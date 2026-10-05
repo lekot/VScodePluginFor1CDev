@@ -70,15 +70,18 @@
 
 Длительные deploy, deploy выбранных/изменённых файлов, pull, export status, EPF/ERF operations,
 команды СКД (`compile`, `info`, `edit`, `validate`), операции поддержки конфигурации
-(`setObjectMode`, `enableObjectRules`, `sync`, `verify`), управление браузерными формами
-(`start`, `exec`, `shot`, `native`) и debug-команды `start`, `startFromBinding`, `waitForStop` можно запустить
+(`setObjectMode`, `enableObjectRules`, `sync`, `verify`), операции TestClient `launch`, `start`,
+`shot`, `native` и debug-команды `start`, `startFromBinding`, `waitForStop` можно запустить
 с `background: true`. MCP-схемы для этих операций по умолчанию выбирают background; синхронный
 MCP-вызов задаёт `background: false`. Прямые Agent-вызовы этих операций сохраняют синхронное
 поведение без `background`; мутации Хранилища остаются фоновыми по умолчанию и принимают
 `background: false` для синхронного вызова.
 
-Передайте `taskId` из receipt в `1c-metadata-tree.agent.task.status`, `.task.result` или `.task.cancel`
-(MCP: `cdt_task_status`, `cdt_task_result`, `cdt_task_cancel`). Receipt немедленно возвращает
+Передайте `taskId` из receipt в `1c-metadata-tree.agent.task.status`, `.task.result` или `.task.cancel`.
+В compact MCP это операции диспетчера `cdt_read`, например
+`cdt_read({ operation: "cdt_task_status", arguments: { taskId } })` и
+`cdt_read({ operation: "cdt_task_result", arguments: { taskId } })`; это не отдельные tools по умолчанию.
+Receipt немедленно возвращает
 `status: "working"`; task snapshots сообщают `running`, `completed`, `failed` или подтверждённый
 `cancelled`, флаг `cancellationRequested` и `elapsedMs`. Для running задачи время растёт от момента
 создания; после terminal state `elapsedMs` фиксируется. `recentMessages` содержит этапы операции и
@@ -229,6 +232,10 @@ MCP endpoint через `mcp.url`.
 Тип — английское имя rootTag: `Catalog`, `Document`, `Enum`, `InformationRegister`, `CommonModule`, `Subsystem`, `Report`, `DataProcessor`, `ChartOfAccounts`, `ChartOfCharacteristicTypes`, `AccumulationRegister`, `AccountingRegister`, `CalculationRegister`, `BusinessProcess`, `Task`, `ExchangePlan`, `Constant`, `Role`, `ScheduledJob`, `HTTPService`, `WebService` и др. (46 типов).
 
 ## Команды
+
+Примеры ниже показывают аргументы прямых Agent-команд. В compact MCP передавайте тот же объект
+аргументов в `arguments` и выбирайте dispatcher по profile из `cdt_catalog`: например,
+`cdt_forms_discover` вызывается через `cdt_read_live`, а `cdt_forms_launch` — через `cdt_write_live`.
 
 Все команды возвращают единый envelope:
 
@@ -1243,6 +1250,29 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 
 Для локального запуска и поиска TestClient поддерживается Windows. Действия формы могут менять данные открытой базы. `forms.stop` закрывает только TCP-соединение и не останавливает сам клиент.
 
+#### Короткий сценарий через compact MCP
+
+В compact MCP имена `cdt_forms_*` выбирают операцию, а не отдельный tool. Найти запущенные
+TestClient можно через `cdt_read_live`; запуск, подключение и работа с формой идут через
+`cdt_write_live`. Следующий вызов запускает клиент и ждёт подключения синхронно:
+
+```text
+cdt_read_live({ operation: "cdt_forms_discover", arguments: {} })
+cdt_write_live({
+  operation: "cdt_forms_launch",
+  arguments: { dbPath: "C:/temp/test-base", waitTimeoutMs: 120000, background: false }
+})
+cdt_write_live({ operation: "cdt_forms_native", arguments: { action: "overview", maxDepth: 4, background: false } })
+```
+
+Если TestClient уже запущен, подключитесь к его порту:
+`cdt_write_live({ operation: "cdt_forms_start", arguments: { driver: "native", port: 1538, background: false } })`.
+MCP по умолчанию запускает `launch`, `start` и `native` как фоновые задачи; с `background: false`
+они возвращают итог сразу. Иначе передайте `taskId` из receipt в
+`cdt_read({ operation: "cdt_task_status", arguments: { taskId } })`, затем запросите результат через
+`cdt_read({ operation: "cdt_task_result", arguments: { taskId } })`. `cdt_forms_native` остаётся в
+`cdt_write_live`, даже когда действие только читает форму: профиль общий для чтения и изменения.
+
 #### `1c-metadata-tree.agent.forms.discover`
 
 Найти локальные TestClient, слушающие TCP-порт. Проверяются executable, `/TESTCLIENT`, аргумент `-TPort` и соответствующий PID слушателя. Ответ содержит только `{ pid, port }`; командная строка и возможные `/P` credentials не возвращаются.
@@ -1302,7 +1332,7 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 { "action": "overview", "maxDepth": 4 }
 ```
 
-Чтение и изменение принимают `ref` из текущего результата `overview`, `find` или `formContext`, например `{ "action": "readField", "ref": { "id": "<ref>" } }`. `overview`, `find`, `commandInterface` и `formContext` обновляют набор ссылок; `executeCommand` очищает ссылки предыдущего окна. Снимки не инвалидируют текущие ссылки. Чтение таблицы временно меняет выделение строк и пытается восстановить его; ответ содержит `complete`, `truncated` и `selectionRestored`. Если полноту нельзя подтвердить, `complete` будет `false`, в том числе для пустого результата. `forms.shot` снимает окно локального Windows TestClient активной сессии.
+Чтение и изменение принимают `ref` из текущего результата `overview`, `find` или `formContext`, например `{ "action": "readField", "ref": { "id": "<ref>" } }`. `overview`, `find`, `commandInterface` и `formContext` обновляют набор ссылок; `executeCommand` очищает ссылки предыдущего окна. Снимки не инвалидируют текущие ссылки. Чтение таблицы временно меняет выделение строк и пытается восстановить его; ответ содержит `complete`, `truncated` и `selectionRestored`. Если полноту нельзя подтвердить, `complete` будет `false`, в том числе для пустого результата.
 
 ---
 

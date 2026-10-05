@@ -139,7 +139,7 @@ synchronized files. Только `acknowledged` даёт `success: true`; status
 
 Длительные deploy/deploySelected/deployChanged/pull/exportStatus и EPF/ERF операции, четыре SKD
 команды, четыре операции поддержки (`setObjectMode`, `enableObjectRules`, `sync`, `verify`),
-`forms.start`/`shot`/`native` и `debug.start`/`startFromBinding`/`waitForStop` поддерживают тот же
+`forms.launch`/`start`/`shot`/`native` и `debug.start`/`startFromBinding`/`waitForStop` поддерживают тот же
 `background` input. MCP schema ставит `true` по умолчанию; `background: false` выполняет вызов
 синхронно. Прямые Agent-вызовы этих команд без `background` остаются синхронными; операции
 Хранилища сохраняют существующий фоновой default. Task receipt содержит `taskId`; status/result/cancel
@@ -301,7 +301,7 @@ Retryable selection учитывает только текущую master genera
 - external processors: `{srcPath,outDir?,format,context,timeoutMs?}`,
   `{rootXmlPath,dstPath?,context,timeoutMs?}`;
 - subsystem/characteristics: `{configurationId?,subsystemPath}`, `{configurationId?,subsystemPath,commandName,common}`, `{configurationId?,subsystemPath,entries: strict {commandName:string,commandGroup:string}[]}`, `{configurationId?,subsystemPath,order:string[]}`, `{configurationId?,path}`, `{configurationId?,path,predefinedName}`, `{configurationId?,path,predefinedName,types:string[]}`;
-- forms: `{driver?,port,host?,platformVersion?}`, `{}`, `{file?,timeoutMs?}`, `{}`, native action union (`overview`, `commandInterface`, `executeCommand`, `find`, `readField`, `writeField`, `act`, `readTable`, `formContext`, `createSnapshot`, `compareSnapshot`, `listSnapshots`, `deleteSnapshot`, `uiLog`);
+- forms: discover `{}`; launch `{dbPath?|infobaseId?,platformPath?,port?,waitTimeoutMs?,background?}` with exactly one of `dbPath`/`infobaseId`; start `{driver?,port,host?,platformVersion?,background?}`; stop `{}`; shot `{file?,timeoutMs?,background?}`; status `{}`; native action union (`overview`, `commandInterface`, `executeCommand`, `find`, `readField`, `writeField`, `act`, `readTable`, `formContext`, `createSnapshot`, `compareSnapshot`, `listSnapshots`, `deleteSnapshot`, `uiLog`) with optional `timeoutMs` and `background`;
 - SKD: `{definitionFile?,value?,outputPath}`, `{templatePath,mode?,name?,batch?,limit?,offset?,outFile?}`, `{templatePath,operation,value,dataSet?,variant?,noSelection?}`, `{templatePath,detailed?,maxErrors?,outFile?}`;
 - XDTO: `{configurationId?}`, selector + `{includeSource?}`, selector + `{outputPath?,includeSource?}`, selector + `{inputPath?,source?}`, `{configurationId?,packageName,inputPath?,source?}`, selector + `{inputPath?,source?,includeTree?,joinStrategy?}`, selector + `{inputPath?,source?,selectedIds,joinStrategy?}`.
 
