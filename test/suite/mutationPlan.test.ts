@@ -628,5 +628,122 @@ suite('MutationPlanExecutor', () => {
     // Fail-closed: recent staging directory must NOT be deleted while another process might be initializing it
     assert.strictEqual(fs.existsSync(stagingOp), true, 'recent staging directory must be preserved');
   });
+
+  test('Issue #167: executor collision on same operationId does not delete first executor journal/backups on rename failure', async () => {
+    const fileA = path.join(tempDir, 'fileA.xml');
+    await fs.promises.writeFile(fileA, 'initial-content', 'utf8');
+    const sharedOpId = 'collision-op-id';
+    const activeOpDir = path.join(tempDir, '.cdt-journal', sharedOpId);
+    const executor2 = new MutationPlanExecutor(tempDir);
+
+    const origRename = fs.promises.rename;
+    try {
+      (fs.promises as any).rename = async (oldPath: string, newPath: string) => {
+        if (newPath === activeOpDir) {
+          // Simulate Process 1 winning the race and publishing activeOpDir just before Process 2's rename
+          await fs.promises.mkdir(path.join(activeOpDir, 'backups'), { recursive: true });
+          await fs.promises.writeFile(
+            path.join(activeOpDir, 'owner.json'),
+            JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+            'utf8',
+          );
+          await fs.promises.writeFile(
+            path.join(activeOpDir, 'journal.json'),
+            JSON.stringify({
+              version: 1,
+              operationId: sharedOpId,
+              plan: { kind: 'test.proc1', steps: [], result: null },
+              state: 'prepared',
+              appliedSteps: 0,
+              snapshots: [],
+            }),
+            'utf8',
+          );
+          await fs.promises.writeFile(path.join(activeOpDir, 'backups', 'backup-0'), 'precious-backup', 'utf8');
+
+          const err = new Error('EEXIST: file already exists, rename') as NodeJS.ErrnoException;
+          err.code = 'EEXIST';
+          throw err;
+        }
+        return origRename(oldPath, newPath);
+      };
+
+      // Now executor2 executes with operationId: sharedOpId
+      // Both processes passed recoverLocked(), Process 1 published activeOpDir, and Process 2's rename threw EEXIST
+      await assert.rejects(
+        executor2.execute({
+          kind: 'test.proc2',
+          steps: [{
+            type: 'writeFile', targetPath: fileA, content: 'from-proc2', encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent('initial-content') },
+          }],
+          result: null,
+        }, sharedOpId),
+        /EEXIST/,
+      );
+
+      // CRITICAL ASSERTION:
+      // Executor 2's catch block MUST NOT have deleted activeOpDir, journal.json, or precious-backup!
+      assert.strictEqual(fs.existsSync(activeOpDir), true, 'activeOpDir must NOT be deleted by failed second executor');
+      assert.strictEqual(fs.existsSync(path.join(activeOpDir, 'journal.json')), true, 'journal.json must remain intact');
+      assert.strictEqual(fs.existsSync(path.join(activeOpDir, 'backups', 'backup-0')), true, 'backups must remain intact');
+    } finally {
+      (fs.promises as any).rename = origRename;
+    }
+  });
+
+  test('Issue #167: persistent cleanup failure on committed operation does not throw or block subsequent plans', async () => {
+    const fileA = path.join(tempDir, 'fileA.xml');
+    await fs.promises.writeFile(fileA, 'initial-A', 'utf8');
+
+    const committedOp = path.join(tempDir, '.cdt-journal', 'committed-unremovable-op');
+    await fs.promises.mkdir(committedOp, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(committedOp, 'owner.json'),
+      JSON.stringify({ pid: process.pid, createdAt: Date.now() - 5000 }),
+      'utf8',
+    );
+    await fs.promises.writeFile(
+      path.join(committedOp, 'journal.json'),
+      JSON.stringify({
+        version: 1,
+        operationId: 'committed-unremovable-op',
+        plan: { kind: 'test.committed', steps: [], result: null },
+        state: 'committed',
+        appliedSteps: 1,
+        snapshots: [],
+      }),
+      'utf8',
+    );
+
+    const origRm = fs.promises.rm;
+    try {
+      (fs.promises as any).rm = async (targetPath: string, opts?: any) => {
+        if (targetPath === committedOp) {
+          const err = new Error('EBUSY: resource busy or locked, rm') as NodeJS.ErrnoException;
+          err.code = 'EBUSY';
+          throw err;
+        }
+        return origRm(targetPath, opts);
+      };
+
+      const executor = new MutationPlanExecutor(tempDir);
+      // recover() should NOT throw even if removing committedOp fails with EBUSY!
+      await executor.recover();
+
+      // Subsequent execute() must succeed without error
+      await executor.execute({
+        kind: 'test.planSubsequent',
+        steps: [{
+          type: 'writeFile', targetPath: fileA, content: 'mutated-A', encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('initial-A') },
+        }],
+        result: 'success',
+      });
+      assert.strictEqual(await fs.promises.readFile(fileA, 'utf8'), 'mutated-A');
+    } finally {
+      (fs.promises as any).rm = origRm;
+    }
+  });
 });
 

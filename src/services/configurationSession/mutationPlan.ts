@@ -108,6 +108,7 @@ export class MutationPlanExecutor {
     let snapshots: PathSnapshot[];
     let journal: MutationJournal<T>;
     const stagingPath = path.join(this.journalRoot, `.prep-${operationId}-${randomUUID()}`);
+    let isPublished = false;
     try {
       await fs.promises.mkdir(stagingPath, { recursive: true });
       const owner: OperationOwner = {
@@ -120,6 +121,7 @@ export class MutationPlanExecutor {
         { encoding: 'utf8', flag: 'wx' },
       );
       await fs.promises.rename(stagingPath, operationPath);
+      isPublished = true;
 
       await fs.promises.mkdir(path.join(operationPath, 'backups'), { recursive: true });
       snapshots = await this.captureSnapshots(plan, operationPath);
@@ -134,9 +136,11 @@ export class MutationPlanExecutor {
       await this.writeJournal(operationPath, journal);
     } catch (prepError) {
       await this.removeOperationDir(stagingPath).catch(() => undefined);
-      await this.removeOperationDir(operationPath).catch((err) => {
-        Logger.warn(`Failed to clean up preparation directory: ${operationPath}`, err);
-      });
+      if (isPublished) {
+        await this.removeOperationDir(operationPath).catch((err) => {
+          Logger.warn(`Failed to clean up preparation directory: ${operationPath}`, err);
+        });
+      }
       await this.removeJournalRootWhenEmpty().catch(() => undefined);
       throw prepError;
     }
@@ -259,7 +263,11 @@ export class MutationPlanExecutor {
         // Durable commit: all changes are safe and permanent.
         // It is completely safe to clean up even if owner process PID is still alive.
         if (journal.state === 'committed') {
-          await this.removeOperationDir(operationPath);
+          try {
+            await this.removeOperationDir(operationPath);
+          } catch (cleanupError) {
+            Logger.warn(`Failed to clean up committed operation directory: ${operationPath}`, cleanupError);
+          }
           continue;
         }
 
