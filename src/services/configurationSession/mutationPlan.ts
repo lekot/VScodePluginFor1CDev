@@ -55,6 +55,11 @@ interface MutationJournal<T = unknown> {
   readonly snapshots: readonly PathSnapshot[];
 }
 
+export interface OperationOwner {
+  readonly pid: number;
+  readonly createdAt: number;
+}
+
 export class MutationPlanError extends Error {
   constructor(
     readonly code: 'PLAN_CONFLICT' | 'PLAN_FAILED' | 'RECOVERY_REQUIRED',
@@ -103,6 +108,16 @@ export class MutationPlanExecutor {
     let snapshots: PathSnapshot[];
     let journal: MutationJournal<T>;
     try {
+      await fs.promises.mkdir(operationPath, { recursive: true });
+      const owner: OperationOwner = {
+        pid: process.pid,
+        createdAt: Date.now(),
+      };
+      await fs.promises.writeFile(
+        path.join(operationPath, 'owner.json'),
+        JSON.stringify(owner),
+        { encoding: 'utf8', flag: 'wx' },
+      );
       await fs.promises.mkdir(path.join(operationPath, 'backups'), { recursive: true });
       snapshots = await this.captureSnapshots(plan, operationPath);
       journal = {
@@ -189,6 +204,32 @@ export class MutationPlanExecutor {
         continue;
       }
       const operationPath = path.join(this.journalRoot, entry.name);
+
+      let owner: OperationOwner | undefined;
+      try {
+        const ownerRaw = await fs.promises.readFile(path.join(operationPath, 'owner.json'), 'utf8');
+        const parsed = JSON.parse(ownerRaw) as Partial<OperationOwner>;
+        if (typeof parsed?.pid === 'number' && Number.isInteger(parsed.pid)) {
+          owner = { pid: parsed.pid, createdAt: Number(parsed.createdAt) || 0 };
+        } else {
+          throw new Error('Invalid owner metadata in owner.json.');
+        }
+      } catch (ownerError) {
+        if (!isMissingError(ownerError)) {
+          throw new MutationPlanError(
+            'RECOVERY_REQUIRED',
+            `Cannot recover mutation journal ${entry.name}: ${errorMessage(ownerError)}`,
+          );
+        }
+      }
+
+      if (owner !== undefined && isProcessAlive(owner.pid)) {
+        throw new MutationPlanError(
+          'PLAN_CONFLICT',
+          `Operation "${entry.name}" is actively in progress by process ${owner.pid}.`,
+        );
+      }
+
       let journalRaw: string;
       try {
         journalRaw = await fs.promises.readFile(path.join(operationPath, 'journal.json'), 'utf8');
@@ -196,7 +237,8 @@ export class MutationPlanExecutor {
         if (isMissingError(readError)) {
           // Pre-effect orphan operation directory: preparation failed or process died before journal.json was committed.
           // No mutation steps were ever applied to target files; clean up safely without throwing RECOVERY_REQUIRED.
-          Logger.warn(`Removed orphan mutation journal dir without journal.json: ${operationPath}`);
+          const ownerInfo = owner ? ` from terminated process ${owner.pid}` : '';
+          Logger.warn(`Removed orphan mutation journal dir${ownerInfo} without journal.json: ${operationPath}`);
           await this.removeOperationDir(operationPath).catch((err) => {
             Logger.warn(`Failed to remove orphan mutation journal dir: ${operationPath}`, err);
           });
@@ -520,4 +562,16 @@ function isNotEmptyError(error: unknown): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === 'EPERM');
+  }
 }
