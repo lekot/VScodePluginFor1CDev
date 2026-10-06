@@ -32,6 +32,8 @@ export const coreSuiteFiles: string[] = [
   'suite/metadataParser.edge.test.js',
   'suite/metadataTreeLifecycle.test.js',
   'suite/metadataWatcherService.test.js',
+  'suite/reloadCoordinatorService.test.js',
+  'suite/deleteReconcileRecovery.test.js',
   'suite/typeContentsCache.test.js',
   'suite/metadataDefaultValues.test.js',
   'suite/metadataFileLocator.test.js',
