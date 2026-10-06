@@ -12,6 +12,7 @@ import { loadTreeFromCache, saveTreeToCache, invalidateTreeCache } from '../util
 import { MetadataType, TreeNode } from '../models/treeNode';
 import { MESSAGES } from '../constants/messages';
 import { normalizeEmptyPlaceholderTree } from '../utils/treeNormalization';
+import { configurationPathKey } from '../utils/configurationPathIdentity';
 import { Logger } from '../utils/logger';
 import {
   createReloadOrchestratorHandlers,
@@ -367,7 +368,7 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
 
   async function reloadConfiguration(configPath: string): Promise<void> {
     throwIfDisposed();
-    const key = path.normalize(configPath).replace(/\\/g, '/').toLocaleLowerCase();
+    const key = configurationPathKey(configPath);
     let slot = configurationReloadSlots.get(key);
     if (!slot) {
       slot = {

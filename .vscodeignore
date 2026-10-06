@@ -14,6 +14,9 @@ src/**
 test/**
 out/**
 build/**
+dist/**/test/**
+dist/**/*.test.*
+dist/**/__tests__/**
 .kiro/**
 BUGS/**
 docs/**
@@ -21,6 +24,7 @@ docs/**
 mcp/**
 FormatSamples/**
 releases/
+*.log
 .gitignore
 .prettierrc.json
 .eslintrc.json
