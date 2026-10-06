@@ -39,8 +39,10 @@ const mustRegisterInCoreCi: readonly string[] = [
   'suite/reloadCoordinatorService.test.js',
   'suite/deleteReconcileRecovery.test.js',
   'suite/mutationPlan.test.js',
+  'suite/xmlFileIoBackupRecovery.test.js',
   'suite/typeEditorProvider.test.js',
   'suite/configurationPathIdentity.test.js',
+  'suite/configurationMutationGateway.test.js',
 ];
 
 

@@ -11,6 +11,7 @@ import {
 } from '../services/subsystemCompositionFileUpdater';
 import { runIbcmdConfigCheckGate, type IbcmdConfigCheckResult } from '../services/ibcmdConfigCheckGate';
 import { IBCMD_SETUP_COMMAND } from '../services/ibcmdService';
+import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
 
 type RegisterFilterCommandsDeps = {
   state: ExtensionState;
@@ -145,10 +146,14 @@ export function registerFilterCommands(deps: RegisterFilterCommandsDeps): vscode
           await showSubsystemCompositionIbcmdGateFailure(gate);
           return;
         }
-        const { rejected } = await applySubsystemCompositionFileUpdate(target.filePath, {
-          add: [trimmed],
-          remove: [],
-        });
+        const { rejected } = await runConfigurationMutation(
+          target.filePath,
+          'ui.subsystem.addToComposition',
+          () => applySubsystemCompositionFileUpdate(target.filePath!, {
+            add: [trimmed],
+            remove: [],
+          }),
+        );
         if (rejected.length > 0) {
           vscode.window.showWarningMessage(
             `${MESSAGES.SUBSYSTEM_COMPOSITION_REJECTED_PREFIX} ${rejected.map((r) => `${r.ref} (${r.reason})`).join('; ')}`
@@ -203,10 +208,14 @@ export function registerFilterCommands(deps: RegisterFilterCommandsDeps): vscode
           await showSubsystemCompositionIbcmdGateFailure(gate);
           return;
         }
-        await applySubsystemCompositionFileUpdate(target.filePath, {
-          add: [],
-          remove: [picked],
-        });
+        await runConfigurationMutation(
+          target.filePath,
+          'ui.subsystem.removeFromComposition',
+          () => applySubsystemCompositionFileUpdate(target.filePath!, {
+            add: [],
+            remove: [picked],
+          }),
+        );
         const cp = state.treeDataProvider.getConfigPathForNode(target);
         if (cp) {
           await invalidateTreeCacheOnly(cp);

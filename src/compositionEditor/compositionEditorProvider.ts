@@ -23,6 +23,7 @@ import {
 } from './compositionObjectCollector';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
+import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
 
 export class CompositionEditorProvider implements vscode.Disposable {
   private static readonly VALID_COMMANDS = new Set(['toggle', 'save', 'cancel', 'selectAll', 'deselectAll', 'expand', 'expandAll', 'settingChange']);
@@ -180,9 +181,9 @@ export class CompositionEditorProvider implements vscode.Disposable {
         );
 
         this.panel.webview.onDidReceiveMessage(
-          (message: unknown) => {
+          async (message: unknown) => {
             if (!this.isValidMessage(message)) { return; }
-            this.handleMessage(message);
+            await this.handleMessage(message);
           },
           null,
           this.disposables
@@ -217,13 +218,13 @@ export class CompositionEditorProvider implements vscode.Disposable {
   /**
    * Handle messages from the webview.
    */
-  private handleMessage(msg: CompositionWebviewMessage): void {
+  public async handleMessage(msg: CompositionWebviewMessage): Promise<void> {
     switch (msg.command) {
       case 'toggle':
         this.handleToggle(msg.data.ref, msg.data.checked);
         break;
       case 'save':
-        void this.handleSave();
+        await this.handleSave();
         break;
       case 'cancel':
         this.panel?.dispose();
@@ -239,10 +240,10 @@ export class CompositionEditorProvider implements vscode.Disposable {
         }
         break;
       case 'expand':
-        void this.handleExpand(msg.data.typeFolderId);
+        await this.handleExpand(msg.data.typeFolderId);
         break;
       case 'expandAll':
-        void this.handleExpandAll();
+        await this.handleExpandAll();
         break;
       case 'settingChange':
         this.handleSettingChange(msg.data.ref, msg.data.key, msg.data.value);
@@ -367,7 +368,7 @@ export class CompositionEditorProvider implements vscode.Disposable {
     this.postMessage({ command: 'allObjectsLoaded', data: payload });
   }
 
-  private async handleSave(): Promise<void> {
+  public async handleSave(): Promise<void> {
     if (this.saveInProgress || !this.contentFilePath) {
       return;
     }
@@ -378,8 +379,7 @@ export class CompositionEditorProvider implements vscode.Disposable {
 
       const settingsChanged = new Map<string, Record<string, string>>();
       for (const [ref, current] of this.currentItemSettings) {
-        const initial = this.initialItemSettings.get(ref);
-        if (!initial) { continue; }
+        const initial = this.initialItemSettings.get(ref) ?? {};
         const changed: Record<string, string> = {};
         let hasChange = false;
         for (const [k, v] of Object.entries(current)) {
@@ -399,7 +399,11 @@ export class CompositionEditorProvider implements vscode.Disposable {
         settingsChanged,
       };
 
-      const result = await this.strategy.applyUpdate(this.contentFilePath, diff);
+      const result = await runConfigurationMutation(
+        this.contentFilePath,
+        'ui.composition.save',
+        () => this.strategy.applyUpdate(this.contentFilePath!, diff),
+      );
 
       if (result.rejected.length > 0) {
         const msg = result.rejected.map(r => `${r.ref} (${r.reason})`).join('; ');
@@ -438,8 +442,7 @@ export class CompositionEditorProvider implements vscode.Disposable {
 
     let settingsChangedCount = 0;
     for (const [ref, current] of this.currentItemSettings) {
-      const initial = this.initialItemSettings.get(ref);
-      if (!initial) { continue; }
+      const initial = this.initialItemSettings.get(ref) ?? {};
       for (const [k, v] of Object.entries(current)) {
         if (initial[k] !== v) { settingsChangedCount++; break; }
       }
