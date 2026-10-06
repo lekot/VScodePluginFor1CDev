@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
-import * as path from 'path';
+import { configurationPathKey } from '../configurationPathIdentity';
 import { Logger } from '../logger';
 import { xmlBuilder } from './xmlCore';
 
@@ -49,7 +49,7 @@ export class XmlWriteRollbackError extends Error {
 const fileWriteLocks = new Map<string, Promise<void>>();
 
 async function acquireFileLock(filePath: string): Promise<() => void> {
-  const canonical = path.resolve(filePath);
+  const canonical = configurationPathKey(filePath);
   const current = fileWriteLocks.get(canonical) ?? Promise.resolve();
   let release!: () => void;
   const next = new Promise<void>((resolve) => {

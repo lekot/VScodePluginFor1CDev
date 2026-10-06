@@ -10,6 +10,7 @@ import {
   XmlWriteRollbackError,
 } from '../../src/utils/xml/xmlFileIo';
 import { XMLWriter } from '../../src/utils/XMLWriter';
+import { configurationPathKey } from '../../src/utils/configurationPathIdentity';
 
 suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
   let tempDir: string;
@@ -247,6 +248,62 @@ suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
 
     // op2 must be blocked on the lock and NOT have started writing backup yet!
     assert.ok(!events.includes('op2:backup'), 'op2 must wait for op1 to finish before acquiring lock');
+
+    releaseFirst();
+    await Promise.all([op1, op2]);
+
+    assert.strictEqual(await fsp.readFile(target, 'utf-8'), '<Root>2</Root>');
+  });
+
+  test('file lock serializes writes across case-insensitive path variants on Windows', async () => {
+    const target = path.join(tempDir, 'case-serialized.xml');
+    await fsp.writeFile(target, '<Root>0</Root>', 'utf-8');
+
+    // On Windows, drive letter and path casing can differ while targeting the same file
+    const targetVariant = process.platform === 'win32'
+      ? (/^[a-zA-Z]:/.test(target)
+          ? (target[0].toLowerCase() === target[0] ? target[0].toUpperCase() : target[0].toLowerCase()) + target.slice(1)
+          : target.toUpperCase())
+      : target;
+
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    const events: string[] = [];
+
+    const hooksOp1: WriteUtf8BackupHooks = {
+      writeFile: async (filePath, data, enc) => {
+        if (configurationPathKey(filePath) === configurationPathKey(target)) {
+          events.push('op1:target:start');
+          await gate;
+          events.push('op1:target:done');
+        }
+        await fsp.writeFile(filePath, data, enc);
+      },
+    };
+
+    const hooksOp2: WriteUtf8BackupHooks = {
+      writeFile: async (filePath, data, enc) => {
+        if (filePath.includes('.bak')) {
+          events.push('op2:backup');
+        }
+        await fsp.writeFile(filePath, data, enc);
+      },
+    };
+
+    const op1 = writeUtf8FileWithBackup(target, '<Root>0</Root>', '<Root>1</Root>', { hooks: hooksOp1 });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(events.includes('op1:target:start'), 'op1 must have started target write');
+
+    // op2 is called with targetVariant (e.g. c:\ instead of C:\)
+    const op2 = writeUtf8FileWithBackup(targetVariant, '<Root>1</Root>', '<Root>2</Root>', { hooks: hooksOp2 });
+    await new Promise((r) => setTimeout(r, 30));
+
+    // op2 MUST be blocked by file lock on Windows even though targetVariant has different casing!
+    if (process.platform === 'win32') {
+      assert.ok(!events.includes('op2:backup'), 'op2 with different path casing must wait for op1 file lock on Windows');
+    }
 
     releaseFirst();
     await Promise.all([op1, op2]);
