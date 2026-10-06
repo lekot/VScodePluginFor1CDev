@@ -252,6 +252,7 @@ export const coreSuiteFiles: string[] = [
   'suite/xdtoXsdConverter.test.js',
   'suite/objectTypeSerializer.test.js',
   'suite/objectTypeEditorProvider.test.js',
+  'suite/typeEditorProvider.test.js',
   'suite/eventSubscriptionSource.test.js',
   'suite/treeItemBuilder.test.js',
   'suite/commandInterfaceParser.test.js',
