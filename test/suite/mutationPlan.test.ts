@@ -563,5 +563,70 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(fs.existsSync(activeOp), true);
     assert.strictEqual(fs.existsSync(path.join(activeOp, 'backups', '0')), true);
   });
+
+  test('Issue #167: recover() cleans up committed journal even if owner process PID is alive and unblocks next plan', async () => {
+    const fileA = path.join(tempDir, 'fileA.xml');
+    await fs.promises.writeFile(fileA, 'committed-content', 'utf8');
+
+    const committedOp = path.join(tempDir, '.cdt-journal', 'committed-op-alive-pid');
+    await fs.promises.mkdir(committedOp, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(committedOp, 'owner.json'),
+      JSON.stringify({ pid: process.pid, createdAt: Date.now() - 5000 }),
+      'utf8',
+    );
+    await fs.promises.writeFile(
+      path.join(committedOp, 'journal.json'),
+      JSON.stringify({
+        version: 1,
+        operationId: 'committed-op-alive-pid',
+        plan: { kind: 'test.committed', steps: [], result: null },
+        state: 'committed',
+        appliedSteps: 1,
+        snapshots: [],
+      }),
+      'utf8',
+    );
+
+    const executor = new MutationPlanExecutor(tempDir);
+    // recover() must NOT throw PLAN_CONFLICT even though process.pid is alive!
+    await executor.recover();
+
+    // Committed operation directory must be removed and journal root cleaned up
+    assert.strictEqual(fs.existsSync(committedOp), false, 'committed directory must be cleaned up');
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+
+    // Next plan executes cleanly without being blocked
+    const fileB = path.join(tempDir, 'fileB.xml');
+    await fs.promises.writeFile(fileB, 'initial-B', 'utf8');
+    await executor.execute({
+      kind: 'test.planB',
+      steps: [{
+        type: 'writeFile', targetPath: fileB, content: 'mutated-B', encoding: 'utf8',
+        expected: { state: 'file', hash: hashContent('initial-B') },
+      }],
+      result: null,
+    });
+    assert.strictEqual(await fs.promises.readFile(fileB, 'utf8'), 'mutated-B');
+  });
+
+  test('Issue #167: recover() fails-closed with PLAN_CONFLICT on recent staging directory without owner.json', async () => {
+    const stagingOp = path.join(tempDir, '.cdt-journal', '.prep-in-flight-tmp');
+    await fs.promises.mkdir(stagingOp, { recursive: true });
+    // In-flight staging directory created just now, owner.json not yet written
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => {
+        assert.strictEqual(err.code, 'PLAN_CONFLICT');
+        assert.ok(err.message.includes('.prep-in-flight-tmp'));
+        return true;
+      },
+    );
+
+    // Fail-closed: recent staging directory must NOT be deleted while another process might be initializing it
+    assert.strictEqual(fs.existsSync(stagingOp), true, 'recent staging directory must be preserved');
+  });
 });
 

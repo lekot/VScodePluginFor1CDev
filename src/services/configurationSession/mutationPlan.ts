@@ -107,17 +107,20 @@ export class MutationPlanExecutor {
     await this.validatePlan(plan);
     let snapshots: PathSnapshot[];
     let journal: MutationJournal<T>;
+    const stagingPath = path.join(this.journalRoot, `.prep-${operationId}-${randomUUID()}`);
     try {
-      await fs.promises.mkdir(operationPath, { recursive: true });
+      await fs.promises.mkdir(stagingPath, { recursive: true });
       const owner: OperationOwner = {
         pid: process.pid,
         createdAt: Date.now(),
       };
       await fs.promises.writeFile(
-        path.join(operationPath, 'owner.json'),
+        path.join(stagingPath, 'owner.json'),
         JSON.stringify(owner),
         { encoding: 'utf8', flag: 'wx' },
       );
+      await fs.promises.rename(stagingPath, operationPath);
+
       await fs.promises.mkdir(path.join(operationPath, 'backups'), { recursive: true });
       snapshots = await this.captureSnapshots(plan, operationPath);
       journal = {
@@ -130,6 +133,7 @@ export class MutationPlanExecutor {
       };
       await this.writeJournal(operationPath, journal);
     } catch (prepError) {
+      await this.removeOperationDir(stagingPath).catch(() => undefined);
       await this.removeOperationDir(operationPath).catch((err) => {
         Logger.warn(`Failed to clean up preparation directory: ${operationPath}`, err);
       });
@@ -223,48 +227,91 @@ export class MutationPlanExecutor {
         }
       }
 
-      if (owner !== undefined && isProcessAlive(owner.pid)) {
-        throw new MutationPlanError(
-          'PLAN_CONFLICT',
-          `Operation "${entry.name}" is actively in progress by process ${owner.pid}.`,
-        );
-      }
-
-      let journalRaw: string;
+      let journalRaw: string | undefined;
+      let journalMissing = false;
       try {
         journalRaw = await fs.promises.readFile(path.join(operationPath, 'journal.json'), 'utf8');
       } catch (readError) {
         if (isMissingError(readError)) {
-          // Pre-effect orphan operation directory: preparation failed or process died before journal.json was committed.
-          // No mutation steps were ever applied to target files; clean up safely without throwing RECOVERY_REQUIRED.
-          const ownerInfo = owner ? ` from terminated process ${owner.pid}` : '';
-          Logger.warn(`Removed orphan mutation journal dir${ownerInfo} without journal.json: ${operationPath}`);
-          await this.removeOperationDir(operationPath).catch((err) => {
-            Logger.warn(`Failed to remove orphan mutation journal dir: ${operationPath}`, err);
-          });
-          continue;
+          journalMissing = true;
+        } else {
+          throw new MutationPlanError(
+            'RECOVERY_REQUIRED',
+            `Cannot recover mutation journal ${entry.name}: ${errorMessage(readError)}`,
+          );
         }
-        throw new MutationPlanError(
-          'RECOVERY_REQUIRED',
-          `Cannot recover mutation journal ${entry.name}: ${errorMessage(readError)}`,
-        );
       }
 
-      let journal: MutationJournal;
-      try {
-        journal = JSON.parse(journalRaw) as MutationJournal;
-        if (journal.version !== 1 || !Array.isArray(journal.snapshots)) {
-          throw new Error('Unsupported or corrupt mutation journal.');
+      if (journalRaw !== undefined) {
+        let journal: MutationJournal;
+        try {
+          journal = JSON.parse(journalRaw) as MutationJournal;
+          if (journal.version !== 1 || !Array.isArray(journal.snapshots)) {
+            throw new Error('Unsupported or corrupt mutation journal.');
+          }
+        } catch (error) {
+          throw new MutationPlanError(
+            'RECOVERY_REQUIRED',
+            `Cannot recover mutation journal ${entry.name}: ${errorMessage(error)}`,
+          );
         }
-        if (journal.state !== 'committed') {
-          await this.restoreSnapshots(operationPath, journal.snapshots);
+
+        // Durable commit: all changes are safe and permanent.
+        // It is completely safe to clean up even if owner process PID is still alive.
+        if (journal.state === 'committed') {
+          await this.removeOperationDir(operationPath);
+          continue;
         }
+
+        // Uncommitted journal: if owner process is alive, fail-closed against concurrent mutations.
+        if (owner !== undefined && isProcessAlive(owner.pid)) {
+          throw new MutationPlanError(
+            'PLAN_CONFLICT',
+            `Operation "${entry.name}" is actively in progress by process ${owner.pid}.`,
+          );
+        }
+
+        // Owner process is terminated/absent: rollback interrupted plan.
+        await this.restoreSnapshots(operationPath, journal.snapshots);
         await this.removeOperationDir(operationPath);
-      } catch (error) {
-        throw new MutationPlanError(
-          'RECOVERY_REQUIRED',
-          `Cannot recover mutation journal ${entry.name}: ${errorMessage(error)}`,
-        );
+        continue;
+      }
+
+      if (journalMissing) {
+        // If owner is alive, the operation is actively in preparation! Fail-closed.
+        if (owner !== undefined && isProcessAlive(owner.pid)) {
+          throw new MutationPlanError(
+            'PLAN_CONFLICT',
+            `Operation "${entry.name}" is actively in progress by process ${owner.pid}.`,
+          );
+        }
+
+        // If staging directory without owner is recent, another process might be initializing it! Fail-closed.
+        if (owner === undefined && entry.name.startsWith('.')) {
+          try {
+            const stat = await fs.promises.stat(operationPath);
+            const ageMs = Date.now() - stat.mtimeMs;
+            if (ageMs < 5000) {
+              throw new MutationPlanError(
+                'PLAN_CONFLICT',
+                `Operation "${entry.name}" is actively being prepared.`,
+              );
+            }
+          } catch (statError) {
+            if (statError instanceof MutationPlanError) {
+              throw statError;
+            }
+          }
+        }
+
+        // Pre-effect orphan operation directory from terminated process or stale unowned dir:
+        // No mutation steps were ever applied to target files; clean up safely without throwing RECOVERY_REQUIRED.
+        const ownerInfo = owner ? ` from terminated process ${owner.pid}` : '';
+        Logger.warn(`Removed orphan mutation journal dir${ownerInfo} without journal.json: ${operationPath}`);
+        await this.removeOperationDir(operationPath).catch((err) => {
+          Logger.warn(`Failed to remove orphan mutation journal dir: ${operationPath}`, err);
+        });
+        continue;
       }
     }
     await this.removeJournalRootWhenEmpty();
