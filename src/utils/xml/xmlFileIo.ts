@@ -8,14 +8,42 @@ export function buildXmlString(data: unknown): string {
   return xmlBuilder.build(data);
 }
 
+/**
+ * Hooks for customizing file operations during write with backup.
+ * @internal Test hook only.
+ */
 export interface WriteUtf8BackupHooks {
   writeFile?: (path: string, data: string, encoding: BufferEncoding) => Promise<void>;
   readFile?: (path: string, encoding: BufferEncoding) => Promise<string>;
   unlink?: (path: string) => Promise<void>;
 }
 
+/**
+ * Options for writeUtf8FileWithBackup.
+ * @internal Test options only.
+ */
 export interface WriteUtf8FileWithBackupOptions {
   hooks?: WriteUtf8BackupHooks;
+}
+
+/**
+ * Error thrown when writing a file fails and subsequent rollback to original content also fails.
+ * Preserves the disk path to the recovery backup and both underlying errors.
+ */
+export class XmlWriteRollbackError extends Error {
+  constructor(
+    readonly backupPath: string,
+    readonly writeError: unknown,
+    readonly rollbackError: unknown
+  ) {
+    const writeMsg = writeError instanceof Error ? writeError.message : String(writeError);
+    const rollbackMsg = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+    super(
+      `Unable to write to file and rollback failed. Recovery backup preserved at: ${backupPath}. ` +
+      `Write error: ${writeMsg}. Rollback error: ${rollbackMsg}`
+    );
+    this.name = 'XmlWriteRollbackError';
+  }
 }
 
 const fileWriteLocks = new Map<string, Promise<void>>();
@@ -56,14 +84,11 @@ export async function writeUtf8FileWithBackup(
   const releaseLock = await acquireFileLock(filePath);
   try {
     const writeFile = options?.hooks?.writeFile ?? ((p, d, e) => fs.promises.writeFile(p, d, e));
-    const readFile = options?.hooks?.readFile ?? ((p, e) => fs.promises.readFile(p, e));
     const unlink = options?.hooks?.unlink ?? ((p) => fs.promises.unlink(p));
 
     const backupPath = generateBackupPath(filePath);
-    let backupCreated = false;
     try {
       await writeFile(backupPath, originalContent, 'utf-8');
-      backupCreated = true;
     } catch (backupErr) {
       Logger.error(`Failed to create backup ${backupPath}`, backupErr);
       const msg = backupErr instanceof Error ? backupErr.message : String(backupErr);
@@ -76,16 +101,13 @@ export async function writeUtf8FileWithBackup(
       Logger.error(`Failed to write file: ${filePath}`, writeError);
       let rollbackSucceeded = false;
       let rollbackError: unknown;
-      if (backupCreated) {
-        try {
-          const restored = await readFile(backupPath, 'utf-8');
-          await writeFile(filePath, restored, 'utf-8');
-          rollbackSucceeded = true;
-          Logger.info(`Rolled back ${filePath} from backup`);
-        } catch (rErr) {
-          rollbackError = rErr;
-          Logger.error(`Rollback failed for ${filePath}`, rErr);
-        }
+      try {
+        await writeFile(filePath, originalContent, 'utf-8');
+        rollbackSucceeded = true;
+        Logger.info(`Rolled back ${filePath} from backup`);
+      } catch (rErr) {
+        rollbackError = rErr;
+        Logger.error(`Rollback failed for ${filePath}`, rErr);
       }
 
       if (rollbackSucceeded) {
@@ -100,18 +122,7 @@ export async function writeUtf8FileWithBackup(
         );
       } else {
         // Rollback failed: PRESERVE BACKUP FILE on disk! Do NOT unlink!
-        const writeMsg = writeError instanceof Error ? writeError.message : String(writeError);
-        const rollbackMsg = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-        const err = new Error(
-          `Unable to write to file and rollback failed. Recovery backup preserved at: ${backupPath}. ` +
-          `Write error: ${writeMsg}. Rollback error: ${rollbackMsg}`
-        );
-        Object.assign(err, {
-          backupPath,
-          writeError,
-          rollbackError,
-        });
-        throw err;
+        throw new XmlWriteRollbackError(backupPath, writeError, rollbackError);
       }
     }
 

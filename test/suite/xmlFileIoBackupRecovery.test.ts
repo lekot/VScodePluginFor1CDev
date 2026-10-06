@@ -3,17 +3,28 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { writeUtf8FileWithBackup, type WriteUtf8FileWithBackupOptions } from '../../src/utils/xml/xmlFileIo';
+import {
+  writeUtf8FileWithBackup,
+  type WriteUtf8FileWithBackupOptions,
+  type WriteUtf8BackupHooks,
+  XmlWriteRollbackError,
+} from '../../src/utils/xml/xmlFileIo';
 import { XMLWriter } from '../../src/utils/XMLWriter';
 
 suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
   let tempDir: string;
+  let originalWriteFile: typeof fs.promises.writeFile | undefined;
 
   setup(async () => {
     tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'xml-file-io-backup-'));
+    originalWriteFile = undefined;
   });
 
   teardown(async () => {
+    if (originalWriteFile) {
+      fs.promises.writeFile = originalWriteFile;
+      originalWriteFile = undefined;
+    }
     await fsp.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -57,7 +68,10 @@ suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
         await writeUtf8FileWithBackup(target, original, updated, options);
       },
       (err: Error) => {
-        assert.ok(err.message.includes('Disk full during target write') || err.message.includes('Unable to write to file'));
+        assert.ok(
+          /Unable to write to file/.test(err.message) && /Disk full during target write/.test(err.message),
+          `Expected both error prefix and original cause, got: ${err.message}`
+        );
         return true;
       }
     );
@@ -86,11 +100,11 @@ suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
       },
     };
 
-    let caughtError: (Error & { backupPath?: string }) | undefined;
+    let caughtError: unknown;
     try {
       await writeUtf8FileWithBackup(target, original, updated, options);
     } catch (err) {
-      caughtError = err as Error & { backupPath?: string };
+      caughtError = err;
     }
 
     assert.ok(caughtError, 'Expected writeUtf8FileWithBackup to reject on failure');
@@ -99,21 +113,17 @@ suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
     // Find any backup files in tempDir
     const files = await fsp.readdir(tempDir);
     const backupFiles = files.filter((f) => f.includes('.bak'));
-    assert.ok(
-      backupFiles.length > 0,
-      `A recoverable backup file must remain on disk when rollback fails! Found files: ${JSON.stringify(files)}`
-    );
+    assert.strictEqual(backupFiles.length, 1, `Exactly one backup file must remain on disk, got: ${JSON.stringify(files)}`);
 
     const preservedBackupPath = path.join(tempDir, backupFiles[0]);
     const preservedContent = await fsp.readFile(preservedBackupPath, 'utf-8');
     assert.strictEqual(preservedContent, original, 'Preserved backup must contain intact original content');
 
-    // Error must report where the backup is retained
-    assert.ok(
-      caughtError.message.includes('Recovery backup preserved at:') ||
-      (caughtError.backupPath && fs.existsSync(caughtError.backupPath)),
-      `Error must report where backup is retained. Actual error message: ${caughtError.message}`
-    );
+    assert.ok(caughtError instanceof XmlWriteRollbackError, 'Caught error must be an instance of XmlWriteRollbackError');
+    assert.strictEqual(caughtError.backupPath, preservedBackupPath, 'backupPath on error must match preserved backup file');
+    assert.ok(caughtError.message.includes(preservedBackupPath), `Error message must explicitly mention preserved backup path: ${caughtError.message}`);
+    assert.ok(caughtError.writeError, 'Must preserve writeError');
+    assert.ok(caughtError.rollbackError, 'Must preserve rollbackError');
   });
 
   test('backup creation failure aborts write, leaves target untouched, and does not attempt rollback', async () => {
@@ -148,7 +158,7 @@ suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
     assert.strictEqual(await fsp.readFile(target, 'utf-8'), original, 'Target file must remain untouched');
   });
 
-  test('stale pre-existing backup is not restored when backup creation fails', async () => {
+  test('stale pre-existing backup is preserved and not touched when fresh write and rollback occur', async () => {
     const target = path.join(tempDir, 'sample.xml');
     const staleBackup = path.join(tempDir, 'sample.xml.bak');
     const original = '<Root>Current Original</Root>';
@@ -156,11 +166,15 @@ suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
     await fsp.writeFile(target, original, 'utf-8');
     await fsp.writeFile(staleBackup, staleContent, 'utf-8');
 
+    let targetWriteCount = 0;
     const options: WriteUtf8FileWithBackupOptions = {
       hooks: {
         writeFile: async (filePath, data, enc) => {
-          if (filePath !== target && filePath !== staleBackup) {
-            throw new Error('Failed to create new backup file');
+          if (path.resolve(filePath) === path.resolve(target)) {
+            targetWriteCount++;
+            if (targetWriteCount === 1) {
+              throw new Error('Target write failure during test');
+            }
           }
           await fsp.writeFile(filePath, data, enc);
         },
@@ -170,46 +184,105 @@ suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
     await assert.rejects(
       async () => {
         await writeUtf8FileWithBackup(target, original, '<Root>New</Root>', options);
-      }
+      },
+      /Target write failure during test/
     );
 
     assert.strictEqual(
       await fsp.readFile(target, 'utf-8'),
       original,
-      'Target must NOT be overwritten with stale backup content'
+      'Target must be restored to current original content via rollback'
     );
     assert.strictEqual(
       await fsp.readFile(staleBackup, 'utf-8'),
       staleContent,
-      'Pre-existing stale backup file must remain as-is'
+      'Pre-existing stale backup file must remain intact and not overwritten'
+    );
+
+    const files = await fsp.readdir(tempDir);
+    assert.deepStrictEqual(
+      files.sort(),
+      ['sample.xml', 'sample.xml.bak'].sort(),
+      'Temporary unique backup file must be removed after successful rollback, leaving only stale backup'
     );
   });
 
-  test('concurrent operations on same file use distinct backup paths and serialize without collisions', async () => {
-    const target = path.join(tempDir, 'sample.xml');
-    const original = '<Root>Initial</Root>';
-    await fsp.writeFile(target, original, 'utf-8');
+  test('concurrent operations on same file are strictly serialized by file lock', async () => {
+    const target = path.join(tempDir, 'serialized.xml');
+    await fsp.writeFile(target, '<Root>0</Root>', 'utf-8');
 
-    const seenBackupPaths = new Set<string>();
-    const createOptions = (): WriteUtf8FileWithBackupOptions => ({
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    const events: string[] = [];
+
+    const hooksOp1: WriteUtf8BackupHooks = {
+      writeFile: async (filePath, data, enc) => {
+        if (path.resolve(filePath) === path.resolve(target)) {
+          events.push('op1:target:start');
+          await gate;
+          events.push('op1:target:done');
+        }
+        await fsp.writeFile(filePath, data, enc);
+      },
+    };
+
+    const hooksOp2: WriteUtf8BackupHooks = {
+      writeFile: async (filePath, data, enc) => {
+        if (filePath.includes('.bak')) {
+          events.push('op2:backup');
+        }
+        await fsp.writeFile(filePath, data, enc);
+      },
+    };
+
+    const op1 = writeUtf8FileWithBackup(target, '<Root>0</Root>', '<Root>1</Root>', { hooks: hooksOp1 });
+    // Let op1 run until it enters target write and waits on gate
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(events.includes('op1:target:start'), 'op1 must have started target write');
+
+    const op2 = writeUtf8FileWithBackup(target, '<Root>1</Root>', '<Root>2</Root>', { hooks: hooksOp2 });
+    await new Promise((r) => setTimeout(r, 30));
+
+    // op2 must be blocked on the lock and NOT have started writing backup yet!
+    assert.ok(!events.includes('op2:backup'), 'op2 must wait for op1 to finish before acquiring lock');
+
+    releaseFirst();
+    await Promise.all([op1, op2]);
+
+    assert.strictEqual(await fsp.readFile(target, 'utf-8'), '<Root>2</Root>');
+  });
+
+  test('file lock is released on error path allowing subsequent writes to same file', async () => {
+    const target = path.join(tempDir, 'lock-release.xml');
+    await fsp.writeFile(target, '<Root>Initial</Root>', 'utf-8');
+
+    let shouldFail = true;
+    const options: WriteUtf8FileWithBackupOptions = {
       hooks: {
         writeFile: async (filePath, data, enc) => {
-          if (filePath.includes('.bak')) {
-            seenBackupPaths.add(filePath);
+          if (shouldFail && path.resolve(filePath) === path.resolve(target)) {
+            throw new Error('Injected failure to trigger error path');
           }
           await fsp.writeFile(filePath, data, enc);
         },
       },
-    });
+    };
 
-    // Run two concurrent writes
-    const op1 = writeUtf8FileWithBackup(target, original, '<Root>Version1</Root>', createOptions());
-    const op2 = writeUtf8FileWithBackup(target, '<Root>Version1</Root>', '<Root>Version2</Root>', createOptions());
+    // First write fails
+    await assert.rejects(
+      async () => {
+        await writeUtf8FileWithBackup(target, '<Root>Initial</Root>', '<Root>Fail</Root>', options);
+      },
+      /Injected failure to trigger error path/
+    );
 
-    await Promise.all([op1, op2]);
+    // Second write to the SAME file must succeed without hanging or deadlocking
+    shouldFail = false;
+    await writeUtf8FileWithBackup(target, '<Root>Initial</Root>', '<Root>Success</Root>', options);
 
-    assert.strictEqual(await fsp.readFile(target, 'utf-8'), '<Root>Version2</Root>');
-    assert.strictEqual(seenBackupPaths.size, 2, 'Each operation must use its own distinct backup path');
+    assert.strictEqual(await fsp.readFile(target, 'utf-8'), '<Root>Success</Root>');
   });
 
   test('XMLWriter integration: updateProperty preserves recoverable backup on write and rollback failure', async () => {
@@ -225,18 +298,17 @@ suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
 </MetaDataObject>`;
     await fsp.writeFile(target, xmlContent, 'utf-8');
 
-    // Monkey-patch fs.promises.writeFile to simulate write + rollback failure specifically on target
-    const originalWriteFile = fs.promises.writeFile;
+    originalWriteFile = fs.promises.writeFile;
     let targetWrites = 0;
-    (fs.promises as any).writeFile = async (filePath: string, data: any, enc: any) => {
+    fs.promises.writeFile = (async (filePath: string, data: any, enc: any) => {
       if (path.resolve(filePath) === path.resolve(target)) {
         targetWrites++;
         // Write corrupted content, then fail both initial write and rollback
-        await originalWriteFile.call(fs.promises, filePath, 'corrupted xml', enc);
+        await originalWriteFile!.call(fs.promises, filePath, 'corrupted xml', enc);
         throw new Error('Injected failure during XMLWriter target update');
       }
-      return originalWriteFile.call(fs.promises, filePath, data, enc);
-    };
+      return originalWriteFile!.call(fs.promises, filePath, data, enc);
+    }) as any;
 
     try {
       await assert.rejects(
@@ -248,15 +320,19 @@ suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
 
       const files = await fsp.readdir(tempDir);
       const backupFiles = files.filter((f) => f.includes('.bak'));
-      assert.ok(
-        backupFiles.length > 0,
+      assert.strictEqual(
+        backupFiles.length,
+        1,
         `XMLWriter must leave intact backup when write & rollback fail. Found files: ${JSON.stringify(files)}`
       );
       const backupPath = path.join(tempDir, backupFiles[0]);
       const content = await fsp.readFile(backupPath, 'utf-8');
       assert.ok(content.includes('Original Comment'), 'Backup must contain original XML content');
     } finally {
-      (fs.promises as any).writeFile = originalWriteFile;
+      if (originalWriteFile) {
+        fs.promises.writeFile = originalWriteFile;
+        originalWriteFile = undefined;
+      }
     }
   });
 });
