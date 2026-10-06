@@ -146,4 +146,136 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'original');
     assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
   });
+
+  test('Issue #167: failed preparation cleans up pre-effect operation directory and unblocks next plan', async () => {
+    const fileA = path.join(tempDir, 'fileA.xml');
+    const fileB = path.join(tempDir, 'fileB.xml');
+    await fs.promises.writeFile(fileA, 'initial-A', 'utf8');
+    await fs.promises.writeFile(fileB, 'initial-B', 'utf8');
+    const executor = new MutationPlanExecutor(tempDir);
+
+    const origWriteFile = fs.promises.writeFile;
+    let failTempJournal = true;
+    (fs.promises as any).writeFile = async (targetPath: any, data: any, options: any) => {
+      if (failTempJournal && typeof targetPath === 'string' && targetPath.includes('.journal-') && targetPath.endsWith('.tmp')) {
+        const err = new Error('ENOSPC: write failed');
+        (err as any).code = 'ENOSPC';
+        throw err;
+      }
+      return origWriteFile.call(fs.promises, targetPath, data, options);
+    };
+
+    try {
+      await assert.rejects(
+        executor.execute({
+          kind: 'test.plan1',
+          steps: [{
+            type: 'writeFile', targetPath: fileA, content: 'mutated-A', encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent('initial-A') },
+          }],
+          result: null,
+        }),
+        (err: Error) => (err as any).code === 'ENOSPC' || err.message.includes('ENOSPC'),
+      );
+    } finally {
+      (fs.promises as any).writeFile = origWriteFile;
+    }
+
+    // Target fileA was never modified
+    assert.strictEqual(await fs.promises.readFile(fileA, 'utf8'), 'initial-A');
+
+    // Subsequent plan2 must succeed without RECOVERY_REQUIRED
+    await executor.execute({
+      kind: 'test.plan2',
+      steps: [{
+        type: 'writeFile', targetPath: fileB, content: 'mutated-B', encoding: 'utf8',
+        expected: { state: 'file', hash: hashContent('initial-B') },
+      }],
+      result: null,
+    });
+
+    assert.strictEqual(await fs.promises.readFile(fileB, 'utf8'), 'mutated-B');
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+  });
+
+  test('Issue #167: recover() safely cleans up orphan operation directories without journal.json', async () => {
+    const orphanOp = path.join(tempDir, '.cdt-journal', 'orphan-op-1');
+    await fs.promises.mkdir(path.join(orphanOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(orphanOp, '.journal-abandoned.tmp'), '{"partial":true}', 'utf8');
+
+    const fileB = path.join(tempDir, 'fileB.xml');
+    await fs.promises.writeFile(fileB, 'initial-B', 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    // recover() must not throw RECOVERY_REQUIRED due to missing journal.json
+    await executor.recover();
+
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+
+    // After recover(), plans can execute normally
+    await executor.execute({
+      kind: 'test.plan2',
+      steps: [{
+        type: 'writeFile', targetPath: fileB, content: 'mutated-B', encoding: 'utf8',
+        expected: { state: 'file', hash: hashContent('initial-B') },
+      }],
+      result: null,
+    });
+    assert.strictEqual(await fs.promises.readFile(fileB, 'utf8'), 'mutated-B');
+  });
+
+  test('Issue #167: recover() cleans up orphan directory while still rolling back valid interrupted journal', async () => {
+    const targetA = path.join(tempDir, 'fileA.xml');
+    const targetB = path.join(tempDir, 'fileB.xml');
+    await fs.promises.writeFile(targetA, 'interrupted-effect', 'utf8');
+    await fs.promises.writeFile(targetB, 'initial-B', 'utf8');
+
+    // 1. Orphan operation folder with no journal.json
+    const orphanOp = path.join(tempDir, '.cdt-journal', 'orphan-op-empty');
+    await fs.promises.mkdir(path.join(orphanOp, 'backups'), { recursive: true });
+
+    // 2. Real interrupted operation folder with valid journal.json
+    const interruptedOp = path.join(tempDir, '.cdt-journal', 'real-interrupted');
+    await fs.promises.mkdir(path.join(interruptedOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(interruptedOp, 'backups', '0'), 'original-A', 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'real-interrupted',
+      plan: { kind: 'test.interrupted', steps: [], result: null },
+      state: 'applying',
+      appliedSteps: 1,
+      snapshots: [{
+        targetPath: targetA,
+        state: 'file',
+        hash: hashContent('original-A'),
+        backupName: '0',
+        contentsBackedUp: true,
+      }],
+    }), 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await executor.recover();
+
+    // targetA rolled back to original
+    assert.strictEqual(await fs.promises.readFile(targetA, 'utf8'), 'original-A');
+    // .cdt-journal fully cleaned up
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+  });
+
+  test('Issue #167: recover() still throws RECOVERY_REQUIRED if journal.json is corrupt', async () => {
+    const corruptOp = path.join(tempDir, '.cdt-journal', 'corrupt-op');
+    await fs.promises.mkdir(corruptOp, { recursive: true });
+    await fs.promises.writeFile(path.join(corruptOp, 'journal.json'), '{corrupt-json', 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => {
+        assert.strictEqual(err.code, 'RECOVERY_REQUIRED');
+        assert.ok(err.message.includes('corrupt-op'));
+        return true;
+      },
+    );
+  });
 });
+

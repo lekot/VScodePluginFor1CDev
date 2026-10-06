@@ -85,17 +85,25 @@ export class MutationPlanExecutor {
     await this.recoverLocked();
     const operationPath = path.join(this.journalRoot, operationId);
     await this.validatePlan(plan);
-    await fs.promises.mkdir(path.join(operationPath, 'backups'), { recursive: true });
-    const snapshots = await this.captureSnapshots(plan, operationPath);
-    const journal: MutationJournal<T> = {
-      version: 1,
-      operationId,
-      plan,
-      state: 'prepared',
-      appliedSteps: 0,
-      snapshots,
-    };
-    await this.writeJournal(operationPath, journal);
+    let snapshots: PathSnapshot[];
+    let journal: MutationJournal<T>;
+    try {
+      await fs.promises.mkdir(path.join(operationPath, 'backups'), { recursive: true });
+      snapshots = await this.captureSnapshots(plan, operationPath);
+      journal = {
+        version: 1,
+        operationId,
+        plan,
+        state: 'prepared',
+        appliedSteps: 0,
+        snapshots,
+      };
+      await this.writeJournal(operationPath, journal);
+    } catch (prepError) {
+      await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+      await this.removeJournalRootWhenEmpty().catch(() => undefined);
+      throw prepError;
+    }
 
     try {
       journal.state = 'applying';
@@ -164,9 +172,25 @@ export class MutationPlanExecutor {
         continue;
       }
       const operationPath = path.join(this.journalRoot, entry.name);
+      let journalRaw: string;
+      try {
+        journalRaw = await fs.promises.readFile(path.join(operationPath, 'journal.json'), 'utf8');
+      } catch (readError) {
+        if (isMissingError(readError)) {
+          // Pre-effect orphan operation directory: preparation failed or process died before journal.json was committed.
+          // No mutation steps were ever applied to target files; clean up safely without throwing RECOVERY_REQUIRED.
+          await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+          continue;
+        }
+        throw new MutationPlanError(
+          'RECOVERY_REQUIRED',
+          `Cannot recover mutation journal ${entry.name}: ${errorMessage(readError)}`,
+        );
+      }
+
       let journal: MutationJournal;
       try {
-        journal = JSON.parse(await fs.promises.readFile(path.join(operationPath, 'journal.json'), 'utf8')) as MutationJournal;
+        journal = JSON.parse(journalRaw) as MutationJournal;
         if (journal.version !== 1 || !Array.isArray(journal.snapshots)) {
           throw new Error('Unsupported or corrupt mutation journal.');
         }
