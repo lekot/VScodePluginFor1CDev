@@ -241,7 +241,7 @@ suite('extension manifest contracts', () => {
     }
   });
 
-  test('ships dist entrypoint while ignoring and excluding legacy build output', () => {
+  test('ships dist entrypoint while ignoring and excluding legacy build output and dist test artifacts', () => {
     const root = repositoryRoot();
     const pkg = readPackageJson();
     const gitignore = fs.readFileSync(path.join(root, '.gitignore'), 'utf-8').split(/\r?\n/);
@@ -250,6 +250,8 @@ suite('extension manifest contracts', () => {
     assert.strictEqual(pkg.main, './dist/extension.js');
     assert.ok(gitignore.includes('build/'));
     assert.ok(vscodeignore.includes('build/**'));
+    assert.ok(vscodeignore.includes('dist/**/test/**'), '.vscodeignore must exclude dist/**/test/**');
+    assert.ok(vscodeignore.includes('dist/**/*.test.*'), '.vscodeignore must exclude dist/**/*.test.*');
   });
 });
 

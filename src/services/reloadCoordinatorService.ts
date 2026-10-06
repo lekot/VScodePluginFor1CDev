@@ -1,5 +1,5 @@
-import * as path from 'path';
 import { Logger } from '../utils/logger';
+import { configurationPathKey } from '../utils/configurationPathIdentity';
 import {
   ReloadOperationResult,
   ReloadReason,
@@ -225,7 +225,7 @@ export class ReloadCoordinatorService {
   }
 
   private getOrCreateSlot(configPath: string): ConfigReloadSlot {
-    const key = normalizeConfigPath(configPath);
+    const key = configurationPathKey(configPath);
     const existing = this.slots.get(key);
     if (existing) {
       return existing;
@@ -267,8 +267,4 @@ function createNeutralReloadState(): ReloadState {
     coalescedCount: 0,
     suppressedWatcherCount: 0,
   };
-}
-
-function normalizeConfigPath(configPath: string): string {
-  return path.normalize(configPath).replace(/\\/g, '/').toLowerCase();
 }
