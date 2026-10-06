@@ -30,6 +30,8 @@ export class PropertiesProvider {
   private currentFormSelectionRevision = 0;
   private disposables: vscode.Disposable[] = [];
   private _isSaving = false;
+  private _isDirty = false;
+  private pendingProperties: Record<string, unknown> | undefined;
   private objectTypeEditorProvider: ObjectTypeEditorProvider;
 
   constructor(
@@ -65,6 +67,52 @@ export class PropertiesProvider {
     return this.panel !== undefined;
   }
 
+  /** Returns true if there are unsaved property changes in the panel. */
+  public isDirty(): boolean {
+    return this._isDirty;
+  }
+
+  /** Update dirty state and optional unsaved property snapshot. */
+  public setIsDirty(isDirty: boolean, properties?: Record<string, unknown>): void {
+    this._isDirty = isDirty;
+    if (properties) {
+      this.pendingProperties = properties;
+    } else if (!isDirty) {
+      this.pendingProperties = undefined;
+    }
+  }
+
+  private async promptUnsavedChangesGuard(): Promise<boolean> {
+    if (!this._isDirty || !this.currentNode) {
+      return true;
+    }
+    const nodeName = this.currentNode.name || 'Элемент';
+    const choice = await vscode.window.showWarningMessage(
+      MESSAGES.UNSAVED_CHANGES_PROMPT(nodeName),
+      { modal: true },
+      MESSAGES.SAVE,
+      MESSAGES.DONT_SAVE,
+      MESSAGES.CANCEL
+    );
+
+    if (choice === MESSAGES.SAVE) {
+      const propsToSave = this.pendingProperties || (this.currentNode.properties as Record<string, unknown>);
+      if (propsToSave) {
+        await handleMessage(
+          { type: 'save', properties: propsToSave },
+          this.buildHandlerContext()
+        );
+      }
+      return !this._isDirty;
+    } else if (choice === MESSAGES.DONT_SAVE) {
+      this._isDirty = false;
+      this.pendingProperties = undefined;
+      return true;
+    } else {
+      return false;
+    }
+  }
+
   /**
    * Update panel content for a new node IF the panel is already open.
    * No-op if the panel has not been created or was closed by the user.
@@ -73,6 +121,15 @@ export class PropertiesProvider {
   public async updateIfOpen(node: TreeNode | undefined): Promise<void> {
     if (!this.panel) {
       return;
+    }
+    if (node === this.currentNode) {
+      return;
+    }
+    if (this._isDirty && this.currentNode) {
+      const canProceed = await this.promptUnsavedChangesGuard();
+      if (!canProceed) {
+        return;
+      }
     }
     this.currentFormSelection = null;
     this.currentFormSelectionRevision += 1;
@@ -85,6 +142,18 @@ export class PropertiesProvider {
    * Creates new panel or reuses existing one (singleton pattern)
    */
   public async showProperties(node: TreeNode | undefined): Promise<void> {
+    if (node && this.currentNode && node === this.currentNode) {
+      if (this.panel) {
+        this.panel.reveal(vscode.ViewColumn.Beside);
+      }
+      return;
+    }
+    if (this._isDirty && this.currentNode && this.currentNode !== node) {
+      const canProceed = await this.promptUnsavedChangesGuard();
+      if (!canProceed) {
+        return;
+      }
+    }
     this.currentFormSelection = null;
     this.currentFormSelectionRevision += 1;
     this.currentNode = node;
@@ -209,6 +278,12 @@ export class PropertiesProvider {
   public async showFormSelectionProperties(
     selection: FormSelectionPayload | undefined
   ): Promise<void> {
+    if (this._isDirty && this.currentNode) {
+      const canProceed = await this.promptUnsavedChangesGuard();
+      if (!canProceed) {
+        return;
+      }
+    }
     this.currentFormSelection = selection ?? null;
     this.currentFormSelectionRevision += 1;
     this.currentNode = undefined;
@@ -390,6 +465,7 @@ export class PropertiesProvider {
       postMessage: (msg) => this.postMessage(msg),
       updateWebviewContent: () => this.updateWebviewContent(),
       setIsSaving: (value) => { this._isSaving = value; },
+      setIsDirty: (isDirty, properties) => { this.setIsDirty(isDirty, properties); },
     };
   }
 
@@ -415,5 +491,7 @@ export class PropertiesProvider {
 
     // Clear references
     this.currentNode = undefined;
+    this._isDirty = false;
+    this.pendingProperties = undefined;
   }
 }

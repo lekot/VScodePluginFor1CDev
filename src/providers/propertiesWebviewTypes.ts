@@ -6,6 +6,7 @@ import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
 export type WebviewMessage =
   | { type: 'save'; properties: Record<string, unknown> }
   | { type: 'cancel' }
+  | { type: 'dirtyChange'; isDirty: boolean; properties?: Record<string, unknown> }
   | { type: 'validate'; properties: Record<string, unknown> }
   | {
       type: 'propertyChanged';
@@ -72,6 +73,6 @@ export function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
   const m = msg as { type?: unknown };
   if (typeof m.type !== 'string') {return false;}
 
-  const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType', 'editSource', 'editContent', 'editFormSelectionType', 'gotoEventHandler', 'createEventHandler', 'gotoHandler'];
+  const validTypes = ['save', 'cancel', 'dirtyChange', 'validate', 'propertyChanged', 'editType', 'editSource', 'editContent', 'editFormSelectionType', 'gotoEventHandler', 'createEventHandler', 'gotoHandler'];
   return validTypes.includes(m.type);
 }

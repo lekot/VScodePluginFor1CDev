@@ -1,4 +1,5 @@
 import * as path from 'path';
+import * as fs from 'fs';
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { PropertiesProvider } from '../../src/providers/propertiesProvider';
@@ -651,5 +652,347 @@ suite('PropertiesProvider Save Operation Test Suite', () => {
         message: /Failed to write properties/,
       }
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #165: Navigation Guard & Dirty State
+// ---------------------------------------------------------------------------
+
+suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => {
+  let provider: PropertiesProvider;
+  let treeDataProvider: MetadataTreeDataProvider;
+  let typeEditorProvider: TypeEditorProvider;
+  let mockContext: vscode.ExtensionContext;
+  let defaultShowWarningMessage: any;
+  let defaultCreateWebviewPanel: any;
+  let mockWebview: any;
+  let tempXmlPath: string;
+
+  setup(async () => {
+    mockContext = {
+      subscriptions: [],
+      extensionPath: '',
+      extensionUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
+      globalState: {} as any,
+      workspaceState: {} as any,
+      secrets: {} as any,
+      storageUri: undefined,
+      storagePath: undefined,
+      globalStorageUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
+      globalStoragePath: '',
+      logUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
+      logPath: '',
+      extensionMode: vscode.ExtensionMode.Test,
+      extension: {} as any,
+      environmentVariableCollection: {} as any,
+      languageModelAccessInformation: {} as any,
+      asAbsolutePath: (relativePath: string) => relativePath,
+    };
+
+    treeDataProvider = new MetadataTreeDataProvider();
+    typeEditorProvider = new TypeEditorProvider(mockContext);
+    provider = new PropertiesProvider(mockContext, treeDataProvider, typeEditorProvider);
+
+    defaultShowWarningMessage = vscode.window.showWarningMessage;
+    defaultCreateWebviewPanel = vscode.window.createWebviewPanel;
+
+    mockWebview = {
+      html: '',
+      onDidReceiveMessage: () => ({ dispose: () => {} }),
+      postMessage: async () => true,
+      asWebviewUri: (uri: vscode.Uri) => uri,
+      cspSource: 'https://test',
+    };
+
+    (vscode.window as any).createWebviewPanel = () => ({
+      webview: mockWebview,
+      onDidDispose: (cb: () => void) => ({ dispose: () => {} }),
+      reveal: () => {},
+      dispose: () => {},
+    });
+
+    const fixturesPath = path.join(__dirname, '../../../test/fixtures');
+    const testXmlPath = path.join(fixturesPath, 'test-properties.xml');
+    tempXmlPath = path.join(fixturesPath, `temp-guard-test-${Date.now()}.xml`);
+    fs.copyFileSync(testXmlPath, tempXmlPath);
+  });
+
+  teardown(() => {
+    provider.dispose();
+    (vscode.window as any).showWarningMessage = defaultShowWarningMessage;
+    (vscode.window as any).createWebviewPanel = defaultCreateWebviewPanel;
+    if (fs.existsSync(tempXmlPath)) {
+      try {
+        fs.unlinkSync(tempXmlPath);
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  test('dirtyChange message updates provider.isDirty() state', async () => {
+    const node: TreeNode = {
+      id: 'node-1',
+      name: 'Catalog1',
+      type: MetadataType.Catalog,
+      properties: { Name: 'Catalog1' },
+      filePath: tempXmlPath,
+    };
+
+    await provider.showProperties(node);
+    assert.strictEqual(provider.isDirty(), false);
+
+    // Simulate dirtyChange true
+    provider.setIsDirty(true, { Name: 'ModifiedCatalog' });
+    assert.strictEqual(provider.isDirty(), true);
+
+    // Simulate dirtyChange false
+    provider.setIsDirty(false);
+    assert.strictEqual(provider.isDirty(), false);
+  });
+
+  test('updateIfOpen prompts when dirty: choice "Сохранить" saves and navigates to new node', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA', Synonym: 'Initial Synonym' },
+      filePath: tempXmlPath,
+    };
+    const nodeB: TreeNode = {
+      id: 'node-b',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogB' },
+      filePath: tempXmlPath,
+    };
+
+    await provider.showProperties(nodeA);
+    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'Saved Before Navigation' });
+
+    let promptCalled = false;
+    (vscode.window as any).showWarningMessage = async (msg: string, ...items: any[]) => {
+      promptCalled = true;
+      assert.ok(msg.includes('CatalogA'), 'Message must contain current node name');
+      return 'Сохранить';
+    };
+
+    await provider.updateIfOpen(nodeB);
+
+    assert.ok(promptCalled, 'showWarningMessage must be called');
+    assert.strictEqual(provider.isDirty(), false, 'Dirty flag must be cleared after save');
+    assert.strictEqual((provider as any).currentNode, nodeB, 'Current node must be updated to nodeB');
+
+    // Verify nodeA changes were persisted to XML
+    const { XMLWriter } = await import('../../src/utils/XMLWriter');
+    const saved = await XMLWriter.readProperties(tempXmlPath);
+    assert.strictEqual(saved.Synonym, 'Saved Before Navigation');
+  });
+
+  test('updateIfOpen prompts when dirty: choice "Не сохранять" discards and navigates to new node', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA', Synonym: 'Initial Synonym' },
+      filePath: tempXmlPath,
+    };
+    const nodeB: TreeNode = {
+      id: 'node-b',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogB' },
+      filePath: tempXmlPath,
+    };
+
+    await provider.showProperties(nodeA);
+    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'Discarded Synonym' });
+
+    let promptCalled = false;
+    (vscode.window as any).showWarningMessage = async (msg: string, ...items: any[]) => {
+      promptCalled = true;
+      return 'Не сохранять';
+    };
+
+    await provider.updateIfOpen(nodeB);
+
+    assert.ok(promptCalled, 'showWarningMessage must be called');
+    assert.strictEqual(provider.isDirty(), false, 'Dirty flag must be cleared');
+    assert.strictEqual((provider as any).currentNode, nodeB, 'Current node must be updated to nodeB');
+
+    // Verify nodeA changes were NOT written to disk
+    const { XMLWriter } = await import('../../src/utils/XMLWriter');
+    const saved = await XMLWriter.readProperties(tempXmlPath);
+    assert.strictEqual(saved.Synonym, 'Test Catalog Synonym');
+  });
+
+  test('updateIfOpen prompts when dirty: choice "Отмена" aborts navigation and stays on currentNode', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA' },
+      filePath: tempXmlPath,
+    };
+    const nodeB: TreeNode = {
+      id: 'node-b',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogB' },
+      filePath: tempXmlPath,
+    };
+
+    await provider.showProperties(nodeA);
+    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'Pending' });
+
+    (vscode.window as any).showWarningMessage = async () => 'Отмена';
+
+    await provider.updateIfOpen(nodeB);
+
+    assert.strictEqual(provider.isDirty(), true, 'Dirty flag must remain true');
+    assert.strictEqual((provider as any).currentNode, nodeA, 'Current node must remain nodeA');
+  });
+
+  test('updateIfOpen on identical node does not prompt even if dirty', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA' },
+      filePath: tempXmlPath,
+    };
+
+    await provider.showProperties(nodeA);
+    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'Pending' });
+
+    (vscode.window as any).showWarningMessage = async () => {
+      assert.fail('Should not prompt when staying on same node');
+    };
+
+    await provider.updateIfOpen(nodeA);
+    assert.strictEqual((provider as any).currentNode, nodeA);
+  });
+
+  test('showProperties prompts when dirty: choice "Отмена" aborts and stays on currentNode', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA' },
+      filePath: tempXmlPath,
+    };
+    const nodeB: TreeNode = {
+      id: 'node-b',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogB' },
+      filePath: tempXmlPath,
+    };
+
+    await provider.showProperties(nodeA);
+    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'Pending' });
+
+    (vscode.window as any).showWarningMessage = async () => 'Отмена';
+
+    await provider.showProperties(nodeB);
+
+    assert.strictEqual(provider.isDirty(), true);
+    assert.strictEqual((provider as any).currentNode, nodeA);
+  });
+
+  test('showProperties prompts when dirty: choice "Сохранить" saves and navigates to new node', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA' },
+      filePath: tempXmlPath,
+    };
+    const nodeB: TreeNode = {
+      id: 'node-b',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogB' },
+      filePath: tempXmlPath,
+    };
+
+    await provider.showProperties(nodeA);
+    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'SavedViaShow' });
+
+    (vscode.window as any).showWarningMessage = async () => 'Сохранить';
+
+    await provider.showProperties(nodeB);
+
+    assert.strictEqual(provider.isDirty(), false);
+    assert.strictEqual((provider as any).currentNode, nodeB);
+
+    const { XMLWriter } = await import('../../src/utils/XMLWriter');
+    const saved = await XMLWriter.readProperties(tempXmlPath);
+    assert.strictEqual(saved.Synonym, 'SavedViaShow');
+  });
+
+  test('showFormSelectionProperties prompts when dirty: choice "Отмена" aborts navigation', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA' },
+      filePath: tempXmlPath,
+    };
+
+    await provider.showProperties(nodeA);
+    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'FormPending' });
+
+    (vscode.window as any).showWarningMessage = async () => 'Отмена';
+
+    await provider.showFormSelectionProperties({
+      source: 'form-editor',
+      docUri: 'file:///form.xml',
+      entityType: 'element',
+      id: 'el-1',
+      name: 'El1',
+      tag: 'InputField',
+      properties: {},
+      events: {},
+      selectedIds: ['el-1'],
+    });
+
+    assert.strictEqual(provider.isDirty(), true);
+    assert.strictEqual((provider as any).currentNode, nodeA);
+  });
+
+  test('guard aborts navigation when properties fail validation on "Сохранить"', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA' },
+      filePath: tempXmlPath,
+    };
+    const nodeB: TreeNode = {
+      id: 'node-b',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogB' },
+      filePath: tempXmlPath,
+    };
+
+    await provider.showProperties(nodeA);
+    // Invalid empty Name fails validation
+    provider.setIsDirty(true, { Name: '' });
+
+    (vscode.window as any).showWarningMessage = async (msg: string) => {
+      if (msg.includes('несохранённые')) {
+        return 'Сохранить';
+      }
+      return undefined;
+    };
+
+    await provider.updateIfOpen(nodeB);
+
+    // Save failed validation, so navigation must be aborted and node remains nodeA
+    assert.strictEqual(provider.isDirty(), true);
+    assert.strictEqual((provider as any).currentNode, nodeA);
   });
 });

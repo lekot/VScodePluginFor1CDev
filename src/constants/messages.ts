@@ -34,6 +34,13 @@ export const MESSAGES = {
   SAVE_FAILED_RESTORED: 'Сохранение не удалось. Файл восстановлен из резервной копии.',
   SAVE_SUCCESS: 'Сохранено.',
   VALIDATION_ERROR_CHECK_PANEL: 'Проверьте ошибки в панели свойств.',
+  UNSAVED_CHANGES_PROMPT: (name: string) =>
+    `В свойствах "${name}" есть несохранённые изменения. Сохранить перед переходом?`,
+  UNSAVED_CHANGES_CLOSE_PROMPT: (name: string) =>
+    `В свойствах "${name}" есть несохранённые изменения. Сохранить?`,
+  SAVE: 'Сохранить',
+  DONT_SAVE: 'Не сохранять',
+  CANCEL: 'Отмена',
 
   // Log export (Stage 9)
   LOGS_EXPORTED: 'Логи экспортированы',

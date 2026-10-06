@@ -46,6 +46,7 @@ export interface MessageHandlerContext {
   postMessage: (message: ExtensionMessage) => void;
   updateWebviewContent: () => void;
   setIsSaving: (value: boolean) => void;
+  setIsDirty?: (isDirty: boolean, properties?: Record<string, unknown>) => void;
 }
 
 /**
@@ -65,6 +66,10 @@ export async function handleMessage(
 
       case 'cancel':
         await handleCancelMessage(ctx);
+        break;
+
+      case 'dirtyChange':
+        ctx.setIsDirty?.(message.isDirty, message.properties);
         break;
 
       case 'validate':
@@ -274,6 +279,8 @@ export async function handleSaveMessage(
   try {
     await saveProperties(ctx.currentNode, message.properties, ctx);
 
+    ctx.setIsDirty?.(false);
+
     // Send success confirmation
     ctx.postMessage({ type: 'saved' });
     vscode.window.showInformationMessage(MESSAGES.SAVE_SUCCESS);
@@ -298,6 +305,8 @@ export async function handleCancelMessage(ctx: MessageHandlerContext): Promise<v
     Logger.warn('Cancel attempted with no current node');
     return;
   }
+
+  ctx.setIsDirty?.(false);
 
   // Reload original properties by sending update message
   ctx.postMessage({

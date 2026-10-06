@@ -430,12 +430,36 @@ export function getWebviewScript(readOnly: boolean): string {
       });
     }
 
-    // Update UI state (enable/disable save button)
+    let previousIsDirty = false;
+
+    // Update UI state (enable/disable save buttons, dirty indicator, dispatch dirtyChange)
     function updateUI() {
+      const isDirty = state.changedProperties.size > 0;
+      const hasErrors = Object.keys(state.validationErrors).length > 0;
+      const canSave = isDirty && !hasErrors;
+
       const saveBtn = document.getElementById('save-btn');
       if (saveBtn) {
-        saveBtn.disabled = state.changedProperties.size === 0 ||
-                           Object.keys(state.validationErrors).length > 0;
+        saveBtn.disabled = !canSave;
+      }
+      const bottomSaveBtn = document.getElementById('bottom-save-btn');
+      if (bottomSaveBtn) {
+        bottomSaveBtn.disabled = !canSave;
+      }
+
+      const dirtyIndicator = document.getElementById('dirty-indicator');
+      if (dirtyIndicator) {
+        dirtyIndicator.textContent = isDirty ? '*' : '';
+        dirtyIndicator.style.display = isDirty ? 'inline' : 'none';
+      }
+
+      if (isDirty !== previousIsDirty) {
+        previousIsDirty = isDirty;
+        vscode.postMessage({
+          type: 'dirtyChange',
+          isDirty: isDirty,
+          properties: state.currentProperties
+        });
       }
     }
 
@@ -488,11 +512,29 @@ export function getWebviewScript(readOnly: boolean): string {
       if (saveBtn) {
         saveBtn.addEventListener('click', handleSave);
       }
+      const bottomSaveBtn = document.getElementById('bottom-save-btn');
+      if (bottomSaveBtn) {
+        bottomSaveBtn.addEventListener('click', handleSave);
+      }
 
       const cancelBtn = document.getElementById('cancel-btn');
       if (cancelBtn) {
         cancelBtn.addEventListener('click', handleCancel);
       }
+      const bottomCancelBtn = document.getElementById('bottom-cancel-btn');
+      if (bottomCancelBtn) {
+        bottomCancelBtn.addEventListener('click', handleCancel);
+      }
+
+      // Keyboard shortcuts: Ctrl+S / Cmd+S
+      window.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+          e.preventDefault();
+          if (state.changedProperties.size > 0 && Object.keys(state.validationErrors).length === 0) {
+            handleSave();
+          }
+        }
+      });
     }
 
     // Handle messages from extension
@@ -639,17 +681,36 @@ export function getWebviewContent(node: TreeNode): string {
           padding: 16px;
         }
         .header {
+          position: sticky;
+          top: 0;
+          z-index: 100;
+          background-color: var(--vscode-editor-background);
           margin-bottom: 20px;
-          padding-bottom: 12px;
+          padding: 8px 0 12px 0;
           border-bottom: 1px solid var(--vscode-panel-border);
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
         }
         .header h2 {
-          margin: 0 0 8px 0;
+          margin: 0;
           color: var(--vscode-foreground);
+          font-size: 1.1em;
         }
         .header p {
           margin: 0;
           color: var(--vscode-descriptionForeground);
+        }
+        .dirty-indicator {
+          color: var(--vscode-inputValidation-warningBorder, #cca700);
+          font-weight: bold;
+          margin-left: 4px;
+        }
+        .header-actions {
+          display: flex;
+          gap: 8px;
+          flex-shrink: 0;
         }
         .read-only-notice {
           background: var(--vscode-inputValidation-warningBackground);
@@ -724,18 +785,18 @@ export function getWebviewContent(node: TreeNode): string {
           font-size: var(--vscode-font-size);
           border-radius: 2px;
         }
-        #save-btn {
+        #save-btn, #bottom-save-btn {
           background: var(--vscode-button-background);
           color: var(--vscode-button-foreground);
         }
-        #save-btn:hover:not(:disabled) {
+        #save-btn:hover:not(:disabled), #bottom-save-btn:hover:not(:disabled) {
           background: var(--vscode-button-hoverBackground);
         }
-        #cancel-btn {
+        #cancel-btn, #bottom-cancel-btn {
           background: var(--vscode-button-secondaryBackground);
           color: var(--vscode-button-secondaryForeground);
         }
-        #cancel-btn:hover {
+        #cancel-btn:hover, #bottom-cancel-btn:hover {
           background: var(--vscode-button-secondaryHoverBackground);
         }
         button:disabled {
@@ -783,7 +844,13 @@ export function getWebviewContent(node: TreeNode): string {
     </head>
     <body>
       <div class="header">
-        <h2>Свойства: ${escapeHtml(node.name)} (${escapeHtml(node.type)})</h2>
+        <h2>Свойства: ${escapeHtml(node.name)} (${escapeHtml(node.type)})<span id="dirty-indicator" class="dirty-indicator" style="display: none;">*</span></h2>
+        ${!readOnly && hasProperties ? `
+          <span class="header-actions">
+            <button id="cancel-btn" title="Отмена" aria-label="Отмена">Отмена</button>
+            <button id="save-btn" disabled title="Сохранить" aria-label="Сохранить">Сохранить</button>
+          </span>
+        ` : ''}
       </div>
       ${readOnly ? `
         <div class="read-only-notice">
@@ -796,8 +863,8 @@ export function getWebviewContent(node: TreeNode): string {
         </div>
         ${!readOnly ? `
           <div class="button-row">
-            <button id="cancel-btn" title="Отмена" aria-label="Отмена">Отмена</button>
-            <button id="save-btn" disabled title="Сохранить" aria-label="Сохранить">Сохранить</button>
+            <button id="bottom-cancel-btn" title="Отмена" aria-label="Отмена">Отмена</button>
+            <button id="bottom-save-btn" disabled title="Сохранить" aria-label="Сохранить">Сохранить</button>
           </div>
         ` : ''}
       ` : `
