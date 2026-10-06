@@ -10,6 +10,7 @@ import {
   requireWriteFormatProfile,
 } from '../utils/format/formatRank';
 import type { FormModel, FormChildItem, FormEventItem } from './formModel';
+import { writeUtf8FileWithBackup, type WriteUtf8FileWithBackupOptions } from '../utils/xml/xmlFileIo';
 
 const BUILDER_OPTIONS = {
   ignoreAttributes: false,
@@ -304,10 +305,14 @@ export function injectXmlnsIntoFormTag(xmlString: string, xmlnsDeclarations: Rec
 /**
  * Write FormModel to Ext/Form.xml. Creates backup before write; on write failure restores from backup.
  */
-export async function writeFormXml(formXmlPath: string, model: FormModel): Promise<void> {
+export async function writeFormXml(
+  formXmlPath: string,
+  model: FormModel,
+  options?: WriteUtf8FileWithBackupOptions
+): Promise<void> {
   // Existing Form.xml is authoritative for updates. Validate and preserve its
   // exact version before any backup or write is attempted.
-  let existingContent = '';
+  let existingContent: string | undefined;
   try {
     existingContent = await fs.promises.readFile(formXmlPath, 'utf-8');
   } catch (readErr) {
@@ -315,7 +320,7 @@ export async function writeFormXml(formXmlPath: string, model: FormModel): Promi
       throw readErr;
     }
   }
-  const profile = existingContent.trim()
+  const profile = existingContent?.trim()
     ? requireDocumentWriteFormatProfile(existingContent)
     : requireWriteFormatProfile(model.version);
   const effectiveModel: FormModel = { ...model, version: profile.version };
@@ -356,34 +361,6 @@ export async function writeFormXml(formXmlPath: string, model: FormModel): Promi
   const declaration = '<?xml version="1.0" encoding="UTF-8"?>\n';
   const fullContent = declaration + xmlString;
 
-  const backupPath = `${formXmlPath}.bak`;
-  try {
-    await fs.promises.writeFile(backupPath, existingContent || fullContent, 'utf-8');
-  } catch (backupErr) {
-    Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
-  }
-  try {
-    await fs.promises.writeFile(formXmlPath, fullContent, 'utf-8');
-  } catch (writeErr) {
-    Logger.error(`Failed to write Form.xml: ${formXmlPath}`, writeErr);
-    try {
-      if (fs.existsSync(backupPath)) {
-        const restored = await fs.promises.readFile(backupPath, 'utf-8');
-        await fs.promises.writeFile(formXmlPath, restored, 'utf-8');
-        await fs.promises.unlink(backupPath);
-        Logger.info(`Rolled back ${formXmlPath} from backup`);
-      }
-    } catch (rollbackErr) {
-      Logger.error(`Rollback failed for ${formXmlPath}`, rollbackErr);
-    }
-    throw new Error(
-      `Не удалось записать файл. ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`
-    );
-  }
-  try {
-    if (fs.existsSync(backupPath)) {await fs.promises.unlink(backupPath);}
-  } catch {
-    Logger.debug(`Could not remove backup ${backupPath}`);
-  }
+  await writeUtf8FileWithBackup(formXmlPath, existingContent, fullContent, options);
   Logger.info(`Form.xml written: ${formXmlPath}`);
 }

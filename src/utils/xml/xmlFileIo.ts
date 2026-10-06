@@ -77,7 +77,7 @@ function generateBackupPath(filePath: string): string {
  */
 export async function writeUtf8FileWithBackup(
   filePath: string,
-  originalContent: string,
+  originalContent: string | undefined,
   newContent: string,
   options?: WriteUtf8FileWithBackupOptions
 ): Promise<void> {
@@ -85,6 +85,20 @@ export async function writeUtf8FileWithBackup(
   try {
     const writeFile = options?.hooks?.writeFile ?? ((p, d, e) => fs.promises.writeFile(p, d, e));
     const unlink = options?.hooks?.unlink ?? ((p) => fs.promises.unlink(p));
+
+    if (originalContent === undefined) {
+      try {
+        await writeFile(filePath, newContent, 'utf-8');
+      } catch (writeError) {
+        Logger.error(`Failed to write new file: ${filePath}`, writeError);
+        await unlink(filePath).catch(() => undefined);
+        const writeMsg = writeError instanceof Error ? writeError.message : String(writeError);
+        throw new Error(
+          `Unable to write to file. Check file permissions and disk space. ${writeMsg}`
+        );
+      }
+      return;
+    }
 
     const backupPath = generateBackupPath(filePath);
     try {
