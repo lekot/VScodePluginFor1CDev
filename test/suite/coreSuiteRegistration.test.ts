@@ -40,6 +40,7 @@ const mustRegisterInCoreCi: readonly string[] = [
   'suite/deleteReconcileRecovery.test.js',
   'suite/typeEditorProvider.test.js',
   'suite/configurationPathIdentity.test.js',
+  'suite/configurationMutationGateway.test.js',
 ];
 
 suite('coreSuiteFiles registration guard', () => {
