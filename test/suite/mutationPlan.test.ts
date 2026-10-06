@@ -184,6 +184,13 @@ suite('MutationPlanExecutor', () => {
     // Target fileA was never modified
     assert.strictEqual(await fs.promises.readFile(fileA, 'utf8'), 'initial-A');
 
+    // Preparation failure must clean up immediately, not rely on next recover()
+    assert.strictEqual(
+      fs.existsSync(path.join(tempDir, '.cdt-journal')),
+      false,
+      'failed preparation must clean up immediately, not rely on next recover()',
+    );
+
     // Subsequent plan2 must succeed without RECOVERY_REQUIRED
     await executor.execute({
       kind: 'test.plan2',
@@ -196,6 +203,89 @@ suite('MutationPlanExecutor', () => {
 
     assert.strictEqual(await fs.promises.readFile(fileB, 'utf8'), 'mutated-B');
     assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+  });
+
+  test('Issue #167: failed snapshot copying during preparation cleans up partially written backups immediately', async () => {
+    const fileA = path.join(tempDir, 'fileA.xml');
+    await fs.promises.writeFile(fileA, 'initial-A', 'utf8');
+    const executor = new MutationPlanExecutor(tempDir);
+
+    const origCopyFile = fs.promises.copyFile;
+    (fs.promises as any).copyFile = async () => {
+      throw new Error('EACCES: copyFile denied during snapshot');
+    };
+
+    try {
+      await assert.rejects(
+        executor.execute({
+          kind: 'test.snapshotFailure',
+          steps: [{
+            type: 'writeFile', targetPath: fileA, content: 'mutated-A', encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent('initial-A') },
+          }],
+          result: null,
+        }),
+        /EACCES: copyFile denied/,
+      );
+    } finally {
+      (fs.promises as any).copyFile = origCopyFile;
+    }
+
+    assert.strictEqual(await fs.promises.readFile(fileA, 'utf8'), 'initial-A');
+    assert.strictEqual(
+      fs.existsSync(path.join(tempDir, '.cdt-journal')),
+      false,
+      'snapshot preparation failure must remove operation directory and journal root immediately',
+    );
+  });
+
+  test('Issue #167: execute() rejects unsafe operationId with path traversal or hidden prefix', async () => {
+    const fileA = path.join(tempDir, 'fileA.xml');
+    await fs.promises.writeFile(fileA, 'initial-A', 'utf8');
+    const executor = new MutationPlanExecutor(tempDir);
+
+    for (const badOpId of ['../escape', 'foo/bar', '.hidden', '..']) {
+      await assert.rejects(
+        executor.execute(
+          {
+            kind: 'test.unsafeOpId',
+            steps: [{
+              type: 'writeFile', targetPath: fileA, content: 'mutated', encoding: 'utf8',
+              expected: { state: 'file', hash: hashContent('initial-A') },
+            }],
+            result: null,
+          },
+          badOpId,
+        ),
+        (err: MutationPlanError) => {
+          assert.strictEqual(err.code, 'PLAN_CONFLICT');
+          return true;
+        },
+      );
+    }
+  });
+
+  test('Issue #167: recover() does NOT treat unreadable journal.json as orphan and preserves backups with RECOVERY_REQUIRED', async () => {
+    const unreadableOp = path.join(tempDir, '.cdt-journal', 'unreadable-journal-op');
+    await fs.promises.mkdir(path.join(unreadableOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(unreadableOp, 'backups', '0'), 'critical-backup', 'utf8');
+    // Create journal.json as a directory so readFile throws EISDIR (non-ENOENT)
+    await fs.promises.mkdir(path.join(unreadableOp, 'journal.json'));
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => {
+        assert.strictEqual(err.code, 'RECOVERY_REQUIRED');
+        assert.ok(err.message.includes('unreadable-journal-op'));
+        return true;
+      },
+    );
+
+    assert.ok(
+      fs.existsSync(path.join(unreadableOp, 'backups', '0')),
+      'Backups must survive when journal read fails with non-ENOENT error',
+    );
   });
 
   test('Issue #167: recover() safely cleans up orphan operation directories without journal.json', async () => {

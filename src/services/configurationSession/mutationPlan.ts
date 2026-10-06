@@ -7,6 +7,7 @@ import {
   PathBoundaryError,
 } from './pathBoundary';
 import { hashContent } from './atomicFileStorage';
+import { Logger } from '../../utils/logger';
 
 export type MutationExpectation =
   | { readonly state: 'missing' }
@@ -81,7 +82,21 @@ export class MutationPlanExecutor {
     }
   }
 
+  private async removeOperationDir(operationPath: string): Promise<void> {
+    await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+
   private async executeLocked<T>(plan: MutationPlan<T>, operationId: string): Promise<T> {
+    if (
+      !operationId ||
+      path.basename(operationId) !== operationId ||
+      operationId.startsWith('.') ||
+      operationId.includes('/') ||
+      operationId.includes('\\')
+    ) {
+      throw new MutationPlanError('PLAN_CONFLICT', `Invalid or unsafe operationId: "${operationId}"`);
+    }
+
     await this.recoverLocked();
     const operationPath = path.join(this.journalRoot, operationId);
     await this.validatePlan(plan);
@@ -100,7 +115,9 @@ export class MutationPlanExecutor {
       };
       await this.writeJournal(operationPath, journal);
     } catch (prepError) {
-      await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+      await this.removeOperationDir(operationPath).catch((err) => {
+        Logger.warn(`Failed to clean up preparation directory: ${operationPath}`, err);
+      });
       await this.removeJournalRootWhenEmpty().catch(() => undefined);
       throw prepError;
     }
@@ -116,7 +133,7 @@ export class MutationPlanExecutor {
       journal.state = 'committed';
       await this.writeJournal(operationPath, journal);
       // Commit is durable; cleanup is best-effort and recovery will remove a committed journal.
-      await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+      await this.removeOperationDir(operationPath).catch(() => undefined);
       await this.removeJournalRootWhenEmpty().catch(() => undefined);
       return plan.result;
     } catch (error) {
@@ -130,7 +147,7 @@ export class MutationPlanExecutor {
         : snapshots;
       try {
         await this.restoreSnapshots(operationPath, snapshotsToRestore);
-        await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        await this.removeOperationDir(operationPath);
         await this.removeJournalRootWhenEmpty();
       } catch (rollbackError) {
         throw new MutationPlanError(
@@ -179,7 +196,10 @@ export class MutationPlanExecutor {
         if (isMissingError(readError)) {
           // Pre-effect orphan operation directory: preparation failed or process died before journal.json was committed.
           // No mutation steps were ever applied to target files; clean up safely without throwing RECOVERY_REQUIRED.
-          await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+          Logger.warn(`Removed orphan mutation journal dir without journal.json: ${operationPath}`);
+          await this.removeOperationDir(operationPath).catch((err) => {
+            Logger.warn(`Failed to remove orphan mutation journal dir: ${operationPath}`, err);
+          });
           continue;
         }
         throw new MutationPlanError(
@@ -197,7 +217,7 @@ export class MutationPlanExecutor {
         if (journal.state !== 'committed') {
           await this.restoreSnapshots(operationPath, journal.snapshots);
         }
-        await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        await this.removeOperationDir(operationPath);
       } catch (error) {
         throw new MutationPlanError(
           'RECOVERY_REQUIRED',
