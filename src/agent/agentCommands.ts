@@ -409,16 +409,38 @@ export function registerAgentCommands(
         async (params: AgentSetRoleRightsParams) => {
             let normalizedParams = params;
             if (params.objects && Array.isArray(params.objects)) {
-                const normalizedObjects = params.objects.map((obj) => {
+                const detectedSourceSets = new Set<string>();
+                let hasUnprefixed = false;
+                const normalizedObjects: string[] = [];
+
+                for (const obj of params.objects) {
                     if (typeof obj === 'string') {
                         const colonCount = (obj.match(/:/g) || []).length;
                         if (colonCount >= 2 && !/^[a-zA-Z]:[\\/]/.test(obj)) {
                             const firstColon = obj.indexOf(':');
-                            return obj.slice(firstColon + 1).trim();
+                            const prefix = obj.slice(0, firstColon).trim();
+                            detectedSourceSets.add(prefix);
+                            normalizedObjects.push(obj.slice(firstColon + 1).trim());
+                            continue;
                         }
                     }
-                    return obj;
-                });
+                    hasUnprefixed = true;
+                    normalizedObjects.push(obj);
+                }
+
+                const uniqueCanonicalSets = new Set(Array.from(detectedSourceSets).map((s) => s.toLowerCase()));
+                if (uniqueCanonicalSets.size > 1 || (uniqueCanonicalSets.size === 1 && hasUnprefixed)) {
+                    const setNames = Array.from(detectedSourceSets);
+                    if (hasUnprefixed) {
+                        setNames.push('<unprefixed>');
+                    }
+                    return {
+                        success: false,
+                        code: 'INVALID_AGENT_PATH',
+                        error: `Cannot set rights across multiple source sets in a single request: ${setNames.join(', ')}.`,
+                    };
+                }
+
                 normalizedParams = { ...params, objects: normalizedObjects };
             }
             const result = await runPlanForConfiguration(params, (configRoot, format) =>
@@ -427,6 +449,7 @@ export function registerAgentCommands(
             return result;
         },
     );
+
 
     // ─── CFE project lifecycle ─────────────────────────────────────────────
 
@@ -1469,18 +1492,10 @@ function extractAddressFromObjectSpec(spec: string): string {
     if (/^[a-zA-Z]:[\\/]/.test(trimmed)) {
         return trimmed;
     }
-    const colonCount = (trimmed.match(/:/g) || []).length;
-    if (colonCount >= 2) {
-        const lastColon = trimmed.lastIndexOf(':');
+    const lastColon = trimmed.lastIndexOf(':');
+    if (lastColon >= 0) {
         return trimmed.slice(0, lastColon).trim();
-    }
-    if (colonCount === 1) {
-        const colonIndex = trimmed.indexOf(':');
-        const afterColon = trimmed.slice(colonIndex + 1).trim();
-        if (afterColon.startsWith('@') || afterColon.startsWith('+') || afterColon.startsWith('-')) {
-            return trimmed.slice(0, colonIndex).trim();
-        }
-        return trimmed;
     }
     return trimmed;
 }
+

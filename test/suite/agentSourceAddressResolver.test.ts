@@ -12,6 +12,7 @@ import { CfeProjectRegistry } from '../../src/extensionSupport/cfeProject/regist
 import { CfeProjectManifestStorage } from '../../src/extensionSupport/cfeProject/manifest';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 import type { AgentResult } from '../../src/agent/types';
+import { MetadataType, type TreeNode } from '../../src/models/treeNode';
 
 const UUID_BASE = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
 const UUID_EXT = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
@@ -348,5 +349,139 @@ suite('Agent source address resolution (Issue #135)', () => {
       const extXml = await fs.promises.readFile(path.join(extRoot, 'Catalogs', 'Goods.xml'), 'utf8');
       assert.strictEqual(extXml.includes('Ext_ToDelete'), false, 'Ext_ToDelete must be deleted from extension');
     });
+
+    test('roles.setRights rejects mixed source sets in a single request', async () => {
+      const setRightsHandler = vscodeTestState.registeredCommandHandlers.get(
+        '1c-metadata-tree.agent.roles.setRights',
+      )!;
+      assert.ok(setRightsHandler, 'roles.setRights command handler must be registered');
+
+      const mixedExtAndMain = await setRightsHandler({
+        roleName: 'Operator',
+        objects: ['ExtShop:Catalog.Goods: @edit', 'main:Catalog.Goods: @view'],
+      }) as AgentResult;
+      assert.strictEqual(mixedExtAndMain.success, false);
+      assert.strictEqual(mixedExtAndMain.code, 'INVALID_AGENT_PATH');
+      assert.match(mixedExtAndMain.error!, /Cannot set rights across multiple source sets/i);
+
+      const mixedExtAndUnprefixed = await setRightsHandler({
+        roleName: 'Operator',
+        objects: ['ExtShop:Catalog.Goods: @edit', 'Catalog.Goods: @view'],
+      }) as AgentResult;
+      assert.strictEqual(mixedExtAndUnprefixed.success, false);
+      assert.strictEqual(mixedExtAndUnprefixed.code, 'INVALID_AGENT_PATH');
+      assert.match(mixedExtAndUnprefixed.error!, /Cannot set rights across multiple source sets/i);
+
+      const mixedMultipleExt = await setRightsHandler({
+        roleName: 'Operator',
+        objects: ['ExtShop:Catalog.Goods: @edit', 'OtherShop:Catalog.Goods: @view'],
+      }) as AgentResult;
+      assert.strictEqual(mixedMultipleExt.success, false);
+      assert.strictEqual(mixedMultipleExt.code, 'INVALID_AGENT_PATH');
+      assert.match(mixedMultipleExt.error!, /Cannot set rights across multiple source sets/i);
+    });
+
+    test('resolveSourceAddress returns a JSON-safe treeNode summary without circular references', async () => {
+      const parentNode: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+      };
+      const childNode: TreeNode = {
+        id: 'Catalogs.Goods',
+        name: 'Goods',
+        type: MetadataType.Catalog,
+        parent: parentNode,
+        properties: { Synonym: 'Goods' },
+        filePath: path.join(extRoot, 'Catalogs', 'Goods.xml'),
+      };
+      parentNode.children = [childNode];
+      childNode.children = [];
+
+      const mockTreeProvider = {
+        findNodeByLocation: async () => childNode,
+      };
+
+      const result = await resolveSourceAddress(
+        { address: 'ExtShop:Catalog.Goods' },
+        {
+          registry,
+          workspaceRoot,
+          treeDataProvider: mockTreeProvider as never,
+        },
+      );
+
+      assert.ok(result.treeNode);
+      assert.strictEqual(result.treeNode.name, 'Goods');
+      assert.strictEqual(result.treeNode.type, 'Catalog');
+      assert.strictEqual(result.treeNode.hasChildren, false);
+      const nodeSummary = result.treeNode as unknown as Record<string, unknown>;
+      assert.strictEqual(nodeSummary.parent, undefined);
+      assert.strictEqual(nodeSummary.children, undefined);
+
+
+      let serialized = '';
+      assert.doesNotThrow(() => {
+        serialized = JSON.stringify(result);
+      });
+      const parsed = JSON.parse(serialized);
+      assert.strictEqual(parsed.treeNode.name, 'Goods');
+      assert.strictEqual(parsed.treeNode.parent, undefined);
+    });
+
+    test('resolveSourceAddress command returns serializable treeNode via treeDataProvider', async () => {
+      const parentNode: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+      };
+      const childNode: TreeNode = {
+        id: 'Catalogs.Goods',
+        name: 'Goods',
+        type: MetadataType.Catalog,
+        parent: parentNode,
+        properties: { Synonym: 'Goods' },
+        filePath: path.join(extRoot, 'Catalogs', 'Goods.xml'),
+      };
+      parentNode.children = [childNode];
+      childNode.children = [];
+
+      const mockTreeProvider = {
+        findNodeByLocation: async () => childNode,
+      };
+
+      const context = { subscriptions: [] as Array<{ dispose(): void }> };
+      registerAgentCommands(
+        context as never,
+        () => mockTreeProvider as never,
+        async () => registry,
+        new DebugSessionRegistry(),
+      );
+
+      const resolveHandler = vscodeTestState.registeredCommandHandlers.get(
+        '1c-metadata-tree.agent.resolveSourceAddress',
+      )!;
+      assert.ok(resolveHandler);
+
+      const result = await resolveHandler({ address: 'ExtShop:Catalog.Goods' }) as AgentResult<{
+        treeNode?: Record<string, unknown>;
+      }>;
+      assert.strictEqual(result.success, true, result.error);
+      assert.ok(result.data?.treeNode);
+      assert.strictEqual(result.data?.treeNode.name, 'Goods');
+      assert.strictEqual(result.data?.treeNode.parent, undefined);
+      assert.strictEqual(result.data?.treeNode.children, undefined);
+
+      let serialized = '';
+      assert.doesNotThrow(() => {
+        serialized = JSON.stringify(result);
+      });
+      const parsed = JSON.parse(serialized);
+      assert.strictEqual(parsed.data.treeNode.name, 'Goods');
+      assert.strictEqual(parsed.data.treeNode.parent, undefined);
+    });
   });
 });
+

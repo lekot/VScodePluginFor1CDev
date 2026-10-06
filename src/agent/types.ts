@@ -358,6 +358,16 @@ export interface ResolveSourceAddressParams extends ConfigurationScopedParams {
     address: string;
 }
 
+export interface AgentTreeNodeSummary {
+    id: string;
+    name: string;
+    type: string;
+    filePath?: string;
+    parentFilePath?: string;
+    properties?: Record<string, unknown>;
+    hasChildren?: boolean;
+}
+
 export interface ResolveSourceAddressData {
     sourceSet: string;
     dotPath: string;
@@ -371,5 +381,6 @@ export interface ResolveSourceAddressData {
         baseRoot: string;
         extensionRoot: string;
     };
-    treeNode?: unknown;
+    treeNode?: AgentTreeNodeSummary;
 }
+

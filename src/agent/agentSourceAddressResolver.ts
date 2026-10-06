@@ -11,7 +11,7 @@ import {
     parseSourceAddress,
     resolveAgentPath,
 } from './agentPathResolver';
-import type { ResolvedAgentPath } from './types';
+import type { ResolvedAgentPath, AgentTreeNodeSummary } from './types';
 import type { TreeNode } from '../models/treeNode';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 
@@ -36,8 +36,9 @@ export interface ResolvedSourceAddress {
     configurationId: string;
     resolvedPath: ResolvedAgentPath;
     cfeContext?: CfeProjectContext;
-    treeNode?: TreeNode;
+    treeNode?: AgentTreeNodeSummary;
 }
+
 
 /**
  * Resolves a semantic source address (e.g. 'main:Catalog.Goods' or 'ExtShop:Catalog.Goods')
@@ -177,15 +178,18 @@ export async function resolveSourceAddress(
     const resolvedPath = resolveAgentPath(configRoot, params.address);
     resolvedPath.sourceSet = sourceSet;
 
-    let treeNode: TreeNode | undefined;
+    let treeNode: AgentTreeNodeSummary | undefined;
     if (context.treeDataProvider && typeof context.treeDataProvider.findNodeByLocation === 'function') {
         try {
-            treeNode = (await context.treeDataProvider.findNodeByLocation({
+            const node = await context.treeDataProvider.findNodeByLocation({
                 configRoot,
                 objectType: resolvedPath.rootTag,
                 objectName: resolvedPath.objectName,
                 extensionName: cfeContext?.extensionName,
-            })) ?? undefined;
+            });
+            if (node) {
+                treeNode = toAgentTreeNodeSummary(node);
+            }
         } catch {
             // Ignore tree walk errors
         }
@@ -202,3 +206,39 @@ export async function resolveSourceAddress(
         treeNode,
     };
 }
+
+/**
+ * Converts a TreeNode into a JSON-safe AgentTreeNodeSummary DTO,
+ * stripping circular references (parent and children) and ensuring safe serialization.
+ */
+export function toAgentTreeNodeSummary(node: TreeNode): AgentTreeNodeSummary {
+    let properties: Record<string, unknown> | undefined;
+    if (node.properties && typeof node.properties === 'object') {
+        properties = {};
+        for (const [key, value] of Object.entries(node.properties)) {
+            if (value === undefined || typeof value === 'function' || typeof value === 'symbol') {
+                continue;
+            }
+            if (typeof value === 'object' && value !== null) {
+                try {
+                    JSON.stringify(value);
+                    properties[key] = value;
+                } catch {
+                    // skip non-serializable property
+                }
+            } else {
+                properties[key] = value;
+            }
+        }
+    }
+    return {
+        id: node.id,
+        name: node.name,
+        type: String(node.type),
+        filePath: node.filePath,
+        parentFilePath: node.parentFilePath,
+        properties,
+        hasChildren: Boolean(node.children && node.children.length > 0),
+    };
+}
+

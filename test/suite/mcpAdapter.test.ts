@@ -208,6 +208,63 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
     assert.deepStrictEqual(calls, cases.map(([, , args, command]) => ({ command, args })));
   });
 
+  test('cdt_resolve_source_address dispatches cleanly through MCP with a found tree node', async () => {
+    const tools = captureRegisteredTools(async (command, args) => {
+      if (command === '1c-metadata-tree.agent.resolveSourceAddress') {
+        return {
+          success: true,
+          configurationId: 'cfg-1',
+          data: {
+            sourceSet: 'main',
+            dotPath: 'Catalog.Goods',
+            configRoot: 'C:/base',
+            configurationId: 'cfg-1',
+            resolvedPath: {
+              rootTag: 'Catalog',
+              objectName: 'Goods',
+              fullPath: 'C:/base/Catalogs/Goods.xml',
+              metadataDir: 'Catalogs',
+              relativeXmlPath: 'Catalogs/Goods.xml',
+            },
+            treeNode: {
+              id: 'Catalog.Goods',
+              name: 'Goods',
+              type: 'Catalog',
+              filePath: 'C:/base/Catalogs/Goods.xml',
+              hasChildren: false,
+              properties: { Synonym: 'Goods' },
+            },
+          },
+        };
+      }
+      return { success: false, error: 'unknown command' };
+    });
+
+    const target = tools.find((candidate) => candidate.name === 'cdt_read')!;
+    const result = await target.handler({
+      operation: 'cdt_resolve_source_address',
+      arguments: { address: 'main:Catalog.Goods' },
+    }, { signal: signal() });
+
+    assert.strictEqual(result.isError, undefined);
+    assert.strictEqual(result.content.length, 1);
+    assert.strictEqual(result.content[0].type, 'text');
+    const parsed = JSON.parse(result.content[0].text) as {
+      success: boolean;
+      data: {
+        treeNode: {
+          id: string;
+          name: string;
+          type: string;
+          properties?: { Synonym?: string };
+        };
+      };
+    };
+    assert.strictEqual(parsed.success, true);
+    assert.strictEqual(parsed.data.treeNode.name, 'Goods');
+    assert.strictEqual(parsed.data.treeNode.properties?.Synonym, 'Goods');
+  });
+
   test('invalid inner strict arguments fail before Agent dispatch', async () => {
     let dispatched = false;
     const tools = captureRegisteredTools(async () => {
