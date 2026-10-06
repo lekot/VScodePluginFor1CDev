@@ -404,12 +404,64 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     const [actual] = provider.getConfigRootPaths();
     const resolved = path.resolve(relativeConfigPath);
     const expected = process.platform === 'win32'
-      ? resolved.toLocaleLowerCase()
+      ? resolved.toLowerCase()
       : resolved;
 
     assert.strictEqual(
-      process.platform === 'win32' ? actual.toLocaleLowerCase() : actual,
+      process.platform === 'win32' ? actual.toLowerCase() : actual,
       expected
+    );
+  });
+
+  test('configuration root replacement preserves empty and trimmed path identity semantics', () => {
+    const emptyPathRoot: TreeNode = {
+      id: 'empty-path-root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+    };
+    const emptyPathReplacement: TreeNode = {
+      id: 'empty-path-replacement',
+      name: 'Configuration replacement',
+      type: MetadataType.Configuration,
+      properties: {},
+    };
+    provider.setRootNode(emptyPathRoot);
+
+    assert.strictEqual(
+      provider.replaceConfigurationRoot('', emptyPathReplacement, {
+        configPath: '',
+        format: ConfigFormat.Designer,
+      }),
+      true,
+      'missing and empty provider paths retain their existing empty identity',
+    );
+
+    const configPath = path.resolve('TrimmedConfigurationRoot');
+    const trimmedPathRoot: TreeNode = {
+      id: 'trimmed-path-root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+    };
+    const trimmedPathReplacement: TreeNode = {
+      id: 'trimmed-path-replacement',
+      name: 'Configuration replacement',
+      type: MetadataType.Configuration,
+      properties: {},
+    };
+    provider.setRootNode(trimmedPathRoot, {
+      configPath: `  ${configPath}  `,
+      format: ConfigFormat.Designer,
+    });
+
+    assert.strictEqual(
+      provider.replaceConfigurationRoot(configPath, trimmedPathReplacement, {
+        configPath,
+        format: ConfigFormat.Designer,
+      }),
+      true,
+      'trimmed provider context paths still match their resolved configuration root',
     );
   });
 

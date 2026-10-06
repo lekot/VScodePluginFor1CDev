@@ -24,6 +24,7 @@ import {
   normalizeConfigRelativePath,
 } from '../bindings/bindingPathUtils';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
+import { configurationPathKey } from '../utils/configurationPathIdentity';
 import { TreeFilterService, FILTERABLE_METADATA_TYPES } from './treeFilterService';
 import { TreeCacheService } from './treeCacheService';
 import { buildTreeItem } from './treeItemBuilder';
@@ -1992,6 +1993,5 @@ function normalizeConfigIdentity(configPath: string | undefined): string {
   if (!value) {
     return '';
   }
-  const resolved = path.resolve(value);
-  return process.platform === 'win32' ? resolved.toLocaleLowerCase() : resolved;
+  return configurationPathKey(value);
 }
