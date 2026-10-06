@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { McpToolDefinition } from './types';
 import { READ_CLOSED, READ_OPEN, WRITE_CLOSED, WRITE_OPEN } from './types';
-import { configurationScopeShape, emptyInput, nonEmptyString, trimmedNonEmptyString } from './schemas';
+import { configurationScopeShape, emptyInput, mutationOptionsShape, nonEmptyString, trimmedNonEmptyString } from './schemas';
 import { FORM_FORMAT_VERSIONS } from '../../agentStaticForms';
 import type { FormChildItem } from '../../../formEditor/formModel';
 
@@ -215,10 +215,9 @@ const formXmlEdit = z.discriminatedUnion('type', [
 
 const formsEditInput = z.strictObject({
   ...configurationScopeShape,
+  ...mutationOptionsShape,
   formPath: staticFormPath,
   operations: z.array(formXmlEdit).min(1),
-  dryRun: z.boolean().optional(),
-  ifRev: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 });
 
 export const FORMS_TOOLS: readonly McpToolDefinition[] = [

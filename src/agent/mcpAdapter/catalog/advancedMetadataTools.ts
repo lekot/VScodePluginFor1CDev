@@ -2,10 +2,19 @@ import { z } from 'zod';
 import type { McpToolDefinition } from './types';
 import { READ_CLOSED, WRITE_CLOSED } from './types';
 import { ObjectTypeParser } from '../../../parsers/objectTypeParser';
-import { agentPath, configurationScopeShape, metadataType, pathInput, rootObjectPath, stringArray } from './schemas';
+import {
+  agentPath,
+  configurationScopeShape,
+  metadataType,
+  mutationOptionsShape,
+  pathInput,
+  rootObjectPath,
+  stringArray,
+} from './schemas';
 
 const setTypeInput = z.strictObject({
   ...configurationScopeShape,
+  ...mutationOptionsShape,
   path: agentPath,
   types: z.array(metadataType),
 });
@@ -33,6 +42,7 @@ const sourceInput = z.strictObject({
 
 const setSourceInput = z.strictObject({
   ...configurationScopeShape,
+  ...mutationOptionsShape,
   path: eventSubscriptionSourcePath,
   types: z.array(sourceType),
 });
