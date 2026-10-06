@@ -38,6 +38,7 @@ const mustRegisterInCoreCi: readonly string[] = [
   'suite/errorHandling.test.js',
   'suite/reloadCoordinatorService.test.js',
   'suite/deleteReconcileRecovery.test.js',
+  'suite/xmlFileIoBackupRecovery.test.js',
 ];
 
 suite('coreSuiteFiles registration guard', () => {
