@@ -110,6 +110,34 @@ suite('ReloadCoordinatorService', () => {
     coordinator.dispose();
   });
 
+  test('uses host path case rules to isolate configuration reload slots', async () => {
+    const upperCaseRoot = '/workspace/Config';
+    const lowerCaseRoot = '/workspace/config';
+    const runs: ReloadRunContext[] = [];
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      runs.push(ctx);
+    }, { defaultDebounceMs: 0 });
+
+    coordinator.scheduleReload(upperCaseRoot, 'delete-command', { operationId: 'op-upper', debounceMs: 0 });
+    coordinator.scheduleReload(lowerCaseRoot, 'rename-command', { operationId: 'op-lower', debounceMs: 0 });
+    await sleep(40);
+
+    if (process.platform === 'win32') {
+      assert.strictEqual(runs.length, 1, 'Windows case aliases should share one reload slot');
+      assert.strictEqual(coordinator.getOperationResult(upperCaseRoot, 'op-upper')?.reason, 'delete-command');
+      assert.strictEqual(coordinator.getOperationResult(lowerCaseRoot, 'op-lower')?.reason, 'rename-command');
+    } else {
+      assert.strictEqual(runs.length, 2, 'case-distinct POSIX roots must not coalesce');
+      assert.strictEqual(coordinator.getOperationResult(upperCaseRoot, 'op-upper')?.reason, 'delete-command');
+      assert.strictEqual(coordinator.getOperationResult(lowerCaseRoot, 'op-lower')?.reason, 'rename-command');
+      assert.deepStrictEqual(
+        runs.map((run) => run.configPath).sort(),
+        [upperCaseRoot, lowerCaseRoot].sort(),
+      );
+    }
+    coordinator.dispose();
+  });
+
   test('retains each debounced operation result when watcher schedules without an ID', async () => {
     const runs: ReloadRunContext[] = [];
     const runEntered = deferred<ReloadRunContext>();

@@ -256,6 +256,161 @@ suite('MetadataTreeLifecycle', () => {
     }
   });
 
+  test('keeps case-distinct targeted reload generations separate on case-sensitive hosts', async function () {
+    if (process.platform === 'win32') {
+      this.skip();
+      return;
+    }
+
+    const workspaceFolderPath = '/workspace';
+    const configA = '/workspace/Config';
+    const configB = '/workspace/config';
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'workspace', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({
+      configs: [
+        { configPath: configA, workspaceFolderPath },
+        { configPath: configB, workspaceFolderPath },
+      ],
+    });
+
+    const revisions = new Map([[configA, 1], [configB, 1]]);
+    const parseCalls: string[] = [];
+    let pauseNextParseForA = false;
+    let parseAStarted: (() => void) | undefined;
+    let parseAGate: Promise<void> | undefined;
+    let releaseParseA: (() => void) | undefined;
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) =
+      async (configPath) => {
+        parseCalls.push(configPath);
+        if (pauseNextParseForA && configPath === configA) {
+          pauseNextParseForA = false;
+          parseAStarted?.();
+          await parseAGate;
+        }
+        return {
+          id: `configuration:${configPath}`,
+          name: 'Configuration',
+          type: MetadataType.Configuration,
+          properties: { comment: String(revisions.get(configPath)) },
+          children: [],
+        };
+      };
+    (FormatDetector.detect as unknown as typeof FormatDetector.detect) =
+      async () => ConfigFormat.Designer;
+
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createMetadataTreeLifecycle(state);
+    try {
+      await lifecycle.loadMetadataTree();
+      assert.deepStrictEqual(
+        provider.getRootNodes().map((root) => root.properties.comment),
+        ['1', '1'],
+      );
+
+      parseCalls.length = 0;
+      revisions.set(configA, 2);
+      await lifecycle.reloadConfiguration(configA);
+      revisions.set(configB, 5);
+      await lifecycle.reloadConfiguration(configB);
+
+      assert.deepStrictEqual(parseCalls, [configA, configB]);
+      assert.deepStrictEqual(
+        provider.getRootNodes().map((root) => root.properties.comment),
+        ['2', '5'],
+        'sequential reloads must publish the requested root and preserve its case-distinct sibling',
+      );
+
+      parseCalls.length = 0;
+      revisions.set(configA, 3);
+      revisions.set(configB, 7);
+      const parseAStartedPromise = new Promise<void>((resolve) => {
+        parseAStarted = resolve;
+      });
+      parseAGate = new Promise<void>((resolve) => {
+        releaseParseA = resolve;
+      });
+      pauseNextParseForA = true;
+
+      const reloadA = lifecycle.reloadConfiguration(configA);
+      await parseAStartedPromise;
+      const reloadB = lifecycle.reloadConfiguration(configB);
+      releaseParseA?.();
+      await Promise.all([reloadA, reloadB]);
+
+      assert.deepStrictEqual(parseCalls.sort(), [configA, configB].sort());
+      assert.deepStrictEqual(
+        provider.getRootNodes().map((root) => root.properties.comment),
+        ['3', '7'],
+        'concurrent reloads must not drop one case-distinct root generation',
+      );
+    } finally {
+      releaseParseA?.();
+      lifecycle.dispose();
+    }
+  });
+
+  test('coalesces case aliases for targeted reload on Windows', async function () {
+    if (process.platform !== 'win32') {
+      this.skip();
+      return;
+    }
+
+    const workspaceFolderPath = 'C:/workspace';
+    const configCanonical = 'C:/workspace/Config';
+    const configLowerAlias = 'c:/workspace/config';
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'workspace', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({
+      configs: [
+        { configPath: configCanonical, workspaceFolderPath },
+      ],
+    });
+
+    let revision = 1;
+    const parseCalls: string[] = [];
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) =
+      async (configPath) => {
+        parseCalls.push(configPath);
+        return {
+          id: `configuration:${configPath}`,
+          name: 'Configuration',
+          type: MetadataType.Configuration,
+          properties: { comment: String(revision) },
+          children: [],
+        };
+      };
+    (FormatDetector.detect as unknown as typeof FormatDetector.detect) =
+      async () => ConfigFormat.Designer;
+
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createMetadataTreeLifecycle(state);
+    try {
+      await lifecycle.loadMetadataTree();
+      assert.deepStrictEqual(
+        provider.getRootNodes().map((root) => root.properties.comment),
+        ['1'],
+      );
+
+      parseCalls.length = 0;
+      revision = 2;
+      // Reload via lower case alias
+      await lifecycle.reloadConfiguration(configLowerAlias);
+
+      assert.strictEqual(parseCalls.length, 1);
+      assert.deepStrictEqual(
+        provider.getRootNodes().map((root) => root.properties.comment),
+        ['2'],
+        'reloading via case alias on Windows must update the canonical root',
+      );
+    } finally {
+      lifecycle.dispose();
+    }
+  });
+
+
   test('targeted reload starts warmup with preferredRootId preserving other roots in queue', async () => {
     const workspaceFolderPath = 'C:/workspace/1c';
     const configA = `${workspaceFolderPath}/cfg-a`;
