@@ -12,14 +12,12 @@ export type ExclusiveConfigurationCallback<T> = () => Promise<T>;
 let mutationRunner: MutationRunner | undefined;
 let planRunner: PlanRunner | undefined;
 
+import { configurationPathKey } from '../../utils/configurationPathIdentity';
+
 const activeMutationStorage = new AsyncLocalStorage<Set<string>>();
 
-function normalizePathKey(filePath: string): string {
-  return path.resolve(filePath).toLowerCase();
-}
-
 function resolveCandidateRootKeys(resourcePath: string): string[] {
-  const keys: string[] = [normalizePathKey(resourcePath)];
+  const keys: string[] = [configurationPathKey(resourcePath)];
   let cursor = path.resolve(resourcePath);
   try {
     if (!fs.statSync(cursor).isDirectory()) {
@@ -29,9 +27,13 @@ function resolveCandidateRootKeys(resourcePath: string): string[] {
     cursor = path.dirname(cursor);
   }
   let depth = 0;
+  let foundConfigRoot: string | undefined;
   while (depth < 16) {
-    keys.push(cursor.toLowerCase());
-    if (fs.existsSync(path.join(cursor, 'Configuration.xml')) || fs.existsSync(path.join(cursor, 'src', 'Configuration', 'Configuration.mdo'))) {
+    if (
+      fs.existsSync(path.join(cursor, 'Configuration.xml')) ||
+      fs.existsSync(path.join(cursor, 'src', 'Configuration', 'Configuration.mdo'))
+    ) {
+      foundConfigRoot = cursor;
       break;
     }
     const parent = path.dirname(cursor);
@@ -40,6 +42,19 @@ function resolveCandidateRootKeys(resourcePath: string): string[] {
     }
     cursor = parent;
     depth++;
+  }
+  if (foundConfigRoot) {
+    keys.push(configurationPathKey(foundConfigRoot));
+  } else {
+    let immediateDir = path.resolve(resourcePath);
+    try {
+      if (!fs.statSync(immediateDir).isDirectory()) {
+        immediateDir = path.dirname(immediateDir);
+      }
+    } catch {
+      immediateDir = path.dirname(immediateDir);
+    }
+    keys.push(configurationPathKey(immediateDir));
   }
   return keys;
 }

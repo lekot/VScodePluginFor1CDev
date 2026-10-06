@@ -19,6 +19,7 @@ export const coreSuiteFiles: string[] = [
   'suite/configuratorProcessRunner.test.js',
   'suite/configurationRepository.test.js',
   'suite/configurationPathIdentity.test.js',
+  'suite/configurationMutationGateway.test.js',
   'suite/supportSyncCoordinator.test.js',
   'suite/supportPayloadCache.test.js',
   'suite/supportRunJournal.test.js',
