@@ -24,6 +24,7 @@ docs/**
 mcp/**
 FormatSamples/**
 releases/
+*.log
 .gitignore
 .prettierrc.json
 .eslintrc.json
