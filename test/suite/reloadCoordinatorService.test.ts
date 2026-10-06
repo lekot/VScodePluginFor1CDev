@@ -7,6 +7,87 @@ const sleep = async (ms: number): Promise<void> => {
   await new Promise((resolve) => setTimeout(resolve, ms));
 };
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+const deferred = <T>(): Deferred<T> => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+};
+
+const nextEventLoopTurn = async (): Promise<void> => {
+  await new Promise<void>((resolve) => setImmediate(() => resolve()));
+};
+
+const assertInFlightBatchResults = async (firstRunFails: boolean): Promise<void> => {
+  const runs: ReloadRunContext[] = [];
+  const firstRunEntered = deferred<ReloadRunContext>();
+  const nextRunEntered = deferred<ReloadRunContext>();
+  const releaseFirstRun = deferred<void>();
+  const coordinator = new ReloadCoordinatorService(async (ctx) => {
+    const index = runs.push(ctx) - 1;
+    if (index === 0) {
+      firstRunEntered.resolve(ctx);
+      await releaseFirstRun.promise;
+      if (firstRunFails) {
+        throw new Error('first batch failed');
+      }
+      return;
+    }
+
+    nextRunEntered.resolve(ctx);
+    if (!firstRunFails) {
+      throw new Error('pending batch failed');
+    }
+  }, { defaultDebounceMs: 0 });
+
+  coordinator.scheduleReload('C:/cfg-a', 'delete-command', { operationId: 'op-first', debounceMs: 0 });
+  const firstContext = await firstRunEntered.promise;
+  assert.strictEqual(firstContext.operationId, 'op-first');
+
+  coordinator.scheduleReload('C:/cfg-a', 'create-command', { operationId: 'op-pending-a' });
+  coordinator.scheduleReload('C:/cfg-a', 'rename-command', { operationId: 'op-pending-b' });
+  assert.strictEqual(coordinator.getState('C:/cfg-a').pending, true);
+
+  releaseFirstRun.resolve(undefined);
+  const nextContext = await nextRunEntered.promise;
+  await nextEventLoopTurn();
+
+  assert.strictEqual(nextContext.operationId, 'op-pending-a');
+  assert.strictEqual(runs.length, 2);
+  assert.deepStrictEqual(
+    coordinator.getOperationResult('C:/cfg-a', 'op-first')?.reason,
+    'delete-command',
+  );
+  assert.strictEqual(
+    coordinator.getOperationResult('C:/cfg-a', 'op-first')?.succeeded,
+    !firstRunFails,
+  );
+  assert.deepStrictEqual(
+    coordinator.getOperationResult('C:/cfg-a', 'op-pending-a')?.reason,
+    'create-command',
+  );
+  assert.deepStrictEqual(
+    coordinator.getOperationResult('C:/cfg-a', 'op-pending-b')?.reason,
+    'rename-command',
+  );
+  assert.strictEqual(
+    coordinator.getOperationResult('C:/cfg-a', 'op-pending-a')?.succeeded,
+    firstRunFails,
+  );
+  assert.strictEqual(
+    coordinator.getOperationResult('C:/cfg-a', 'op-pending-b')?.succeeded,
+    firstRunFails,
+  );
+  assert.strictEqual(coordinator.getState('C:/cfg-a').executedCount, 2);
+  coordinator.dispose();
+};
+
 suite('ReloadCoordinatorService', () => {
   test('coalesces burst schedules into one effective run', async () => {
     const runs: ReloadRunContext[] = [];
@@ -28,6 +109,198 @@ suite('ReloadCoordinatorService', () => {
     assert.ok(state.coalescedCount >= 2);
     coordinator.dispose();
   });
+
+  test('retains each debounced operation result when watcher schedules without an ID', async () => {
+    const runs: ReloadRunContext[] = [];
+    const runEntered = deferred<ReloadRunContext>();
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      runs.push(ctx);
+      runEntered.resolve(ctx);
+    }, { defaultDebounceMs: 0 });
+
+    coordinator.scheduleReload('C:/cfg-a', 'delete-command', { operationId: 'op-delete', debounceMs: 0 });
+    coordinator.scheduleReload('C:/cfg-a', 'rename-command', { operationId: 'op-rename' });
+    coordinator.scheduleReload('C:/cfg-a', 'watcher');
+    const runContext = await runEntered.promise;
+    await nextEventLoopTurn();
+
+    assert.strictEqual(runs.length, 1);
+    assert.strictEqual(runContext.operationId, 'op-rename');
+    assert.strictEqual(runContext.reason, 'watcher');
+    assert.deepStrictEqual(
+      coordinator.getOperationResult('C:/cfg-a', 'op-delete')?.reason,
+      'delete-command',
+    );
+    assert.deepStrictEqual(
+      coordinator.getOperationResult('C:/cfg-a', 'op-rename')?.reason,
+      'rename-command',
+    );
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-delete')?.succeeded, true);
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-rename')?.succeeded, true);
+    coordinator.dispose();
+  });
+
+  test('keeps successful in-flight and failed pending batches separate', async () => {
+    await assertInFlightBatchResults(false);
+  });
+
+  test('keeps failed in-flight and successful pending batches separate', async () => {
+    await assertInFlightBatchResults(true);
+  });
+
+  test('isolates operation batches with the same ID across config roots', async () => {
+    const runs: ReloadRunContext[] = [];
+    const bothRunsEntered = deferred<void>();
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      runs.push(ctx);
+      if (runs.length === 2) {
+        bothRunsEntered.resolve(undefined);
+      }
+    }, { defaultDebounceMs: 0 });
+
+    coordinator.scheduleReload('C:/cfg-a', 'delete-command', { operationId: 'shared-id', debounceMs: 0 });
+    coordinator.scheduleReload('C:/cfg-b', 'rename-command', { operationId: 'shared-id', debounceMs: 0 });
+    await bothRunsEntered.promise;
+    await nextEventLoopTurn();
+
+    assert.strictEqual(runs.length, 2);
+    assert.strictEqual(
+      coordinator.getOperationResult('C:/cfg-a', 'shared-id')?.reason,
+      'delete-command',
+    );
+    assert.strictEqual(
+      coordinator.getOperationResult('C:/cfg-b', 'shared-id')?.reason,
+      'rename-command',
+    );
+    coordinator.dispose();
+  });
+
+  test('deduplicates repeated operation IDs and keeps their original reason', async () => {
+    const runs: ReloadRunContext[] = [];
+    const runEntered = deferred<void>();
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      runs.push(ctx);
+      runEntered.resolve(undefined);
+    }, { defaultDebounceMs: 0 });
+
+    coordinator.scheduleReload('C:/cfg-a', 'delete-command', { operationId: 'same-id', debounceMs: 0 });
+    coordinator.scheduleReload('C:/cfg-a', 'rename-command', { operationId: 'same-id' });
+    await runEntered.promise;
+    await nextEventLoopTurn();
+
+    assert.strictEqual(runs.length, 1);
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'same-id')?.reason, 'delete-command');
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'same-id')?.succeeded, true);
+    coordinator.dispose();
+  });
+
+  test('bounds operation result history to the newest 50 entries', async () => {
+    const runEntered = deferred<void>();
+    const coordinator = new ReloadCoordinatorService(async () => {
+      runEntered.resolve(undefined);
+    }, { defaultDebounceMs: 0 });
+
+    for (let index = 1; index <= 51; index += 1) {
+      coordinator.scheduleReload('C:/cfg-a', 'create-command', {
+        operationId: `op-${index}`,
+        debounceMs: 0,
+      });
+    }
+    await runEntered.promise;
+    await nextEventLoopTurn();
+
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-1'), null);
+    for (let index = 2; index <= 51; index += 1) {
+      assert.strictEqual(
+        coordinator.getOperationResult('C:/cfg-a', `op-${index}`)?.succeeded,
+        true,
+        `operation ${index} should remain in result history`,
+      );
+    }
+    coordinator.dispose();
+  });
+
+  test('bounds result history when the oldest operation ID is an empty string', async () => {
+    const runEntered = deferred<void>();
+    const coordinator = new ReloadCoordinatorService(async () => {
+      runEntered.resolve(undefined);
+    }, { defaultDebounceMs: 0 });
+
+    coordinator.scheduleReload('C:/cfg-a', 'create-command', { operationId: '', debounceMs: 0 });
+    for (let index = 1; index <= 50; index += 1) {
+      coordinator.scheduleReload('C:/cfg-a', 'create-command', {
+        operationId: `op-${index}`,
+        debounceMs: 0,
+      });
+    }
+    await runEntered.promise;
+    await nextEventLoopTurn();
+
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', ''), null);
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-1')?.succeeded, true);
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-50')?.succeeded, true);
+    coordinator.dispose();
+  });
+
+  test('dispose cancels debounce work and makes later calls neutral', async () => {
+    let runCount = 0;
+    const coordinator = new ReloadCoordinatorService(async () => {
+      runCount += 1;
+    }, { defaultDebounceMs: 30 });
+
+    coordinator.scheduleReload('C:/cfg-a', 'delete-command', { operationId: 'op-pending' });
+    coordinator.dispose();
+    coordinator.dispose();
+    coordinator.scheduleReload('C:/cfg-a', 'watcher', { operationId: 'op-after-dispose' });
+    coordinator.markMutationWindow('C:/cfg-a', 'op-after-dispose', 1000);
+    await sleep(80);
+
+    const state = coordinator.getState('C:/cfg-a');
+    assert.strictEqual(runCount, 0);
+    assert.strictEqual(state.pending, false);
+    assert.strictEqual(state.inFlight, false);
+    assert.strictEqual(state.lastReason, null);
+    assert.strictEqual(state.scheduledCount, 0);
+    assert.strictEqual(state.mutationWindowUntil, undefined);
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-pending'), null);
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-after-dispose'), null);
+  });
+
+  for (const firstRunFails of [false, true]) {
+    test(`dispose does not rearm an in-flight batch after ${firstRunFails ? 'failure' : 'success'}`, async () => {
+      const firstRunEntered = deferred<void>();
+      const releaseFirstRun = deferred<void>();
+      let runCount = 0;
+      const coordinator = new ReloadCoordinatorService(async () => {
+        runCount += 1;
+        firstRunEntered.resolve(undefined);
+        await releaseFirstRun.promise;
+        if (firstRunFails) {
+          throw new Error('in-flight reload failed');
+        }
+      }, { defaultDebounceMs: 0 });
+
+      coordinator.scheduleReload('C:/cfg-a', 'delete-command', { operationId: 'op-running', debounceMs: 0 });
+      await firstRunEntered.promise;
+      coordinator.scheduleReload('C:/cfg-a', 'rename-command', { operationId: 'op-pending' });
+      coordinator.dispose();
+      coordinator.dispose();
+      coordinator.scheduleReload('C:/cfg-a', 'watcher', { operationId: 'op-after-dispose' });
+      coordinator.markMutationWindow('C:/cfg-a', 'op-after-dispose');
+      releaseFirstRun.resolve(undefined);
+      await sleep(30);
+
+      const state = coordinator.getState('C:/cfg-a');
+      assert.strictEqual(runCount, 1);
+      assert.strictEqual(state.pending, false);
+      assert.strictEqual(state.inFlight, false);
+      assert.strictEqual(state.lastReason, null);
+      assert.strictEqual(state.scheduledCount, 0);
+      assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-running'), null);
+      assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-pending'), null);
+      assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-after-dispose'), null);
+    });
+  }
 
   test('keeps pending rerun while previous run is in flight', async () => {
     const runs: ReloadRunContext[] = [];
@@ -78,6 +351,28 @@ suite('ReloadCoordinatorService', () => {
     assert.strictEqual(runs.length, 1);
     assert.strictEqual(runs[0].reason, 'delete-command');
     assert.ok(state.suppressedWatcherCount >= 1);
+    coordinator.dispose();
+  });
+
+  test('keeps a watcher operation ID in a batch during the mutation window', async () => {
+    const runs: ReloadRunContext[] = [];
+    const runEntered = deferred<void>();
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      runs.push(ctx);
+      runEntered.resolve(undefined);
+    }, { defaultDebounceMs: 0, mutationWindowTtlMs: 250 });
+
+    coordinator.markMutationWindow('C:/cfg-a', 'op-command', 250);
+    coordinator.scheduleReload('C:/cfg-a', 'delete-command', { operationId: 'op-command', debounceMs: 0 });
+    coordinator.scheduleReload('C:/cfg-a', 'watcher', { operationId: 'op-watcher' });
+    await runEntered.promise;
+    await nextEventLoopTurn();
+
+    assert.strictEqual(runs.length, 1);
+    assert.strictEqual(coordinator.getState('C:/cfg-a').suppressedWatcherCount, 0);
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-command')?.reason, 'delete-command');
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-watcher')?.reason, 'watcher');
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-watcher')?.succeeded, true);
     coordinator.dispose();
   });
 
@@ -134,6 +429,10 @@ suite('ReloadCoordinatorService', () => {
       operationId: 'op-typed',
       debounceMs: 0,
     });
+    coordinator.scheduleReload('C:/cfg-a', 'rename-command', {
+      operationId: 'op-typed-second',
+      debounceMs: 0,
+    });
     await sleep(30);
 
     const expectedFailure = {
@@ -144,6 +443,15 @@ suite('ReloadCoordinatorService', () => {
     assert.deepStrictEqual(
       coordinator.getOperationResult('C:/cfg-a', 'op-typed')?.failure,
       expectedFailure,
+    );
+    assert.deepStrictEqual(
+      coordinator.getOperationResult('C:/cfg-a', 'op-typed-second')?.failure,
+      expectedFailure,
+    );
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'op-typed')?.reason, 'delete-command');
+    assert.strictEqual(
+      coordinator.getOperationResult('C:/cfg-a', 'op-typed-second')?.reason,
+      'rename-command',
     );
     coordinator.dispose();
   });

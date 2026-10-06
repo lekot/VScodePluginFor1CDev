@@ -36,6 +36,8 @@ const mustRegisterInCoreCi: readonly string[] = [
   'suite/metadataParser.edge.test.js',
   'suite/typeContentsCache.test.js',
   'suite/errorHandling.test.js',
+  'suite/reloadCoordinatorService.test.js',
+  'suite/deleteReconcileRecovery.test.js',
 ];
 
 suite('coreSuiteFiles registration guard', () => {
