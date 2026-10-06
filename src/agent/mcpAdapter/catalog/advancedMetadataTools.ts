@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpToolDefinition } from './types';
 import { READ_CLOSED, WRITE_CLOSED } from './types';
 import { ObjectTypeParser } from '../../../parsers/objectTypeParser';
+import { parseSourceAddress } from '../../agentPathResolver';
 import { agentPath, configurationScopeShape, metadataType, pathInput, rootObjectPath, stringArray } from './schemas';
 
 const setTypeInput = z.strictObject({
@@ -20,10 +21,15 @@ const sourceType = z.string().refine((value) => {
 }, { message: 'must be a valid cfg:ObjectKind[.Name] Source type' });
 
 const eventSubscriptionSourcePath = z.string().refine((value) => {
-  const segments = value.split('.');
-  return segments.length === 2
-    && segments[0] === 'EventSubscription'
-    && rootObjectPath.safeParse(value).success;
+  try {
+    const { dotPath } = parseSourceAddress(value);
+    const segments = dotPath.split('.');
+    return segments.length === 2
+      && segments[0] === 'EventSubscription'
+      && rootObjectPath.safeParse(value).success;
+  } catch {
+    return false;
+  }
 }, { message: 'must have the form EventSubscription.Name' });
 
 const sourceInput = z.strictObject({

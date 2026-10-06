@@ -231,6 +231,7 @@ export const coreSuiteFiles: string[] = [
   'suite/agentCommands.debug.test.js',
   'suite/agentConfigurationRouting.test.js',
   'suite/agentCfeProjectOperations.test.js',
+  'suite/agentSourceAddressResolver.test.js',
   'suite/agentSafety.test.js',
   'suite/startDebuggingFromConfigPath.test.js',
   'suite/agentDebugOperations.startFromBinding.test.js',

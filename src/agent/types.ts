@@ -225,6 +225,8 @@ export interface GetPropertiesResult {
 }
 
 export interface ResolvedAgentPath {
+    /** Semantic source set when resolved with prefix or default: 'main' or extension name. */
+    sourceSet?: string;
     /** Root metadata tag, e.g. 'Catalog', 'ChartOfAccounts' */
     rootTag: string;
     /** Object name, e.g. 'Товары' */
@@ -349,4 +351,25 @@ export interface SetPredefinedCotTypeParams extends ConfigurationScopedParams {
     path: string;
     predefinedName: string;
     types: string[];
+}
+
+export interface ResolveSourceAddressParams extends ConfigurationScopedParams {
+    /** Semantic address, e.g. 'main:Catalog.Goods', 'ExtShop:Catalog.Goods', or 'Catalog.Goods' */
+    address: string;
+}
+
+export interface ResolveSourceAddressData {
+    sourceSet: string;
+    dotPath: string;
+    configRoot: string;
+    configurationId: string;
+    resolvedPath: ResolvedAgentPath;
+    cfeContext?: {
+        extensionName: string;
+        baseConfiguration: string;
+        extensionConfiguration: string;
+        baseRoot: string;
+        extensionRoot: string;
+    };
+    treeNode?: unknown;
 }

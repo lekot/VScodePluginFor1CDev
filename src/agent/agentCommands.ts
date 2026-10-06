@@ -45,6 +45,7 @@ import type {
     AgentDumpExternalProcessorParams,
     AgentBuildExternalProcessorParams,
     AgentSetRoleRightsParams,
+    ResolveSourceAddressParams,
 } from './types';
 import type {
     DebugStartParams,
@@ -108,7 +109,8 @@ import type { ConfigurationIdentity } from '../services/configurationSession/typ
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
 import { AgentRoleRightsError, planSetRoleRights } from './agentRoleRights';
 import { resolveAgentConfiguration } from './agentConfigurationResolver';
-import { AgentPathError } from './agentPathResolver';
+import { AgentPathError, parseSourceAddress } from './agentPathResolver';
+import { resolveSourceAddress } from './agentSourceAddressResolver';
 import { AgentTaskManager } from './agentTaskManager';
 import { AgentRepositoryOperations } from './agentRepositoryOperations';
 import type {
@@ -186,6 +188,24 @@ export function registerAgentCommands(
                 );
             }
             return session;
+        }
+        const candidateAddress = extractCandidateAddress(params);
+        if (candidateAddress) {
+            const resolved = await resolveSourceAddress(
+                { address: candidateAddress, configurationId: params.configurationId },
+                {
+                    registry,
+                    workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+                    treeDataProvider: getTreeDataProvider ? getTreeDataProvider() ?? undefined : undefined,
+                },
+            );
+            if (!resolved.session.identity.capabilities[capability]) {
+                throw new WorkspaceRegistryError(
+                    'CONFIGURATION_CAPABILITY_UNSUPPORTED',
+                    `Конфигурация ${resolved.session.identity.configurationId} не поддерживает ${capability}.`,
+                );
+            }
+            return resolved.session;
         }
         return resolveAgentConfiguration(registry, params, capability);
     };
@@ -387,8 +407,22 @@ export function registerAgentCommands(
     const setRoleRightsCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.roles.setRights',
         async (params: AgentSetRoleRightsParams) => {
+            let normalizedParams = params;
+            if (params.objects && Array.isArray(params.objects)) {
+                const normalizedObjects = params.objects.map((obj) => {
+                    if (typeof obj === 'string') {
+                        const colonCount = (obj.match(/:/g) || []).length;
+                        if (colonCount >= 2 && !/^[a-zA-Z]:[\\/]/.test(obj)) {
+                            const firstColon = obj.indexOf(':');
+                            return obj.slice(firstColon + 1).trim();
+                        }
+                    }
+                    return obj;
+                });
+                normalizedParams = { ...params, objects: normalizedObjects };
+            }
             const result = await runPlanForConfiguration(params, (configRoot, format) =>
-                planSetRoleRights(configRoot, format, params));
+                planSetRoleRights(configRoot, format, normalizedParams));
             if (result.success) { getTreeDataProvider()?.refresh(); }
             return result;
         },
@@ -445,8 +479,13 @@ export function registerAgentCommands(
     const createObjectCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.createObject',
         async (params: CreateObjectParams) => {
+            let normalizedParams = params;
+            if (params.type && params.type.includes(':') && !/^[a-zA-Z]:[\\/]/.test(params.type)) {
+                const { dotPath } = parseSourceAddress(params.type);
+                normalizedParams = { ...params, type: dotPath };
+            }
             const result = await runPlanForConfiguration(params, (configRoot) =>
-                new AgentOperations(configRoot).planCreateObject(params));
+                new AgentOperations(configRoot).planCreateObject(normalizedParams));
             if (result.success) { getTreeDataProvider()?.refresh(); }
             return result;
         }
@@ -467,8 +506,13 @@ export function registerAgentCommands(
     const listObjectsCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.listObjects',
         async (params: ListObjectsParams = {}) => {
+            let normalizedParams = params;
+            if (params.type && params.type.includes(':') && !/^[a-zA-Z]:[\\/]/.test(params.type)) {
+                const { dotPath } = parseSourceAddress(params.type);
+                normalizedParams = { ...params, type: dotPath };
+            }
             return runForConfiguration(params, 'read', undefined, (configRoot) =>
-                new AgentOperations(configRoot).listObjects(params));
+                new AgentOperations(configRoot).listObjects(normalizedParams));
         }
     );
 
@@ -476,6 +520,55 @@ export function registerAgentCommands(
         '1c-metadata-tree.agent.listChildren',
         async (params: ListChildrenParams) => runForConfiguration(params, 'read', undefined, (configRoot) =>
             new AgentOperations(configRoot).listChildren(params)),
+    );
+
+    // ─── 1c-metadata-tree.agent.resolveSourceAddress ─────────────────────────
+
+    const resolveSourceAddressCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.resolveSourceAddress',
+        async (params: ResolveSourceAddressParams) => {
+            try {
+                const registry = await getConfigurationRegistry();
+                if (!registry) {
+                    return { success: false, error: 'Корень конфигурации не найден.' };
+                }
+                const resolved = await resolveSourceAddress(params, {
+                    registry,
+                    workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+                    treeDataProvider: getTreeDataProvider ? getTreeDataProvider() ?? undefined : undefined,
+                });
+                return {
+                    success: true,
+                    configurationId: resolved.configurationId,
+                    snapshotVersion: resolved.session.snapshotVersion,
+                    data: {
+                        sourceSet: resolved.sourceSet,
+                        dotPath: resolved.dotPath,
+                        configRoot: resolved.configRoot,
+                        configurationId: resolved.configurationId,
+                        resolvedPath: resolved.resolvedPath,
+                        cfeContext: resolved.cfeContext ? {
+                            extensionName: resolved.cfeContext.extensionName,
+                            baseConfiguration: resolved.cfeContext.baseSession.identity.rootPath,
+                            extensionConfiguration: resolved.cfeContext.extensionSession.identity.rootPath,
+                            baseRoot: resolved.cfeContext.baseRoot,
+                            extensionRoot: resolved.cfeContext.extensionRoot,
+                        } : undefined,
+                        treeNode: resolved.treeNode,
+                    },
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    code: error instanceof AgentPathError
+                        ? error.code
+                        : error instanceof WorkspaceRegistryError
+                        ? error.code
+                        : 'INVALID_AGENT_PATH',
+                    error: error instanceof Error ? error.message : String(error),
+                };
+            }
+        },
     );
 
     // ─── 1c-metadata-tree.agent.getProperties ────────────────────────────────
@@ -1292,7 +1385,7 @@ export function registerAgentCommands(
         setRoleRightsCommand,
         cfeListProjectsCommand, cfeGetContextCommand, cfeValidateCommand, cfeCreateProjectCommand, cfeBorrowObjectCommand,
         cfeCreateInterceptorCommand, cfeCreateOwnFormCommand, cfeBorrowFormCommand, cfeExtendFormCommand,
-        createObjectCommand, getYamlCommand, listObjectsCommand, listChildrenCommand, getPropertiesCommand,
+        createObjectCommand, getYamlCommand, listObjectsCommand, listChildrenCommand, resolveSourceAddressCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
         deleteAttributeCommand, deleteTabularSectionCommand, deleteObjectCommand,
         renameObjectCommand, setPropertiesCommand,
@@ -1341,4 +1434,53 @@ function isTaskIdParams(value: unknown): value is AgentTaskIdParams {
 
 function invalidTaskParams(): AgentResult<never> {
     return { success: false, code: 'INVALID_ARGUMENTS', error: 'Укажите непустой taskId.' };
+}
+
+function extractCandidateAddress(params: ConfigurationScopedParams): string | undefined {
+    if ('address' in params && typeof (params as Record<string, unknown>).address === 'string') {
+        const address = ((params as Record<string, unknown>).address as string).trim();
+        if (address) {
+            return address;
+        }
+    }
+    if ('path' in params && typeof (params as Record<string, unknown>).path === 'string') {
+        const pathVal = ((params as Record<string, unknown>).path as string).trim();
+        if (pathVal) {
+            return pathVal;
+        }
+    }
+    if ('type' in params && typeof (params as Record<string, unknown>).type === 'string') {
+        const typeVal = ((params as Record<string, unknown>).type as string).trim();
+        if (typeVal.includes(':') && !/^[a-zA-Z]:[\\/]/.test(typeVal)) {
+            return typeVal;
+        }
+    }
+    if ('objects' in params && Array.isArray((params as Record<string, unknown>).objects)) {
+        const objects = (params as Record<string, unknown>).objects as unknown[];
+        if (typeof objects[0] === 'string' && objects[0].trim()) {
+            return extractAddressFromObjectSpec(objects[0]);
+        }
+    }
+    return undefined;
+}
+
+function extractAddressFromObjectSpec(spec: string): string {
+    const trimmed = spec.trim();
+    if (/^[a-zA-Z]:[\\/]/.test(trimmed)) {
+        return trimmed;
+    }
+    const colonCount = (trimmed.match(/:/g) || []).length;
+    if (colonCount >= 2) {
+        const lastColon = trimmed.lastIndexOf(':');
+        return trimmed.slice(0, lastColon).trim();
+    }
+    if (colonCount === 1) {
+        const colonIndex = trimmed.indexOf(':');
+        const afterColon = trimmed.slice(colonIndex + 1).trim();
+        if (afterColon.startsWith('@') || afterColon.startsWith('+') || afterColon.startsWith('-')) {
+            return trimmed.slice(0, colonIndex).trim();
+        }
+        return trimmed;
+    }
+    return trimmed;
 }
