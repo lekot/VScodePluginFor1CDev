@@ -2,8 +2,9 @@
  * Reads and writes FunctionalOption Content from the main XML file.
  * XML path: MetaDataObject → FunctionalOption → Properties → Content → xr:Object
  */
-import * as fs from 'fs';
 import { XmlParser } from '../parsers/xmlParser';
+import { mutateCompositionFile } from './compositionFileMutation';
+import { reconcileSimpleReferenceRefs } from './compositionReconciliation';
 import type { ContentReadResult, ContentUpdateDiff } from '../compositionEditor/compositionContracts';
 import { localName, getPropertiesFromParsed } from '../parsers/xmlNavHelpers';
 
@@ -48,15 +49,6 @@ function extractFunctionalOptionRefs(content: unknown): string[] {
   return [];
 }
 
-/** Simple validation — just non-empty trimmed string (FO refs can have multiple dots). */
-function validateFunctionalOptionRef(ref: string): string | null {
-  const t = typeof ref === 'string' ? ref.trim() : '';
-  if (!t) {
-    return 'empty reference';
-  }
-  return null;
-}
-
 /**
  * Read FunctionalOption Content refs from the XML file without mutating.
  */
@@ -77,48 +69,30 @@ export async function applyFunctionalOptionContentUpdate(
   filePath: string,
   diff: ContentUpdateDiff,
 ): Promise<{ rejected: Array<{ ref: string; reason: string }> }> {
-  const parsed = await XmlParser.parseFileAsync(filePath);
-  const props = getPropertiesFromParsed(parsed, 'FunctionalOption');
-  if (!props) {
-    throw new Error(
-      `Not a FunctionalOption metadata file (expected MetaDataObject/FunctionalOption/Properties): ${filePath}`,
-    );
-  }
-
-  const current = extractFunctionalOptionRefs(props.Content);
-  const rejected: Array<{ ref: string; reason: string }> = [];
-
-  const normalized = current.map((r) => r.trim()).filter(Boolean);
-  const seen = new Set(normalized);
-  const out = [...normalized];
-
-  for (const raw of diff.add) {
-    const ref = typeof raw === 'string' ? raw.trim() : '';
-    const err = validateFunctionalOptionRef(ref);
-    if (err) {
-      rejected.push({ ref: String(raw), reason: err });
-      continue;
+  return mutateCompositionFile(filePath, 'ui.functionalOption.content', async ({ rawContent, exists }) => {
+    if (!exists) {
+      throw new Error(
+        `Not a FunctionalOption metadata file (expected MetaDataObject/FunctionalOption/Properties): ${filePath}`,
+      );
     }
-    if (seen.has(ref)) {
-      continue;
+    const parsed = XmlParser.parseString(rawContent);
+    const props = getPropertiesFromParsed(parsed, 'FunctionalOption');
+    if (!props) {
+      throw new Error(
+        `Not a FunctionalOption metadata file (expected MetaDataObject/FunctionalOption/Properties): ${filePath}`,
+      );
     }
-    seen.add(ref);
-    out.push(ref);
-  }
 
-  const removeSet = new Set(
-    (diff.remove ?? []).map((r) => (typeof r === 'string' ? r.trim() : '')).filter(Boolean),
-  );
-  const refs = out.filter((r) => !removeSet.has(r));
+    const current = extractFunctionalOptionRefs(props.Content);
+    const { refs, rejected } = reconcileSimpleReferenceRefs(current, diff);
 
-  if (refs.length === 0) {
-    props.Content = {};
-  } else {
-    props.Content = { 'xr:Object': refs.map((r) => r) };
-  }
+    if (refs.length === 0) {
+      props.Content = {};
+    } else {
+      props.Content = { 'xr:Object': refs.map((r) => r) };
+    }
 
-  const xml = XmlParser.objectToXml(parsed);
-  await fs.promises.writeFile(filePath, xml, 'utf-8');
-
-  return { rejected };
+    const nextXml = XmlParser.objectToXml(parsed);
+    return { nextXml, result: { rejected } };
+  });
 }

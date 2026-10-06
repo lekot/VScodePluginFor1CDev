@@ -1,8 +1,8 @@
 /**
  * B.3 — persist subsystem `Properties.Content` composition (Designer MetaDataObject → Subsystem).
  */
-import * as fs from 'fs';
 import { XmlParser } from '../parsers/xmlParser';
+import { mutateCompositionFile } from './compositionFileMutation';
 import {
   buildSubsystemCompositionContentNode,
   extractSubsystemCompositionRefs,
@@ -38,15 +38,19 @@ export async function applySubsystemCompositionFileUpdate(
   filePath: string,
   options: { add?: string[]; remove?: string[] }
 ): Promise<ApplySubsystemCompositionFileResult> {
-  const parsed = await XmlParser.parseFileAsync(filePath);
-  const props = getSubsystemPropertiesFromParsed(parsed);
-  if (!props) {
-    throw new Error(`Not a subsystem metadata file (expected MetaDataObject/Subsystem/Properties): ${filePath}`);
-  }
-  const current = extractSubsystemCompositionRefs(props.Content);
-  const { refs, rejected } = reconcileSubsystemCompositionRefs(current, options);
-  props.Content = buildSubsystemCompositionContentNode(refs);
-  const xml = XmlParser.objectToXml(parsed);
-  await fs.promises.writeFile(filePath, xml, 'utf-8');
-  return { refs, rejected };
+  return mutateCompositionFile(filePath, 'ui.subsystem.composition', async ({ rawContent, exists }) => {
+    if (!exists) {
+      throw new Error(`Subsystem metadata file not found: ${filePath}`);
+    }
+    const parsed = XmlParser.parseString(rawContent);
+    const props = getSubsystemPropertiesFromParsed(parsed);
+    if (!props) {
+      throw new Error(`Not a subsystem metadata file (expected MetaDataObject/Subsystem/Properties): ${filePath}`);
+    }
+    const current = extractSubsystemCompositionRefs(props.Content);
+    const { refs, rejected } = reconcileSubsystemCompositionRefs(current, options);
+    props.Content = buildSubsystemCompositionContentNode(refs);
+    const nextXml = XmlParser.objectToXml(parsed);
+    return { nextXml, result: { refs, rejected } };
+  });
 }

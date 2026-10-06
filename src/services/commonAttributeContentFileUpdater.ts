@@ -2,8 +2,8 @@
  * Reads and writes CommonAttribute Content from the main XML file.
  * XML path: MetaDataObject → CommonAttribute → Properties → Content → xr:Item
  */
-import * as fs from 'fs';
 import { XmlParser } from '../parsers/xmlParser';
+import { mutateCompositionFile } from './compositionFileMutation';
 import { validateSubsystemCompositionRef } from '../parsers/xmlChildObjects';
 import type { ContentReadResult, ContentUpdateDiff } from '../compositionEditor/compositionContracts';
 import { getValueByLocalName, getPropertiesFromParsed } from '../parsers/xmlNavHelpers';
@@ -69,53 +69,58 @@ export async function applyCommonAttributeContentUpdate(
   filePath: string,
   diff: ContentUpdateDiff,
 ): Promise<{ rejected: Array<{ ref: string; reason: string }> }> {
-  const parsed = await XmlParser.parseFileAsync(filePath);
-  const props = getPropertiesFromParsed(parsed, 'CommonAttribute');
-  if (!props) {
-    throw new Error(
-      `Not a CommonAttribute metadata file (expected MetaDataObject/CommonAttribute/Properties): ${filePath}`,
+  return mutateCompositionFile(filePath, 'ui.commonAttribute.content', async ({ rawContent, exists }) => {
+    if (!exists) {
+      throw new Error(
+        `Not a CommonAttribute metadata file (expected MetaDataObject/CommonAttribute/Properties): ${filePath}`,
+      );
+    }
+    const parsed = XmlParser.parseString(rawContent);
+    const props = getPropertiesFromParsed(parsed, 'CommonAttribute');
+    if (!props) {
+      throw new Error(
+        `Not a CommonAttribute metadata file (expected MetaDataObject/CommonAttribute/Properties): ${filePath}`,
+      );
+    }
+
+    const currentItems = extractItems(props.Content);
+    const rejected: Array<{ ref: string; reason: string }> = [];
+
+    // Build working map: ref → { use, condSep }
+    const workingMap = new Map<string, { use: string; condSep: string }>(
+      currentItems.map(({ ref, use, condSep }) => [ref, { use, condSep }]),
     );
-  }
 
-  const currentItems = extractItems(props.Content);
-  const rejected: Array<{ ref: string; reason: string }> = [];
-
-  // Build working map: ref → { use, condSep }
-  const workingMap = new Map<string, { use: string; condSep: string }>(
-    currentItems.map(({ ref, use, condSep }) => [ref, { use, condSep }]),
-  );
-
-  // Apply removals
-  for (const ref of diff.remove) {
-    workingMap.delete(ref);
-  }
-
-  // Apply additions (validate first)
-  for (const raw of diff.add) {
-    const ref = typeof raw === 'string' ? raw.trim() : '';
-    const err = validateSubsystemCompositionRef(ref);
-    if (err) {
-      rejected.push({ ref: String(raw), reason: err });
-      continue;
+    // Apply removals
+    for (const ref of diff.remove) {
+      workingMap.delete(ref);
     }
-    if (!workingMap.has(ref)) {
-      workingMap.set(ref, { use: 'Use', condSep: '' });
+
+    // Apply additions (validate first)
+    for (const raw of diff.add) {
+      const ref = typeof raw === 'string' ? raw.trim() : '';
+      const err = validateSubsystemCompositionRef(ref);
+      if (err) {
+        rejected.push({ ref: String(raw), reason: err });
+        continue;
+      }
+      if (!workingMap.has(ref)) {
+        workingMap.set(ref, { use: 'Use', condSep: '' });
+      }
     }
-  }
 
-  // Apply settings changes (only update Use; condSep is not user-editable)
-  for (const [ref, settings] of diff.settingsChanged) {
-    const current = workingMap.get(ref);
-    if (current !== undefined && settings.Use !== undefined) {
-      workingMap.set(ref, { use: settings.Use, condSep: current.condSep });
+    // Apply settings changes (only update Use; condSep is not user-editable)
+    for (const [ref, settings] of diff.settingsChanged) {
+      const current = workingMap.get(ref);
+      if (current !== undefined && settings.Use !== undefined) {
+        workingMap.set(ref, { use: settings.Use, condSep: current.condSep });
+      }
     }
-  }
 
-  const refsWithSettings = Array.from(workingMap.entries()).map(([ref, { use, condSep }]) => ({ ref, use, condSep }));
-  props.Content = buildContentItems(refsWithSettings);
+    const refsWithSettings = Array.from(workingMap.entries()).map(([ref, { use, condSep }]) => ({ ref, use, condSep }));
+    props.Content = buildContentItems(refsWithSettings);
 
-  const xml = XmlParser.objectToXml(parsed);
-  await fs.promises.writeFile(filePath, xml, 'utf-8');
-
-  return { rejected };
+    const nextXml = XmlParser.objectToXml(parsed);
+    return { nextXml, result: { rejected } };
+  });
 }

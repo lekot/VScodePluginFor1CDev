@@ -11,6 +11,18 @@
  * mutations in isolation.
  */
 import * as assert from 'assert';
+import * as vscode from 'vscode';
+import * as fsp from 'fs/promises';
+import * as path from 'path';
+import { CompositionEditorProvider } from '../../src/compositionEditor/compositionEditorProvider';
+import { SubsystemStrategy } from '../../src/compositionEditor/strategies/subsystemStrategy';
+import { CommonAttributeStrategy } from '../../src/compositionEditor/strategies/commonAttributeStrategy';
+import { FunctionalOptionStrategy } from '../../src/compositionEditor/strategies/functionalOptionStrategy';
+import { FilterCriterionStrategy } from '../../src/compositionEditor/strategies/filterCriterionStrategy';
+import { ExchangePlanStrategy } from '../../src/compositionEditor/strategies/exchangePlanStrategy';
+import { TreeNode, MetadataType } from '../../src/models/treeNode';
+import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
+import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
 
 // ── diff simulator ────────────────────────────────────────────────────────────
 
@@ -127,5 +139,285 @@ suite('subsystemCompositionEditorProvider — diff logic', () => {
 
     assert.deepStrictEqual(toAdd, [], 'deselectAll must not add anything');
     assert.deepStrictEqual(toRemove.sort(), ['Catalog.A', 'Document.X', 'Document.Y']);
+  });
+});
+
+suite('CompositionEditorProvider — production writers & save entrypoint (Issue 159)', () => {
+  let tmpDir: string;
+  let originalCreateWebviewPanel: typeof vscode.window.createWebviewPanel;
+  let currentMessageHandler: ((msg: any) => void) | undefined;
+  let postedMessages: any[] = [];
+  let panelDisposed = false;
+
+  setup(async () => {
+    tmpDir = await createTempDir('1cviewer-provider-save-');
+    postedMessages = [];
+    panelDisposed = false;
+    currentMessageHandler = undefined;
+
+    originalCreateWebviewPanel = vscode.window.createWebviewPanel;
+    (vscode.window as any).createWebviewPanel = () => {
+      return {
+        title: '',
+        webview: {
+          html: '',
+          postMessage: async (msg: any) => {
+            postedMessages.push(msg);
+            return true;
+          },
+          onDidReceiveMessage: (cb: any) => {
+            currentMessageHandler = cb;
+            return { dispose: () => {} };
+          },
+        },
+        reveal: () => {},
+        onDidDispose: (cb: any) => {
+          return { dispose: () => {} };
+        },
+        dispose: () => {
+          panelDisposed = true;
+        },
+      };
+    };
+  });
+
+  teardown(async () => {
+    (vscode.window as any).createWebviewPanel = originalCreateWebviewPanel;
+    await cleanupTempDir(tmpDir);
+  });
+
+  function createMockContext(): vscode.ExtensionContext {
+    return {
+      extensionPath: path.resolve(__dirname, '../../'),
+      extensionUri: vscode.Uri.file(path.resolve(__dirname, '../../')),
+      subscriptions: [],
+    } as unknown as vscode.ExtensionContext;
+  }
+
+  function createMockTreeProvider(): any {
+    return {
+      getRootNodes: () => [],
+      getChildren: async () => [],
+    };
+  }
+
+  test('SubsystemStrategy: save entrypoint updates real XML on disk and routes through gateway', async () => {
+    const xmlContent = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.17">
+  <Subsystem uuid="00000000-0000-0000-0000-000000000001">
+    <Properties>
+      <Name>Admin</Name>
+      <Content/>
+    </Properties>
+  </Subsystem>
+</MetaDataObject>`;
+    const filePath = path.join(tmpDir, 'Subsystem.xml');
+    await fsp.writeFile(filePath, xmlContent, 'utf-8');
+
+    let gatewayCalled = false;
+    const gateway = configureConfigurationMutationGateway(
+      async (resPath, kind, op) => {
+        gatewayCalled = true;
+        assert.strictEqual(kind, 'ui.composition.save');
+        assert.strictEqual(path.resolve(resPath), path.resolve(filePath));
+        return op();
+      },
+      async (_path, plan) => plan.result
+    );
+
+    const provider = new CompositionEditorProvider(
+      createMockContext(),
+      {
+        loadMetadataTree: async () => {},
+        invalidateTreeCacheOnly: async () => {},
+      },
+      SubsystemStrategy
+    );
+
+    try {
+      const node: TreeNode = {
+        id: 'subsystem:admin',
+        name: 'Admin',
+        type: MetadataType.Subsystem,
+        filePath,
+        properties: {},
+      };
+
+      await provider.show(node, createMockTreeProvider(), tmpDir);
+      assert.ok(currentMessageHandler, 'Webview message handler must be registered');
+
+      // Send toggle message from webview
+      currentMessageHandler({ command: 'toggle', data: { ref: 'Catalog.Users', checked: true } });
+      assert.strictEqual(provider.getDirtyCount(), 1);
+
+      // Send save message
+      await currentMessageHandler({ command: 'save' });
+
+      assert.strictEqual(gatewayCalled, true, 'Save entrypoint must route through configuration mutation gateway');
+      assert.ok(
+        postedMessages.some((m) => m.command === 'saveSuccess'),
+        `Expected saveSuccess in webview messages: ${JSON.stringify(postedMessages)}`
+      );
+
+      const written = await fsp.readFile(filePath, 'utf-8');
+      assert.ok(written.includes('Catalog.Users'), 'Subsystem.xml must contain Catalog.Users');
+      assert.strictEqual(panelDisposed, true, 'Panel must be disposed on successful save');
+    } finally {
+      gateway.dispose();
+      provider.dispose();
+    }
+  });
+
+  test('CommonAttributeStrategy: save entrypoint updates Use setting on real XML on disk', async () => {
+    const xmlContent = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.17">
+  <CommonAttribute uuid="00000000-0000-0000-0000-000000000002">
+    <Properties>
+      <Name>Department</Name>
+      <Content/>
+    </Properties>
+  </CommonAttribute>
+</MetaDataObject>`;
+    const filePath = path.join(tmpDir, 'CommonAttribute.xml');
+    await fsp.writeFile(filePath, xmlContent, 'utf-8');
+
+    const provider = new CompositionEditorProvider(
+      createMockContext(),
+      {
+        loadMetadataTree: async () => {},
+        invalidateTreeCacheOnly: async () => {},
+      },
+      CommonAttributeStrategy
+    );
+
+    try {
+      const node: TreeNode = {
+        id: 'commonAttribute:dept',
+        name: 'Department',
+        type: MetadataType.CommonAttribute,
+        filePath,
+        properties: {},
+      };
+
+      await provider.show(node, createMockTreeProvider(), tmpDir);
+      assert.ok(currentMessageHandler, 'Webview message handler must be registered');
+
+      currentMessageHandler({ command: 'toggle', data: { ref: 'Catalog.Employees', checked: true } });
+      currentMessageHandler({
+        command: 'settingChange',
+        data: { ref: 'Catalog.Employees', key: 'Use', value: 'DontUse' },
+      });
+
+      await currentMessageHandler({ command: 'save' });
+
+      assert.ok(
+        postedMessages.some((m) => m.command === 'saveSuccess'),
+        `Expected saveSuccess message: ${JSON.stringify(postedMessages)}`
+      );
+
+      const written = await fsp.readFile(filePath, 'utf-8');
+      assert.ok(written.includes('Catalog.Employees'), 'CommonAttribute.xml must contain Catalog.Employees');
+      assert.ok(written.includes('DontUse'), 'CommonAttribute.xml must contain DontUse');
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  test('FunctionalOptionStrategy: save entrypoint adds multi-segment ref to real XML', async () => {
+    const xmlContent = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.17">
+  <FunctionalOption uuid="00000000-0000-0000-0000-000000000003">
+    <Properties>
+      <Name>UseDiscounts</Name>
+      <Content/>
+    </Properties>
+  </FunctionalOption>
+</MetaDataObject>`;
+    const filePath = path.join(tmpDir, 'FunctionalOption.xml');
+    await fsp.writeFile(filePath, xmlContent, 'utf-8');
+
+    const provider = new CompositionEditorProvider(
+      createMockContext(),
+      {
+        loadMetadataTree: async () => {},
+        invalidateTreeCacheOnly: async () => {},
+      },
+      FunctionalOptionStrategy
+    );
+
+    try {
+      const node: TreeNode = {
+        id: 'functionalOption:discounts',
+        name: 'UseDiscounts',
+        type: MetadataType.FunctionalOption,
+        filePath,
+        properties: {},
+      };
+
+      await provider.show(node, createMockTreeProvider(), tmpDir);
+      assert.ok(currentMessageHandler, 'Webview message handler must be registered');
+
+      currentMessageHandler({
+        command: 'toggle',
+        data: { ref: 'Document.Order.TabularSection.Goods.Attribute.Discount', checked: true },
+      });
+
+      await currentMessageHandler({ command: 'save' });
+
+      const written = await fsp.readFile(filePath, 'utf-8');
+      assert.ok(
+        written.includes('Document.Order.TabularSection.Goods.Attribute.Discount'),
+        'FunctionalOption.xml must contain nested ref'
+      );
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  test('reports saveError to webview when invalid reference rejected', async () => {
+    const xmlContent = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.17">
+  <Subsystem uuid="00000000-0000-0000-0000-000000000004">
+    <Properties>
+      <Name>InvalidTest</Name>
+      <Content/>
+    </Properties>
+  </Subsystem>
+</MetaDataObject>`;
+    const filePath = path.join(tmpDir, 'Subsystem.xml');
+    await fsp.writeFile(filePath, xmlContent, 'utf-8');
+
+    const provider = new CompositionEditorProvider(
+      createMockContext(),
+      {
+        loadMetadataTree: async () => {},
+        invalidateTreeCacheOnly: async () => {},
+      },
+      SubsystemStrategy
+    );
+
+    try {
+      const node: TreeNode = {
+        id: 'subsystem:invalid',
+        name: 'InvalidTest',
+        type: MetadataType.Subsystem,
+        filePath,
+        properties: {},
+      };
+
+      await provider.show(node, createMockTreeProvider(), tmpDir);
+      assert.ok(currentMessageHandler, 'Webview message handler must be registered');
+
+      currentMessageHandler({ command: 'toggle', data: { ref: 'InvalidNameWithoutType', checked: true } });
+      await currentMessageHandler({ command: 'save' });
+
+      assert.ok(
+        postedMessages.some((m) => m.command === 'saveError'),
+        `Expected saveError in webview messages: ${JSON.stringify(postedMessages)}`
+      );
+      assert.strictEqual(panelDisposed, false, 'Panel must not be disposed on save error');
+    } finally {
+      provider.dispose();
+    }
   });
 });

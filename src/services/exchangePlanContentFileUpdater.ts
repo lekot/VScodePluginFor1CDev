@@ -108,115 +108,114 @@ export async function readExchangePlanContent(filePath: string): Promise<Content
 /**
  * Apply add/remove/settingsChanged diff to ExchangePlan `Content.xml` and write back.
  */
+import { mutateCompositionFile } from './compositionFileMutation';
+
 export async function applyExchangePlanContentUpdate(
   filePath: string,
   diff: ContentUpdateDiff,
   targetVersion?: string,
 ): Promise<{ rejected: Array<{ ref: string; reason: string }> }> {
-  const rejected: Array<{ ref: string; reason: string }> = [];
+  return mutateCompositionFile(filePath, 'ui.exchangePlan.content', async ({ rawContent, exists }) => {
+    const rejected: Array<{ ref: string; reason: string }> = [];
 
-  // Read existing content (or start with empty state)
-  let parsed: Record<string, unknown>;
-  let existingRefs: string[];
-  let existingSettings: Map<string, Record<string, string>>;
+    // Read existing content (or start with empty state)
+    let parsed: Record<string, unknown>;
+    let existingRefs: string[];
+    let existingSettings: Map<string, Record<string, string>>;
 
-  const exists = await fs.promises.access(filePath).then(() => true).catch(() => false);
-  if (exists) {
-    const existingXml = await fs.promises.readFile(filePath, 'utf8');
-    requireDocumentWriteFormatProfile(existingXml);
-    parsed = await XmlParser.parseFileAsync(filePath);
-    const items = getItemsFromParsed(parsed);
-    existingRefs = [];
-    existingSettings = new Map();
-    if (items) {
-      for (const item of items) {
-        if (!item || typeof item !== 'object' || Array.isArray(item)) { continue; }
-        const metaRaw = getValueByLocalName(item as Record<string, unknown>, 'Metadata');
-        const autoRaw = getValueByLocalName(item as Record<string, unknown>, 'AutoRecord');
-        const ref = typeof metaRaw === 'string' ? metaRaw.trim() : String(metaRaw ?? '').trim();
-        if (!ref) { continue; }
-        existingRefs.push(ref);
-        existingSettings.set(ref, { AutoRecord: typeof autoRaw === 'string' ? autoRaw.trim() : 'Allow' });
+    if (exists) {
+      requireDocumentWriteFormatProfile(rawContent);
+      parsed = XmlParser.parseString(rawContent);
+      const items = getItemsFromParsed(parsed);
+      existingRefs = [];
+      existingSettings = new Map();
+      if (items) {
+        for (const item of items) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) { continue; }
+          const metaRaw = getValueByLocalName(item as Record<string, unknown>, 'Metadata');
+          const autoRaw = getValueByLocalName(item as Record<string, unknown>, 'AutoRecord');
+          const ref = typeof metaRaw === 'string' ? metaRaw.trim() : String(metaRaw ?? '').trim();
+          if (!ref) { continue; }
+          existingRefs.push(ref);
+          existingSettings.set(ref, { AutoRecord: typeof autoRaw === 'string' ? autoRaw.trim() : 'Allow' });
+        }
+      }
+    } else {
+      // Resolve before creating Ext/ or Content.xml. Existing child documents
+      // retain their own root version; only a missing one uses the project.
+      const profile = await resolveContentCreateProfile(filePath, targetVersion);
+      parsed = {
+        ExchangePlanContent: {
+          '@_xmlns': 'http://v8.1c.ru/8.3/xcf/extrnprops',
+          '@_xmlns:xr': 'http://v8.1c.ru/8.3/xcf/readable',
+          '@_xmlns:xs': 'http://www.w3.org/2001/XMLSchema',
+          '@_xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+          '@_version': profile.version,
+          Item: [],
+        },
+      };
+      existingRefs = [];
+      existingSettings = new Map();
+    }
+
+    // Build working set: start from existing refs
+    const seen = new Set(existingRefs);
+    const out: string[] = [...existingRefs];
+    const settingsMap: Map<string, Record<string, string>> = new Map(existingSettings);
+
+    // Apply removes
+    for (const ref of diff.remove) {
+      const trimmed = ref.trim();
+      if (seen.has(trimmed)) {
+        seen.delete(trimmed);
+        const idx = out.indexOf(trimmed);
+        if (idx !== -1) {
+          out.splice(idx, 1);
+        }
+        settingsMap.delete(trimmed);
       }
     }
-  } else {
-    // Resolve before creating Ext/ or Content.xml. Existing child documents
-    // retain their own root version; only a missing one uses the project.
-    const profile = await resolveContentCreateProfile(filePath, targetVersion);
-    parsed = {
-      ExchangePlanContent: {
-        '@_xmlns': 'http://v8.1c.ru/8.3/xcf/extrnprops',
-        '@_xmlns:xr': 'http://v8.1c.ru/8.3/xcf/readable',
-        '@_xmlns:xs': 'http://www.w3.org/2001/XMLSchema',
-        '@_xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
-        '@_version': profile.version,
-        Item: [],
-      },
-    };
-    existingRefs = [];
-    existingSettings = new Map();
-  }
 
-  // Build working set: start from existing refs
-  const seen = new Set(existingRefs);
-  const out: string[] = [...existingRefs];
-  const settingsMap: Map<string, Record<string, string>> = new Map(existingSettings);
-
-  // Apply removes
-  for (const ref of diff.remove) {
-    const trimmed = ref.trim();
-    if (seen.has(trimmed)) {
-      seen.delete(trimmed);
-      const idx = out.indexOf(trimmed);
-      if (idx !== -1) {
-        out.splice(idx, 1);
+    // Apply adds
+    for (const raw of diff.add) {
+      const ref = typeof raw === 'string' ? raw.trim() : '';
+      const err = validateSubsystemCompositionRef(ref);
+      if (err) {
+        rejected.push({ ref: String(raw), reason: err });
+        continue;
       }
-      settingsMap.delete(trimmed);
+      if (seen.has(ref)) {
+        continue;
+      }
+      seen.add(ref);
+      out.push(ref);
+      settingsMap.set(ref, { AutoRecord: 'Allow' });
     }
-  }
 
-  // Apply adds
-  for (const raw of diff.add) {
-    const ref = typeof raw === 'string' ? raw.trim() : '';
-    const err = validateSubsystemCompositionRef(ref);
-    if (err) {
-      rejected.push({ ref: String(raw), reason: err });
-      continue;
+    // Apply settings changes
+    for (const [ref, settings] of diff.settingsChanged) {
+      if (!seen.has(ref)) {
+        continue;
+      }
+      const existing = settingsMap.get(ref) ?? { AutoRecord: 'Allow' };
+      settingsMap.set(ref, { ...existing, ...settings });
     }
-    if (seen.has(ref)) {
-      continue;
-    }
-    seen.add(ref);
-    out.push(ref);
-    settingsMap.set(ref, { AutoRecord: 'Allow' });
-  }
 
-  // Apply settings changes
-  for (const [ref, settings] of diff.settingsChanged) {
-    if (!seen.has(ref)) {
-      continue;
-    }
-    const existing = settingsMap.get(ref) ?? { AutoRecord: 'Allow' };
-    settingsMap.set(ref, { ...existing, ...settings });
-  }
+    // Build new Item array
+    const newItems = out.map((ref) => {
+      const settings = settingsMap.get(ref) ?? { AutoRecord: 'Allow' };
+      return { Metadata: ref, AutoRecord: settings['AutoRecord'] ?? 'Allow' };
+    });
 
-  // Build new Item array
-  const newItems = out.map((ref) => {
-    const settings = settingsMap.get(ref) ?? { AutoRecord: 'Allow' };
-    return { Metadata: ref, AutoRecord: settings['AutoRecord'] ?? 'Allow' };
+    // Inject into parsed object
+    const accessor = getContentNodeAndSetter(parsed);
+    if (accessor) {
+      accessor.setItems(newItems);
+    }
+
+    const nextXml = XmlParser.objectToXml(parsed);
+    return { nextXml, result: { rejected } };
   });
-
-  // Inject into parsed object
-  const accessor = getContentNodeAndSetter(parsed);
-  if (accessor) {
-    accessor.setItems(newItems);
-  }
-
-  const xml = XmlParser.objectToXml(parsed);
-  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.promises.writeFile(filePath, xml, 'utf-8');
-
-  return { rejected };
 }
 
 async function resolveContentCreateProfile(filePath: string, targetVersion?: string) {
