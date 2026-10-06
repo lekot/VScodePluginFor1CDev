@@ -10,7 +10,7 @@ import {
   requireWriteFormatProfile,
 } from '../utils/format/formatRank';
 import type { FormModel, FormChildItem, FormEventItem } from './formModel';
-import { writeUtf8FileWithBackup, type WriteUtf8FileWithBackupOptions } from '../utils/xml/xmlFileIo';
+import { writeUtf8FileWithBackup, withFileLock, type WriteUtf8FileWithBackupOptions } from '../utils/xml/xmlFileIo';
 
 const BUILDER_OPTIONS = {
   ignoreAttributes: false,
@@ -310,57 +310,62 @@ export async function writeFormXml(
   model: FormModel,
   options?: WriteUtf8FileWithBackupOptions
 ): Promise<void> {
-  // Existing Form.xml is authoritative for updates. Validate and preserve its
-  // exact version before any backup or write is attempted.
-  let existingContent: string | undefined;
-  try {
-    existingContent = await fs.promises.readFile(formXmlPath, 'utf-8');
-  } catch (readErr) {
-    if ((readErr as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw readErr;
+  return await withFileLock(formXmlPath, async () => {
+    // Existing Form.xml is authoritative for updates. Validate and preserve its
+    // exact version before any backup or write is attempted.
+    let existingContent: string | undefined;
+    try {
+      existingContent = await fs.promises.readFile(formXmlPath, 'utf-8');
+    } catch (readErr) {
+      if ((readErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw readErr;
+      }
     }
-  }
-  const profile = existingContent?.trim()
-    ? requireDocumentWriteFormatProfile(existingContent)
-    : requireWriteFormatProfile(model.version);
-  const effectiveModel: FormModel = { ...model, version: profile.version };
+    const profile = existingContent?.trim()
+      ? requireDocumentWriteFormatProfile(existingContent)
+      : requireWriteFormatProfile(model.version);
+    const effectiveModel: FormModel = { ...model, version: profile.version };
 
-  const rawContent = buildFormContent(effectiveModel);
-  const head = rawContent[0] as Record<string, unknown> | undefined;
-  const formAttrs =
-    head && typeof head === 'object' && Object.keys(head).length === 1 && head[':@'] !== undefined
-      ? (head[':@'] as Record<string, string>)
-      : {};
-  const body = head && Object.keys(head).length === 1 && head[':@'] !== undefined ? rawContent.slice(1) : rawContent;
-  const normalizedBody = body.map(normalizePreserveOrderNode);
-  const root = [{ Form: normalizedBody, ':@': formAttrs }];
-  const builder = new XMLBuilder(BUILDER_OPTIONS);
-  let xmlString: string;
-  try {
-    xmlString = builder.build(root);
-  } catch (buildErr) {
-    Logger.error(`Failed to build Form.xml for ${formXmlPath}`, buildErr);
-    throw new Error(
-      `Не удалось сформировать Form.xml. ${buildErr instanceof Error ? buildErr.message : String(buildErr)}`
-    );
-  }
+    const rawContent = buildFormContent(effectiveModel);
+    const head = rawContent[0] as Record<string, unknown> | undefined;
+    const formAttrs =
+      head && typeof head === 'object' && Object.keys(head).length === 1 && head[':@'] !== undefined
+        ? (head[':@'] as Record<string, string>)
+        : {};
+    const body = head && Object.keys(head).length === 1 && head[':@'] !== undefined ? rawContent.slice(1) : rawContent;
+    const normalizedBody = body.map(normalizePreserveOrderNode);
+    const root = [{ Form: normalizedBody, ':@': formAttrs }];
+    const builder = new XMLBuilder(BUILDER_OPTIONS);
+    let xmlString: string;
+    try {
+      xmlString = builder.build(root);
+    } catch (buildErr) {
+      Logger.error(`Failed to build Form.xml for ${formXmlPath}`, buildErr);
+      throw new Error(
+        `Не удалось сформировать Form.xml. ${buildErr instanceof Error ? buildErr.message : String(buildErr)}`
+      );
+    }
 
-  // Inject xmlns declarations (XMLBuilder strips them with ignoreNameSpace:true)
-  if (effectiveModel.xmlnsDeclarations && Object.keys(effectiveModel.xmlnsDeclarations).length) {
-    xmlString = injectXmlnsIntoFormTag(xmlString, effectiveModel.xmlnsDeclarations);
-  }
-  xmlString = injectMissingFormOpenTagAttrs(xmlString, effectiveModel);
+    // Inject xmlns declarations (XMLBuilder strips them with ignoreNameSpace:true)
+    if (effectiveModel.xmlnsDeclarations && Object.keys(effectiveModel.xmlnsDeclarations).length) {
+      xmlString = injectXmlnsIntoFormTag(xmlString, effectiveModel.xmlnsDeclarations);
+    }
+    xmlString = injectMissingFormOpenTagAttrs(xmlString, effectiveModel);
 
-  // Validate: never write empty Form when model has content
-  if ((model.childItemsRoot?.length ?? 0) > 0 && /^<Form\s*\/>$|^<Form>\s*<\/Form>$/.test(xmlString.trim())) {
-    throw new Error(
-      'Validation failed: XMLBuilder generated empty <Form> for a non-empty model. Write aborted.'
-    );
-  }
+    // Validate: never write empty Form when model has content
+    if ((model.childItemsRoot?.length ?? 0) > 0 && /^<Form\s*\/>$|^<Form>\s*<\/Form>$/.test(xmlString.trim())) {
+      throw new Error(
+        'Validation failed: XMLBuilder generated empty <Form> for a non-empty model. Write aborted.'
+      );
+    }
 
-  const declaration = '<?xml version="1.0" encoding="UTF-8"?>\n';
-  const fullContent = declaration + xmlString;
+    const declaration = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    const fullContent = declaration + xmlString;
 
-  await writeUtf8FileWithBackup(formXmlPath, existingContent, fullContent, options);
-  Logger.info(`Form.xml written: ${formXmlPath}`);
+    await writeUtf8FileWithBackup(formXmlPath, existingContent, fullContent, {
+      ...options,
+      skipLock: true,
+    });
+    Logger.info(`Form.xml written: ${formXmlPath}`);
+  });
 }

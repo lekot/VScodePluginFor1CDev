@@ -596,6 +596,105 @@ suite('FormXmlWriter', () => {
     }
   });
 
+  test('Issue #172: writeUtf8FileWithBackup for new file creation does not overwrite or unlink concurrently created file', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-writer-conflict-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      // Initially formXmlPath does not exist
+      assert.ok(!fs.existsSync(formXmlPath));
+
+      const concurrentContent = '<ConcurrentForm>DO_NOT_TOUCH</ConcurrentForm>';
+
+      // Simulate another process creating the file concurrently before writeUtf8FileWithBackup creates it
+      const options: WriteUtf8FileWithBackupOptions = {
+        hooks: {
+          writeFile: async (p, d, opt) => {
+            if (path.resolve(p) === path.resolve(formXmlPath)) {
+              // Concurrently create the file on disk if not already existing
+              if (!fs.existsSync(p)) {
+                await fs.promises.writeFile(p, concurrentContent, 'utf-8');
+              }
+            }
+            await fs.promises.writeFile(p, d, opt as any);
+          },
+        },
+      };
+
+      await assert.rejects(
+        () => writeFormXml(formXmlPath, createBaseModel(), options),
+        /already exists/i
+      );
+
+      // CRITICAL ASSERTION: The concurrently created file must NOT be deleted (unlinked) or overwritten!
+      assert.ok(fs.existsSync(formXmlPath), 'Form.xml must NOT be deleted by failed creation');
+      assert.strictEqual(
+        await fs.promises.readFile(formXmlPath, 'utf-8'),
+        concurrentContent,
+        'Form.xml content must remain completely intact'
+      );
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('Issue #172: concurrent writeFormXml saves do not overwrite earlier success upon later save failure', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-writer-interleaving-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      const initialContent = '<?xml version="1.0" encoding="UTF-8"?>\n<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">\n</Form>';
+      await fs.promises.writeFile(formXmlPath, initialContent, 'utf-8');
+
+      // Model 1 sets event OnOpen
+      const model1 = createBaseModel();
+      model1.formEvents = [{ name: 'OnOpen', method: 'ПриОткрытии1' }];
+
+      // Model 2 sets event OnClose
+      const model2 = createBaseModel();
+      model2.formEvents = [{ name: 'OnClose', method: 'ПриЗакрытии2' }];
+
+      // Simulate Save 2 failing during its write attempt
+      let save2WriteAttempts = 0;
+      const save2Options: WriteUtf8FileWithBackupOptions = {
+        hooks: {
+          writeFile: async (p, d, opt) => {
+            if (path.resolve(p) === path.resolve(formXmlPath)) {
+              save2WriteAttempts++;
+              if (save2WriteAttempts === 1) {
+                // Failure on target write
+                throw new Error('ENOSPC: disk full during save2 write');
+              }
+            }
+            await fs.promises.writeFile(p, d, opt as any);
+          },
+        },
+      };
+
+      // Launch both saves concurrently
+      const promise1 = writeFormXml(formXmlPath, model1);
+      const promise2 = writeFormXml(formXmlPath, model2, save2Options);
+
+      // Save 1 must succeed
+      await promise1;
+
+      // Save 2 must reject due to write failure
+      await assert.rejects(
+        () => promise2,
+        /Unable to write to file|Concurrent modification detected/
+      );
+
+      // CRITICAL ASSERTION:
+      // Disk must contain Save 1's committed result ('ПриОткрытии1'), NOT rolled back to initialContent!
+      const diskContent = await fs.promises.readFile(formXmlPath, 'utf-8');
+      assert.ok(
+        diskContent.includes('ПриОткрытии1'),
+        'Save 1 content must remain on disk, must not be overwritten by Save 2 rollback'
+      );
+      assert.ok(!diskContent.includes('ПриЗакрытии2'));
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   // ── version handling ─────────────────────────────────────────────────────────
 
   test('writes model.version when provided', async () => {
