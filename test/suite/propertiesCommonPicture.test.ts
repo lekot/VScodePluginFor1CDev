@@ -107,6 +107,148 @@ suite('Properties Webview - CommonPicture and StyleItem Preview', () => {
     assert.ok(html.includes('Пример') || html.includes('Текст') || html.includes('Sample'));
   });
 
+  // Finding 1 (Review #175): XSS / CSS injection sanitization
+  test('Finding 1: renderStyleItemPreview sanitizes malicious web: color breakout and event handlers', () => {
+    const node: TreeNode = {
+      id: 'StyleItems.MaliciousColor',
+      name: 'MaliciousColor',
+      type: MetadataType.StyleItem,
+      properties: {
+        Name: 'MaliciousColor',
+        Type: 'Color',
+        Value: 'web:red;" onmouseover="alert(1)',
+      },
+    };
+
+    const html = renderStyleItemPreview(node);
+    assert.ok(!/<[^>]+onmouseover/i.test(html), 'must not contain injected onmouseover attribute on any HTML element');
+    assert.ok(!/<[^>]+style="[^"]*red;\s*"/i.test(html), 'must not break style attribute');
+    assert.ok(html.includes('background-color: var(--vscode-editor-foreground)'), 'must fall back to safe background');
+  });
+
+  test('Finding 1 (Broad): renderStyleItemPreview rejects invalid or dangerous color values', () => {
+    const maliciousValues = [
+      'web:javascript:alert(1)',
+      'web:red; background: url(http://attacker.com/evil.png)',
+      'web:expression(alert(1))',
+      '#FF0000; display: none',
+    ];
+
+    for (const val of maliciousValues) {
+      const node: TreeNode = {
+        id: 'StyleItems.Malicious',
+        name: 'Malicious',
+        type: MetadataType.StyleItem,
+        properties: {
+          Name: 'Malicious',
+          Type: 'Color',
+          Value: val,
+        },
+      };
+
+      const html = renderStyleItemPreview(node);
+      assert.ok(!/<[^>]+javascript:/i.test(html), `must not contain javascript in attribute for value ${val}`);
+      assert.ok(!/<[^>]+style="[^"]*url\(/i.test(html), `must not contain url() in style attribute for value ${val}`);
+      assert.ok(!/<[^>]+style="[^"]*expression\(/i.test(html), `must not contain expression() in style attribute for value ${val}`);
+      assert.ok(!/<[^>]+style="[^"]*display:\s*none/i.test(html), `must not contain injected CSS in style attribute for value ${val}`);
+      assert.ok(html.includes('background-color: var(--vscode-editor-foreground)'), `must fall back to safe color for ${val}`);
+    }
+  });
+
+  // Finding 2 (Review #175): XML-parser object extraction for Color and Font
+  test('Finding 2: renderStyleItemPreview extracts Color from XML parser object with #text', () => {
+    const node: TreeNode = {
+      id: 'StyleItems.ParsedColor',
+      name: 'ParsedColor',
+      type: MetadataType.StyleItem,
+      properties: {
+        Name: 'ParsedColor',
+        Type: 'Color',
+        Value: {
+          '#text': 'web:Red',
+          '@_xsi:type': 'v8ui:Color',
+        },
+      },
+    };
+
+    const html = renderStyleItemPreview(node);
+    assert.ok(!html.includes('{"#text"'), 'must not render raw JSON in webview');
+    assert.ok(html.includes('web:Red'), 'must render display value web:Red');
+    assert.ok(html.includes('background-color: Red') || html.includes('background-color: red'), 'must apply background-color Red');
+  });
+
+  test('Finding 2: renderStyleItemPreview extracts style reference Color from object', () => {
+    const node: TreeNode = {
+      id: 'StyleItems.ParsedStyleRef',
+      name: 'ParsedStyleRef',
+      type: MetadataType.StyleItem,
+      properties: {
+        Name: 'ParsedStyleRef',
+        Type: 'Color',
+        Value: {
+          '#text': 'style:FieldAlternativeBackColor',
+          '@_xsi:type': 'v8ui:Color',
+        },
+      },
+    };
+
+    const html = renderStyleItemPreview(node);
+    assert.ok(!html.includes('{"#text"'), 'must not render raw JSON');
+    assert.ok(html.includes('style:FieldAlternativeBackColor'), 'must display style reference value');
+  });
+
+  test('Finding 2: renderStyleItemPreview extracts Font from XML parser object attributes', () => {
+    const node: TreeNode = {
+      id: 'StyleItems.ParsedFont',
+      name: 'ParsedFont',
+      type: MetadataType.StyleItem,
+      properties: {
+        Name: 'ParsedFont',
+        Type: 'Font',
+        Value: {
+          '@_xsi:type': 'v8ui:Font',
+          '@_faceName': 'Arial',
+          '@_height': '12',
+          '@_bold': 'true',
+          '@_italic': 'false',
+          '@_underline': 'true',
+        },
+      },
+    };
+
+    const html = renderStyleItemPreview(node);
+    assert.ok(!html.includes('{"@_xsi:type"'), 'must not display raw JSON string');
+    assert.ok(html.includes('font-family: Arial'), 'must apply Arial font-family');
+    assert.ok(html.includes('font-weight: bold'), 'must apply bold font-weight');
+    assert.ok(html.includes('text-decoration: underline'), 'must apply underline');
+  });
+
+  test('Finding 2: renderStyleItemPreview extracts Font from nested v8:Font object', () => {
+    const node: TreeNode = {
+      id: 'StyleItems.NestedFont',
+      name: 'NestedFont',
+      type: MetadataType.StyleItem,
+      properties: {
+        Name: 'NestedFont',
+        Type: 'Font',
+        Value: {
+          'v8:Font': {
+            '@_faceName': 'Courier New',
+            '@_height': '10',
+            '@_bold': 'false',
+            '@_italic': 'true',
+          },
+          '@_xsi:type': 'v8ui:Font',
+        },
+      },
+    };
+
+    const html = renderStyleItemPreview(node);
+    assert.ok(!html.includes('{"v8:Font"'), 'must not display raw JSON string');
+    assert.ok(html.includes('font-family: Courier New'), 'must apply Courier New');
+    assert.ok(html.includes('font-style: italic'), 'must apply italic font-style');
+  });
+
   test('getWebviewContent includes picture preview card for CommonPicture node', () => {
     const node: TreeNode = {
       id: 'CommonPictures.Logo',

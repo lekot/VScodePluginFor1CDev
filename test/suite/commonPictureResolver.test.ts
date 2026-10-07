@@ -177,7 +177,10 @@ suite('CommonPictureResolver', () => {
     assert.strictEqual(result.mimeType, 'image/png');
     assert.ok(result.entryName === '100.png' || result.entryName === '200.png');
     assert.ok(result.dataUri?.startsWith('data:image/png;base64,'));
-    assert.strictEqual(result.resolvedFilePath, zipPath);
+    assert.notStrictEqual(result.resolvedFilePath, zipPath, 'resolvedFilePath must not be the raw zip archive');
+    assert.strictEqual(result.zipFilePath, zipPath, 'zipFilePath must point to the zip archive');
+    assert.ok(fs.existsSync(result.resolvedFilePath!), 'extracted entry image must exist on disk');
+    assert.strictEqual(path.basename(result.resolvedFilePath!), result.entryName);
   });
 
   test('prefers SVG variant when Picture.zip contains both SVG and PNG', async () => {
@@ -200,7 +203,8 @@ suite('CommonPictureResolver', () => {
       { name: 'vector.svg', content: svgData },
     ]);
 
-    await fs.promises.writeFile(path.join(subPicDir, 'Picture.zip'), zipBuf);
+    const zipPath = path.join(subPicDir, 'Picture.zip');
+    await fs.promises.writeFile(zipPath, zipBuf);
 
     const result = await resolveCommonPicture(metadataXml);
     assert.strictEqual(result.success, true);
@@ -208,6 +212,9 @@ suite('CommonPictureResolver', () => {
     assert.strictEqual(result.format, 'SVG');
     assert.strictEqual(result.entryName, 'vector.svg');
     assert.strictEqual(result.mimeType, 'image/svg+xml');
+    assert.notStrictEqual(result.resolvedFilePath, zipPath, 'resolvedFilePath must point to extracted svg, not zip');
+    assert.ok(fs.existsSync(result.resolvedFilePath!), 'extracted svg file must exist on disk');
+    assert.strictEqual(path.basename(result.resolvedFilePath!), 'vector.svg');
   });
 
   test('resolves EDT layout where image is placed alongside CommonPicture.mdo', async () => {

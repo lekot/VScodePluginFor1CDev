@@ -74,6 +74,198 @@ export function renderPicturePreviewCard(picture: ResolvedPicture): string {
 }
 
 /**
+ * Validate that a color string is safe to use in inline CSS style attributes.
+ * Allows hex colors (#rgb, #rrggbb, #rrggbbaa), safe named CSS colors, and rgb/rgba functions.
+ * Strictly prevents quotes, semicolons, injection of url(), expression(), or scripts.
+ */
+export function isSafeCssColor(color: string): boolean {
+  if (!color || typeof color !== 'string') {
+    return false;
+  }
+  const trimmed = color.trim();
+  // Hex color (#fff, #ffffff, #ffffffff)
+  if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(trimmed)) {
+    return true;
+  }
+  // Named CSS color (ASCII letters only, excluding dangerous words)
+  if (/^[a-zA-Z]+$/.test(trimmed)) {
+    const lower = trimmed.toLowerCase();
+    if (lower === 'javascript' || lower === 'expression' || lower === 'url') {
+      return false;
+    }
+    return true;
+  }
+  // rgb/rgba functions with safe numbers
+  if (/^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*(?:0|1|0?\.\d+)\s*)?\)$/i.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Validate that a font family name contains only safe characters (no quotes, semicolons, etc.).
+ */
+export function isSafeFontFamily(face: string): boolean {
+  if (!face || typeof face !== 'string') {
+    return false;
+  }
+  return /^[a-zA-Z0-9\s\-_]+$/.test(face.trim());
+}
+
+interface ExtractedStyleColor {
+  displayVal: string;
+  cssBg: string;
+}
+
+function extractStyleColor(rawValue: unknown): ExtractedStyleColor {
+  let valStr = '';
+  if (typeof rawValue === 'string') {
+    valStr = rawValue.trim();
+  } else if (rawValue && typeof rawValue === 'object') {
+    const obj = rawValue as Record<string, unknown>;
+    if (typeof obj['#text'] === 'string') {
+      valStr = obj['#text'].trim();
+    } else if (obj['#text'] !== undefined && obj['#text'] !== null) {
+      valStr = String(obj['#text']).trim();
+    }
+  }
+
+  let cssBg = 'var(--vscode-editor-foreground)';
+  let displayVal = valStr;
+
+  const hexMatch = /^#([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})$/.exec(valStr.trim());
+  if (hexMatch && isSafeCssColor(hexMatch[0])) {
+    cssBg = hexMatch[0];
+    displayVal = hexMatch[0];
+  } else if (valStr.startsWith('web:')) {
+    const colorName = valStr.slice(4).trim();
+    if (isSafeCssColor(colorName)) {
+      cssBg = colorName;
+    } else {
+      cssBg = 'var(--vscode-editor-foreground)';
+    }
+    displayVal = valStr;
+  } else if (valStr.startsWith('style:')) {
+    displayVal = valStr;
+    cssBg = 'var(--vscode-editor-foreground)';
+  } else if (valStr.startsWith('win:')) {
+    displayVal = valStr;
+    cssBg = 'var(--vscode-button-background)';
+  } else {
+    const rgbMatch = /(?:d\d+p\d+:)?RGB\s*\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)/i.exec(valStr);
+    if (rgbMatch) {
+      const rgbColor = `rgb(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]})`;
+      if (isSafeCssColor(rgbColor)) {
+        cssBg = rgbColor;
+        displayVal = valStr;
+      }
+    } else if (isSafeCssColor(valStr)) {
+      cssBg = valStr;
+      displayVal = valStr;
+    }
+  }
+
+  return { displayVal, cssBg };
+}
+
+interface ExtractedStyleFont {
+  displayStr: string;
+  fontFamily: string;
+  isBold: boolean;
+  isItalic: boolean;
+  isUnderline: boolean;
+  isStrikeout: boolean;
+}
+
+function extractStyleFont(rawValue: unknown): ExtractedStyleFont {
+  let isBold = false;
+  let isItalic = false;
+  let isUnderline = false;
+  let isStrikeout = false;
+  let faceName = '';
+  let ref = '';
+  let height: string | undefined;
+
+  if (rawValue && typeof rawValue === 'object') {
+    const obj = rawValue as Record<string, unknown>;
+    const fontObj = (
+      obj['v8:Font'] && typeof obj['v8:Font'] === 'object'
+        ? obj['v8:Font']
+        : obj['Font'] && typeof obj['Font'] === 'object'
+          ? obj['Font']
+          : obj
+    ) as Record<string, unknown>;
+
+    const getAttr = (key: string): unknown =>
+      fontObj[`@_${key}`] ?? fontObj[key] ?? obj[`@_${key}`] ?? obj[key];
+
+    const parseBool = (v: unknown): boolean =>
+      v === true || v === 'true' || v === 1 || v === '1';
+
+    isBold = parseBool(getAttr('bold'));
+    isItalic = parseBool(getAttr('italic'));
+    isUnderline = parseBool(getAttr('underline'));
+    isStrikeout = parseBool(getAttr('strikeout'));
+
+    const rawFace = getAttr('faceName') ?? getAttr('face');
+    if (typeof rawFace === 'string') {
+      faceName = rawFace.trim();
+    }
+    const rawRef = getAttr('ref');
+    if (typeof rawRef === 'string') {
+      ref = rawRef.trim();
+    }
+    const rawHeight = getAttr('height');
+    if (rawHeight !== undefined && rawHeight !== null) {
+      height = String(rawHeight).trim();
+    }
+  } else {
+    const valStr = typeof rawValue === 'string' ? rawValue : JSON.stringify(rawValue || '');
+    isBold = /bold\s*=\s*["']?true["']?|bold\s*:\s*true/i.test(valStr);
+    isItalic = /italic\s*=\s*["']?true["']?|italic\s*:\s*true/i.test(valStr);
+    isUnderline = /underline\s*=\s*["']?true["']?|underline\s*:\s*true/i.test(valStr);
+    isStrikeout = /strikeout\s*=\s*["']?true["']?|strikeout\s*:\s*true/i.test(valStr);
+
+    const faceMatch = /(?:@_)?faceName\s*[:=]\s*["']([^"']+)["']/i.exec(valStr);
+    if (faceMatch) {
+      faceName = faceMatch[1].trim();
+    }
+    const refMatch = /(?:@_)?ref\s*[:=]\s*["']([^"']+)["']/i.exec(valStr);
+    if (refMatch) {
+      ref = refMatch[1].trim();
+    }
+    const heightMatch = /(?:@_)?height\s*[:=]\s*["']?(\d+)["']?/i.exec(valStr);
+    if (heightMatch) {
+      height = heightMatch[1];
+    }
+  }
+
+  const fontFamily = isSafeFontFamily(faceName) ? faceName : 'inherit';
+
+  let displayStr = '';
+  if (ref) {
+    displayStr = ref;
+  } else if (faceName) {
+    displayStr = `${faceName}${height ? `, ${height}pt` : ''}`;
+  } else if (typeof rawValue === 'string' && rawValue) {
+    displayStr = rawValue;
+  } else {
+    displayStr = 'Стандартный шрифт';
+  }
+
+  const flags: string[] = [];
+  if (isBold) { flags.push('жирный'); }
+  if (isItalic) { flags.push('курсив'); }
+  if (isUnderline) { flags.push('подчёркнутый'); }
+  if (isStrikeout) { flags.push('зачёркнутый'); }
+  if (flags.length > 0 && !displayStr.includes('(')) {
+    displayStr += ` (${flags.join(', ')})`;
+  }
+
+  return { displayStr, fontFamily, isBold, isItalic, isUnderline, isStrikeout };
+}
+
+/**
  * Render visual swatch / font typography sample for StyleItem elements.
  */
 export function renderStyleItemPreview(node: TreeNode): string {
@@ -83,31 +275,13 @@ export function renderStyleItemPreview(node: TreeNode): string {
   const props = (node.properties || {}) as Record<string, unknown>;
   const typeVal = String(props.Type || props['type'] || '').trim();
   const rawValue = props.Value !== undefined ? props.Value : props['value'];
-  const valStr = typeof rawValue === 'string' ? rawValue : JSON.stringify(rawValue || '');
 
   if (typeVal.toLowerCase() === 'color') {
-    let cssBg = 'var(--vscode-editor-foreground)';
-    let displayVal = valStr;
-
-    const hexMatch = /#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/.exec(valStr);
-    if (hexMatch) {
-      cssBg = hexMatch[0];
-      displayVal = hexMatch[0];
-    } else if (valStr.startsWith('web:')) {
-      const colorName = valStr.slice(4).trim();
-      cssBg = colorName;
-      displayVal = valStr;
-    } else if (valStr.startsWith('style:')) {
-      displayVal = valStr;
-      cssBg = 'var(--vscode-editor-foreground)';
-    } else if (valStr.startsWith('win:')) {
-      displayVal = valStr;
-      cssBg = 'var(--vscode-button-background)';
-    }
+    const { displayVal, cssBg } = extractStyleColor(rawValue);
 
     return `
       <div class="style-item-preview">
-        <div class="style-preview-swatch" style="background-color: ${cssBg};"></div>
+        <div class="style-preview-swatch" style="background-color: ${escapeHtml(cssBg)};"></div>
         <div class="style-preview-details">
           <span class="style-preview-title">Цвет стиля</span>
           <span class="style-preview-value">${escapeHtml(displayVal)}</span>
@@ -117,33 +291,30 @@ export function renderStyleItemPreview(node: TreeNode): string {
   }
 
   if (typeVal.toLowerCase() === 'font') {
-    const isBold = /bold="true"|bold:\s*true/i.test(valStr);
-    const isItalic = /italic="true"|italic:\s*true/i.test(valStr);
-    const isUnderline = /underline="true"|underline:\s*true/i.test(valStr);
-    const faceMatch = /faceName="([^"]+)"/i.exec(valStr);
-    const fontFamily = faceMatch ? faceMatch[1] : 'inherit';
+    const font = extractStyleFont(rawValue);
 
     const styleParts: string[] = [
-      `font-family: ${fontFamily}`,
-      isBold ? 'font-weight: bold' : 'font-weight: normal',
-      isItalic ? 'font-style: italic' : 'font-style: normal',
-      isUnderline ? 'text-decoration: underline' : '',
+      `font-family: ${font.fontFamily}`,
+      font.isBold ? 'font-weight: bold' : 'font-weight: normal',
+      font.isItalic ? 'font-style: italic' : 'font-style: normal',
+      font.isUnderline ? 'text-decoration: underline' : '',
     ].filter(Boolean);
 
     return `
       <div class="style-item-preview">
-        <div class="style-font-sample" style="${styleParts.join('; ')}">
+        <div class="style-font-sample" style="${escapeHtml(styleParts.join('; '))}">
           Пример текста / Sample Text 123
         </div>
         <div class="style-preview-details">
           <span class="style-preview-title">Шрифт стиля</span>
-          <span class="style-preview-value">${escapeHtml(valStr)}</span>
+          <span class="style-preview-value">${escapeHtml(font.displayStr)}</span>
         </div>
       </div>
     `;
   }
 
   if (typeVal.toLowerCase() === 'border') {
+    const valStr = typeof rawValue === 'string' ? rawValue : JSON.stringify(rawValue || '');
     return `
       <div class="style-item-preview">
         <div class="style-border-sample" style="border: 2px solid var(--vscode-editor-foreground); width: 60px; height: 30px;"></div>

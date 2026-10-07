@@ -170,6 +170,7 @@ export class PropertiesProvider {
       getConfigurationXmlPathForNode(node, this.treeDataProvider.getConfigPathForNode.bind(this.treeDataProvider)) ??
       node.filePath;
 
+    const targetId = node.id;
     if (pathToRead && !node.parentFilePath) {
       let isReadableFile = false;
       try {
@@ -184,11 +185,18 @@ export class PropertiesProvider {
           const { XMLWriter: xmlWriter } = await import('../utils/XMLWriter');
           const xmlProperties = await xmlWriter.readProperties(pathToRead);
 
+          if (this.currentNode !== node || this.currentNode?.id !== targetId) {
+            return;
+          }
+
           // Update node properties with fresh data from XML
           node.properties = { ...xmlProperties };
 
           Logger.debug(`Successfully loaded properties from ${pathToRead}`);
         } catch (error) {
+          if (this.currentNode !== node || this.currentNode?.id !== targetId) {
+            return;
+          }
           // Log detailed error
           Logger.error(`Failed to read properties from ${pathToRead}`, error);
 
@@ -204,6 +212,9 @@ export class PropertiesProvider {
     }
     // For nested elements with parentFilePath, use already loaded properties from node.properties
 
+    if (this.currentNode !== node || this.currentNode?.id !== targetId) {
+      return;
+    }
     await this.updateWebviewContent();
   }
 
@@ -334,14 +345,25 @@ export class PropertiesProvider {
       return;
     }
 
+    const targetNode = this.currentNode;
+    const targetId = targetNode.id;
+
     let picture: import('../services/picture/commonPictureResolver').ResolvedPicture | undefined;
-    if (this.currentNode.type === MetadataType.CommonPicture) {
-      picture = await resolveCommonPicture(this.currentNode);
+    if (targetNode.type === MetadataType.CommonPicture) {
+      picture = await resolveCommonPicture(targetNode);
+      if (this.currentNode !== targetNode || this.currentNode?.id !== targetId || this.currentFormSelection !== null) {
+        // Discard stale result if selection changed during async picture resolution
+        return;
+      }
     }
 
-    const html = getWebviewContent(this.currentNode, { picture });
+    if (this.currentNode !== targetNode || this.currentNode?.id !== targetId || this.currentFormSelection !== null) {
+      return;
+    }
+
+    const html = getWebviewContent(targetNode, { picture });
     this.panel.webview.html = html;
-    Logger.debug(`Properties panel updated for node: ${this.currentNode.name}`);
+    Logger.debug(`Properties panel updated for node: ${targetNode.name}`);
   }
 
   /**

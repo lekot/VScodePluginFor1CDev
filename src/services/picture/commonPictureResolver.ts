@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+import * as crypto from 'crypto';
 import * as zlib from 'zlib';
 import { TreeNode } from '../../models/treeNode';
 import { Logger } from '../../utils/logger';
@@ -12,6 +14,7 @@ export interface ResolvedPicture {
   isZip?: boolean;
   entryName?: string;
   resolvedFilePath?: string;
+  zipFilePath?: string;
   error?: string;
 }
 
@@ -257,6 +260,23 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
       const format = getFormatName(chosenEntry.name);
       const dataUri = `data:${mimeType};base64,${decompressed.toString('base64')}`;
 
+      // Extract specific entry to temp file so VS Code can open the image directly
+      let extractedFilePath = resolvedAssetPath;
+      try {
+        const hash = crypto
+          .createHash('sha256')
+          .update(`${resolvedAssetPath}:${chosenEntry.name}`)
+          .digest('hex')
+          .slice(0, 12);
+        const safeEntryBase = path.basename(chosenEntry.name);
+        const tempPicDir = path.join(os.tmpdir(), '1cviewer-pictures', hash);
+        await fs.promises.mkdir(tempPicDir, { recursive: true });
+        extractedFilePath = path.join(tempPicDir, safeEntryBase);
+        await fs.promises.writeFile(extractedFilePath, decompressed);
+      } catch (err) {
+        Logger.warn(`Failed to cache extracted picture entry ${chosenEntry.name} to disk`, err);
+      }
+
       return {
         success: true,
         dataUri,
@@ -264,7 +284,8 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
         format,
         isZip: true,
         entryName: chosenEntry.name,
-        resolvedFilePath: resolvedAssetPath,
+        resolvedFilePath: extractedFilePath,
+        zipFilePath: resolvedAssetPath,
       };
     }
 
