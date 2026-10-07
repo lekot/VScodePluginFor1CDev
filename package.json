@@ -2137,7 +2137,7 @@
     "copy:test-fixtures": "node -e \"require('fs').cpSync('test/fixtures','out/test/fixtures',{recursive:true,force:true})\"",
     "test:ci": "tsc -p tsconfig.test.json && npm run copy:test-fixtures && node scripts/copy-webviews.js && node out/test/runCore.js",
     "test:vscode:ci": "npm run compile && node node_modules/typescript/bin/tsc -p tsconfig.test.json && npm run copy:test-fixtures && node scripts/copy-webviews.js && xvfb-run -a node out/test/runTest.js",
-    "test:coverage": "tsc -p tsconfig.test.json && npm run copy:test-fixtures && node scripts/copy-webviews.js && c8 --reporter=text-summary --reporter=json-summary node out/test/runCore.js",
+    "test:coverage": "tsc -p tsconfig.test.json && npm run copy:test-fixtures && node scripts/copy-webviews.js && c8 --reporter=text-summary --reporter=json-summary --reporter=lcov node out/test/runCore.js",
     "coverage:check": "node scripts/check-coverage-delta.js",
     "test:smoke": "npm run compile && node node_modules/typescript/bin/tsc -p tsconfig.test.json && node out/test/runSmoke.js",
     "acceptance:epic36:block6": "node scripts/epic36-block6-acceptance.cjs",
