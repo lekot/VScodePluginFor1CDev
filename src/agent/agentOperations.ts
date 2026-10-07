@@ -1480,24 +1480,6 @@ export class AgentOperations {
                     return check.errorResult!;
                 }
 
-                if (params.dryRun) {
-                    return {
-                        success: true,
-                        dryRun: true,
-                        rev: check.currentRev,
-                        target: params.path,
-                        data: {
-                            dryRun: true,
-                            rev: check.currentRev,
-                            target: params.path,
-                            plannedChanges: {
-                                files: [filePath],
-                                summary: `Изменение типа ${params.path}`,
-                            },
-                        },
-                    };
-                }
-
                 // Строим TypeDefinition из массива строк
                 const typeEntries = params.types.map(typeStr => {
                     if (typeStr === 'xs:string') { return { kind: 'string' as const }; }
@@ -1537,6 +1519,24 @@ export class AgentOperations {
                     category = 'reference';
                 } else {
                     category = typeEntries.length === 1 ? 'primitive' : 'composite';
+                }
+
+                if (params.dryRun) {
+                    return {
+                        success: true,
+                        dryRun: true,
+                        rev: check.currentRev,
+                        target: params.path,
+                        data: {
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: params.path,
+                            plannedChanges: {
+                                files: [filePath],
+                                summary: `Изменение типа ${params.path}`,
+                            },
+                        },
+                    };
                 }
 
                 const definition = { category, types: typeEntries };

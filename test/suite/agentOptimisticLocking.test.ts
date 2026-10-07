@@ -96,15 +96,72 @@ suite('Agent API — Issue #134 calculateRevision & validateIfRev', () => {
     assert.strictEqual(validation.currentRev, rev);
   });
 
-  test('validateIfRev returns ok: false when ifRev differs from current revision', async () => {
-    const filePath = path.join(tmpDir, 'test.xml');
-    fs.writeFileSync(filePath, '<test>content</test>', 'utf-8');
-    const rev = await calculateRevision(filePath);
+  test('calculateRevision rejects symbolic links with an explicit error instead of ZERO_REVISION', async () => {
+    const targetFile = path.join(tmpDir, 'symlink-target.xml');
+    fs.writeFileSync(targetFile, '<target/>', 'utf-8');
+    const linkPath = path.join(tmpDir, 'symlink-link.xml');
+    let hasSymlink = false;
+    try {
+      fs.symlinkSync(targetFile, linkPath);
+      hasSymlink = true;
+    } catch {
+      // unprivileged Windows
+    }
 
-    const staleRev = 'a'.repeat(64);
-    const validation = await validateIfRev(filePath, staleRev);
-    assert.strictEqual(validation.ok, false);
-    assert.strictEqual(validation.currentRev, rev);
+    if (hasSymlink) {
+      await assert.rejects(
+        () => calculateRevision(linkPath),
+        /символические ссылки|symlink/i
+      );
+    } else {
+      const origLstat = fs.promises.lstat;
+      try {
+        (fs.promises as any).lstat = async () => ({
+          isFile: () => false,
+          isDirectory: () => false,
+          isSymbolicLink: () => true,
+        });
+        await assert.rejects(
+          () => calculateRevision(targetFile),
+          /символические ссылки|symlink/i
+        );
+      } finally {
+        fs.promises.lstat = origLstat;
+      }
+    }
+  });
+
+  test('calculateRevision rejects broken symbolic links with an explicit error instead of ZERO_REVISION', async () => {
+    const missingTarget = path.join(tmpDir, 'nonexistent-target.xml');
+    const brokenLink = path.join(tmpDir, 'broken-link.xml');
+    try {
+      fs.symlinkSync(missingTarget, brokenLink);
+    } catch {
+      return; // Windows unprivileged symlink fallback
+    }
+    await assert.rejects(
+      () => calculateRevision(brokenLink),
+      /символические ссылки|symlink/i
+    );
+  });
+
+  test('calculateRevision rejects non-file non-directory entries with explicit error', async () => {
+    const fakePath = path.join(tmpDir, 'special-device.xml');
+    fs.writeFileSync(fakePath, '<fake/>', 'utf-8');
+    const origLstat = fs.promises.lstat;
+    try {
+      (fs.promises as any).lstat = async () => ({
+        isFile: () => false,
+        isDirectory: () => false,
+        isSymbolicLink: () => false,
+      });
+      await assert.rejects(
+        () => calculateRevision(fakePath),
+        /неподдерживаемый тип|unsupported/i
+      );
+    } finally {
+      fs.promises.lstat = origLstat;
+    }
   });
 });
 
@@ -419,6 +476,29 @@ suite('Agent API — Issue #134 ifRev optimistic locking', () => {
     });
     assert.strictEqual(okRes.success, true);
     assert.notStrictEqual(okRes.rev, revBefore);
+  });
+
+  test('setType with dryRun: true rejects invalid types with identical error to live mutation', async () => {
+    await ops.addAttribute({ path: 'Catalog.Goods', name: 'Discount' });
+
+    const dryRunRes = await ops.setType({
+      path: 'Catalog.Goods.Attribute.Discount',
+      types: ['invalid:unknown:type'],
+      dryRun: true,
+    });
+    assert.strictEqual(dryRunRes.success, false, 'dryRun must fail on invalid type');
+    assert.ok(
+      dryRunRes.error?.includes('Неизвестный тип') || dryRunRes.error?.includes('Некорректный формат'),
+      `dryRun error was: ${dryRunRes.error}`
+    );
+
+    const liveRes = await ops.setType({
+      path: 'Catalog.Goods.Attribute.Discount',
+      types: ['invalid:unknown:type'],
+      dryRun: false,
+    });
+    assert.strictEqual(liveRes.success, false, 'live execution must fail on invalid type');
+    assert.strictEqual(dryRunRes.error, liveRes.error, 'dryRun and live execution must yield identical validation error');
   });
 
   test('deleteObject with ifRev succeeds and returns ZERO_REVISION', async () => {

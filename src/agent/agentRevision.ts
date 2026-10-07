@@ -24,6 +24,9 @@ export interface RevisionValidationResult {
 export async function calculateRevision(targetPath: string): Promise<string> {
   try {
     const stat = await fs.promises.lstat(targetPath);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Символические ссылки не поддерживаются для расчета ревизии метаданных: ${targetPath}`);
+    }
     if (stat.isFile()) {
       const bytes = await fs.promises.readFile(targetPath);
       return hashContent(bytes);
@@ -31,7 +34,7 @@ export async function calculateRevision(targetPath: string): Promise<string> {
     if (stat.isDirectory()) {
       return await calculateDirectoryRevision(targetPath);
     }
-    return ZERO_REVISION;
+    throw new Error(`Неподдерживаемый тип файла метаданных: ${targetPath}`);
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
       return ZERO_REVISION;
@@ -46,11 +49,16 @@ async function calculateDirectoryRevision(dirPath: string): Promise<string> {
   const hashes: string[] = [];
   for (const entry of entries) {
     const full = path.join(dirPath, entry.name);
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Символические ссылки внутри каталога метаданных не поддерживаются: ${full}`);
+    }
     if (entry.isFile()) {
       const content = await fs.promises.readFile(full);
       hashes.push(`${entry.name}:${hashContent(content)}`);
     } else if (entry.isDirectory()) {
       hashes.push(`${entry.name}:${await calculateDirectoryRevision(full)}`);
+    } else {
+      throw new Error(`Неподдерживаемый тип записи каталога метаданных: ${full}`);
     }
   }
   return hashContent(hashes.join('\n'));
