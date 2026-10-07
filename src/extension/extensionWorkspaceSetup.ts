@@ -211,7 +211,7 @@ function registerReloadCoordinator(
   });
   context.subscriptions.push({
     dispose: () => {
-      state.reloadCoordinator?.dispose();
+      void state.reloadCoordinator?.dispose();
       state.reloadCoordinator = null;
     },
   });

@@ -935,7 +935,7 @@ function buildBslProjectionInputs(input: {
   const matchedDiagnostics = new Set<BslModuleDiagnostic>();
   const candidateFactories = new Map<string, ExecutableCandidateFactory>();
 
-  for (const moduleId of [...moduleIds].sort()) {
+  for (const moduleId of [...moduleIds].sort((a, b) => a.localeCompare(b))) {
     const leftMatches = leftByModuleId.get(moduleId) ?? [];
     const rightMatches = rightByModuleId.get(moduleId) ?? [];
 

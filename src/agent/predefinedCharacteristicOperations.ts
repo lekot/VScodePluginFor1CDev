@@ -221,5 +221,5 @@ export async function getCharacteristicValueRegisters(
     }
   }
 
-  return Array.from(found).sort();
+  return Array.from(found).sort((a, b) => a.localeCompare(b));
 }

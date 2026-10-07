@@ -153,7 +153,7 @@ function formatSnapshotIds(snapshotIds: PreviewGuard['snapshotIds']): string {
   const entries = Object.entries(snapshotIds)
     .filter(([, snapshotId]) => snapshotId)
     .map(([side, snapshotId]) => `${side}=${snapshotId}`)
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
 
   return entries.length > 0 ? entries.join(', ') : 'none';
 }

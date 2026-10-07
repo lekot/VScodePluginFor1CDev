@@ -745,14 +745,14 @@ function encodeGotoRow(
 }
 
 function rowKey(row: Record<string, string | null>): string {
-  return JSON.stringify(Object.keys(row).sort().map((key) => [key, row[key]]));
+  return JSON.stringify(Object.keys(row).sort((a, b) => a.localeCompare(b)).map((key) => [key, row[key]]));
 }
 
 function rowsEqual(
   left: Array<Record<string, string | null>>,
   right: Array<Record<string, string | null>>,
 ): boolean {
-  const ordered = (rows: Array<Record<string, string | null>>) => rows.map(rowKey).sort();
+  const ordered = (rows: Array<Record<string, string | null>>) => rows.map(rowKey).sort((a, b) => a.localeCompare(b));
   return JSON.stringify(ordered(left)) === JSON.stringify(ordered(right));
 }
 
@@ -794,7 +794,7 @@ function diffValues(before: unknown, after: unknown, limit = 1000): Array<{ path
       return;
     }
     if (isRecord(left) && isRecord(right)) {
-      const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])].sort();
+      const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])].sort((a, b) => a.localeCompare(b));
       for (const key of keys) {
         visit(left[key], right[key], path ? `${path}.${key}` : key);
         if (changes.length >= limit) {break;}

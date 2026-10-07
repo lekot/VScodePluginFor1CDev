@@ -88,7 +88,7 @@ function compareFileArtifacts(
 
   const leftArtifacts = fileArtifactsFor(input.leftInventory, input.match.left);
   const rightArtifacts = fileArtifactsFor(input.rightInventory, input.match.right);
-  const relativePaths = [...new Set([...leftArtifacts.keys(), ...rightArtifacts.keys()])].sort();
+  const relativePaths = [...new Set([...leftArtifacts.keys(), ...rightArtifacts.keys()])].sort((a, b) => a.localeCompare(b));
   const nodes: CompareTreeNode[] = [];
 
   for (const relativePath of relativePaths) {

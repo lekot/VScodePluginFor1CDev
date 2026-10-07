@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { randomBytes } from 'crypto';
 import * as path from 'path';
 import type * as vscode from 'vscode';
 import type { TreeNode } from '../models/treeNode';
@@ -44,12 +45,7 @@ interface XdtoPackageCompareSession {
 }
 
 function createNonce(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let value = '';
-  for (let i = 0; i < 32; i++) {
-    value += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return value;
+  return randomBytes(24).toString('base64url');
 }
 
 async function getVscode(): Promise<typeof vscode> {

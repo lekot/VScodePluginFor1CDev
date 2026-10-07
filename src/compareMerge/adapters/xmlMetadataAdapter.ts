@@ -236,7 +236,7 @@ function compareChildren(
   ];
   const leftChildren = indexChildren(leftParent.children, leftParent);
   const rightChildren = indexChildren(rightParent.children, rightParent);
-  const keys = [...new Set([...leftChildren.keys(), ...rightChildren.keys()])].sort();
+  const keys = [...new Set([...leftChildren.keys(), ...rightChildren.keys()])].sort((a, b) => a.localeCompare(b));
 
   for (const key of keys) {
     const left = leftChildren.get(key);
@@ -310,7 +310,7 @@ function compareAttributes(
   parentLocation: XmlCompareLocation,
   context: XmlCompareContext
 ): CompareTreeNode[] {
-  const names = [...new Set([...Object.keys(left.attributes), ...Object.keys(right.attributes)])].sort();
+  const names = [...new Set([...Object.keys(left.attributes), ...Object.keys(right.attributes)])].sort((a, b) => a.localeCompare(b));
   return names
     .map((name) => {
       const leftValue = left.attributes[name];
@@ -478,7 +478,7 @@ function readonlyAttributeNodes(input: {
   context: XmlCompareContext;
 }): CompareTreeNode[] {
   return Object.keys(input.element.attributes)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .map((name) =>
       readOnlyPropertyNode({
         element: {

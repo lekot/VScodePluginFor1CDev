@@ -227,7 +227,7 @@ export class ConfigurationCompareWorkspace {
   }
 
   listMergeableNodeIds(): string[] {
-    return this.disposed ? [] : [...this.candidateFactories.keys()].sort();
+    return this.disposed ? [] : [...this.candidateFactories.keys()].sort((a, b) => a.localeCompare(b));
   }
 
   async setStrategy(strategy: CompareJoinStrategy): Promise<WorkspaceStrategyResult> {

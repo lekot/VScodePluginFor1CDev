@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createElement, createForm, deleteElement } from '../../src/services/elementOperations';
@@ -421,7 +421,7 @@ export async function runContainerMatrix(
     return runIbcmdConfigCheck();
   })();
 
-  const runId = `matrix-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const runId = `matrix-${Date.now()}-${randomBytes(4).toString('hex')}`;
   const report: ContainerMatrixReport = {
     runId,
     timestamp: new Date().toISOString(),

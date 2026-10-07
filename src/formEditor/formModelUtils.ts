@@ -307,7 +307,7 @@ export function generateNextId(model: FormModel): string {
   collectIds(model.childItemsRoot, ids);
   let max = 0;
   for (const id of ids) {
-    const n = parseInt(id, 10);
+    const n = Number.parseInt(id, 10);
     if (!Number.isNaN(n) && n > max) {max = n;}
   }
   return String(max + 1);
@@ -318,7 +318,7 @@ export function generateNextAttributeId(model: FormModel): string {
   let max = 0;
   for (const a of model.attributes || []) {
     if (a.id) {
-      const n = parseInt(a.id, 10);
+      const n = Number.parseInt(a.id, 10);
       if (!Number.isNaN(n) && n > max) {max = n;}
     }
   }
@@ -330,7 +330,7 @@ export function generateNextCommandId(model: FormModel): string {
   let max = 0;
   for (const c of model.commands || []) {
     if (c.id) {
-      const n = parseInt(c.id, 10);
+      const n = Number.parseInt(c.id, 10);
       if (!Number.isNaN(n) && n > max) {max = n;}
     }
   }
@@ -354,7 +354,7 @@ export function cloneWithNewIds(item: FormChildItem, nextId: () => string): Form
 export function createIdGenerator(model: FormModel): () => string {
   let next = 0;
   const initial = generateNextId(model);
-  next = parseInt(initial, 10);
+  next = Number.parseInt(initial, 10);
   if (Number.isNaN(next)) {next = 1;}
   return () => String(next++);
 }

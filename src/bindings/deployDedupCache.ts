@@ -32,7 +32,7 @@ function makeKey(key: DedupKey): string {
 }
 
 function hashFiles(relativeFiles: readonly string[]): string {
-  const sorted = [...relativeFiles].map((f) => f.toLowerCase()).sort();
+  const sorted = [...relativeFiles].map((f) => f.toLowerCase()).sort((a, b) => a.localeCompare(b));
   return crypto.createHash('sha256').update(JSON.stringify(sorted)).digest('hex');
 }
 

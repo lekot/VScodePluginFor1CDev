@@ -462,8 +462,8 @@ export class ConfiguratorSupportApplicator implements SupportApplicator {
         fileName,
       };
     });
-    const actualSet = [...actualCfNames].map((name) => name.toLocaleLowerCase()).sort();
-    const expectedSet = expected.map((file) => file.fileName.toLocaleLowerCase()).sort();
+    const actualSet = [...actualCfNames].map((name) => name.toLocaleLowerCase()).sort((a, b) => a.localeCompare(b));
+    const expectedSet = expected.map((file) => file.fileName.toLocaleLowerCase()).sort((a, b) => a.localeCompare(b));
     if (JSON.stringify(actualSet) !== JSON.stringify(expectedSet)) {
       throw new Error('Minimal dump supplier payload set is missing, duplicated, or unexpected.');
     }
@@ -534,7 +534,7 @@ export class ConfiguratorSupportApplicator implements SupportApplicator {
         supplierConfigurationIds: Object.freeze(
           snapshot.supplierConfigurations
             .map((supplier) => supplier.supplierConfigurationId)
-            .sort(),
+            .sort((a, b) => a.localeCompare(b)),
         ),
         formatRevision: snapshot.formatRevision,
       });
@@ -835,8 +835,8 @@ function sortedEqual(left: readonly string[], right: readonly string[]): boolean
   if (left.length !== right.length) {
     return false;
   }
-  const leftSorted = [...left].sort();
-  const rightSorted = [...right].sort();
+  const leftSorted = [...left].sort((a, b) => a.localeCompare(b));
+  const rightSorted = [...right].sort((a, b) => a.localeCompare(b));
   return leftSorted.every((value, index) => value === rightSorted[index]);
 }
 

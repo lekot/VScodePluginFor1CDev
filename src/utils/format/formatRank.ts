@@ -50,7 +50,7 @@ export function getFormatRank(versionStr: string | undefined | null): number {
   if (!versionStr) { return 0; }
   const match = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(versionStr.trim());
   if (!match) { return 0; }
-  return parseInt(match[1], 10) * 100 + parseInt(match[2], 10);
+  return Number.parseInt(match[1], 10) * 100 + Number.parseInt(match[2], 10);
 }
 
 /**

@@ -406,8 +406,10 @@ function runPowerShell(script: string, timeoutMs: number, signal?: AbortSignal):
   const bootstrap = "$source = [System.IO.StreamReader]::new([System.Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8).ReadToEnd(); Invoke-Expression $source";
   const encodedCommand = Buffer.from(bootstrap, 'utf16le').toString('base64');
   return new Promise((resolve, reject) => {
+    const systemRoot = process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows';
+    const powershellExe = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const child = spawn(
-      'powershell.exe',
+      powershellExe,
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodedCommand],
       { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
     );

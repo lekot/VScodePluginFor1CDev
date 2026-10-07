@@ -446,7 +446,7 @@ function canonicalKey(key: SupportPayloadCacheKey): string {
     canonicalTargetId: key.canonicalTargetId,
     platformVersion: key.platformVersion,
     configurationId: key.configurationId,
-    supplierConfigurationIds: [...key.supplierConfigurationIds].sort(),
+    supplierConfigurationIds: [...key.supplierConfigurationIds].sort((a, b) => a.localeCompare(b)),
     formatRevision: key.formatRevision,
   });
 }
@@ -454,7 +454,7 @@ function canonicalKey(key: SupportPayloadCacheKey): string {
 function freezeKey(key: SupportPayloadCacheKey): SupportPayloadCacheKey {
   return Object.freeze({
     ...key,
-    supplierConfigurationIds: Object.freeze([...key.supplierConfigurationIds].sort()),
+    supplierConfigurationIds: Object.freeze([...key.supplierConfigurationIds].sort((a, b) => a.localeCompare(b))),
   });
 }
 
@@ -462,7 +462,7 @@ function sortedUnique(values: readonly string[], field: string): string[] {
   if (values.length === 0 || values.some((value) => !value)) {
     throw new Error(`${field} must be non-empty.`);
   }
-  const sorted = [...values].sort();
+  const sorted = [...values].sort((a, b) => a.localeCompare(b));
   if (new Set(sorted).size !== sorted.length) {
     throw new Error(`${field} must be unique.`);
   }

@@ -66,7 +66,7 @@ export class InfobaseConfigurationOperationQueue {
     reason: string,
   ): readonly InfobaseConfigurationQueueQuarantine[] {
     const quarantinedAt = new Date().toISOString();
-    const entries = [...new Set(identities.map(identityKey))].sort().map((canonicalTargetId) => {
+    const entries = [...new Set(identities.map(identityKey))].sort((a, b) => a.localeCompare(b)).map((canonicalTargetId) => {
       const existing = this.quarantines.get(canonicalTargetId);
       if (existing) {
         return existing;
@@ -87,7 +87,7 @@ export class InfobaseConfigurationOperationQueue {
   ): readonly InfobaseConfigurationQueueQuarantine[] {
     return Object.freeze(
       [...new Set(identities.map(identityKey))]
-        .sort()
+        .sort((a, b) => a.localeCompare(b))
         .flatMap((key) => {
           const quarantine = this.quarantines.get(key);
           return quarantine ? [quarantine] : [];
@@ -106,7 +106,7 @@ export class InfobaseConfigurationOperationQueue {
     identities: readonly InfobaseConfigurationQueueIdentity[],
     operation: (lease: InfobaseConfigurationOperationLease) => Promise<T>,
   ): Promise<T> {
-    const requestedKeys = [...new Set(identities.map(identityKey))].sort();
+    const requestedKeys = [...new Set(identities.map(identityKey))].sort((a, b) => a.localeCompare(b));
     const current = this.ownership.getStore();
     if (current?.active) {
       if (requestedKeys.every((key) => current.keys.has(key))) {

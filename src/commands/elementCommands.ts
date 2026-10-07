@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { randomBytes } from 'crypto';
 import {
   createElement,
   createForm,
@@ -234,7 +235,7 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
       );
       if (choice !== 'Удалить') {return;}
       try {
-        const operationId = `delete-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        const operationId = `delete-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
         if (TOP_LEVEL_TYPES.has(target.type)) {
           const plan = await new AgentOperations(configPath).planDeleteObject({
             path: `${String(target.type)}.${target.name}`,

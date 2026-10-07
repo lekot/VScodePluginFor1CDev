@@ -109,9 +109,9 @@ function projectMetadata(
   }
 
   const children: CompareTreeNode[] = [
-    ...metadata.matches.map(projectMetadataMatch),
-    ...metadata.conflicts.map(projectIdentityConflict),
-    ...metadata.diagnostics.map(projectMetadataDiagnostic),
+    ...metadata.matches.map((match) => projectMetadataMatch(match)),
+    ...metadata.conflicts.map((conflict) => projectIdentityConflict(conflict)),
+    ...metadata.diagnostics.map((diag, index) => projectMetadataDiagnostic(diag, index)),
     ...metadata.unmatchedLeft.map((identity, index) =>
       projectUnmatchedMetadata(identity, 'leftOnly', index, metadataObjectOperations)
     ),
@@ -531,7 +531,7 @@ function stableIdentityConflictKey(conflict: IdentityConflict): string {
     .filter((part): part is string => Boolean(part));
   return [
     conflictContext,
-    ...[...new Set(identityContexts)].sort().map((context) => `identity:${context}`),
+    ...[...new Set(identityContexts)].sort((a, b) => a.localeCompare(b)).map((context) => `identity:${context}`),
   ]
     .filter(Boolean)
     .join(';');
@@ -565,7 +565,7 @@ function metadataDiagnosticIdentitiesContext(
         ['uuid', identity.uuid],
       ])
     )
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .join(',');
 }
 

@@ -123,7 +123,7 @@ class SdblParser {
           TokenType.NumberLiteral,
           'Expected integer count after TOP / ПЕРВЫЕ'
         );
-        top = parseInt(topTok.value, 10);
+        top = Number.parseInt(topTok.value, 10);
       } else {
         break;
       }

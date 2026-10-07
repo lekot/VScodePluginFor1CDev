@@ -196,7 +196,7 @@ export function filterFilesByMasterLocks(
     return {
       kept: [],
       filtered: [],
-      lockedSupportSubjectIds: [...lockedSupportSubjectIds].sort(),
+      lockedSupportSubjectIds: [...lockedSupportSubjectIds].sort((a, b) => a.localeCompare(b)),
       mappingDiagnostics,
     };
   }
@@ -217,7 +217,7 @@ export function filterFilesByMasterLocks(
   return {
     kept,
     filtered,
-    lockedSupportSubjectIds: [...lockedSupportSubjectIds].sort(),
+    lockedSupportSubjectIds: [...lockedSupportSubjectIds].sort((a, b) => a.localeCompare(b)),
     mappingDiagnostics: [],
   };
 }

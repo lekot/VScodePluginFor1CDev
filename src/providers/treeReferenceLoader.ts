@@ -75,7 +75,7 @@ export function getTypeEditorReferenceableScopeKey(
   if (configRoot) {
     return `cfg:${configRootScopeFingerprint(configRoot, cache)}`;
   }
-  return `all:${[...rootNodes].map((r) => configRootScopeFingerprint(r, cache)).sort().join('|')}`;
+  return `all:${[...rootNodes].map((r) => configRootScopeFingerprint(r, cache)).sort((a, b) => a.localeCompare(b)).join('|')}`;
 }
 
 /**

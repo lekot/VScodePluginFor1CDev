@@ -427,7 +427,8 @@ async function pickExecutionContext(): Promise<ExternalProcessorExecutionContext
     const databaseFile = await vscode.workspace.fs.stat(
       vscode.Uri.file(path.join(infobaseDirectory.fsPath, '1Cv8.1CD'))
     );
-    if ((databaseFile.type & vscode.FileType.File) === 0) {
+    const isFile = Boolean(databaseFile.type & vscode.FileType.File);
+    if (!isFile) {
       throw new Error('1Cv8.1CD не является файлом.');
     }
   } catch {

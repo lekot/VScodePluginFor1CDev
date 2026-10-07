@@ -379,7 +379,7 @@ function scanXml(xml: string): XmlDocument {
       attributes,
       start: opening,
       openEnd: end + 1,
-      closeStart: selfClosing ? -1 : -1,
+      closeStart: -1,
       end: selfClosing ? end + 1 : -1,
       selfClosing,
       parent,
@@ -1065,7 +1065,7 @@ function decodeXml(value: string): string {
     if (token === 'amp') { return '&'; }
     if (token === 'quot') { return '"'; }
     if (token === 'apos') { return "'"; }
-    const codePoint = token[1]?.toLowerCase() === 'x' ? parseInt(token.slice(2), 16) : parseInt(token.slice(1), 10);
+    const codePoint = token[1]?.toLowerCase() === 'x' ? Number.parseInt(token.slice(2), 16) : Number.parseInt(token.slice(1), 10);
     return Number.isFinite(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : _match;
   });
 }
@@ -1109,7 +1109,7 @@ function stable(value: unknown): string {
   if (Array.isArray(value)) { return `[${value.map(stable).join(',')}]`; }
   if (value && typeof value === 'object') {
     const object = value as Record<string, unknown>;
-    return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${stable(object[key])}`).join(',')}}`;
+    return `{${Object.keys(object).sort((a, b) => a.localeCompare(b)).map((key) => `${JSON.stringify(key)}:${stable(object[key])}`).join(',')}}`;
   }
   return JSON.stringify(value) ?? String(value);
 }
