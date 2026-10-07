@@ -644,8 +644,11 @@ export class BslDebugSession extends DebugSession {
     private async _doDisconnect(): Promise<void> {
         try {
             this._client?.stopPolling();
+            this._transport?.abortPending();
             if (this._client) {
-                await this._client.detach();
+                const detachPromise = this._client.detach();
+                const timeoutPromise = new Promise<void>((resolve) => setTimeout(resolve, 1500));
+                await Promise.race([detachPromise, timeoutPromise]);
             }
         } catch {
             // swallow

@@ -79,6 +79,7 @@ export async function registerAllCommands({
   const configurationRegistry = new WorkspaceRegistry(
     path.join(context.globalStorageUri.fsPath, 'configuration-identities.v1.json'),
   );
+  state.workspaceRegistry = configurationRegistry;
   let registryRefreshTail: Promise<void> = Promise.resolve();
   const getConfigurationRegistry = async (): Promise<WorkspaceRegistry> => {
     const refresh = async () => {
@@ -149,7 +150,7 @@ export async function registerAllCommands({
   // Agent API — регистрируем отдельно (не возвращают Disposable[] — управляют подписками сами)
   const debugRegistry = new DebugSessionRegistry();
   debugRegistry.activate(context);
-  registerAgentCommands(
+  const { taskManager } = registerAgentCommands(
     context,
     () => state.treeDataProvider,
     getConfigurationRegistry,
@@ -184,6 +185,7 @@ export async function registerAllCommands({
     lifecycle.loadMetadataTree,
     () => state.configurationRepositoryService,
   );
+  state.agentTaskManager = taskManager;
 
   // Agent Bridge — HTTP сервер для вызова Agent API команд снаружи VS Code
   const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;

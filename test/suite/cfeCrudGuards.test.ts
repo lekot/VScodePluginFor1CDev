@@ -40,7 +40,7 @@ suite('CFE generic CRUD guards', () => {
   });
 
   teardown(async () => {
-    await fs.promises.rm(workspace, { recursive: true, force: true });
+    await fs.promises.rm(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
   });
 
   test('allows own root creates and applies NamePrefix in both UI and Agent paths', async () => {

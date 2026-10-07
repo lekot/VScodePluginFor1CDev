@@ -40,6 +40,8 @@ export class RdbgTransport {
     private readonly timeoutMs: number;
     /** One in-flight HTTP request at a time; new calls wait on the previous. */
     private _sendChain: Promise<unknown> = Promise.resolve();
+    private _abortController = new AbortController();
+    private _disposed = false;
 
     constructor(
         baseUrl: string,
@@ -58,7 +60,15 @@ export class RdbgTransport {
     }
 
     async send(command: string, body: string): Promise<string> {
-        const next = this._sendChain.then(() => this.sendOne(command, body));
+        if (this._disposed) {
+            throw new Error(`RDBG transport disposed: ${command}`);
+        }
+        const next = this._sendChain.then(() => {
+            if (this._disposed) {
+                throw new Error(`RDBG transport disposed: ${command}`);
+            }
+            return this.sendOne(command, body);
+        });
         this._sendChain = next.then(
             () => undefined,
             () => undefined
@@ -67,19 +77,23 @@ export class RdbgTransport {
     }
 
     private async sendOne(command: string, body: string): Promise<string> {
+        if (this._disposed) {
+            throw new Error(`RDBG transport disposed: ${command}`);
+        }
         const url = `${this.baseUrl}/e1crdbg/rdbg?cmd=${command}&dbgui=${this.debugUiId}`;
 
-        let signal: AbortSignal | undefined;
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const reqController = new AbortController();
+        const activeSignal = this._abortController.signal;
+        const onAbort = () => reqController.abort();
+        if (activeSignal.aborted) {
+            reqController.abort();
+        } else {
+            activeSignal.addEventListener('abort', onAbort, { once: true });
+        }
 
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
         if (this.timeoutMs > 0) {
-            if (typeof AbortSignal.timeout === 'function') {
-                signal = AbortSignal.timeout(this.timeoutMs);
-            } else {
-                const controller = new AbortController();
-                timeoutHandle = setTimeout(() => controller.abort(), this.timeoutMs);
-                signal = controller.signal;
-            }
+            timeoutHandle = setTimeout(() => reqController.abort(), this.timeoutMs);
         }
 
         try {
@@ -94,7 +108,7 @@ export class RdbgTransport {
                         'Accept-Encoding': 'gzip',
                     },
                     body,
-                    ...(signal ? { signal } : {}),
+                    signal: reqController.signal,
                 });
             } catch (err: unknown) {
                 const isAbort =
@@ -102,6 +116,9 @@ export class RdbgTransport {
                     (err.name === 'AbortError' || err.name === 'TimeoutError');
 
                 if (isAbort) {
+                    if (this._disposed || activeSignal.aborted) {
+                        throw new Error(`RDBG request aborted: ${command}`);
+                    }
                     throw new Error(
                         `RDBG request timeout after ${this.timeoutMs}ms: ${command}`
                     );
@@ -126,10 +143,22 @@ export class RdbgTransport {
             if (timeoutHandle !== undefined) {
                 clearTimeout(timeoutHandle);
             }
+            activeSignal.removeEventListener('abort', onAbort);
+        }
+    }
+
+    abortPending(): void {
+        this._abortController.abort();
+        if (!this._disposed) {
+            this._abortController = new AbortController();
         }
     }
 
     dispose(): void {
-        // Reserved for future cancellation of pending requests.
+        if (this._disposed) {
+            return;
+        }
+        this._disposed = true;
+        this._abortController.abort();
     }
 }
