@@ -200,6 +200,33 @@ suite('AgentTaskManager', () => {
     await settle();
     now += 101;
     assert.strictEqual(manager.status(taskId).code, 'TASK_NOT_FOUND');
-    manager.dispose();
+    await manager.dispose();
+  });
+
+  test('#204: dispose() awaits in-flight tasks and blocks admission of new tasks', async () => {
+    let taskFinished = false;
+    const manager = new AgentTaskManager();
+
+    const startResult = manager.start('long-task', async (token) => {
+      await new Promise<void>((resolve) => {
+        token.onCancellationRequested(() => resolve());
+      });
+      await new Promise<void>((r) => setTimeout(r, 30));
+      taskFinished = true;
+      return { success: false, code: 'REQUEST_CANCELLED', error: 'Cancelled' };
+    });
+    assert.strictEqual(startResult.success, true);
+
+    const disposePromise = manager.dispose();
+    assert.strictEqual(taskFinished, false, 'Task must not be marked finished immediately');
+
+    const nextStart = manager.start('another', async () => ({ success: true }));
+    assert.strictEqual(nextStart.success, false, 'New tasks must be rejected during/after dispose');
+    assert.strictEqual(nextStart.code, 'MANAGER_DISPOSED');
+
+    await disposePromise;
+    assert.strictEqual(taskFinished, true, 'dispose() must await in-flight task completion');
+
+    await manager.dispose();
   });
 });

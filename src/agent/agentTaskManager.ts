@@ -58,6 +58,8 @@ const DEFAULT_MAX_MESSAGE_LENGTH = 320;
 /** In-memory lifecycle manager for long-running Agent operations. */
 export class AgentTaskManager {
   private readonly tasks = new Map<string, TaskRecord>();
+  private readonly runningPromises = new Map<string, Promise<void>>();
+  private isDisposed = false;
   private readonly now: () => number;
   private readonly createCancellationSource: () => vscode.CancellationTokenSource;
   private readonly maxTasks: number;
@@ -79,6 +81,13 @@ export class AgentTaskManager {
     name: string,
     execute: (token: vscode.CancellationToken, reportStage: (message: string) => void) => Promise<AgentResult<unknown>>,
   ): AgentResult<AgentTaskReceipt> {
+    if (this.isDisposed) {
+      return {
+        success: false,
+        code: 'MANAGER_DISPOSED',
+        error: 'Менеджер задач завершает работу.',
+      };
+    }
     this.prune();
     this.makeRoom();
     if (this.tasks.size >= this.maxTasks) {
@@ -106,14 +115,18 @@ export class AgentTaskManager {
     this.recordMessage(task, 'Задача принята.');
 
     // Defer execution until after the immediate receipt has been returned.
-    void Promise.resolve()
+    const executionPromise = Promise.resolve()
       .then(() => execute(task.cancellationSource.token, (message) => this.reportStage(taskId, message)))
       .then((result) => this.complete(task, result))
       .catch((error: unknown) => this.complete(task, {
         success: false,
         code: 'TASK_EXECUTION_FAILED',
         error: sanitizeMessage(error instanceof Error ? error.message : String(error), this.maxMessageLength),
-      }));
+      }))
+      .finally(() => {
+        this.runningPromises.delete(taskId);
+      });
+    this.runningPromises.set(taskId, executionPromise);
 
     return {
       success: true,
@@ -187,15 +200,37 @@ export class AgentTaskManager {
     this.recordMessage(task, task.message);
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
+    if (this.isDisposed) {
+      return;
+    }
+    this.isDisposed = true;
+
     for (const task of this.tasks.values()) {
       if (task.status === 'running') {
         task.cancellationRequested = true;
-        task.cancellationSource.cancel();
+        try {
+          task.cancellationSource.cancel();
+        } catch {
+          // swallow
+        }
       }
-      task.cancellationSource.dispose();
+    }
+
+    const pending = Array.from(this.runningPromises.values());
+    if (pending.length > 0) {
+      await Promise.allSettled(pending);
+    }
+
+    for (const task of this.tasks.values()) {
+      try {
+        task.cancellationSource.dispose();
+      } catch {
+        // swallow
+      }
     }
     this.tasks.clear();
+    this.runningPromises.clear();
   }
 
   private complete(task: TaskRecord, result: AgentResult<unknown>): void {

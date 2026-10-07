@@ -511,4 +511,48 @@ suite('ReloadCoordinatorService', () => {
     assert.strictEqual(runs.length, 2, 'Both delete and watcher runs should execute');
     coordinator.dispose();
   });
+
+  test('#213: dispose() awaits in-flight reload and drops pending timer schedules', async () => {
+    let reloadFinished = false;
+    let secondReloadStarted = false;
+    const reloadEntered = deferred<void>();
+    const allowReloadFinish = deferred<void>();
+
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      if (ctx.operationId === 'op-1') {
+        reloadEntered.resolve(undefined);
+        await allowReloadFinish.promise;
+        reloadFinished = true;
+        return;
+      }
+      secondReloadStarted = true;
+    }, { defaultDebounceMs: 50 });
+
+    coordinator.scheduleReload('C:/cfg-a', 'manual-refresh', { operationId: 'op-1', debounceMs: 0 });
+    await reloadEntered.promise;
+    assert.strictEqual(coordinator.getState('C:/cfg-a').inFlight, true);
+
+    // Schedule another with debounce that hasn't fired yet
+    coordinator.scheduleReload('C:/cfg-b', 'watcher', { debounceMs: 100 });
+
+    // Call dispose
+    let disposeFinished = false;
+    const disposePromise = Promise.resolve(coordinator.dispose()).then(() => {
+      disposeFinished = true;
+    });
+
+    await new Promise((r) => setTimeout(r, 25));
+    assert.strictEqual(disposeFinished, false, 'dispose() must not complete before in-flight reload settles');
+
+    // New schedule after dispose must be rejected/ignored
+    coordinator.scheduleReload('C:/cfg-c', 'manual-refresh', { debounceMs: 0 });
+
+    // Allow in-flight reload to finish
+    allowReloadFinish.resolve(undefined);
+    await disposePromise;
+
+    assert.strictEqual(disposeFinished, true, 'dispose() must complete after in-flight reload settles');
+    assert.strictEqual(reloadFinished, true, 'in-flight reload must be completed');
+    assert.strictEqual(secondReloadStarted, false, 'pending debounced reload must not have run');
+  });
 });

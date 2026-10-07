@@ -79,6 +79,7 @@ export async function registerAllCommands({
   const configurationRegistry = new WorkspaceRegistry(
     path.join(context.globalStorageUri.fsPath, 'configuration-identities.v1.json'),
   );
+  state.workspaceRegistry = configurationRegistry;
   let registryRefreshTail: Promise<void> = Promise.resolve();
   const getConfigurationRegistry = async (): Promise<WorkspaceRegistry> => {
     const refresh = async () => {

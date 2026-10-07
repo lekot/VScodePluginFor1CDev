@@ -35,6 +35,7 @@ const OPERATION_RESULT_LIMIT = 50;
 
 export class ReloadCoordinatorService {
   private readonly slots = new Map<string, ConfigReloadSlot>();
+  private readonly inFlightReloads = new Set<Promise<void>>();
   private readonly defaultDebounceMs: number;
   private readonly mutationWindowTtlMs: number;
   private disposed = false;
@@ -122,7 +123,7 @@ export class ReloadCoordinatorService {
     return slot.operationResults.get(operationId) ?? null;
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     if (this.disposed) {
       return;
     }
@@ -138,6 +139,12 @@ export class ReloadCoordinatorService {
       slot.pendingOperations.clear();
       slot.state.pending = false;
     }
+
+    const pendingReloads = Array.from(this.inFlightReloads);
+    if (pendingReloads.length > 0) {
+      await Promise.allSettled(pendingReloads);
+    }
+
     this.slots.clear();
   }
 
@@ -163,10 +170,17 @@ export class ReloadCoordinatorService {
     slot.state.startedAt = Date.now();
 
     let failure: ReturnType<typeof toReloadFailure> | undefined;
+    let reloadPromise: Promise<void> | undefined;
     try {
-      await this.runReload({ configPath: slot.configPath, reason, operationId });
+      reloadPromise = this.runReload({ configPath: slot.configPath, reason, operationId });
+      this.inFlightReloads.add(reloadPromise);
+      await reloadPromise;
     } catch (error) {
       failure = toReloadFailure(error);
+    } finally {
+      if (reloadPromise) {
+        this.inFlightReloads.delete(reloadPromise);
+      }
     }
 
     if (this.disposed) {

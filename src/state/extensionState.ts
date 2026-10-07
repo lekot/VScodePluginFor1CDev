@@ -24,6 +24,8 @@ import type { SupportStateWatcher } from '../support/supportStateWatcher';
 import type { SupportRootRegistrationLifecycle } from '../support/supportRootRegistrationLifecycle';
 import type { ConfigurationRepositoryService } from '../services/configurationRepository/configurationRepositoryService';
 import type { RepositoryStateProjection } from '../services/configurationRepository/repositoryTreeDecorations';
+import type { WorkspaceRegistry } from '../services/configurationSession/WorkspaceRegistry';
+import { Logger } from '../utils/logger';
 
 /**
  * Holds extension-wide mutable references (providers, tree view, reload coordinator).
@@ -60,9 +62,12 @@ export class ExtensionState {
   private _supportRootRegistrationLifecycle: SupportRootRegistrationLifecycle | null = null;
   private _configurationRepositoryService: ConfigurationRepositoryService | null = null;
   private _configurationRepositoryProjection: RepositoryStateProjection | null = null;
+  private _workspaceRegistry: WorkspaceRegistry | null = null;
+  private _isDisposed = false;
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
+  get workspaceRegistry(): WorkspaceRegistry | null { return this._workspaceRegistry; }
   get treeDataProvider(): MetadataTreeDataProvider | null { return this._treeDataProvider; }
   get treeView(): vscode.TreeView<TreeNode> | null { return this._treeView; }
   get propertiesProvider(): PropertiesProvider | null { return this._propertiesProvider; }
@@ -130,6 +135,7 @@ export class ExtensionState {
   }
   set configurationRepositoryService(v: ConfigurationRepositoryService | null) { this._configurationRepositoryService = v; }
   set configurationRepositoryProjection(v: RepositoryStateProjection | null) { this._configurationRepositoryProjection = v; }
+  set workspaceRegistry(v: WorkspaceRegistry | null) { this._workspaceRegistry = v; }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -141,54 +147,147 @@ export class ExtensionState {
   }
 
   async dispose(): Promise<void> {
+    if (this._isDisposed) {
+      return;
+    }
+    this._isDisposed = true;
+
+    const errors: unknown[] = [];
+    const attempt = async (name: string, fn: () => Promise<void> | void): Promise<void> => {
+      try {
+        await fn();
+      } catch (err) {
+        errors.push(err);
+        Logger.error(`Error during ExtensionState teardown of ${name}`, err);
+      }
+    };
+
+    // 1. Drain active WorkspaceRegistry mutation queues before shutting down dependencies
+    await attempt('workspaceRegistry', async () => {
+      await this._workspaceRegistry?.dispose();
+    });
+    this._workspaceRegistry = null;
+
+    // 2. Metadata watchers
     for (const w of this._metadataWatchers) {
-      w.dispose();
+      await attempt('metadataWatcher', () => {
+        w.dispose();
+      });
     }
     this._metadataWatchers = [];
-    this._treeDataProvider?.setSupportRootRegistrationCallback(undefined);
-    this._treeDataProvider?.setSupportStateCache(undefined);
-    const supportCompositionDisposal = this._supportComposition?.dispose();
-    this._supportComposition = null;
-    await this._supportRootRegistrationLifecycle?.dispose();
-    this._supportRootRegistrationLifecycle = null;
-    this._supportStateWatcher?.dispose();
+
+    // 3. Tree data provider support callbacks
+    await attempt('treeSupportCallbacks', () => {
+      this._treeDataProvider?.setSupportRootRegistrationCallback(undefined);
+      this._treeDataProvider?.setSupportStateCache(undefined);
+    });
+
+    // 4. Support lifecycle & composition (run and observe both independently)
+    await attempt('supportServices', async () => {
+      const supportComp = this._supportComposition;
+      const supportRoot = this._supportRootRegistrationLifecycle;
+      this._supportComposition = null;
+      this._supportRootRegistrationLifecycle = null;
+      await Promise.allSettled([
+        Promise.resolve(supportComp?.dispose()),
+        Promise.resolve(supportRoot?.dispose()),
+      ]);
+    });
+
+    await attempt('supportStateWatcher', () => {
+      this._supportStateWatcher?.dispose();
+    });
     this._supportStateWatcher = null;
-    this._supportStateCache?.clear();
+
+    await attempt('supportStateCache', () => {
+      this._supportStateCache?.clear();
+    });
     this._supportStateCache = null;
-    await supportCompositionDisposal;
+
+    // 5. Configuration repository & tree
     this._configurationRepositoryService = null;
-    this._configurationRepositoryProjection?.clear();
+    await attempt('configurationRepositoryProjection', () => {
+      this._configurationRepositoryProjection?.clear();
+    });
     this._configurationRepositoryProjection = null;
-    this._treeDataProvider?.dispose();
+
+    await attempt('treeDataProvider', () => {
+      this._treeDataProvider?.dispose();
+    });
     this._treeDataProvider = null;
-    this._reloadCoordinator?.dispose();
+
+    // 6. Reload coordinator
+    await attempt('reloadCoordinator', async () => {
+      await this._reloadCoordinator?.dispose();
+    });
     this._reloadCoordinator = null;
-    await this._agentBridge?.stop();
+
+    // 7. Agent bridge
+    await attempt('agentBridge', async () => {
+      await this._agentBridge?.stop();
+    });
     this._agentBridge = null;
-    this._subsystemCompositionEditorProvider?.dispose();
+
+    // 8. Editors
+    await attempt('subsystemCompositionEditorProvider', () => {
+      this._subsystemCompositionEditorProvider?.dispose();
+    });
     this._subsystemCompositionEditorProvider = null;
-    this._exchangePlanCompositionEditorProvider?.dispose();
+
+    await attempt('exchangePlanCompositionEditorProvider', () => {
+      this._exchangePlanCompositionEditorProvider?.dispose();
+    });
     this._exchangePlanCompositionEditorProvider = null;
-    this._commonAttributeCompositionEditorProvider?.dispose();
+
+    await attempt('commonAttributeCompositionEditorProvider', () => {
+      this._commonAttributeCompositionEditorProvider?.dispose();
+    });
     this._commonAttributeCompositionEditorProvider = null;
-    this._functionalOptionCompositionEditorProvider?.dispose();
+
+    await attempt('functionalOptionCompositionEditorProvider', () => {
+      this._functionalOptionCompositionEditorProvider?.dispose();
+    });
     this._functionalOptionCompositionEditorProvider = null;
-    this._filterCriterionCompositionEditorProvider?.dispose();
+
+    await attempt('filterCriterionCompositionEditorProvider', () => {
+      this._filterCriterionCompositionEditorProvider?.dispose();
+    });
     this._filterCriterionCompositionEditorProvider = null;
-    this._subsystemCommandInterfaceProvider?.dispose();
+
+    await attempt('subsystemCommandInterfaceProvider', () => {
+      this._subsystemCommandInterfaceProvider?.dispose();
+    });
     this._subsystemCommandInterfaceProvider = null;
-    this._xdtoPackageEditorProvider?.dispose();
+
+    await attempt('xdtoPackageEditorProvider', () => {
+      this._xdtoPackageEditorProvider?.dispose();
+    });
     this._xdtoPackageEditorProvider = null;
-    this._formEditorProvider?.dispose();
+
+    await attempt('formEditorProvider', () => {
+      this._formEditorProvider?.dispose();
+    });
     this._formEditorProvider = null;
+
     this._infobaseTreeProvider = null;
     this._infobaseTreeView = null;
     this._refreshBindingTreeDecorations = null;
-    this._infobaseStorage?.dispose();
+
+    // 9. Infobase storage and bindings
+    await attempt('infobaseStorage', () => {
+      this._infobaseStorage?.dispose();
+    });
     this._infobaseStorage = null;
     this._bindingManager = null;
     this._infobaseManager = null;
-    resetIbcmdService();
-    await FormsContext.get().dispose();
+
+    // 10. Singletons
+    await attempt('resetIbcmdService', () => {
+      resetIbcmdService();
+    });
+
+    await attempt('formsContext', async () => {
+      await FormsContext.get().dispose();
+    });
   }
 }
