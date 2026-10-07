@@ -13,6 +13,19 @@ import type {
 } from '../services/configurationRepository/types';
 import type { MetadataObjectPathSegment } from '../types/metadataObjectPath';
 
+export interface MutationResultData {
+    filePath?: string;
+    dryRun?: boolean;
+    rev?: string;
+    currentRev?: string;
+    target?: string;
+    plannedChanges?: import('./agentRevision').MutationPlannedChanges;
+}
+
+export interface CreateObjectResult extends MutationResultData {
+    filePath: string;
+}
+
 export interface AgentResult<T = void> {
     success: boolean;
     data?: T;
@@ -21,6 +34,11 @@ export interface AgentResult<T = void> {
     configurationId?: string;
     operationId?: string;
     snapshotVersion?: number;
+    dryRun?: boolean;
+    rev?: string;
+    currentRev?: string;
+    target?: string;
+    plannedChanges?: import('./agentRevision').MutationPlannedChanges;
 }
 
 export type AgentExternalProcessorContext = ExternalProcessorExecutionContext;
@@ -50,6 +68,15 @@ export interface ConfigurationScopedParams {
     /** Exact configuration selector. Optional only for a single compatible configuration. */
     configurationId?: string;
 }
+
+export interface MutationOptions {
+    /** If true, calculates planned diff and revision without writing to disk. */
+    dryRun?: boolean;
+    /** Expected target revision (SHA-256). If current revision on disk mismatches, returns CONCURRENT_MODIFICATION_ERROR. */
+    ifRev?: string;
+}
+
+export interface MutationScopedParams extends ConfigurationScopedParams, MutationOptions {}
 
 export interface AgentTaskIdParams {
     taskId: string;
@@ -174,7 +201,7 @@ export interface AgentSupportVerifyParams extends AgentSupportConfigurationParam
 
 export type AgentSupportGetLastRunParams = AgentSupportConfigurationParams;
 
-export interface CreateObjectParams extends ConfigurationScopedParams {
+export interface CreateObjectParams extends MutationScopedParams {
     /** Тип объекта: 'Catalog', 'Document', 'Enum', 'CommonModule', 'Subsystem' */
     type: string;
     name: string;
@@ -247,40 +274,40 @@ export interface ResolvedAgentPath {
     tabularSection?: string;
 }
 
-export interface AddAttributeParams extends ConfigurationScopedParams {
+export interface AddAttributeParams extends MutationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары' */
     path: string;
     name: string;
 }
 
-export interface AddTabularSectionParams extends ConfigurationScopedParams {
+export interface AddTabularSectionParams extends MutationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары' */
     path: string;
     name: string;
 }
 
-export interface AddTabularSectionColumnParams extends ConfigurationScopedParams {
+export interface AddTabularSectionColumnParams extends MutationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары.TabularSection.Состав' */
     path: string;
     name: string;
 }
 
-export interface DeleteAttributeParams extends ConfigurationScopedParams {
+export interface DeleteAttributeParams extends MutationScopedParams {
     /** Agent path to attribute, e.g. 'Catalog.Товары.Attribute.Цена' */
     path: string;
 }
 
-export interface DeleteTabularSectionParams extends ConfigurationScopedParams {
+export interface DeleteTabularSectionParams extends MutationScopedParams {
     /** Agent path to tabular section, e.g. 'Catalog.Товары.TabularSection.Состав' */
     path: string;
 }
 
-export interface DeleteObjectParams extends ConfigurationScopedParams {
+export interface DeleteObjectParams extends MutationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары' */
     path: string;
 }
 
-export interface RenameObjectParams extends ConfigurationScopedParams {
+export interface RenameObjectParams extends MutationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары' */
     path: string;
     newName: string;
@@ -291,7 +318,7 @@ export interface GetPropertiesParams extends ConfigurationScopedParams {
     path: string;
 }
 
-export interface SetPropertiesParams extends ConfigurationScopedParams {
+export interface SetPropertiesParams extends MutationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары' */
     path: string;
     properties: Record<string, unknown>;
@@ -302,7 +329,7 @@ export interface GetTypeParams extends ConfigurationScopedParams {
     path: string;
 }
 
-export interface SetTypeParams extends ConfigurationScopedParams {
+export interface SetTypeParams extends MutationScopedParams {
     /** Agent path, e.g. 'DefinedType.ТипНоменклатуры' or 'Catalog.Товары.Attribute.Цена' */
     path: string;
     /** Array of type strings, e.g. ['xs:string', 'cfg:CatalogRef.Товары'] */
@@ -321,7 +348,7 @@ export interface GetSourceParams extends ConfigurationScopedParams {
     path: string;
 }
 
-export interface SetSourceParams extends ConfigurationScopedParams {
+export interface SetSourceParams extends MutationScopedParams {
     /** Root EventSubscription path, for example 'EventSubscription.ПодпискаНаСобытие'. */
     path: string;
     /** Complete replacement list of cfg:ObjectKind[.Name] types; an empty array clears Source. */

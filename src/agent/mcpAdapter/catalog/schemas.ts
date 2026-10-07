@@ -146,6 +146,11 @@ export const metadataType = z.string().refine(
 
 export const configurationScopeShape = { configurationId } as const;
 
+export const mutationOptionsShape = {
+  dryRun: z.boolean().optional(),
+  ifRev: z.string().regex(/^[a-f0-9]{64}$/, 'must be a 64-character lowercase hex SHA-256 hash').optional(),
+} as const;
+
 export const cfeConfigurationId = trimmedNonEmptyString;
 export const cfeNamePrefix = z.string().refine(
   (value) => value.trim().length === 0 || validateElementName(value.trim(), []) === null,

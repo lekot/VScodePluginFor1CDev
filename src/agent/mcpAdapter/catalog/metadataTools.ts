@@ -7,6 +7,7 @@ import {
   configurationScopeShape,
   elementName,
   emptyInput,
+  mutationOptionsShape,
   pathInput,
   rootObjectPath,
   tabularSectionPath,
@@ -15,6 +16,7 @@ import {
 
 const createObjectInput = z.strictObject({
   ...configurationScopeShape,
+  ...mutationOptionsShape,
   type: elementName,
   name: elementName,
   synonym: z.string().optional(),
@@ -29,12 +31,14 @@ const listObjectsInput = z.strictObject({
 
 const pathNameInput = z.strictObject({
   ...configurationScopeShape,
+  ...mutationOptionsShape,
   path: agentPath,
   name: elementName,
 });
 
 const tabularPathNameInput = z.strictObject({
   ...configurationScopeShape,
+  ...mutationOptionsShape,
   path: tabularSectionPath,
   name: elementName,
 });
@@ -46,12 +50,14 @@ const resolveSourceAddressInput = z.strictObject({
 
 const renameObjectInput = z.strictObject({
   ...configurationScopeShape,
+  ...mutationOptionsShape,
   path: rootObjectPath,
   newName: elementName,
 });
 
 const setPropertiesInput = z.strictObject({
   ...configurationScopeShape,
+  ...mutationOptionsShape,
   path: agentPath,
   properties: z.record(z.string(), z.unknown()).refine(
     (properties) => !Object.prototype.hasOwnProperty.call(properties, 'Name'),
@@ -61,12 +67,20 @@ const setPropertiesInput = z.strictObject({
 
 const deleteAttributeInput = z.strictObject({
   ...configurationScopeShape,
+  ...mutationOptionsShape,
   path: attributePath,
 });
 
 const deleteTabularSectionInput = z.strictObject({
   ...configurationScopeShape,
+  ...mutationOptionsShape,
   path: tabularSectionPath,
+});
+
+const deleteObjectInput = z.strictObject({
+  ...configurationScopeShape,
+  ...mutationOptionsShape,
+  path: rootObjectPath,
 });
 
 export const METADATA_TOOLS: readonly McpToolDefinition[] = [
@@ -158,7 +172,7 @@ export const METADATA_TOOLS: readonly McpToolDefinition[] = [
     name: 'cdt_delete_object',
     description: 'Delete a metadata object by Agent API path.',
     command: '1c-metadata-tree.agent.deleteObject',
-    inputSchema: z.strictObject({ ...configurationScopeShape, path: rootObjectPath }),
+    inputSchema: deleteObjectInput,
     annotations: WRITE_CLOSED,
   },
   {
