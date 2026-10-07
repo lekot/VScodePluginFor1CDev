@@ -771,6 +771,131 @@ suite('Agent API — Registered Commands dryRun & ifRev dispatch', () => {
     assert.strictEqual(failResult.success, false);
     assert.strictEqual(failResult.code, 'CONCURRENT_MODIFICATION_ERROR');
   });
+
+  test('mutation commands with dryRun: true route as read, without operationId or snapshotVersion increment', async () => {
+    // Setup rich fixture with Catalog.Goods and EventSubscription.OnWrite
+    const goodsDir = path.join(tmpDir, 'Catalogs');
+    fs.mkdirSync(goodsDir, { recursive: true });
+    const goodsPath = path.join(goodsDir, 'Goods.xml');
+    fs.writeFileSync(goodsPath, `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Catalog uuid="11111111-1111-4111-8111-111111111111">
+    <Properties>
+      <Name>Goods</Name>
+      <DescriptionLength>25</DescriptionLength>
+    </Properties>
+    <ChildObjects>
+      <Attribute uuid="22222222-2222-4222-8222-222222222222">
+        <Properties>
+          <Name>ExistingAttr</Name>
+          <Type><v8:Type>xs:string</v8:Type></Type>
+        </Properties>
+      </Attribute>
+      <TabularSection uuid="33333333-3333-4333-8333-333333333333">
+        <Properties>
+          <Name>ExistingTS</Name>
+        </Properties>
+        <ChildObjects>
+          <Attribute uuid="44444444-4444-4444-8444-444444444444">
+            <Properties>
+              <Name>ExistingCol</Name>
+              <Type><v8:Type>xs:decimal</v8:Type></Type>
+            </Properties>
+          </Attribute>
+        </ChildObjects>
+      </TabularSection>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`, 'utf-8');
+
+    const subsDir = path.join(tmpDir, 'EventSubscriptions');
+    fs.mkdirSync(subsDir, { recursive: true });
+    const subPath = path.join(subsDir, 'OnWrite.xml');
+    fs.writeFileSync(subPath, `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <EventSubscription uuid="55555555-5555-4555-8555-555555555555">
+    <Properties>
+      <Name>OnWrite</Name>
+      <Source>
+        <v8:Type>cfg:CatalogObject.Goods</v8:Type>
+      </Source>
+      <Event>BeforeWrite</Event>
+      <Handler>CommonModule.Handler</Handler>
+    </Properties>
+    <ChildObjects/>
+  </EventSubscription>
+</MetaDataObject>`, 'utf-8');
+
+    fs.writeFileSync(path.join(tmpDir, 'Configuration.xml'), `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Configuration uuid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee">
+    <Properties><Name>TestConfig</Name></Properties>
+    <ChildObjects>
+      <Catalog>Goods</Catalog>
+      <EventSubscription>OnWrite</EventSubscription>
+    </ChildObjects>
+  </Configuration>
+</MetaDataObject>`, 'utf-8');
+
+    const goodsBefore = fs.readFileSync(goodsPath, 'utf-8');
+    const subBefore = fs.readFileSync(subPath, 'utf-8');
+    const initialSnapshot = registry.require(configId).snapshotVersion;
+
+    const testCases: Array<{ commandId: string; params: Record<string, unknown> }> = [
+      {
+        commandId: '1c-metadata-tree.agent.addAttribute',
+        params: { configurationId: configId, path: 'Catalog.Goods', name: 'NewAttr', dryRun: true },
+      },
+      {
+        commandId: '1c-metadata-tree.agent.addTabularSection',
+        params: { configurationId: configId, path: 'Catalog.Goods', name: 'NewTS', dryRun: true },
+      },
+      {
+        commandId: '1c-metadata-tree.agent.addTabularSectionColumn',
+        params: { configurationId: configId, path: 'Catalog.Goods.TabularSection.ExistingTS', name: 'NewCol', dryRun: true },
+      },
+      {
+        commandId: '1c-metadata-tree.agent.deleteAttribute',
+        params: { configurationId: configId, path: 'Catalog.Goods.Attribute.ExistingAttr', dryRun: true },
+      },
+      {
+        commandId: '1c-metadata-tree.agent.deleteTabularSection',
+        params: { configurationId: configId, path: 'Catalog.Goods.TabularSection.ExistingTS', dryRun: true },
+      },
+      {
+        commandId: '1c-metadata-tree.agent.setProperties',
+        params: { configurationId: configId, path: 'Catalog.Goods', properties: { DescriptionLength: 100 }, dryRun: true },
+      },
+      {
+        commandId: '1c-metadata-tree.agent.setType',
+        params: { configurationId: configId, path: 'Catalog.Goods.Attribute.ExistingAttr', types: ['xs:decimal'], dryRun: true },
+      },
+      {
+        commandId: '1c-metadata-tree.agent.setSource',
+        params: { configurationId: configId, path: 'EventSubscription.OnWrite', types: ['cfg:DocumentObject.Invoice'], dryRun: true },
+      },
+    ];
+
+    for (const tc of testCases) {
+      const handler = vscodeTestState.registeredCommandHandlers.get(tc.commandId);
+      assert.ok(handler, `Handler for ${tc.commandId} must be registered`);
+
+      const res = await handler(tc.params) as AgentResult<MutationResultData>;
+      assert.strictEqual(res.success, true, `${tc.commandId} error: ${res.error}`);
+      assert.strictEqual(res.dryRun, true, `${tc.commandId} must report dryRun: true`);
+      assert.strictEqual(res.operationId, undefined, `${tc.commandId} dryRun must not return operationId`);
+      assert.strictEqual(
+        registry.require(configId).snapshotVersion,
+        initialSnapshot,
+        `${tc.commandId} dryRun must not increment snapshotVersion`
+      );
+      assert.ok(res.data?.plannedChanges, `${tc.commandId} dryRun must include plannedChanges`);
+    }
+
+    // Disk contents must remain completely unmodified
+    assert.strictEqual(fs.readFileSync(goodsPath, 'utf-8'), goodsBefore, 'Goods.xml must not be modified after dryRuns');
+    assert.strictEqual(fs.readFileSync(subPath, 'utf-8'), subBefore, 'OnWrite.xml must not be modified after dryRuns');
+  });
 });
 
 

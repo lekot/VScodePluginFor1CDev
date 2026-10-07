@@ -611,9 +611,10 @@ export function registerAgentCommands(
     const addAttributeCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.addAttribute',
         async (params: AddAttributeParams) => {
-            return runForConfiguration(params, 'write', 'agent.addAttribute', async (configRoot) => {
+            const dryRun = params?.dryRun === true;
+            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.addAttribute', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).addAttribute(params);
-                if (result.success) { getTreeDataProvider()?.refresh(); }
+                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -624,9 +625,10 @@ export function registerAgentCommands(
     const addTabularSectionCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.addTabularSection',
         async (params: AddTabularSectionParams) => {
-            return runForConfiguration(params, 'write', 'agent.addTabularSection', async (configRoot) => {
+            const dryRun = params?.dryRun === true;
+            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.addTabularSection', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).addTabularSection(params);
-                if (result.success) { getTreeDataProvider()?.refresh(); }
+                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -637,9 +639,10 @@ export function registerAgentCommands(
     const addTabularSectionColumnCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.addTabularSectionColumn',
         async (params: AddTabularSectionColumnParams) => {
-            return runForConfiguration(params, 'write', 'agent.addTabularSectionColumn', async (configRoot) => {
+            const dryRun = params?.dryRun === true;
+            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.addTabularSectionColumn', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).addTabularSectionColumn(params);
-                if (result.success) { getTreeDataProvider()?.refresh(); }
+                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -650,9 +653,10 @@ export function registerAgentCommands(
     const deleteAttributeCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deleteAttribute',
         async (params: DeleteAttributeParams) => {
-            return runForConfiguration(params, 'write', 'agent.deleteAttribute', async (configRoot) => {
+            const dryRun = params?.dryRun === true;
+            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.deleteAttribute', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).deleteAttribute(params);
-                if (result.success) { getTreeDataProvider()?.refresh(); }
+                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -663,9 +667,10 @@ export function registerAgentCommands(
     const deleteTabularSectionCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deleteTabularSection',
         async (params: DeleteTabularSectionParams) => {
-            return runForConfiguration(params, 'write', 'agent.deleteTabularSection', async (configRoot) => {
+            const dryRun = params?.dryRun === true;
+            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.deleteTabularSection', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).deleteTabularSection(params);
-                if (result.success) { getTreeDataProvider()?.refresh(); }
+                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -722,9 +727,10 @@ export function registerAgentCommands(
     const setPropertiesCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.setProperties',
         async (params: SetPropertiesParams) => {
-            return runForConfiguration(params, 'write', 'agent.setProperties', async (configRoot) => {
+            const dryRun = params?.dryRun === true;
+            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.setProperties', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).setProperties(params);
-                if (result.success) { getTreeDataProvider()?.refresh(); }
+                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -1014,9 +1020,10 @@ export function registerAgentCommands(
     const setTypeCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.setType',
         async (params: SetTypeParams) => {
-            return runForConfiguration(params, 'write', 'agent.setType', async (configRoot) => {
+            const dryRun = params?.dryRun === true;
+            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.setType', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).setType(params);
-                if (result.success) { getTreeDataProvider()?.refresh(); }
+                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -1034,11 +1041,14 @@ export function registerAgentCommands(
 
     const setSourceCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.setSource',
-        async (params: SetSourceParams) => runForConfiguration(params, 'write', 'agent.setSource', async (configRoot) => {
-            const result = await new AgentOperations(configRoot).setSource(params);
-            if (result.success) { getTreeDataProvider()?.refresh(); }
-            return result;
-        }),
+        async (params: SetSourceParams) => {
+            const dryRun = params?.dryRun === true;
+            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.setSource', async (configRoot) => {
+                const result = await new AgentOperations(configRoot).setSource(params);
+                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
+                return result;
+            });
+        },
     );
 
     const getSubsystemCommandInterfaceCommand = vscode.commands.registerCommand(
