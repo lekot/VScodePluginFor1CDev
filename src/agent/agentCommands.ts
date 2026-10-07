@@ -165,7 +165,7 @@ export function registerAgentCommands(
     /** Optional lifecycle hook used by CFE creation after registry discovery succeeds. */
     refreshCfeLifecycle?: () => Promise<void>,
     getRepositoryService?: () => ConfigurationRepositoryService | null,
-): void {
+): { readonly taskManager: AgentTaskManager } {
     const resolveSession = async (
         params: ConfigurationScopedParams = {},
         capability: keyof ConfigurationIdentity['capabilities'] = 'read',
@@ -306,7 +306,7 @@ export function registerAgentCommands(
     };
 
     const taskManager = new AgentTaskManager();
-    context.subscriptions.push({ dispose: () => taskManager.dispose() });
+    context.subscriptions.push({ dispose: () => { void taskManager.dispose(); } });
     const runAgentLongTask = <T>(
         name: string,
         background: boolean | undefined,
@@ -1503,6 +1503,7 @@ export function registerAgentCommands(
         supportVerifyCommand, supportGetLastRunCommand,
         dumpExternalProcessorCommand, buildExternalProcessorCommand,
     );
+    return { taskManager };
 }
 
 function isTaskIdParams(value: unknown): value is AgentTaskIdParams {

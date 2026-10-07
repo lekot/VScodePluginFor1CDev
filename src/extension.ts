@@ -8,7 +8,7 @@ import { registerExtensionWorkspace } from './extension/extensionWorkspaceSetup'
 import { registerDebugAdapter } from './debug';
 import { MetadataParser } from './parsers/metadataParser';
 
-const extensionState = new ExtensionState();
+export const extensionState = new ExtensionState();
 let activeMetadataLifecycle: ReturnType<typeof createMetadataTreeLifecycle> | undefined;
 
 /**

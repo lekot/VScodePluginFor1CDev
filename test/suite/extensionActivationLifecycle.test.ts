@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
-import { activate, rollbackPartialActivation } from '../../src/extension';
+import { activate, deactivate, extensionState, rollbackPartialActivation } from '../../src/extension';
 import { ExtensionState } from '../../src/state/extensionState';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
@@ -50,5 +50,21 @@ suite('extension activation lifecycle', () => {
     } finally {
       ExtensionState.prototype.init = originalInit;
     }
+  });
+
+  test('deactivate awaits agentTaskManager disposal and drains background tasks', async () => {
+    (extensionState as any)._isDisposed = false;
+    let taskDrained = false;
+    extensionState.agentTaskManager = {
+      dispose: async () => {
+        await new Promise((r) => setTimeout(r, 30));
+        taskDrained = true;
+      },
+    } as any;
+
+    const deactivatePromise = deactivate();
+    assert.strictEqual(taskDrained, false, 'deactivate must not finish before task drain');
+    await deactivatePromise;
+    assert.strictEqual(taskDrained, true, 'deactivate must await background task drain');
   });
 });

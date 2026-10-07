@@ -103,6 +103,52 @@ suite('ExtensionState teardown and drain (#202, #205)', () => {
     assert.strictEqual(registryDisposed, true, 'registry must be disposed');
   });
 
+  test('#202: synchronous throw in supportComposition does not prevent supportRootRegistrationLifecycle disposal', async () => {
+    const state = new ExtensionState();
+
+    let supportRootDisposed = false;
+    state.supportComposition = {
+      dispose: () => {
+        throw new Error('Support composition threw synchronously');
+      },
+    } as any;
+
+    state.supportRootRegistrationLifecycle = {
+      dispose: () => {
+        supportRootDisposed = true;
+      },
+    } as any;
+
+    await state.dispose();
+    assert.strictEqual(
+      supportRootDisposed,
+      true,
+      'supportRootRegistrationLifecycle must be disposed even if supportComposition throws synchronously'
+    );
+  });
+
+  test('#204: ExtensionState.dispose() awaits agentTaskManager disposal and drains running tasks', async () => {
+    const state = new ExtensionState();
+
+    let taskDrainCompleted = false;
+    let agentTaskManagerDisposed = false;
+
+    (state as any).agentTaskManager = {
+      dispose: async () => {
+        await new Promise((r) => setTimeout(r, 40));
+        taskDrainCompleted = true;
+        agentTaskManagerDisposed = true;
+      },
+    };
+
+    const disposePromise = state.dispose();
+    assert.strictEqual(taskDrainCompleted, false, 'dispose must not complete before agentTaskManager drain');
+
+    await disposePromise;
+    assert.strictEqual(taskDrainCompleted, true, 'running agent tasks must drain before dispose completes');
+    assert.strictEqual(agentTaskManagerDisposed, true, 'agentTaskManager must be disposed');
+  });
+
   test('#202: dispose() is idempotent on repeated calls', async () => {
     const state = new ExtensionState();
 

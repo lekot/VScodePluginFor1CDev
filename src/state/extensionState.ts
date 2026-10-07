@@ -18,6 +18,7 @@ import { InfobaseStorageService } from '../infobases/infobaseStorageService';
 import { resetIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { FormsContext } from '../services/forms/FormsContext';
 import type { AgentBridge } from '../agent/agentBridge';
+import type { AgentTaskManager } from '../agent/agentTaskManager';
 import type { SupportServiceComposition } from '../support/supportServiceComposition';
 import type { SupportStateCache } from '../support/supportStateCache';
 import type { SupportStateWatcher } from '../support/supportStateWatcher';
@@ -56,6 +57,7 @@ export class ExtensionState {
   private _infobaseTreeView: vscode.TreeView<InfobaseTreeNode> | null = null;
   private _refreshBindingTreeDecorations: (() => Promise<void>) | null = null;
   private _agentBridge: AgentBridge | null = null;
+  private _agentTaskManager: AgentTaskManager | null = null;
   private _supportComposition: SupportServiceComposition | null = null;
   private _supportStateCache: SupportStateCache | null = null;
   private _supportStateWatcher: SupportStateWatcher | null = null;
@@ -93,6 +95,7 @@ export class ExtensionState {
   /** Обновление бейджей/tooltip привязок на узле Configuration (§2C); выставляется в extensionWorkspaceSetup. */
   get refreshBindingTreeDecorations(): (() => Promise<void>) | null { return this._refreshBindingTreeDecorations; }
   get agentBridge(): AgentBridge | null { return this._agentBridge; }
+  get agentTaskManager(): AgentTaskManager | null { return this._agentTaskManager; }
   get supportComposition(): SupportServiceComposition | null { return this._supportComposition; }
   get supportStateCache(): SupportStateCache | null { return this._supportStateCache; }
   get supportStateWatcher(): SupportStateWatcher | null { return this._supportStateWatcher; }
@@ -127,6 +130,7 @@ export class ExtensionState {
   set bindingManager(v: BindingManager | null) { this._bindingManager = v; }
   set infobaseManager(v: InfobaseManager | null) { this._infobaseManager = v; }
   set agentBridge(v: AgentBridge | null) { this._agentBridge = v; }
+  set agentTaskManager(v: AgentTaskManager | null) { this._agentTaskManager = v; }
   set supportComposition(v: SupportServiceComposition | null) { this._supportComposition = v; }
   set supportStateCache(v: SupportStateCache | null) { this._supportStateCache = v; }
   set supportStateWatcher(v: SupportStateWatcher | null) { this._supportStateWatcher = v; }
@@ -140,6 +144,7 @@ export class ExtensionState {
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   init(context: vscode.ExtensionContext): void {
+    this._isDisposed = false;
     this._extensionContext = context;
     this._infobaseStorage = new InfobaseStorageService(context.globalState, context.secrets);
     this._bindingManager = new BindingManager();
@@ -183,15 +188,16 @@ export class ExtensionState {
     });
 
     // 4. Support lifecycle & composition (run and observe both independently)
-    await attempt('supportServices', async () => {
-      const supportComp = this._supportComposition;
-      const supportRoot = this._supportRootRegistrationLifecycle;
-      this._supportComposition = null;
-      this._supportRootRegistrationLifecycle = null;
-      await Promise.allSettled([
-        Promise.resolve(supportComp?.dispose()),
-        Promise.resolve(supportRoot?.dispose()),
-      ]);
+    const supportComp = this._supportComposition;
+    this._supportComposition = null;
+    await attempt('supportComposition', async () => {
+      await supportComp?.dispose();
+    });
+
+    const supportRoot = this._supportRootRegistrationLifecycle;
+    this._supportRootRegistrationLifecycle = null;
+    await attempt('supportRootRegistrationLifecycle', async () => {
+      await supportRoot?.dispose();
     });
 
     await attempt('supportStateWatcher', () => {
@@ -222,11 +228,16 @@ export class ExtensionState {
     });
     this._reloadCoordinator = null;
 
-    // 7. Agent bridge
+    // 7. Agent bridge and long-running tasks
     await attempt('agentBridge', async () => {
       await this._agentBridge?.stop();
     });
     this._agentBridge = null;
+
+    await attempt('agentTaskManager', async () => {
+      await this._agentTaskManager?.dispose();
+    });
+    this._agentTaskManager = null;
 
     // 8. Editors
     await attempt('subsystemCompositionEditorProvider', () => {
