@@ -225,6 +225,11 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.openCommonPicture",
+        "title": "Открыть общую картинку",
+        "category": "CDT 41"
+      },
+      {
         "command": "1c-metadata-tree.saveRightsEditor",
         "title": "Сохранить права (редактор)",
         "category": "CDT 41"
@@ -1532,6 +1537,11 @@
         {
           "command": "1c-metadata-tree.openTemplatePreview",
           "when": "view == 1c-metadata-tree && viewItem =~ /^CommonTemplate\\b/",
+          "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.openCommonPicture",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^CommonPicture\\b/",
           "group": "navigation"
         },
         {

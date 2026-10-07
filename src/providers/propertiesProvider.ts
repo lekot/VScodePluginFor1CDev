@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { TreeNode } from '../models/treeNode';
+import { TreeNode, MetadataType } from '../models/treeNode';
+import { resolveCommonPicture } from '../services/picture/commonPictureResolver';
 import { Logger } from '../utils/logger';
 import { MetadataTreeDataProvider } from './treeDataProvider';
 import { TypeEditorProvider } from './typeEditorProvider';
@@ -77,7 +78,7 @@ export class PropertiesProvider {
     this.currentFormSelection = null;
     this.currentFormSelectionRevision += 1;
     this.currentNode = node;
-    this.updateWebviewContent();
+    await this.updateWebviewContent();
   }
 
   /**
@@ -95,7 +96,7 @@ export class PropertiesProvider {
       } else {
         this.panel.reveal(vscode.ViewColumn.Beside);
       }
-      this.updateWebviewContent();
+      await this.updateWebviewContent();
       return;
     }
 
@@ -203,7 +204,7 @@ export class PropertiesProvider {
     }
     // For nested elements with parentFilePath, use already loaded properties from node.properties
 
-    this.updateWebviewContent();
+    await this.updateWebviewContent();
   }
 
   public async showFormSelectionProperties(
@@ -217,7 +218,7 @@ export class PropertiesProvider {
     } else {
       this.panel.reveal(vscode.ViewColumn.Beside);
     }
-    this.updateWebviewContent();
+    await this.updateWebviewContent();
   }
 
   /**
@@ -317,7 +318,7 @@ export class PropertiesProvider {
   /**
    * Update webview content with current node
    */
-  private updateWebviewContent(): void {
+  private async updateWebviewContent(): Promise<void> {
     if (!this.panel) {
       return;
     }
@@ -333,7 +334,12 @@ export class PropertiesProvider {
       return;
     }
 
-    const html = getWebviewContent(this.currentNode);
+    let picture: import('../services/picture/commonPictureResolver').ResolvedPicture | undefined;
+    if (this.currentNode.type === MetadataType.CommonPicture) {
+      picture = await resolveCommonPicture(this.currentNode);
+    }
+
+    const html = getWebviewContent(this.currentNode, { picture });
     this.panel.webview.html = html;
     Logger.debug(`Properties panel updated for node: ${this.currentNode.name}`);
   }
@@ -388,7 +394,7 @@ export class PropertiesProvider {
       onGotoEventHandler: this.onGotoEventHandler,
       onCreateEventHandler: this.onCreateEventHandler,
       postMessage: (msg) => this.postMessage(msg),
-      updateWebviewContent: () => this.updateWebviewContent(),
+      updateWebviewContent: () => { void this.updateWebviewContent(); },
       setIsSaving: (value) => { this._isSaving = value; },
     };
   }
