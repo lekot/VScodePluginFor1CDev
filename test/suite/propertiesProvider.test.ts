@@ -500,6 +500,92 @@ suite('PropertiesProvider isOpen / updateIfOpen Test Suite', () => {
     provider.dispose();
     assert.strictEqual(provider.isOpen(), false, 'panel should be undefined after dispose');
   });
+
+  test('Finding 3: race condition between rapid selections discards stale picture of previous node', async () => {
+    let htmlContent = '';
+    const fakePanel: any = {
+      webview: {
+        get html() { return htmlContent; },
+        set html(val: string) { htmlContent = val; },
+        postMessage: async () => true,
+        onDidReceiveMessage: () => ({ dispose: () => undefined }),
+      },
+      reveal: () => undefined,
+      onDidDispose: () => ({ dispose: () => undefined }),
+      dispose: () => undefined,
+    };
+    (provider as any).panel = fakePanel;
+
+    const node1: TreeNode = {
+      id: 'CommonPictures.FirstPic',
+      name: 'FirstPic',
+      type: MetadataType.CommonPicture,
+      properties: { Name: 'FirstPic' },
+      filePath: '/nonexistent/FirstPic.xml',
+    };
+
+    const node2: TreeNode = {
+      id: 'CommonPictures.SecondPic',
+      name: 'SecondPic',
+      type: MetadataType.CommonPicture,
+      properties: { Name: 'SecondPic' },
+      filePath: '/nonexistent/SecondPic.xml',
+    };
+
+    let resolveFirstPromise: (value: any) => void;
+    const delayedFirstPromise = new Promise((resolve) => {
+      resolveFirstPromise = resolve;
+    });
+
+    const pictureResolver = await import('../../src/services/picture/commonPictureResolver');
+    const origResolve = pictureResolver.resolveCommonPicture;
+
+    try {
+      (pictureResolver as any).resolveCommonPicture = async (node: TreeNode) => {
+        if (node.id === node1.id) {
+          await delayedFirstPromise;
+          return {
+            success: true,
+            format: 'PNG',
+            dataUri: 'data:image/png;base64,FIRST',
+            resolvedFilePath: '/fake/first.png',
+          };
+        }
+        return {
+          success: true,
+          format: 'PNG',
+          dataUri: 'data:image/png;base64,SECOND',
+          resolvedFilePath: '/fake/second.png',
+        };
+      };
+
+      // node1 begins updateWebviewContent and waits on resolveCommonPicture
+      (provider as any).currentNode = node1;
+      const p1 = (provider as any).updateWebviewContent();
+
+      // Immediately switch to node2
+      (provider as any).currentNode = node2;
+      const p2 = (provider as any).updateWebviewContent();
+
+      await p2;
+      assert.ok(htmlContent.includes('SecondPic'), 'panel must display SecondPic after node2 is shown');
+      assert.ok(htmlContent.includes('SECOND'), 'panel must contain picture of SecondPic');
+
+      // Now node1's delayed picture finishes
+      resolveFirstPromise!({});
+      await p1;
+
+      // Stale node1 resolution MUST NOT overwrite node2's webview with node1's picture
+      assert.ok(htmlContent.includes('SecondPic'), 'panel must still display SecondPic');
+      assert.strictEqual(
+        htmlContent.includes('data:image/png;base64,FIRST'),
+        false,
+        'stale first picture must not overwrite webview under second node'
+      );
+    } finally {
+      (pictureResolver as any).resolveCommonPicture = origResolve;
+    }
+  });
 });
 
 /**

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { registerExternalProcessorCommands } from './externalProcessorCommands';
+import { registerPictureCommands } from './pictureCommands';
 import { ExtensionState } from '../state/extensionState';
 import type { MetadataTreeLifecycle } from '../extension/metadataTreeLifecycle';
 import { registerElementCommands } from './elementCommands';
@@ -71,6 +72,7 @@ export async function registerAllCommands({
     extensionContext: context,
   };
   registerExternalProcessorCommands(context);
+  registerPictureCommands(context);
 
   const configurationRegistry = new WorkspaceRegistry(
     path.join(context.globalStorageUri.fsPath, 'configuration-identities.v1.json'),

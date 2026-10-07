@@ -185,6 +185,8 @@ export const coreSuiteFiles: string[] = [
   'suite/servicesCoverage.test.js',
   'suite/fixtureMatrix.test.js',
   'suite/propertiesWebviewContent.test.js',
+  'suite/commonPictureResolver.test.js',
+  'suite/propertiesCommonPicture.test.js',
   'suite/metadataTreeSettings.test.js',
   'suite/objectFileCollector.test.js',
   'suite/rules/converters.test.js',

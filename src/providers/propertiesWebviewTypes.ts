@@ -43,7 +43,8 @@ export type WebviewMessage =
       elementName: string;
       elementTag: string;
       docUri: string;
-    };
+    }
+  | { type: 'openPictureFile'; filePath: string };
 
 /**
  * Message types sent from extension to webview (discriminated union for type safety)
@@ -72,6 +73,6 @@ export function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
   const m = msg as { type?: unknown };
   if (typeof m.type !== 'string') {return false;}
 
-  const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType', 'editSource', 'editContent', 'editFormSelectionType', 'gotoEventHandler', 'createEventHandler', 'gotoHandler'];
+  const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType', 'editSource', 'editContent', 'editFormSelectionType', 'gotoEventHandler', 'createEventHandler', 'gotoHandler', 'openPictureFile'];
   return validTypes.includes(m.type);
 }
