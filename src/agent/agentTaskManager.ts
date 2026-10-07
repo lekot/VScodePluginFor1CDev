@@ -60,6 +60,7 @@ export class AgentTaskManager {
   private readonly tasks = new Map<string, TaskRecord>();
   private readonly runningPromises = new Map<string, Promise<void>>();
   private isDisposed = false;
+  private disposePromise: Promise<void> | null = null;
   private readonly now: () => number;
   private readonly createCancellationSource: () => vscode.CancellationTokenSource;
   private readonly maxTasks: number;
@@ -200,37 +201,41 @@ export class AgentTaskManager {
     this.recordMessage(task, task.message);
   }
 
-  async dispose(): Promise<void> {
-    if (this.isDisposed) {
-      return;
+  dispose(): Promise<void> {
+    if (this.disposePromise) {
+      return this.disposePromise;
     }
     this.isDisposed = true;
 
-    for (const task of this.tasks.values()) {
-      if (task.status === 'running') {
-        task.cancellationRequested = true;
+    this.disposePromise = (async () => {
+      for (const task of this.tasks.values()) {
+        if (task.status === 'running') {
+          task.cancellationRequested = true;
+          try {
+            task.cancellationSource.cancel();
+          } catch {
+            // swallow
+          }
+        }
+      }
+
+      const pending = Array.from(this.runningPromises.values());
+      if (pending.length > 0) {
+        await Promise.allSettled(pending);
+      }
+
+      for (const task of this.tasks.values()) {
         try {
-          task.cancellationSource.cancel();
+          task.cancellationSource.dispose();
         } catch {
           // swallow
         }
       }
-    }
+      this.tasks.clear();
+      this.runningPromises.clear();
+    })();
 
-    const pending = Array.from(this.runningPromises.values());
-    if (pending.length > 0) {
-      await Promise.allSettled(pending);
-    }
-
-    for (const task of this.tasks.values()) {
-      try {
-        task.cancellationSource.dispose();
-      } catch {
-        // swallow
-      }
-    }
-    this.tasks.clear();
-    this.runningPromises.clear();
+    return this.disposePromise;
   }
 
   private complete(task: TaskRecord, result: AgentResult<unknown>): void {
