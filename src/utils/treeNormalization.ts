@@ -385,6 +385,40 @@ export function isTabularSectionColumnsContainer(node: TreeNode): boolean {
   return (node.properties as Record<string, unknown> | undefined)?.type === TABULAR_SECTION_COLUMNS_PLACEHOLDER_TYPE;
 }
 
+export const CONTAINER_SECTION_IDS = new Set<string>([
+  'Attributes',
+  'TabularSections',
+  'Dimensions',
+  'Resources',
+  'EnumValues',
+  'Forms',
+  'Commands',
+  'Templates',
+  'PredefinedData',
+  'StandardAttributes',
+  'StandardTabularSections',
+  'AccountingFlags',
+  'ExtDimensionAccountingFlags',
+  'Parameters',
+]);
+
+export function isContainerNode(node: TreeNode | undefined): boolean {
+  if (!node) {
+    return false;
+  }
+  if (isTabularSectionColumnsContainer(node)) {
+    return true;
+  }
+  if (CONTAINER_SECTION_IDS.has(node.id)) {
+    return true;
+  }
+  const lastSegment = node.id.split('.').pop();
+  if (lastSegment && CONTAINER_SECTION_IDS.has(lastSegment) && (!node.nestedPath || node.nestedPath.length === 0)) {
+    return true;
+  }
+  return false;
+}
+
 /** Stable id: `TabularSections.<SectionName>.Attributes` (columns under that ТЧ). */
 export function tabularSectionColumnsContainerId(sectionInstanceId: string): string {
   return `${sectionInstanceId}.Attributes`;

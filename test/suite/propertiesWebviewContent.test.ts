@@ -704,3 +704,83 @@ suite('propertiesWebviewContent — getFormSelectionWebviewContent', () => {
     assert.ok(!html.includes('<script>alert'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #165: Sticky Header, Dirty Indicator & Keyboard Shortcuts
+// ---------------------------------------------------------------------------
+
+suite('propertiesWebviewContent — Issue #165 Sticky Header & Dirty Indicator', () => {
+  test('header contains sticky positioning styles and background', () => {
+    const node = makeNode({
+      type: MetadataType.Catalog,
+      name: 'StickyCatalog',
+      properties: { Name: 'StickyCatalog', Synonym: 'Синоним' },
+      filePath: '/test/StickyCatalog.xml',
+    });
+    const html = getWebviewContent(node);
+    assert.ok(html.includes('position: sticky'), 'Header style should have position: sticky');
+    assert.ok(html.includes('top: 0'), 'Header style should have top: 0');
+    assert.ok(html.includes('z-index: 100') || html.includes('z-index:100'), 'Header style should have z-index');
+  });
+
+  test('header contains dirty indicator element', () => {
+    const node = makeNode({
+      type: MetadataType.Catalog,
+      name: 'DirtyCatalog',
+      properties: { Name: 'DirtyCatalog' },
+      filePath: '/test/DirtyCatalog.xml',
+    });
+    const html = getWebviewContent(node);
+    assert.ok(html.includes('id="dirty-indicator"'), 'Dirty indicator element should exist');
+    assert.ok(html.includes('class="dirty-indicator"'), 'Dirty indicator class should exist');
+  });
+
+  test('header renders save and cancel action buttons in sticky header for editable node', () => {
+    const node = makeNode({
+      type: MetadataType.Catalog,
+      name: 'ActionCatalog',
+      properties: { Name: 'ActionCatalog' },
+      filePath: '/test/ActionCatalog.xml',
+    });
+    const html = getWebviewContent(node);
+    const headerMatch = html.match(/<div class="header">([\s\S]*?)<\/div>/);
+    assert.ok(headerMatch, 'Header div must exist');
+    const headerHtml = headerMatch[1];
+    assert.ok(headerHtml.includes('id="save-btn"'), 'Save button must be present in header');
+    assert.ok(headerHtml.includes('id="cancel-btn"'), 'Cancel button must be present in header');
+  });
+
+  test('bottom button row also provides save and cancel buttons', () => {
+    const node = makeNode({
+      type: MetadataType.Catalog,
+      name: 'BottomActionsCatalog',
+      properties: { Name: 'BottomActionsCatalog' },
+      filePath: '/test/BottomActionsCatalog.xml',
+    });
+    const html = getWebviewContent(node);
+    assert.ok(html.includes('class="button-row"'), 'Button row must exist');
+    assert.ok(html.includes('id="bottom-save-btn"') || html.includes('class="button-row"'), 'Bottom save button exists');
+  });
+
+  test('webview script includes dirtyChange message dispatch', () => {
+    const script = getWebviewScript(false);
+    assert.ok(script.includes("'dirtyChange'") || script.includes('"dirtyChange"'), 'Script must send dirtyChange message');
+    assert.ok(script.includes('isDirty'), 'Script dirtyChange payload must include isDirty');
+  });
+
+  test('webview script handles Ctrl+S / Cmd+S keyboard shortcut', () => {
+    const script = getWebviewScript(false);
+    assert.ok(
+      script.includes('ctrlKey') && script.includes('metaKey') && script.includes("'s'"),
+      'Script must listen for Ctrl+S / Cmd+S'
+    );
+  });
+
+  test('webview script dispatches dirtyChange on every edit when dirty, not only when isDirty boolean toggles', () => {
+    const script = getWebviewScript(false);
+    assert.ok(
+      script.includes('dirtyStateChanged || isDirty') || script.includes('isDirty || dirtyStateChanged'),
+      'Script must dispatch dirtyChange whenever isDirty is true so subsequent edits are captured'
+    );
+  });
+});

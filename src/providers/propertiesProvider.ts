@@ -8,6 +8,7 @@ import { ObjectTypeEditorProvider } from './objectTypeEditorProvider';
 import { MESSAGES } from '../constants/messages';
 import { getConfigurationXmlPathForNode } from '../utils/configHelpers';
 import * as path from 'path';
+import { isContainerNode } from '../utils/treeNormalization';
 import * as fs from 'fs';
 import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
 import { isValidWebviewMessage } from './propertiesWebviewTypes';
@@ -31,6 +32,8 @@ export class PropertiesProvider {
   private currentFormSelectionRevision = 0;
   private disposables: vscode.Disposable[] = [];
   private _isSaving = false;
+  private _isDirty = false;
+  private pendingProperties: Record<string, unknown> | undefined;
   private objectTypeEditorProvider: ObjectTypeEditorProvider;
 
   constructor(
@@ -61,9 +64,74 @@ export class PropertiesProvider {
     void this.treeDataProvider;
   }
 
+  private _sessionCounter: number = 0;
+  private currentSessionToken: string = '';
+
   /** Returns true if the properties panel is currently open (created and not disposed). */
   public isOpen(): boolean {
     return this.panel !== undefined;
+  }
+
+  /** Returns true if there are unsaved property changes in the panel. */
+  public isDirty(): boolean {
+    return this._isDirty;
+  }
+
+  /** Update dirty state and optional unsaved property snapshot. */
+  public setIsDirty(
+    isDirty: boolean,
+    properties?: Record<string, unknown>,
+    token?: { nodeId?: string; sessionToken?: string }
+  ): void {
+    if (!this.currentNode || !this.currentSessionToken) {
+      Logger.warn('Ignoring setIsDirty when no active node or session exists');
+      return;
+    }
+    if (token?.nodeId !== undefined && token.nodeId !== this.currentNode.id) {
+      Logger.warn(`Ignoring setIsDirty from outdated node ${token.nodeId} (current: ${this.currentNode.id})`);
+      return;
+    }
+    if (token?.sessionToken !== undefined && token.sessionToken !== this.currentSessionToken) {
+      Logger.warn(`Ignoring setIsDirty from outdated session ${token.sessionToken} (current: ${this.currentSessionToken})`);
+      return;
+    }
+    this._isDirty = isDirty;
+    if (properties) {
+      this.pendingProperties = properties;
+    } else if (!isDirty) {
+      this.pendingProperties = undefined;
+    }
+  }
+
+  private async promptUnsavedChangesGuard(): Promise<boolean> {
+    if (!this._isDirty || !this.currentNode) {
+      return true;
+    }
+    const nodeName = this.currentNode.name || 'Элемент';
+    const choice = await vscode.window.showWarningMessage(
+      MESSAGES.UNSAVED_CHANGES_PROMPT(nodeName),
+      { modal: true },
+      MESSAGES.SAVE,
+      MESSAGES.DONT_SAVE,
+      MESSAGES.CANCEL
+    );
+
+    if (choice === MESSAGES.SAVE) {
+      const propsToSave = this.pendingProperties || (this.currentNode.properties as Record<string, unknown>);
+      if (propsToSave) {
+        await handleMessage(
+          { type: 'save', properties: propsToSave },
+          this.buildHandlerContext()
+        );
+      }
+      return !this._isDirty;
+    } else if (choice === MESSAGES.DONT_SAVE) {
+      this._isDirty = false;
+      this.pendingProperties = undefined;
+      return true;
+    } else {
+      return false;
+    }
   }
 
   /**
@@ -75,9 +143,21 @@ export class PropertiesProvider {
     if (!this.panel) {
       return;
     }
+    if (node === this.currentNode) {
+      return;
+    }
+    if (this._isDirty && this.currentNode) {
+      const canProceed = await this.promptUnsavedChangesGuard();
+      if (!canProceed) {
+        return;
+      }
+    }
     this.currentFormSelection = null;
     this.currentFormSelectionRevision += 1;
     this.currentNode = node;
+    this.currentSessionToken = node ? `${node.id || node.name}:${++this._sessionCounter}` : '';
+    this._isDirty = false;
+    this.pendingProperties = undefined;
     await this.updateWebviewContent();
   }
 
@@ -85,10 +165,25 @@ export class PropertiesProvider {
    * Show properties for a tree node (or empty state when node is undefined)
    * Creates new panel or reuses existing one (singleton pattern)
    */
-  public async showProperties(node: TreeNode | undefined): Promise<void> {
+  public async showProperties(node: TreeNode | undefined, options?: { force?: boolean }): Promise<boolean> {
+    if (node && this.currentNode && node === this.currentNode && !options?.force) {
+      if (this.panel) {
+        this.panel.reveal(vscode.ViewColumn.Beside);
+      }
+      return true;
+    }
+    if (this._isDirty && this.currentNode && (this.currentNode !== node || options?.force)) {
+      const canProceed = await this.promptUnsavedChangesGuard();
+      if (!canProceed) {
+        return false;
+      }
+    }
     this.currentFormSelection = null;
     this.currentFormSelectionRevision += 1;
     this.currentNode = node;
+    this.currentSessionToken = node ? `${node.id || node.name}:${++this._sessionCounter}` : '';
+    this._isDirty = false;
+    this.pendingProperties = undefined;
 
     if (!node) {
       if (!this.panel) {
@@ -97,7 +192,7 @@ export class PropertiesProvider {
         this.panel.reveal(vscode.ViewColumn.Beside);
       }
       await this.updateWebviewContent();
-      return;
+      return true;
     }
 
     // Check if this is a .bsl module file - open it as text instead of properties
@@ -106,11 +201,11 @@ export class PropertiesProvider {
         const uri = vscode.Uri.file(node.filePath);
         await vscode.window.showTextDocument(uri, { preview: false });
         Logger.info(`Opened .bsl module file: ${node.filePath}`);
-        return;
+        return true;
       } catch (error) {
         Logger.error(`Failed to open .bsl file: ${node.filePath}`, error);
         vscode.window.showErrorMessage(`Failed to open module file: ${error instanceof Error ? error.message : String(error)}`);
-        return;
+        return false;
       }
     }
 
@@ -159,7 +254,7 @@ export class PropertiesProvider {
             events: formEventsMap,
             selectedIds: ['__form_root__'],
           });
-          return;
+          return true;
         }
       } catch (error) {
         Logger.error(`Failed to parse Form.xml for tree node ${node.name}`, error);
@@ -186,7 +281,7 @@ export class PropertiesProvider {
           const xmlProperties = await xmlWriter.readProperties(pathToRead);
 
           if (this.currentNode !== node || this.currentNode?.id !== targetId) {
-            return;
+            return false;
           }
 
           // Update node properties with fresh data from XML
@@ -195,7 +290,7 @@ export class PropertiesProvider {
           Logger.debug(`Successfully loaded properties from ${pathToRead}`);
         } catch (error) {
           if (this.currentNode !== node || this.currentNode?.id !== targetId) {
-            return;
+            return false;
           }
           // Log detailed error
           Logger.error(`Failed to read properties from ${pathToRead}`, error);
@@ -206,24 +301,97 @@ export class PropertiesProvider {
             `Failed to read properties from file`,
             error instanceof Error ? error.message : String(error)
           );
-          return;
+          return false;
+        }
+      }
+    } else if (
+      node.parentFilePath &&
+      node.name &&
+      node.type &&
+      !isContainerNode(node) &&
+      node.type !== MetadataType.PredefinedItem
+    ) {
+      let isReadableFile = false;
+      try {
+        const stat = await fs.promises.stat(node.parentFilePath);
+        isReadableFile = stat.isFile();
+      } catch {
+        // path doesn't exist
+      }
+
+      if (!isReadableFile) {
+        if (options?.force) {
+          Logger.warn(`Parent file for nested element ${node.name} not readable: ${node.parentFilePath}`);
+          this.showErrorInPanel(
+            node,
+            `Failed to read properties from file`,
+            `Parent file not readable: ${node.parentFilePath}`
+          );
+          return false;
+        }
+      } else {
+        try {
+          const { XMLWriter: xmlWriter } = await import('../utils/XMLWriter');
+          const { findTabularSectionInstanceForAttributeParent } = await import('../services/elementOperations');
+          const scopedTabularSectionName =
+            node.type === MetadataType.Attribute && node.parent
+              ? findTabularSectionInstanceForAttributeParent(node.parent)?.name
+              : undefined;
+          const nestedOptions = node.nestedPath || scopedTabularSectionName
+            ? {
+                ...(node.nestedPath ? { nestedPath: node.nestedPath } : {}),
+                ...(scopedTabularSectionName ? { scopedTabularSectionName } : {}),
+              }
+            : undefined;
+
+          const xmlProperties = await xmlWriter.readNestedElementProperties(
+            node.parentFilePath,
+            node.type,
+            node.name,
+            nestedOptions
+          );
+          if (this.currentNode !== node || this.currentNode?.id !== targetId) {
+            return false;
+          }
+          node.properties = { ...xmlProperties };
+          Logger.debug(`Successfully loaded nested properties for ${node.name} from ${node.parentFilePath}`);
+        } catch (error) {
+          if (this.currentNode !== node || this.currentNode?.id !== targetId) {
+            return false;
+          }
+          Logger.error(`Failed to re-read nested properties for ${node.name} from ${node.parentFilePath}`, error);
+          this.showErrorInPanel(
+            node,
+            `Failed to read properties from file`,
+            error instanceof Error ? error.message : String(error)
+          );
+          return false;
         }
       }
     }
-    // For nested elements with parentFilePath, use already loaded properties from node.properties
 
     if (this.currentNode !== node || this.currentNode?.id !== targetId) {
-      return;
+      return false;
     }
     await this.updateWebviewContent();
+    return true;
   }
 
   public async showFormSelectionProperties(
     selection: FormSelectionPayload | undefined
   ): Promise<void> {
+    if (this._isDirty && this.currentNode) {
+      const canProceed = await this.promptUnsavedChangesGuard();
+      if (!canProceed) {
+        return;
+      }
+    }
     this.currentFormSelection = selection ?? null;
     this.currentFormSelectionRevision += 1;
     this.currentNode = undefined;
+    this.currentSessionToken = '';
+    this._isDirty = false;
+    this.pendingProperties = undefined;
     if (!this.panel) {
       this.panel = this.createPanel();
     } else {
@@ -257,8 +425,10 @@ export class PropertiesProvider {
     if (!nodePath || path.normalize(nodePath) !== normalized) {
       return;
     }
-    await this.showProperties(node);
-    vscode.window.showInformationMessage(MESSAGES.FILE_CHANGED_PANEL_REFRESHED);
+    const refreshed = await this.showProperties(node, { force: true });
+    if (refreshed) {
+      vscode.window.showInformationMessage(MESSAGES.FILE_CHANGED_PANEL_REFRESHED);
+    }
   }
 
   /**
@@ -316,6 +486,14 @@ export class PropertiesProvider {
           Logger.warn('Received invalid message from webview', message);
           return;
         }
+        if (message.sessionToken && message.sessionToken !== this.currentSessionToken) {
+          Logger.warn(`Ignoring stale webview message for outdated session ${message.sessionToken} (current: ${this.currentSessionToken})`);
+          return;
+        }
+        if (message.nodeId && message.nodeId !== this.currentNode?.id) {
+          Logger.warn(`Ignoring stale webview message for outdated node ${message.nodeId} (current: ${this.currentNode?.id})`);
+          return;
+        }
         await handleMessage(message, this.buildHandlerContext());
       },
       null,
@@ -361,7 +539,7 @@ export class PropertiesProvider {
       return;
     }
 
-    const html = getWebviewContent(targetNode, { picture });
+    const html = getWebviewContent(targetNode, { picture, sessionToken: this.currentSessionToken });
     this.panel.webview.html = html;
     Logger.debug(`Properties panel updated for node: ${targetNode.name}`);
   }
@@ -418,6 +596,7 @@ export class PropertiesProvider {
       postMessage: (msg) => this.postMessage(msg),
       updateWebviewContent: () => { void this.updateWebviewContent(); },
       setIsSaving: (value) => { this._isSaving = value; },
+      setIsDirty: (isDirty, properties, token) => { this.setIsDirty(isDirty, properties, token); },
     };
   }
 
@@ -443,5 +622,7 @@ export class PropertiesProvider {
 
     // Clear references
     this.currentNode = undefined;
+    this._isDirty = false;
+    this.pendingProperties = undefined;
   }
 }

@@ -111,6 +111,8 @@ export interface TreeNodeProperties {
   version?: string;
   /** Value property for StyleItem or other value-bearing metadata objects. */
   Value?: unknown;
+  code?: string;
+  isFolder?: boolean;
 }
 
 /**

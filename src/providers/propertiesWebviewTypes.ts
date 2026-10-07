@@ -3,9 +3,10 @@ import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
 /**
  * Message types sent from webview to extension (discriminated union for type safety)
  */
-export type WebviewMessage =
+export type WebviewMessage = (
   | { type: 'save'; properties: Record<string, unknown> }
   | { type: 'cancel' }
+  | { type: 'dirtyChange'; isDirty: boolean; properties?: Record<string, unknown> }
   | { type: 'validate'; properties: Record<string, unknown> }
   | {
       type: 'propertyChanged';
@@ -44,7 +45,11 @@ export type WebviewMessage =
       elementTag: string;
       docUri: string;
     }
-  | { type: 'openPictureFile'; filePath: string };
+  | { type: 'openPictureFile'; filePath: string }
+) & {
+  nodeId?: string;
+  sessionToken?: string;
+};
 
 /**
  * Message types sent from extension to webview (discriminated union for type safety)
@@ -73,6 +78,6 @@ export function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
   const m = msg as { type?: unknown };
   if (typeof m.type !== 'string') {return false;}
 
-  const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType', 'editSource', 'editContent', 'editFormSelectionType', 'gotoEventHandler', 'createEventHandler', 'gotoHandler', 'openPictureFile'];
+  const validTypes = ['save', 'cancel', 'dirtyChange', 'validate', 'propertyChanged', 'editType', 'editSource', 'editContent', 'editFormSelectionType', 'gotoEventHandler', 'createEventHandler', 'gotoHandler', 'openPictureFile'];
   return validTypes.includes(m.type);
 }
