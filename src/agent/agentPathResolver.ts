@@ -18,6 +18,53 @@ export class AgentPathError extends Error {
     }
 }
 
+export interface ParsedSourceAddress {
+    sourceSet?: string;
+    dotPath: string;
+}
+
+/**
+ * Parses a semantic source address into an optional source set prefix and metadata dotPath.
+ * e.g. "main:Catalog.Goods" -> { sourceSet: "main", dotPath: "Catalog.Goods" }
+ *      "ExtShop:Catalog.Goods" -> { sourceSet: "ExtShop", dotPath: "Catalog.Goods" }
+ *      "Catalog.Goods" -> { sourceSet: undefined, dotPath: "Catalog.Goods" }
+ */
+export function parseSourceAddress(address: string): ParsedSourceAddress {
+    if (typeof address !== 'string' || !address.trim()) {
+        throw new AgentPathError('INVALID_AGENT_PATH', 'Agent address cannot be empty.');
+    }
+    const trimmed = address.trim();
+    if (/^[a-zA-Z]:[\\/]/.test(trimmed)) {
+        return { dotPath: trimmed };
+    }
+    const colonIndex = trimmed.indexOf(':');
+    if (colonIndex === -1) {
+        return { dotPath: trimmed };
+    }
+    if (colonIndex !== trimmed.lastIndexOf(':')) {
+        throw new AgentPathError(
+            'INVALID_AGENT_PATH',
+            `Invalid agent address "${trimmed}". Only a single source set prefix is supported.`,
+        );
+    }
+    const prefix = trimmed.slice(0, colonIndex);
+    const dotPath = trimmed.slice(colonIndex + 1);
+    if (!prefix || !prefix.trim()) {
+        throw new AgentPathError('INVALID_AGENT_PATH', `Source set prefix in "${trimmed}" cannot be empty.`);
+    }
+    if (!dotPath || !dotPath.trim()) {
+        throw new AgentPathError('INVALID_AGENT_PATH', `Metadata path in "${trimmed}" cannot be empty.`);
+    }
+    const identifierError = validateElementName(prefix.trim(), []);
+    if (identifierError) {
+        throw new AgentPathError('INVALID_AGENT_PATH', `Invalid source set prefix "${prefix}": ${identifierError}`);
+    }
+    return {
+        sourceSet: prefix.trim(),
+        dotPath: dotPath.trim(),
+    };
+}
+
 /**
  * Resolve an agent path (dot-separated) to a ResolvedAgentPath.
  *
@@ -28,7 +75,8 @@ export class AgentPathError extends Error {
  *               (including the legacy TabularSection path)
  */
 export function resolveAgentPath(configRoot: string, agentPath: string): ResolvedAgentPath {
-    const segments = agentPath.split('.');
+    const { sourceSet, dotPath } = parseSourceAddress(agentPath);
+    const segments = dotPath.split('.');
 
     if (segments.length !== 2 && segments.length !== 4 && segments.length !== 6) {
         throw new Error(
@@ -61,7 +109,12 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
     }
 
     if (segments.length === 2) {
-        return { rootTag, objectName, filePath };
+        return {
+            ...(sourceSet !== undefined ? { sourceSet } : {}),
+            rootTag,
+            objectName,
+            filePath,
+        };
     }
 
     const nestedPath = [
@@ -76,6 +129,7 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
         if (segments.length === 4 && segments[2] === 'Table') {
             const filePath = externalDataSourceTableFilePath(configRoot, folderName, objectName, segments[3], agentPath);
             return {
+                ...(sourceSet !== undefined ? { sourceSet } : {}),
                 rootTag,
                 objectName,
                 filePath,
@@ -88,6 +142,7 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
         if (segments.length === 6 && segments[2] === 'Table' && segments[4] === 'Field') {
             const filePath = externalDataSourceTableFilePath(configRoot, folderName, objectName, segments[3], agentPath);
             return {
+                ...(sourceSet !== undefined ? { sourceSet } : {}),
                 rootTag,
                 objectName,
                 filePath,
@@ -109,6 +164,7 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
 
     if (segments.length === 4) {
         return {
+            ...(sourceSet !== undefined ? { sourceSet } : {}),
             rootTag,
             objectName,
             filePath,
@@ -120,6 +176,7 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
 
     // 6 segments
     return {
+        ...(sourceSet !== undefined ? { sourceSet } : {}),
         rootTag,
         objectName,
         filePath,
