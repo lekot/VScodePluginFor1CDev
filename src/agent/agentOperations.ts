@@ -7,9 +7,7 @@ import * as path from 'path';
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { rulesRegistry, metadataConverter } from '../rules';
 import {
-    addRootObjectToConfiguration,
     buildRootObjectConfigurationContent,
-    removeRootObjectFromConfiguration,
 } from '../services/configurationXmlUpdater';
 import { getDesignerTemplateXml } from '../services/designerTemplateRepository';
 import { substituteDesignerTemplate } from '../services/designerTemplateSubstitutor';
@@ -456,7 +454,7 @@ export class AgentOperations {
 
     async createObject(params: CreateObjectParams): Promise<AgentResult<CreateObjectResult>> {
         try {
-            const { type, name, synonym, properties } = params;
+            const { type, name } = params;
 
             // Валидация
             if (!type || typeof type !== 'string') {
@@ -485,8 +483,6 @@ export class AgentOperations {
             // Определяем папку типа через маппинг, fallback = rootTag + 's'
             const typeFolderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(type as MetadataType) ?? `${type}s`;
             const typeFolderPath = path.join(this.configRootPath, typeFolderName);
-            const cfgXml = await fs.promises.readFile(path.join(this.configRootPath, CONFIGURATION_XML), 'utf8');
-            const targetVersion = requireProjectWriteFormatProfile(cfgXml).version;
             const nameValidation = validateElementName(trimmedName, await listXmlSiblingNames(typeFolderPath));
             if (nameValidation) {
                 return { success: false, error: nameValidation };
@@ -509,43 +505,12 @@ export class AgentOperations {
                     return check.errorResult!;
                 }
 
-                if (type === 'FilterCriterion') {
-                    const plan = await this.planCreateObject(params);
-                    if (params.dryRun) {
-                        return {
-                            success: true,
-                            dryRun: true,
-                            rev: check.currentRev,
-                            target: targetPath,
-                            data: {
-                                filePath: newFilePath,
-                                dryRun: true,
-                                rev: check.currentRev,
-                                target: targetPath,
-                                plannedChanges: {
-                                    files: [newFilePath, path.join(this.configRootPath, CONFIGURATION_XML)],
-                                    summary: `Создание объекта ${targetPath}`,
-                                },
-                            },
-                        };
-                    }
-                    const executor = new MutationPlanExecutor(this.configRootPath);
-                    const execResult = await executor.execute(plan);
-                    if (execResult.success && execResult.data) {
-                        const newRev = await calculateRevision(newFilePath);
-                        return {
-                            ...execResult,
-                            rev: newRev,
-                            target: targetPath,
-                            data: {
-                                ...execResult.data,
-                                rev: newRev,
-                                target: targetPath,
-                            },
-                        };
-                    }
-                    return execResult;
-                }
+                const plan = await this.planCreateObject(params);
+                const plannedFiles = Array.from(new Set(
+                    plan.steps
+                        .map((step) => 'targetPath' in step ? step.targetPath : undefined)
+                        .filter((p): p is string => typeof p === 'string'),
+                ));
 
                 if (params.dryRun) {
                     return {
@@ -559,68 +524,29 @@ export class AgentOperations {
                             rev: check.currentRev,
                             target: targetPath,
                             plannedChanges: {
-                                files: [newFilePath, path.join(this.configRootPath, CONFIGURATION_XML)],
+                                files: plannedFiles.length > 0 ? plannedFiles : [newFilePath, path.join(this.configRootPath, CONFIGURATION_XML)],
                                 summary: `Создание объекта ${targetPath}`,
                             },
                         },
                     };
                 }
 
-                await assertPathWithinRoot(this.configRootPath, typeFolderPath);
-                await fs.promises.mkdir(typeFolderPath, { recursive: true });
-
-                let content: string;
-                const uuid = generateSimpleUuid();
-
-                if (rules) {
-                    // Rules-based path
-                    let ir = metadataConverter.createDefaultIR(rules, { name: trimmedName, uuid });
-                    const overrides: Record<string, unknown> = {};
-                    if (synonym !== undefined) {
-                        overrides['Synonym'] = synonym;
-                    }
-                    if (properties) {
-                        Object.assign(overrides, properties);
-                    }
-                    if (Object.keys(overrides).length > 0) {
-                        ir = metadataConverter.mergeProperties(ir, overrides);
-                    }
-                    content = metadataConverter.irToXml(ir, rules);
-                } else {
-                    // Template fallback (registers with default children)
-                    const uuidDim = generateSimpleUuid();
-                    const uuidResource = generateSimpleUuid();
-                    content = substituteDesignerTemplate(templateXml!, {
-                        uuid, Name: trimmedName, Synonym_ru: synonym ?? trimmedName,
-                        uuidDim, uuidResource,
-                    });
-                }
-
-                content = injectInternalInfoIntoMetadataXml(content, type, trimmedName);
-                content = normalizeMetaDataObjectRoot(content, targetVersion);
-
-                await assertPathWithinRoot(this.configRootPath, newFilePath);
-                await fs.promises.writeFile(newFilePath, content, 'utf-8');
-
-                // Создаём директорию объекта
-                const elementDir = path.join(typeFolderPath, trimmedName);
-                await assertPathWithinRoot(this.configRootPath, elementDir);
-                await fs.promises.mkdir(elementDir, { recursive: true });
-
-                // Регистрируем в Configuration.xml
-                await addRootObjectToConfiguration(this.configRootPath, type, trimmedName);
-
-                const newRev = await calculateRevision(newFilePath);
-                return {
-                    success: true,
-                    rev: newRev,
-                    target: targetPath,
-                    data: {
-                        filePath: newFilePath,
+                const executor = new MutationPlanExecutor(this.configRootPath);
+                const execResult = await executor.execute(plan);
+                if (execResult.success && execResult.data) {
+                    const newRev = await calculateRevision(newFilePath);
+                    return {
+                        ...execResult,
                         rev: newRev,
                         target: targetPath,
-                    },
-                };
+                        data: {
+                            ...execResult.data,
+                            rev: newRev,
+                            target: targetPath,
+                        },
+                    };
+                }
+                return execResult;
             });
         } catch (err) {
             return mutationFailure(err);
@@ -978,7 +904,7 @@ export class AgentOperations {
                 };
             }
             const resolved = await this.resolveContainedAgentPath(params.path);
-            const { rootTag, objectName, filePath } = resolved;
+            const { filePath } = resolved;
             await assertCfeGenericMutationAllowed(filePath, 'delete');
 
             try {
@@ -987,11 +913,18 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
-            return await this.withTargetMutationLock(filePath, async () => {
-                const check = await this.checkMutationPreconditions(filePath, params.path, params);
+            return await this.withTargetMutationLock<MutationResultData>(filePath, async () => {
+                const check = await this.checkMutationPreconditions<MutationResultData>(filePath, params.path, params);
                 if (!check.proceed) {
                     return check.errorResult!;
                 }
+
+                const plan = await this.planDeleteObject(params);
+                const plannedFiles = Array.from(new Set(
+                    plan.steps
+                        .map((step) => 'targetPath' in step ? step.targetPath : undefined)
+                        .filter((p): p is string => typeof p === 'string'),
+                ));
 
                 if (params.dryRun) {
                     return {
@@ -1004,42 +937,28 @@ export class AgentOperations {
                             rev: check.currentRev,
                             target: params.path,
                             plannedChanges: {
-                                files: [filePath, path.join(this.configRootPath, CONFIGURATION_XML)],
+                                files: plannedFiles.length > 0 ? plannedFiles : [filePath, path.join(this.configRootPath, CONFIGURATION_XML)],
                                 summary: `Удаление объекта ${params.path}`,
                             },
                         },
                     };
                 }
 
-                const folderName =
-                    MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ??
-                    `${rootTag}s`;
-                const typeFolderPath = path.join(this.configRootPath, folderName);
-
-                // Удаляем XML-файл объекта
-                try {
-                    await fs.promises.unlink(filePath);
-                } catch (err) {
-                    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-                        return { success: false, error: `Файл объекта не найден: ${filePath}` };
-                    }
-                    throw err;
+                const executor = new MutationPlanExecutor(this.configRootPath);
+                const execResult = await executor.execute(plan);
+                if (execResult.success) {
+                    const newRev = ZERO_REVISION;
+                    return {
+                        success: true,
+                        rev: newRev,
+                        target: params.path,
+                        data: { rev: newRev, target: params.path },
+                    };
                 }
-
-                // Удаляем директорию объекта если есть
-                const elementDir = path.join(typeFolderPath, objectName);
-                await assertPathWithinRoot(this.configRootPath, elementDir);
-                await fs.promises.rm(elementDir, { recursive: true, force: true });
-
-                // Снимаем регистрацию из Configuration.xml
-                await removeRootObjectFromConfiguration(this.configRootPath, rootTag, objectName);
-
-                const newRev = ZERO_REVISION;
                 return {
-                    success: true,
-                    rev: newRev,
-                    target: params.path,
-                    data: { rev: newRev, target: params.path },
+                    success: false,
+                    error: execResult.error,
+                    code: execResult.code,
                 };
             });
         } catch (err) {
@@ -1095,14 +1014,27 @@ export class AgentOperations {
             }
 
             const newFilePath = path.join(typeFolderPath, `${newName}.xml`);
-            const oldDir = path.join(typeFolderPath, objectName);
-            const newDir = path.join(typeFolderPath, newName);
 
             return await this.withTargetMutationLock(filePath, async () => {
                 const check = await this.checkMutationPreconditions<CreateObjectResult>(filePath, params.path, params);
                 if (!check.proceed) {
                     return check.errorResult!;
                 }
+
+                const plan = await this.planRenameObject(params);
+                const plannedFiles = Array.from(new Set(
+                    plan.steps
+                        .flatMap((step) => {
+                            if ('targetPath' in step && 'sourcePath' in step) {
+                                return [step.sourcePath, step.targetPath];
+                            }
+                            if ('targetPath' in step) {
+                                return [step.targetPath];
+                            }
+                            return [];
+                        })
+                        .filter((p): p is string => typeof p === 'string'),
+                ));
 
                 if (params.dryRun) {
                     return {
@@ -1116,44 +1048,30 @@ export class AgentOperations {
                             rev: check.currentRev,
                             target: params.path,
                             plannedChanges: {
-                                files: [filePath, newFilePath, path.join(this.configRootPath, CONFIGURATION_XML)],
+                                files: plannedFiles.length > 0 ? plannedFiles : [filePath, newFilePath, path.join(this.configRootPath, CONFIGURATION_XML)],
                                 summary: `Переименование объекта ${params.path} в ${newName}`,
                             },
                         },
                     };
                 }
 
-                await Promise.all([
-                    assertPathWithinRoot(this.configRootPath, newFilePath),
-                    assertPathWithinRoot(this.configRootPath, oldDir),
-                    assertPathWithinRoot(this.configRootPath, newDir),
-                ]);
-
-                // Обновляем Name в XML
-                await XMLWriter.writeProperties(filePath, { Name: newName });
-
-                // Переименовываем XML-файл
-                await fs.promises.rename(filePath, newFilePath);
-
-                // Переименовываем директорию объекта если есть
-                try {
-                    await fs.promises.access(oldDir);
-                    await fs.promises.rename(oldDir, newDir);
-                } catch {
-                    // Директории нет — ок
+                const executor = new MutationPlanExecutor(this.configRootPath);
+                const execResult = await executor.execute(plan);
+                if (execResult.success && execResult.data) {
+                    const newRev = await calculateRevision(newFilePath);
+                    return {
+                        ...execResult,
+                        rev: newRev,
+                        target: params.path,
+                        data: {
+                            ...execResult.data,
+                            filePath: newFilePath,
+                            rev: newRev,
+                            target: params.path,
+                        },
+                    };
                 }
-
-                // Обновляем Configuration.xml
-                await removeRootObjectFromConfiguration(this.configRootPath, rootTag, objectName);
-                await addRootObjectToConfiguration(this.configRootPath, rootTag, newName);
-
-                const newRev = await calculateRevision(newFilePath);
-                return {
-                    success: true,
-                    rev: newRev,
-                    target: params.path,
-                    data: { filePath: newFilePath, rev: newRev, target: params.path },
-                };
+                return execResult;
             });
         } catch (err) {
             return mutationFailure(err);

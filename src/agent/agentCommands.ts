@@ -503,9 +503,16 @@ export function registerAgentCommands(
         '1c-metadata-tree.agent.createObject',
         async (params: CreateObjectParams) => {
             let normalizedParams = params;
-            if (params.type && params.type.includes(':') && !/^[a-zA-Z]:[\\/]/.test(params.type)) {
-                const { dotPath } = parseSourceAddress(params.type);
-                normalizedParams = { ...params, type: dotPath };
+            if (params?.type && params.type.includes(':') && !/^[a-zA-Z]:[\\/]/.test(params.type)) {
+                try {
+                    const { dotPath } = parseSourceAddress(params.type);
+                    normalizedParams = { ...params, type: dotPath };
+                } catch (error) {
+                    if (error instanceof AgentPathError) {
+                        return { success: false, code: error.code, error: error.message };
+                    }
+                    return { success: false, code: 'INVALID_AGENT_PATH', error: error instanceof Error ? error.message : String(error) };
+                }
             }
             const dryRun = params?.dryRun === true;
             return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.createObject', async (configRoot) => {
@@ -681,7 +688,15 @@ export function registerAgentCommands(
     const deleteObjectCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deleteObject',
         async (params: DeleteObjectParams) => {
-            const dotPath = typeof params?.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
+            let dotPath = '';
+            try {
+                dotPath = typeof params?.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
+            } catch (error) {
+                if (error instanceof AgentPathError) {
+                    return { success: false, code: error.code, error: error.message };
+                }
+                return { success: false, code: 'INVALID_AGENT_PATH', error: error instanceof Error ? error.message : String(error) };
+            }
             const segmentCount = dotPath ? dotPath.split('.').length : 0;
             if (segmentCount !== 2) {
                 return {
@@ -704,7 +719,15 @@ export function registerAgentCommands(
     const renameObjectCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.renameObject',
         async (params: RenameObjectParams) => {
-            const dotPath = typeof params?.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
+            let dotPath = '';
+            try {
+                dotPath = typeof params?.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
+            } catch (error) {
+                if (error instanceof AgentPathError) {
+                    return { success: false, code: error.code, error: error.message };
+                }
+                return { success: false, code: 'INVALID_AGENT_PATH', error: error instanceof Error ? error.message : String(error) };
+            }
             const segmentCount = dotPath ? dotPath.split('.').length : 0;
             if (segmentCount !== 2) {
                 return {

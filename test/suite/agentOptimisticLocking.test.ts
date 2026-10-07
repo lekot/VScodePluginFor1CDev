@@ -896,6 +896,131 @@ suite('Agent API — Registered Commands dryRun & ifRev dispatch', () => {
     assert.strictEqual(fs.readFileSync(goodsPath, 'utf-8'), goodsBefore, 'Goods.xml must not be modified after dryRuns');
     assert.strictEqual(fs.readFileSync(subPath, 'utf-8'), subBefore, 'OnWrite.xml must not be modified after dryRuns');
   });
+
+  test('createObject, deleteObject and renameObject roll back filesystem mutations when later steps fail', async () => {
+    const ops = new AgentOperations(tmpDir);
+    const configPath = path.join(tmpDir, 'Configuration.xml');
+    const initialConfig = fs.readFileSync(configPath, 'utf-8');
+
+    // Intercept atomic move of Configuration.xml inside MutationPlanExecutor to test reverse recovery
+    const originalRename = fs.promises.rename;
+    let failConfigAtomicCommit = false;
+    fs.promises.rename = (async (src: any, dest: any) => {
+      if (failConfigAtomicCommit && typeof dest === 'string' && path.basename(dest) === 'Configuration.xml') {
+        throw new Error('Simulated atomic failure committing Configuration.xml');
+      }
+      return originalRename.call(fs.promises, src, dest);
+    }) as any;
+
+    try {
+      failConfigAtomicCommit = true;
+      const createRes = await ops.createObject({ type: 'Catalog', name: 'RollbackCatalog' });
+      assert.strictEqual(createRes.success, false, 'createObject must report failure');
+
+      const createdXml = path.join(tmpDir, 'Catalogs', 'RollbackCatalog.xml');
+      const createdDir = path.join(tmpDir, 'Catalogs', 'RollbackCatalog');
+      assert.strictEqual(fs.existsSync(createdXml), false, 'RollbackCatalog.xml must not remain on disk after failure');
+      assert.strictEqual(fs.existsSync(createdDir), false, 'RollbackCatalog directory must not remain on disk after failure');
+      assert.strictEqual(fs.readFileSync(configPath, 'utf-8'), initialConfig, 'Configuration.xml must remain intact');
+    } finally {
+      failConfigAtomicCommit = false;
+      fs.promises.rename = originalRename;
+    }
+
+    // Now create a real object to test delete and rename rollback
+    const createSuccess = await ops.createObject({ type: 'Catalog', name: 'ItemToRollback' });
+    assert.strictEqual(createSuccess.success, true);
+    const itemXml = path.join(tmpDir, 'Catalogs', 'ItemToRollback.xml');
+    const itemDir = path.join(tmpDir, 'Catalogs', 'ItemToRollback');
+    assert.strictEqual(fs.existsSync(itemXml), true);
+    const itemXmlBefore = fs.readFileSync(itemXml, 'utf-8');
+    const configWithItem = fs.readFileSync(configPath, 'utf-8');
+
+    // 2. deleteObject failure during Configuration.xml write rolls back deleted files and directories
+    try {
+      failConfigAtomicCommit = true;
+      fs.promises.rename = (async (src: any, dest: any) => {
+        if (failConfigAtomicCommit && typeof dest === 'string' && path.basename(dest) === 'Configuration.xml') {
+          throw new Error('Simulated atomic failure committing Configuration.xml');
+        }
+        return originalRename.call(fs.promises, src, dest);
+      }) as any;
+
+      const deleteRes = await ops.deleteObject({ path: 'Catalog.ItemToRollback' });
+      assert.strictEqual(deleteRes.success, false, 'deleteObject must report failure');
+
+      assert.strictEqual(fs.existsSync(itemXml), true, 'ItemToRollback.xml must be restored after rollback');
+      assert.strictEqual(fs.readFileSync(itemXml, 'utf-8'), itemXmlBefore, 'ItemToRollback.xml content must match original');
+      assert.strictEqual(fs.readFileSync(configPath, 'utf-8'), configWithItem, 'Configuration.xml must remain intact');
+    } finally {
+      failConfigAtomicCommit = false;
+      fs.promises.rename = originalRename;
+    }
+
+    // 3. renameObject failure during Configuration.xml write rolls back renamed files and directories
+    const renamedXml = path.join(tmpDir, 'Catalogs', 'RenamedItem.xml');
+    const renamedDir = path.join(tmpDir, 'Catalogs', 'RenamedItem');
+    try {
+      failConfigAtomicCommit = true;
+      fs.promises.rename = (async (src: any, dest: any) => {
+        if (failConfigAtomicCommit && typeof dest === 'string' && path.basename(dest) === 'Configuration.xml') {
+          throw new Error('Simulated atomic failure committing Configuration.xml');
+        }
+        return originalRename.call(fs.promises, src, dest);
+      }) as any;
+
+      const renameRes = await ops.renameObject({ path: 'Catalog.ItemToRollback', newName: 'RenamedItem' });
+      assert.strictEqual(renameRes.success, false, 'renameObject must report failure');
+
+      assert.strictEqual(fs.existsSync(renamedXml), false, 'RenamedItem.xml must not remain on disk after rollback');
+      assert.strictEqual(fs.existsSync(renamedDir), false, 'RenamedItem dir must not remain on disk after rollback');
+      assert.strictEqual(fs.existsSync(itemXml), true, 'Original ItemToRollback.xml must be restored');
+      assert.strictEqual(fs.readFileSync(itemXml, 'utf-8'), itemXmlBefore, 'Original ItemToRollback.xml content must match');
+      assert.strictEqual(fs.readFileSync(configPath, 'utf-8'), configWithItem, 'Configuration.xml must remain intact');
+    } finally {
+      failConfigAtomicCommit = false;
+      fs.promises.rename = originalRename;
+    }
+  });
+
+  test('registered deleteObject, renameObject and createObject command handlers reject malformed addresses without unhandled promise rejection', async () => {
+    const deleteHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.deleteObject');
+    assert.ok(deleteHandler);
+    const renameHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.renameObject');
+    assert.ok(renameHandler);
+    const createHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.createObject');
+    assert.ok(createHandler);
+
+    // Malformed address with multiple colons
+    const delRes1 = await deleteHandler({ path: 'A:B:C' }) as AgentResult;
+    assert.strictEqual(delRes1.success, false);
+    assert.strictEqual(delRes1.code, 'INVALID_AGENT_PATH');
+
+    // Malformed single segment address
+    const delRes2 = await deleteHandler({ path: 'Catalog' }) as AgentResult;
+    assert.strictEqual(delRes2.success, false);
+    assert.strictEqual(delRes2.code, 'INVALID_AGENT_PATH');
+
+    // Empty path
+    const delRes3 = await deleteHandler({ path: '' }) as AgentResult;
+    assert.strictEqual(delRes3.success, false);
+    assert.strictEqual(delRes3.code, 'INVALID_AGENT_PATH');
+
+    // Rename with multiple colons
+    const renRes1 = await renameHandler({ path: 'A:B:C', newName: 'NewName' }) as AgentResult;
+    assert.strictEqual(renRes1.success, false);
+    assert.strictEqual(renRes1.code, 'INVALID_AGENT_PATH');
+
+    // Rename with single segment
+    const renRes2 = await renameHandler({ path: 'Catalog', newName: 'NewName' }) as AgentResult;
+    assert.strictEqual(renRes2.success, false);
+    assert.strictEqual(renRes2.code, 'INVALID_AGENT_PATH');
+
+    // Create with multiple colons in type
+    const createRes1 = await createHandler({ type: 'A:B:C', name: 'NewItem' }) as AgentResult;
+    assert.strictEqual(createRes1.success, false);
+    assert.strictEqual(createRes1.code, 'INVALID_AGENT_PATH');
+  });
 });
 
 
