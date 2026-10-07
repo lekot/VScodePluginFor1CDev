@@ -745,5 +745,157 @@ suite('MutationPlanExecutor', () => {
       (fs.promises as any).rm = origRm;
     }
   });
+
+  test('#183: recover() rolls back journal with state rollback-required from same process rather than throwing PLAN_CONFLICT', async () => {
+    const fileA = path.join(tempDir, 'fileA.txt');
+    await fs.promises.writeFile(fileA, 'initial-content', 'utf8');
+
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const opDir = path.join(journalRoot, 'failed-op-123');
+    const backupsDir = path.join(opDir, 'backups');
+    await fs.promises.mkdir(backupsDir, { recursive: true });
+
+    const backupFile = path.join(backupsDir, '0');
+    await fs.promises.writeFile(backupFile, 'initial-content', 'utf8');
+
+    await fs.promises.writeFile(fileA, 'corrupted-partial-mutation', 'utf8');
+
+    await fs.promises.writeFile(
+      path.join(opDir, 'owner.json'),
+      JSON.stringify({ pid: process.pid, createdAt: Date.now() - 5000 }),
+      'utf8',
+    );
+
+    await fs.promises.writeFile(
+      path.join(opDir, 'journal.json'),
+      JSON.stringify({
+        version: 1,
+        operationId: 'failed-op-123',
+        plan: {
+          kind: 'test.failed',
+          steps: [{
+            type: 'writeFile', targetPath: fileA, content: 'mutated', encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent('initial-content') },
+          }],
+          result: null,
+        },
+        state: 'rollback-required',
+        appliedSteps: 1,
+        snapshots: [{
+          targetPath: fileA,
+          state: 'file',
+          hash: hashContent('initial-content'),
+          backupName: '0',
+          contentsBackedUp: true,
+        }],
+      }),
+      'utf8',
+    );
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await executor.recover();
+
+    assert.strictEqual(
+      await fs.promises.readFile(fileA, 'utf8'),
+      'initial-content',
+      'recover() must restore snapshots for rollback-required operations from the same process',
+    );
+    assert.strictEqual(fs.existsSync(opDir), false, 'operation directory must be removed after successful recovery');
+  });
+
+  test('#212: recover() recovers stale journal with live PID when heartbeat has expired (reused PID)', async () => {
+    const fileA = path.join(tempDir, 'fileA.txt');
+    await fs.promises.writeFile(fileA, 'initial-content', 'utf8');
+
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const opDir = path.join(journalRoot, 'stale-reused-pid-op');
+    const backupsDir = path.join(opDir, 'backups');
+    await fs.promises.mkdir(backupsDir, { recursive: true });
+
+    const backupFile = path.join(backupsDir, '0');
+    await fs.promises.writeFile(backupFile, 'initial-content', 'utf8');
+
+    await fs.promises.writeFile(fileA, 'abandoned-mutation', 'utf8');
+
+    await fs.promises.writeFile(
+      path.join(opDir, 'owner.json'),
+      JSON.stringify({
+        pid: process.pid,
+        createdAt: Date.now() - 60000,
+        heartbeatAt: Date.now() - 60000,
+      }),
+      'utf8',
+    );
+
+    await fs.promises.writeFile(
+      path.join(opDir, 'journal.json'),
+      JSON.stringify({
+        version: 1,
+        operationId: 'stale-reused-pid-op',
+        plan: {
+          kind: 'test.stale',
+          steps: [{
+            type: 'writeFile', targetPath: fileA, content: 'mutated', encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent('initial-content') },
+          }],
+          result: null,
+        },
+        state: 'applying',
+        appliedSteps: 1,
+        snapshots: [{
+          targetPath: fileA,
+          state: 'file',
+          hash: hashContent('initial-content'),
+          backupName: '0',
+          contentsBackedUp: true,
+        }],
+      }),
+      'utf8',
+    );
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await executor.recover();
+
+    assert.strictEqual(
+      await fs.promises.readFile(fileA, 'utf8'),
+      'initial-content',
+      'recover() must restore snapshots when lease has expired despite live PID',
+    );
+    assert.strictEqual(fs.existsSync(opDir), false);
+  });
+
+  test('#184: active root lease from another process blocks execution with PLAN_CONFLICT', async () => {
+    const fileA = path.join(tempDir, 'fileA.txt');
+    await fs.promises.writeFile(fileA, 'initial-content', 'utf8');
+
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    await fs.promises.writeFile(
+      leasePath,
+      JSON.stringify({
+        pid: process.pid,
+        leaseId: 'other-process-lease',
+        createdAt: Date.now(),
+        heartbeatAt: Date.now(),
+      }),
+      'utf8',
+    );
+
+    const executor = new MutationPlanExecutor(tempDir);
+
+    await assert.rejects(
+      () => executor.execute({
+        kind: 'test.concurrent',
+        steps: [{
+          type: 'writeFile', targetPath: fileA, content: 'mutated-2', encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('initial-content') },
+        }],
+        result: 'success',
+      }),
+      (err: MutationPlanError) => err.code === 'PLAN_CONFLICT',
+    );
+  });
 });
 

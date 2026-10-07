@@ -6,6 +6,7 @@ import {
   writeBindingsForFolder,
 } from './bindingStorage';
 import { bindingKey, normalizeConfigRelativePath } from './bindingPathUtils';
+import { Logger } from '../utils/logger';
 
 /** Для тестов и альтернативных окружений (по умолию — workspace VS Code). */
 export interface BindingManagerDeps {
@@ -158,7 +159,13 @@ export class BindingManager {
     if (!folder) {
       throw new Error(`Workspace folder not found: "${next.workspaceFolder}"`);
     }
-    const list = await readBindingsForFolder(this.fsApi, folder);
+    const diagnostic = await readBindingsForFolderDiagnostic(this.fsApi, folder);
+    if (diagnostic.kind === 'invalid') {
+      throw new Error(
+        `Cannot update bindings: file is corrupted or invalid (${diagnostic.uri.fsPath}): ${diagnostic.diagnostics.join('; ')}`,
+      );
+    }
+    const list = diagnostic.kind === 'valid' ? diagnostic.bindings : [];
     const key = bindingKey(next.workspaceFolder, next.configRelativePath, next.ibcmdExtensionName);
     const mapped = new Map<string, ConfigurationBinding>();
     for (const b of list) {
@@ -179,7 +186,16 @@ export class BindingManager {
       return false;
     }
     const norm = normalizeConfigRelativePath(configRelativePath);
-    const list = await readBindingsForFolder(this.fsApi, folder);
+    const diagnostic = await readBindingsForFolderDiagnostic(this.fsApi, folder);
+    if (diagnostic.kind === 'invalid') {
+      throw new Error(
+        `Cannot delete binding: file is corrupted or invalid (${diagnostic.uri.fsPath}): ${diagnostic.diagnostics.join('; ')}`,
+      );
+    }
+    if (diagnostic.kind === 'absent') {
+      return false;
+    }
+    const list = diagnostic.bindings;
     const targetKey = bindingKey(workspaceFolderName, norm, ibcmdExtensionName);
     const filtered = list.filter(
       (b) => bindingKey(b.workspaceFolder, b.configRelativePath, b.ibcmdExtensionName) !== targetKey,
@@ -203,7 +219,15 @@ export class BindingManager {
     const folders = this.getWorkspaceFolders() ?? [];
     let touched = 0;
     for (const folder of folders) {
-      const list = await readBindingsForFolder(this.fsApi, folder);
+      const diagnostic = await readBindingsForFolderDiagnostic(this.fsApi, folder);
+      if (diagnostic.kind === 'invalid') {
+        Logger.warn(`removeInfobaseFromAllBindings: skipped corrupted bindings file ${diagnostic.uri.fsPath}`);
+        continue;
+      }
+      if (diagnostic.kind === 'absent') {
+        continue;
+      }
+      const list = diagnostic.bindings;
       const next: ConfigurationBinding[] = [];
       let folderChanged = false;
       for (const b of list) {

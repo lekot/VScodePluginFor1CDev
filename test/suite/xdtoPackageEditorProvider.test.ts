@@ -263,5 +263,67 @@ suite('XdtoPackageEditorProvider (pure helpers)', () => {
         fs.rmSync(root, { recursive: true, force: true });
       }
     });
+
+    test('external modification of XDTO package file causes save to fail with conflict error rather than overwriting (#195)', async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xdto-conflict-'));
+      try {
+        fs.writeFileSync(
+          path.join(root, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="00000000-0000-0000-0000-000000000000"><Properties><Name>TestConfig</Name></Properties></Configuration></MetaDataObject>',
+          'utf8'
+        );
+        const metaPathA = path.join(root, 'XDTOPackages', 'PackageA.xml');
+        const extPathA = path.join(root, 'XDTOPackages', 'PackageA', 'Ext');
+        fs.mkdirSync(extPathA, { recursive: true });
+        const sourceA = '<package xmlns="http://v8.1c.ru/8.1/xdto"><valueType name="TypeA" base="xs:string"/></package>';
+        fs.writeFileSync(metaPathA, '<MetaDataObject><XDTOPackage name="PackageA"/></MetaDataObject>', 'utf8');
+        const binFile = path.join(extPathA, 'Package.bin');
+        fs.writeFileSync(binFile, sourceA, 'utf8');
+
+        const nodeA: TreeNode = {
+          id: 'XDTOPackages.PackageA',
+          name: 'PackageA',
+          type: MetadataType.XDTOPackage,
+          filePath: metaPathA,
+          properties: {},
+        };
+
+        const { panel, getPostedMessages } = createFakeWebviewPanel();
+        const restore = patchCreateWebviewPanel(panel);
+        const provider = new XdtoPackageEditorProvider(createFakeExtensionContext());
+
+        try {
+          await provider.show(nodeA);
+
+          // External modification behind the editor's back
+          const externalContent = '<package xmlns="http://v8.1c.ru/8.1/xdto"><valueType name="ExternalChange" base="xs:string"/></package>';
+          fs.writeFileSync(binFile, externalContent, 'utf8');
+
+          // User attempts to save editor's version
+          const userUpdatedSource = '<package xmlns="http://v8.1c.ru/8.1/xdto"><valueType name="UserEditorUpdate" base="xs:string"/></package>';
+          await (provider as any).handleMessage({ type: 'save', source: userUpdatedSource });
+
+          // File on disk MUST preserve external change and not be silently overwritten
+          const diskContent = fs.readFileSync(binFile, 'utf8');
+          assert.strictEqual(
+            diskContent,
+            externalContent,
+            'External changes on disk must not be overwritten by stale editor save'
+          );
+
+          // Webview must receive saveError, not saveSuccess
+          const messages = getPostedMessages();
+          const hasSaveError = messages.some((m: any) => m.type === 'saveError');
+          const hasSaveSuccess = messages.some((m: any) => m.type === 'saveSuccess');
+          assert.strictEqual(hasSaveError, true, 'Webview must receive saveError upon conflict');
+          assert.strictEqual(hasSaveSuccess, false, 'Webview must not receive saveSuccess upon conflict');
+        } finally {
+          restore();
+          provider.dispose();
+        }
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 });

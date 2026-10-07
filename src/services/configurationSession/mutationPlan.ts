@@ -58,6 +58,25 @@ interface MutationJournal<T = unknown> {
 export interface OperationOwner {
   readonly pid: number;
   readonly createdAt: number;
+  readonly heartbeatAt?: number;
+  readonly leaseId?: string;
+}
+
+const ROOT_LEASE_FILE = '.root-lease.json';
+const LEASE_TTL_MS = 15000;
+const LEASE_HEARTBEAT_INTERVAL_MS = 2000;
+
+interface RootLeaseRecord {
+  leaseId: string;
+  pid: number;
+  createdAt: number;
+  heartbeatAt: number;
+  operationId: string;
+}
+
+interface ActiveRootLease {
+  leaseId: string;
+  release(): Promise<void>;
 }
 
 export class MutationPlanError extends Error {
@@ -81,17 +100,119 @@ export class MutationPlanExecutor {
   async execute<T>(plan: MutationPlan<T>, operationId: string = randomUUID()): Promise<T> {
     const release = await acquirePlanMutationLock(this.rootPath);
     try {
-      return await this.executeLocked(plan, operationId);
+      const lease = await this.acquireRootLease(operationId);
+      try {
+        return await this.executeLocked(plan, operationId, lease);
+      } finally {
+        await lease.release();
+      }
     } finally {
       release();
     }
+  }
+
+  private async acquireRootLease(operationId: string): Promise<ActiveRootLease> {
+    await fs.promises.mkdir(this.journalRoot, { recursive: true });
+    const leasePath = path.join(this.journalRoot, ROOT_LEASE_FILE);
+    const leaseId = randomUUID();
+
+    const tryAcquire = async (): Promise<boolean> => {
+      const record: RootLeaseRecord = {
+        leaseId,
+        pid: process.pid,
+        createdAt: Date.now(),
+        heartbeatAt: Date.now(),
+        operationId,
+      };
+      try {
+        await fs.promises.writeFile(leasePath, JSON.stringify(record), { encoding: 'utf8', flag: 'wx' });
+        return true;
+      } catch (err: unknown) {
+        if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'EEXIST') {
+          return false;
+        }
+        throw err;
+      }
+    };
+
+    let acquired = await tryAcquire();
+    if (!acquired) {
+      let existingRecord: RootLeaseRecord | undefined;
+      try {
+        const raw = await fs.promises.readFile(leasePath, 'utf8');
+        existingRecord = JSON.parse(raw) as RootLeaseRecord;
+      } catch (err) {
+        if (isMissingError(err)) {
+          acquired = await tryAcquire();
+        }
+      }
+
+      if (!acquired && existingRecord) {
+        const isHolderAlive = isProcessAlive(existingRecord.pid);
+        const lastHeartbeat = existingRecord.heartbeatAt || existingRecord.createdAt || 0;
+        const isHeartbeatFresh = Date.now() - lastHeartbeat <= LEASE_TTL_MS;
+
+        if (isHolderAlive && isHeartbeatFresh) {
+          throw new MutationPlanError(
+            'PLAN_CONFLICT',
+            `Configuration is actively locked by process ${existingRecord.pid}.`,
+          );
+        }
+
+        await fs.promises.rm(leasePath, { force: true }).catch(() => undefined);
+        acquired = await tryAcquire();
+        if (!acquired) {
+          throw new MutationPlanError(
+            'PLAN_CONFLICT',
+            'Configuration root lease acquisition conflict after breaking stale lease.',
+          );
+        }
+      }
+    }
+
+    const heartbeatTimer = setInterval(() => {
+      void (async () => {
+        try {
+          const raw = await fs.promises.readFile(leasePath, 'utf8');
+          const current = JSON.parse(raw) as RootLeaseRecord;
+          if (current.leaseId === leaseId) {
+            current.heartbeatAt = Date.now();
+            await fs.promises.writeFile(leasePath, JSON.stringify(current), 'utf8');
+          }
+        } catch {
+          // ignore transient error
+        }
+      })();
+    }, LEASE_HEARTBEAT_INTERVAL_MS);
+    if (typeof heartbeatTimer.unref === 'function') {
+      heartbeatTimer.unref();
+    }
+
+    let released = false;
+    const release = async (): Promise<void> => {
+      if (released) { return; }
+      released = true;
+      clearInterval(heartbeatTimer);
+      try {
+        const raw = await fs.promises.readFile(leasePath, 'utf8');
+        const current = JSON.parse(raw) as RootLeaseRecord;
+        if (current.leaseId === leaseId) {
+          await fs.promises.rm(leasePath, { force: true });
+        }
+      } catch {
+        // ignore error
+      }
+      await this.removeJournalRootWhenEmpty().catch(() => undefined);
+    };
+
+    return { leaseId, release };
   }
 
   private async removeOperationDir(operationPath: string): Promise<void> {
     await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 
-  private async executeLocked<T>(plan: MutationPlan<T>, operationId: string): Promise<T> {
+  private async executeLocked<T>(plan: MutationPlan<T>, operationId: string, lease: ActiveRootLease): Promise<T> {
     if (
       !operationId ||
       path.basename(operationId) !== operationId ||
@@ -114,6 +235,8 @@ export class MutationPlanExecutor {
       const owner: OperationOwner = {
         pid: process.pid,
         createdAt: Date.now(),
+        heartbeatAt: Date.now(),
+        leaseId: lease.leaseId,
       };
       await fs.promises.writeFile(
         path.join(stagingPath, 'owner.json'),
@@ -191,7 +314,12 @@ export class MutationPlanExecutor {
   async recover(): Promise<void> {
     const release = await acquirePlanMutationLock(this.rootPath);
     try {
-      await this.recoverLocked();
+      const lease = await this.acquireRootLease('recovery');
+      try {
+        await this.recoverLocked();
+      } finally {
+        await lease.release();
+      }
     } finally {
       release();
     }
@@ -218,7 +346,12 @@ export class MutationPlanExecutor {
         const ownerRaw = await fs.promises.readFile(path.join(operationPath, 'owner.json'), 'utf8');
         const parsed = JSON.parse(ownerRaw) as Partial<OperationOwner>;
         if (typeof parsed?.pid === 'number' && Number.isInteger(parsed.pid)) {
-          owner = { pid: parsed.pid, createdAt: Number(parsed.createdAt) || 0 };
+          owner = {
+            pid: parsed.pid,
+            createdAt: Number(parsed.createdAt) || 0,
+            heartbeatAt: typeof parsed.heartbeatAt === 'number' ? parsed.heartbeatAt : undefined,
+            leaseId: typeof parsed.leaseId === 'string' ? parsed.leaseId : undefined,
+          };
         } else {
           throw new Error('Invalid owner metadata in owner.json.');
         }
@@ -271,26 +404,36 @@ export class MutationPlanExecutor {
           continue;
         }
 
-        // Uncommitted journal: if owner process is alive, fail-closed against concurrent mutations.
-        if (owner !== undefined && isProcessAlive(owner.pid)) {
+        // #183: Rollback was explicitly required after an error.
+        // It must be restored and removed rather than blocking with PLAN_CONFLICT.
+        if (journal.state === 'rollback-required') {
+          await this.restoreSnapshots(operationPath, journal.snapshots);
+          await this.removeOperationDir(operationPath);
+          continue;
+        }
+
+        // Uncommitted journal (prepared or applying):
+        // If owner process is alive AND its heartbeat is fresh (if tracked), fail-closed against concurrent mutations.
+        // If heartbeat is expired, treat as stale/reused PID (#212) and recover.
+        if (isOwnerActivelyRunning(owner)) {
           throw new MutationPlanError(
             'PLAN_CONFLICT',
-            `Operation "${entry.name}" is actively in progress by process ${owner.pid}.`,
+            `Operation "${entry.name}" is actively in progress by process ${owner!.pid}.`,
           );
         }
 
-        // Owner process is terminated/absent: rollback interrupted plan.
+        // Owner process is terminated/absent or stale: rollback interrupted plan.
         await this.restoreSnapshots(operationPath, journal.snapshots);
         await this.removeOperationDir(operationPath);
         continue;
       }
 
       if (journalMissing) {
-        // If owner is alive, the operation is actively in preparation! Fail-closed.
-        if (owner !== undefined && isProcessAlive(owner.pid)) {
+        // If owner is alive and heartbeat is fresh (if tracked), the operation is actively in preparation! Fail-closed.
+        if (isOwnerActivelyRunning(owner)) {
           throw new MutationPlanError(
             'PLAN_CONFLICT',
-            `Operation "${entry.name}" is actively in progress by process ${owner.pid}.`,
+            `Operation "${entry.name}" is actively in progress by process ${owner!.pid}.`,
           );
         }
 
@@ -630,3 +773,14 @@ export function isProcessAlive(pid: number): boolean {
     return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === 'EPERM');
   }
 }
+
+export function isOwnerActivelyRunning(owner: OperationOwner | undefined): boolean {
+  if (owner === undefined || !isProcessAlive(owner.pid)) {
+    return false;
+  }
+  if (typeof owner.heartbeatAt === 'number') {
+    return Date.now() - owner.heartbeatAt <= LEASE_TTL_MS;
+  }
+  return true;
+}
+

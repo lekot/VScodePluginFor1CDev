@@ -227,4 +227,64 @@ suite('BindingManager', () => {
     const m = makeManager(createMemoryFs());
     assert.strictEqual(await m.delete('unknown-ws', 'c.xml'), false);
   });
+
+  test('upsert fails closed and preserves file when bindings JSON is malformed (#190)', async () => {
+    const fs = createMemoryFs();
+    const bindingsPath = path.join(root, '.vscode', 'infobase-bindings.json');
+    const corruptedContent = '<<<<<<< HEAD: merge conflict corrupted json';
+    await fs.writeFile(vscode.Uri.file(bindingsPath), Buffer.from(corruptedContent, 'utf8'));
+
+    const m = makeManager(fs);
+    await assert.rejects(
+      () => m.upsert({
+        workspaceFolder: folder.name,
+        configRelativePath: 'src/Configuration.xml',
+        infobaseIds: ['base1'],
+        massDeployment: false,
+      }),
+      /corrupt|invalid|Некорректный JSON|не удалось/i,
+    );
+
+    const current = Buffer.from(await fs.readFile(vscode.Uri.file(bindingsPath))).toString('utf8');
+    assert.strictEqual(current, corruptedContent, 'corrupted file must not be overwritten');
+  });
+
+  test('upsert fails closed and preserves file when schemaVersion is unsupported (#190)', async () => {
+    const fs = createMemoryFs();
+    const bindingsPath = path.join(root, '.vscode', 'infobase-bindings.json');
+    const unsupportedContent = JSON.stringify({ schemaVersion: 999, bindings: [{ workspaceFolder: 'ws', configRelativePath: 'c.xml' }] });
+    await fs.writeFile(vscode.Uri.file(bindingsPath), Buffer.from(unsupportedContent, 'utf8'));
+
+    const m = makeManager(fs);
+    await assert.rejects(
+      () => m.upsert({
+        workspaceFolder: folder.name,
+        configRelativePath: 'src/Configuration.xml',
+        infobaseIds: ['base1'],
+        massDeployment: false,
+      }),
+      /schemaVersion|unsupported|неподдерживаемая/i,
+    );
+
+    const current = Buffer.from(await fs.readFile(vscode.Uri.file(bindingsPath))).toString('utf8');
+    assert.strictEqual(current, unsupportedContent, 'file with unsupported schema must not be overwritten');
+  });
+
+  test('delete fails closed when bindings JSON is malformed (#190)', async () => {
+    const fs = createMemoryFs();
+    const bindingsPath = path.join(root, '.vscode', 'infobase-bindings.json');
+    const corruptedContent = '{ "malformed json": ';
+    await fs.writeFile(vscode.Uri.file(bindingsPath), Buffer.from(corruptedContent, 'utf8'));
+
+    const m = makeManager(fs);
+    await assert.rejects(
+      () => m.delete(folder.name, 'src/Configuration.xml'),
+      /corrupt|invalid|Некорректный JSON|не удалось/i,
+    );
+  });
+
+
+
+
+
 });
