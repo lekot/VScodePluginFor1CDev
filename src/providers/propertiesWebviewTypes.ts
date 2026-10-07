@@ -3,7 +3,7 @@ import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
 /**
  * Message types sent from webview to extension (discriminated union for type safety)
  */
-export type WebviewMessage =
+export type WebviewMessage = (
   | { type: 'save'; properties: Record<string, unknown> }
   | { type: 'cancel' }
   | { type: 'dirtyChange'; isDirty: boolean; properties?: Record<string, unknown> }
@@ -44,7 +44,11 @@ export type WebviewMessage =
       elementName: string;
       elementTag: string;
       docUri: string;
-    };
+    }
+) & {
+  nodeId?: string;
+  sessionToken?: string;
+};
 
 /**
  * Message types sent from extension to webview (discriminated union for type safety)

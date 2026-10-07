@@ -1071,4 +1071,119 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
     assert.strictEqual(provider.isDirty(), true);
     assert.strictEqual((provider as any).pendingProperties?.Synonym, 'Unsaved Edit');
   });
+
+  test('refreshIfCurrentNode re-reads nested element properties from parentFilePath when file changed externally', async () => {
+    const parentXml = path.join(path.dirname(tempXmlPath), `temp-nested-${Date.now()}.xml`);
+    await fs.promises.writeFile(
+      parentXml,
+      `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+  <Catalog uuid="cat-1">
+    <Properties><Name>CatalogWithAttrs</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="attr-1">
+        <Properties>
+          <Name>TestAttr</Name>
+          <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Original Synonym</v8:content></v8:item></Synonym>
+          <Comment>Original Comment</Comment>
+        </Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`,
+      'utf8'
+    );
+
+    try {
+      const nestedNode: TreeNode = {
+        id: 'Catalog.CatalogWithAttrs.Attribute.TestAttr',
+        name: 'TestAttr',
+        type: MetadataType.Attribute,
+        properties: { Name: 'TestAttr', Synonym: 'Original Synonym', Comment: 'Original Comment' },
+        filePath: undefined,
+        parentFilePath: parentXml,
+      };
+
+      await provider.showProperties(nestedNode);
+      assert.strictEqual(nestedNode.properties.Comment, 'Original Comment');
+
+      // Externally update attribute in parentXml
+      const { XMLWriter } = await import('../../src/utils/XMLWriter');
+      await XMLWriter.writeNestedElementProperties(
+        parentXml,
+        'Attribute',
+        'TestAttr',
+        { Comment: 'Externally Updated Comment' },
+        ['Comment']
+      );
+
+      // Refresh should re-read nested properties from parentFilePath
+      await provider.refreshIfCurrentNode(parentXml);
+
+      assert.strictEqual(
+        nestedNode.properties.Comment,
+        'Externally Updated Comment',
+        'nested node properties must be re-read from parentFilePath on refresh'
+      );
+    } finally {
+      if (fs.existsSync(parentXml)) {
+        await fs.promises.unlink(parentXml);
+      }
+    }
+  });
+
+  test('delayed dirtyChange message from previous node does not pollute newly opened node', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA', Synonym: 'Synonym A' },
+      filePath: tempXmlPath,
+    };
+
+    const nodeBXml = path.join(path.dirname(tempXmlPath), `temp-node-b-${Date.now()}.xml`);
+    await fs.promises.writeFile(nodeBXml, '<Catalog><Properties><Name>CatalogB</Name></Properties></Catalog>', 'utf8');
+
+    try {
+      const nodeB: TreeNode = {
+        id: 'node-b',
+        name: 'CatalogB',
+        type: MetadataType.Catalog,
+        properties: { Name: 'CatalogB', Synonym: 'Synonym B' },
+        filePath: nodeBXml,
+      };
+
+      // Open Node A
+      await provider.showProperties(nodeA);
+
+      // User navigates to Node B
+      await provider.showProperties(nodeB);
+      assert.strictEqual(provider.isDirty(), false);
+      assert.strictEqual((provider as any).pendingProperties, undefined);
+
+      // Delayed dirtyChange from Node A arrives late
+      const { handleMessage } = await import('../../src/providers/propertiesMessageHandler');
+      const ctx = (provider as any).buildHandlerContext();
+
+      await handleMessage(
+        {
+          type: 'dirtyChange',
+          isDirty: true,
+          properties: { Name: 'CatalogA', Synonym: 'Polluted From A' },
+          nodeId: 'node-a',
+          sessionToken: 'node-a:session-1',
+        },
+        ctx
+      );
+
+      // Node B must NOT be dirty and must NOT contain Node A's properties
+      assert.strictEqual(provider.isDirty(), false, 'delayed message from node A must not mark node B as dirty');
+      assert.strictEqual((provider as any).pendingProperties, undefined, 'pendingProperties must not be set from node A');
+    } finally {
+      if (fs.existsSync(nodeBXml)) {
+        await fs.promises.unlink(nodeBXml);
+      }
+    }
+  });
 });
+

@@ -349,10 +349,13 @@ export function renderPropertiesBySections(node: TreeNode, readOnly: boolean): s
 /**
  * Generate webview JavaScript for client-side interaction
  */
-export function getWebviewScript(readOnly: boolean): string {
+export function getWebviewScript(readOnly: boolean, node?: TreeNode, sessionToken?: string): string {
   if (readOnly) {
     return '// Read-only mode - no interaction needed';
   }
+
+  const escapedNodeId = JSON.stringify(node?.id || '');
+  const escapedToken = JSON.stringify(sessionToken || node?.id || '');
 
   return `
     const vscode = acquireVsCodeApi();
@@ -419,14 +422,18 @@ export function getWebviewScript(readOnly: boolean): string {
     function handleSave() {
       vscode.postMessage({
         type: 'save',
-        properties: state.currentProperties
+        properties: state.currentProperties,
+        nodeId: ${escapedNodeId},
+        sessionToken: ${escapedToken}
       });
     }
 
     // Handle cancel button click
     function handleCancel() {
       vscode.postMessage({
-        type: 'cancel'
+        type: 'cancel',
+        nodeId: ${escapedNodeId},
+        sessionToken: ${escapedToken}
       });
     }
 
@@ -459,7 +466,9 @@ export function getWebviewScript(readOnly: boolean): string {
         vscode.postMessage({
           type: 'dirtyChange',
           isDirty: isDirty,
-          properties: state.currentProperties
+          properties: state.currentProperties,
+          nodeId: ${escapedNodeId},
+          sessionToken: ${escapedToken}
         });
       }
     }
@@ -650,7 +659,7 @@ export function getWebviewScript(readOnly: boolean): string {
 /**
  * Generate HTML content for webview
  */
-export function getWebviewContent(node: TreeNode): string {
+export function getWebviewContent(node: TreeNode, sessionToken?: string): string {
   // Handle empty state when no node is selected
   if (!node) {
     return getEmptyStateContent();
@@ -875,7 +884,7 @@ export function getWebviewContent(node: TreeNode): string {
         </div>
       `}
       <script>
-        ${getWebviewScript(readOnly)}
+        ${getWebviewScript(readOnly, node, sessionToken)}
       </script>
     </body>
     </html>

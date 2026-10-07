@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { TreeNode } from '../models/treeNode';
+import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { MetadataTreeDataProvider } from './treeDataProvider';
 import { TypeEditorProvider } from './typeEditorProvider';
@@ -62,6 +62,9 @@ export class PropertiesProvider {
     void this.treeDataProvider;
   }
 
+  private _sessionCounter: number = 0;
+  private currentSessionToken: string = '';
+
   /** Returns true if the properties panel is currently open (created and not disposed). */
   public isOpen(): boolean {
     return this.panel !== undefined;
@@ -73,7 +76,19 @@ export class PropertiesProvider {
   }
 
   /** Update dirty state and optional unsaved property snapshot. */
-  public setIsDirty(isDirty: boolean, properties?: Record<string, unknown>): void {
+  public setIsDirty(
+    isDirty: boolean,
+    properties?: Record<string, unknown>,
+    token?: { nodeId?: string; sessionToken?: string }
+  ): void {
+    if (token?.nodeId && this.currentNode && token.nodeId !== this.currentNode.id) {
+      Logger.warn(`Ignoring setIsDirty from outdated node ${token.nodeId} (current: ${this.currentNode.id})`);
+      return;
+    }
+    if (token?.sessionToken && this.currentSessionToken && token.sessionToken !== this.currentSessionToken) {
+      Logger.warn(`Ignoring setIsDirty from outdated session ${token.sessionToken} (current: ${this.currentSessionToken})`);
+      return;
+    }
     this._isDirty = isDirty;
     if (properties) {
       this.pendingProperties = properties;
@@ -134,6 +149,7 @@ export class PropertiesProvider {
     this.currentFormSelection = null;
     this.currentFormSelectionRevision += 1;
     this.currentNode = node;
+    this.currentSessionToken = node ? `${node.id || node.name}:${++this._sessionCounter}` : '';
     this.updateWebviewContent();
   }
 
@@ -157,6 +173,7 @@ export class PropertiesProvider {
     this.currentFormSelection = null;
     this.currentFormSelectionRevision += 1;
     this.currentNode = node;
+    this.currentSessionToken = node ? `${node.id || node.name}:${++this._sessionCounter}` : '';
 
     if (!node) {
       if (!this.panel) {
@@ -269,8 +286,43 @@ export class PropertiesProvider {
           return false;
         }
       }
+    } else if (node.parentFilePath && node.name && node.type) {
+      let isReadableFile = false;
+      try {
+        const stat = await fs.promises.stat(node.parentFilePath);
+        isReadableFile = stat.isFile();
+      } catch {
+        // path doesn't exist
+      }
+
+      if (isReadableFile) {
+        try {
+          const { XMLWriter: xmlWriter } = await import('../utils/XMLWriter');
+          const { findTabularSectionInstanceForAttributeParent } = await import('../services/elementOperations');
+          const scopedTabularSectionName =
+            node.type === MetadataType.Attribute && node.parent
+              ? findTabularSectionInstanceForAttributeParent(node.parent)?.name
+              : undefined;
+          const nestedOptions = node.nestedPath || scopedTabularSectionName
+            ? {
+                ...(node.nestedPath ? { nestedPath: node.nestedPath } : {}),
+                ...(scopedTabularSectionName ? { scopedTabularSectionName } : {}),
+              }
+            : undefined;
+
+          const xmlProperties = await xmlWriter.readNestedElementProperties(
+            node.parentFilePath,
+            node.type,
+            node.name,
+            nestedOptions
+          );
+          node.properties = { ...xmlProperties };
+          Logger.debug(`Successfully loaded nested properties for ${node.name} from ${node.parentFilePath}`);
+        } catch (error) {
+          Logger.warn(`Failed to re-read nested properties for ${node.name} from ${node.parentFilePath}`, error);
+        }
+      }
     }
-    // For nested elements with parentFilePath, use already loaded properties from node.properties
 
     this.updateWebviewContent();
     return true;
@@ -382,6 +434,14 @@ export class PropertiesProvider {
           Logger.warn('Received invalid message from webview', message);
           return;
         }
+        if (message.sessionToken && this.currentSessionToken && message.sessionToken !== this.currentSessionToken) {
+          Logger.warn(`Ignoring stale webview message for outdated session ${message.sessionToken} (current: ${this.currentSessionToken})`);
+          return;
+        }
+        if (message.nodeId && this.currentNode && message.nodeId !== this.currentNode.id) {
+          Logger.warn(`Ignoring stale webview message for outdated node ${message.nodeId} (current: ${this.currentNode.id})`);
+          return;
+        }
         await handleMessage(message, this.buildHandlerContext());
       },
       null,
@@ -411,7 +471,7 @@ export class PropertiesProvider {
       return;
     }
 
-    const html = getWebviewContent(this.currentNode);
+    const html = getWebviewContent(this.currentNode, this.currentSessionToken);
     this.panel.webview.html = html;
     Logger.debug(`Properties panel updated for node: ${this.currentNode.name}`);
   }
@@ -468,7 +528,7 @@ export class PropertiesProvider {
       postMessage: (msg) => this.postMessage(msg),
       updateWebviewContent: () => this.updateWebviewContent(),
       setIsSaving: (value) => { this._isSaving = value; },
-      setIsDirty: (isDirty, properties) => { this.setIsDirty(isDirty, properties); },
+      setIsDirty: (isDirty, properties, token) => { this.setIsDirty(isDirty, properties, token); },
     };
   }
 
