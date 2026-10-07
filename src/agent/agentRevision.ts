@@ -32,8 +32,11 @@ export async function calculateRevision(targetPath: string): Promise<string> {
       return await calculateDirectoryRevision(targetPath);
     }
     return ZERO_REVISION;
-  } catch {
-    return ZERO_REVISION;
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return ZERO_REVISION;
+    }
+    throw err;
   }
 }
 

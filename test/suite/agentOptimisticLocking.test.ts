@@ -65,6 +65,27 @@ suite('Agent API — Issue #134 calculateRevision & validateIfRev', () => {
     assert.strictEqual(rev, '0'.repeat(64));
   });
 
+  test('calculateRevision throws error for non-ENOENT file system errors (e.g. EACCES)', async () => {
+    const filePath = path.join(tmpDir, 'test-eacces.xml');
+    fs.writeFileSync(filePath, '<test/>', 'utf-8');
+
+    const origReadFile = fs.promises.readFile;
+    try {
+      (fs.promises as any).readFile = async () => {
+        const err = new Error('EACCES: permission denied');
+        (err as any).code = 'EACCES';
+        throw err;
+      };
+
+      await assert.rejects(
+        () => calculateRevision(filePath),
+        /EACCES/
+      );
+    } finally {
+      fs.promises.readFile = origReadFile;
+    }
+  });
+
   test('validateIfRev returns ok: true when ifRev matches current revision', async () => {
     const filePath = path.join(tmpDir, 'test.xml');
     fs.writeFileSync(filePath, '<test>content</test>', 'utf-8');
@@ -473,6 +494,38 @@ suite('Agent API — Issue #134 ifRev optimistic locking', () => {
     });
     assert.strictEqual(delTsOk.success, true);
     assert.notStrictEqual(delTsOk.rev, revAfterDelAttr);
+  });
+
+  test('concurrent setProperties mutations with same ifRev result in exactly 1 success and 1 conflict', async () => {
+    const catalogPath = path.join(tmpDir, 'Catalogs', 'Goods.xml');
+    const revBefore = await calculateRevision(catalogPath);
+
+    const [res1, res2] = await Promise.all([
+      ops.setProperties({ path: 'Catalog.Goods', properties: { Synonym: 'Value1' }, ifRev: revBefore }),
+      ops.setProperties({ path: 'Catalog.Goods', properties: { Synonym: 'Value2' }, ifRev: revBefore }),
+    ]);
+
+    const successes = [res1, res2].filter((r) => r.success);
+    const conflicts = [res1, res2].filter((r) => !r.success && r.code === 'CONCURRENT_MODIFICATION_ERROR');
+
+    assert.strictEqual(successes.length, 1, 'Exactly one concurrent mutation must succeed');
+    assert.strictEqual(conflicts.length, 1, 'Exactly one concurrent mutation must receive CONCURRENT_MODIFICATION_ERROR conflict');
+  });
+
+  test('concurrent createAttribute mutations with same ifRev result in exactly 1 success and 1 conflict', async () => {
+    const catalogPath = path.join(tmpDir, 'Catalogs', 'Goods.xml');
+    const revBefore = await calculateRevision(catalogPath);
+
+    const [res1, res2] = await Promise.all([
+      ops.addAttribute({ path: 'Catalog.Goods', name: 'RaceAttr1', ifRev: revBefore }),
+      ops.addAttribute({ path: 'Catalog.Goods', name: 'RaceAttr2', ifRev: revBefore }),
+    ]);
+
+    const successes = [res1, res2].filter((r) => r.success);
+    const conflicts = [res1, res2].filter((r) => !r.success && r.code === 'CONCURRENT_MODIFICATION_ERROR');
+
+    assert.strictEqual(successes.length, 1, 'Exactly one concurrent attribute addition must succeed');
+    assert.strictEqual(conflicts.length, 1, 'Exactly one concurrent attribute addition must receive conflict');
   });
 });
 

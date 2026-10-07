@@ -30,6 +30,7 @@ import { CfeOwnershipError, type CfeObjectIdentity } from '../extensionSupport/c
 import { getMetadataTypeDescriptorByRootTag } from '../constants/metadataTypeDescriptors';
 import { hashContent } from '../services/configurationSession/atomicFileStorage';
 import type { MutationExpectation, MutationPlan, MutationStep } from '../services/configurationSession/mutationPlan';
+import { configurationPathKey } from '../utils/configurationPathIdentity';
 
 /** Types whose templates include default ChildObjects (Dimension+Resource); rules engine cannot generate those yet. */
 const TEMPLATE_ONLY_TYPES = new Set(['InformationRegister', 'AccumulationRegister']);
@@ -157,11 +158,43 @@ function mutationFailure(error: unknown): AgentResult<never> {
 
 import { calculateRevision, isValidRevisionFormat, ZERO_REVISION } from './agentRevision';
 
+const targetMutationLocks = new Map<string, Promise<void>>();
+
+export async function acquireTargetMutationLock(targetPath: string): Promise<() => void> {
+    const canonical = configurationPathKey(targetPath);
+    const current = targetMutationLocks.get(canonical) ?? Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    const chained = current.then(() => next, () => next);
+    targetMutationLocks.set(canonical, chained);
+    await current.catch(() => undefined);
+    return () => {
+        release();
+        if (targetMutationLocks.get(canonical) === chained) {
+            targetMutationLocks.delete(canonical);
+        }
+    };
+}
+
 export class AgentOperations {
     private readonly configRootPath: string;
 
     constructor(configRootPath: string) {
         this.configRootPath = configRootPath;
+    }
+
+    private async withTargetMutationLock<T>(
+        targetPath: string,
+        action: () => Promise<AgentResult<T>>
+    ): Promise<AgentResult<T>> {
+        const release = await acquireTargetMutationLock(targetPath);
+        try {
+            return await action();
+        } finally {
+            release();
+        }
     }
 
     private async checkMutationPreconditions<T = MutationResultData>(
@@ -426,86 +459,88 @@ export class AgentOperations {
                 // ENOENT — файл не существует, продолжаем
             }
 
-            const targetPath = `${type}.${trimmedName}`;
-            const check = await this.checkMutationPreconditions<CreateObjectResult>(newFilePath, targetPath, params);
-            if (!check.proceed) {
-                return check.errorResult!;
-            }
+            return await this.withTargetMutationLock(newFilePath, async () => {
+                const targetPath = `${type}.${trimmedName}`;
+                const check = await this.checkMutationPreconditions<CreateObjectResult>(newFilePath, targetPath, params);
+                if (!check.proceed) {
+                    return check.errorResult!;
+                }
 
-            if (params.dryRun) {
-                return {
-                    success: true,
-                    dryRun: true,
-                    rev: check.currentRev,
-                    target: targetPath,
-                    data: {
-                        filePath: newFilePath,
+                if (params.dryRun) {
+                    return {
+                        success: true,
                         dryRun: true,
                         rev: check.currentRev,
                         target: targetPath,
-                        plannedChanges: {
-                            files: [newFilePath, path.join(this.configRootPath, CONFIGURATION_XML)],
-                            summary: `Создание объекта ${targetPath}`,
+                        data: {
+                            filePath: newFilePath,
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: targetPath,
+                            plannedChanges: {
+                                files: [newFilePath, path.join(this.configRootPath, CONFIGURATION_XML)],
+                                summary: `Создание объекта ${targetPath}`,
+                            },
                         },
-                    },
-                };
-            }
-
-            await assertPathWithinRoot(this.configRootPath, typeFolderPath);
-            await fs.promises.mkdir(typeFolderPath, { recursive: true });
-
-            let content: string;
-            const uuid = generateSimpleUuid();
-
-            if (rules) {
-                // Rules-based path
-                let ir = metadataConverter.createDefaultIR(rules, { name: trimmedName, uuid });
-                const overrides: Record<string, unknown> = {};
-                if (synonym !== undefined) {
-                    overrides['Synonym'] = synonym;
+                    };
                 }
-                if (properties) {
-                    Object.assign(overrides, properties);
+
+                await assertPathWithinRoot(this.configRootPath, typeFolderPath);
+                await fs.promises.mkdir(typeFolderPath, { recursive: true });
+
+                let content: string;
+                const uuid = generateSimpleUuid();
+
+                if (rules) {
+                    // Rules-based path
+                    let ir = metadataConverter.createDefaultIR(rules, { name: trimmedName, uuid });
+                    const overrides: Record<string, unknown> = {};
+                    if (synonym !== undefined) {
+                        overrides['Synonym'] = synonym;
+                    }
+                    if (properties) {
+                        Object.assign(overrides, properties);
+                    }
+                    if (Object.keys(overrides).length > 0) {
+                        ir = metadataConverter.mergeProperties(ir, overrides);
+                    }
+                    content = metadataConverter.irToXml(ir, rules);
+                } else {
+                    // Template fallback (registers with default children)
+                    const uuidDim = generateSimpleUuid();
+                    const uuidResource = generateSimpleUuid();
+                    content = substituteDesignerTemplate(templateXml!, {
+                        uuid, Name: trimmedName, Synonym_ru: synonym ?? trimmedName,
+                        uuidDim, uuidResource,
+                    });
                 }
-                if (Object.keys(overrides).length > 0) {
-                    ir = metadataConverter.mergeProperties(ir, overrides);
-                }
-                content = metadataConverter.irToXml(ir, rules);
-            } else {
-                // Template fallback (registers with default children)
-                const uuidDim = generateSimpleUuid();
-                const uuidResource = generateSimpleUuid();
-                content = substituteDesignerTemplate(templateXml!, {
-                    uuid, Name: trimmedName, Synonym_ru: synonym ?? trimmedName,
-                    uuidDim, uuidResource,
-                });
-            }
 
-            content = injectInternalInfoIntoMetadataXml(content, type, trimmedName);
-            content = normalizeMetaDataObjectRoot(content, targetVersion);
+                content = injectInternalInfoIntoMetadataXml(content, type, trimmedName);
+                content = normalizeMetaDataObjectRoot(content, targetVersion);
 
-            await assertPathWithinRoot(this.configRootPath, newFilePath);
-            await fs.promises.writeFile(newFilePath, content, 'utf-8');
+                await assertPathWithinRoot(this.configRootPath, newFilePath);
+                await fs.promises.writeFile(newFilePath, content, 'utf-8');
 
-            // Создаём директорию объекта
-            const elementDir = path.join(typeFolderPath, trimmedName);
-            await assertPathWithinRoot(this.configRootPath, elementDir);
-            await fs.promises.mkdir(elementDir, { recursive: true });
+                // Создаём директорию объекта
+                const elementDir = path.join(typeFolderPath, trimmedName);
+                await assertPathWithinRoot(this.configRootPath, elementDir);
+                await fs.promises.mkdir(elementDir, { recursive: true });
 
-            // Регистрируем в Configuration.xml
-            await addRootObjectToConfiguration(this.configRootPath, type, trimmedName);
+                // Регистрируем в Configuration.xml
+                await addRootObjectToConfiguration(this.configRootPath, type, trimmedName);
 
-            const newRev = await calculateRevision(newFilePath);
-            return {
-                success: true,
-                rev: newRev,
-                target: targetPath,
-                data: {
-                    filePath: newFilePath,
+                const newRev = await calculateRevision(newFilePath);
+                return {
+                    success: true,
                     rev: newRev,
                     target: targetPath,
-                },
-            };
+                    data: {
+                        filePath: newFilePath,
+                        rev: newRev,
+                        target: targetPath,
+                    },
+                };
+            });
         } catch (err) {
             return mutationFailure(err);
         }
@@ -740,44 +775,46 @@ export class AgentOperations {
                 return { success: false, error: `Некорректный путь для deleteAttribute: "${params.path}". Ожидается 4 или 6 сегментов.` };
             }
 
-            const check = await this.checkMutationPreconditions(filePath, params.path, params);
-            if (!check.proceed) {
-                return check.errorResult!;
-            }
+            return await this.withTargetMutationLock(filePath, async () => {
+                const check = await this.checkMutationPreconditions(filePath, params.path, params);
+                if (!check.proceed) {
+                    return check.errorResult!;
+                }
 
-            if (params.dryRun) {
-                return {
-                    success: true,
-                    dryRun: true,
-                    rev: check.currentRev,
-                    target: params.path,
-                    data: {
+                if (params.dryRun) {
+                    return {
+                        success: true,
                         dryRun: true,
                         rev: check.currentRev,
                         target: params.path,
-                        plannedChanges: {
-                            files: [filePath],
-                            summary: `Удаление реквизита ${params.path}`,
+                        data: {
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: params.path,
+                            plannedChanges: {
+                                files: [filePath],
+                                summary: `Удаление реквизита ${params.path}`,
+                            },
                         },
-                    },
+                    };
+                }
+
+                if (segments.length === 4) {
+                    // RootTag.ObjectName.Attribute.AttrName
+                    await XMLWriter.removeNestedElement(filePath, 'Attribute', resolved.nestedName!);
+                } else if (segments.length === 6) {
+                    // RootTag.ObjectName.TabularSection.TSName.Attribute.ColName
+                    await XMLWriter.removeAttributeFromTabularSection(filePath, resolved.tabularSection!, resolved.nestedName!);
+                }
+
+                const newRev = await calculateRevision(filePath);
+                return {
+                    success: true,
+                    rev: newRev,
+                    target: params.path,
+                    data: { rev: newRev, target: params.path },
                 };
-            }
-
-            if (segments.length === 4) {
-                // RootTag.ObjectName.Attribute.AttrName
-                await XMLWriter.removeNestedElement(filePath, 'Attribute', resolved.nestedName!);
-            } else if (segments.length === 6) {
-                // RootTag.ObjectName.TabularSection.TSName.Attribute.ColName
-                await XMLWriter.removeAttributeFromTabularSection(filePath, resolved.tabularSection!, resolved.nestedName!);
-            }
-
-            const newRev = await calculateRevision(filePath);
-            return {
-                success: true,
-                rev: newRev,
-                target: params.path,
-                data: { rev: newRev, target: params.path },
-            };
+            });
         } catch (err) {
             return mutationFailure(err);
         }
@@ -804,37 +841,39 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
-            const check = await this.checkMutationPreconditions(filePath, params.path, params);
-            if (!check.proceed) {
-                return check.errorResult!;
-            }
+            return await this.withTargetMutationLock(filePath, async () => {
+                const check = await this.checkMutationPreconditions(filePath, params.path, params);
+                if (!check.proceed) {
+                    return check.errorResult!;
+                }
 
-            if (params.dryRun) {
-                return {
-                    success: true,
-                    dryRun: true,
-                    rev: check.currentRev,
-                    target: params.path,
-                    data: {
+                if (params.dryRun) {
+                    return {
+                        success: true,
                         dryRun: true,
                         rev: check.currentRev,
                         target: params.path,
-                        plannedChanges: {
-                            files: [filePath],
-                            summary: `Удаление табличной части ${params.path}`,
+                        data: {
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: params.path,
+                            plannedChanges: {
+                                files: [filePath],
+                                summary: `Удаление табличной части ${params.path}`,
+                            },
                         },
-                    },
-                };
-            }
+                    };
+                }
 
-            await XMLWriter.removeNestedElement(filePath, 'TabularSection', resolved.nestedName!);
-            const newRev = await calculateRevision(filePath);
-            return {
-                success: true,
-                rev: newRev,
-                target: params.path,
-                data: { rev: newRev, target: params.path },
-            };
+                await XMLWriter.removeNestedElement(filePath, 'TabularSection', resolved.nestedName!);
+                const newRev = await calculateRevision(filePath);
+                return {
+                    success: true,
+                    rev: newRev,
+                    target: params.path,
+                    data: { rev: newRev, target: params.path },
+                };
+            });
         } catch (err) {
             return mutationFailure(err);
         }
@@ -859,59 +898,61 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
-            const check = await this.checkMutationPreconditions(filePath, params.path, params);
-            if (!check.proceed) {
-                return check.errorResult!;
-            }
+            return await this.withTargetMutationLock(filePath, async () => {
+                const check = await this.checkMutationPreconditions(filePath, params.path, params);
+                if (!check.proceed) {
+                    return check.errorResult!;
+                }
 
-            if (params.dryRun) {
-                return {
-                    success: true,
-                    dryRun: true,
-                    rev: check.currentRev,
-                    target: params.path,
-                    data: {
+                if (params.dryRun) {
+                    return {
+                        success: true,
                         dryRun: true,
                         rev: check.currentRev,
                         target: params.path,
-                        plannedChanges: {
-                            files: [filePath, path.join(this.configRootPath, CONFIGURATION_XML)],
-                            summary: `Удаление объекта ${params.path}`,
+                        data: {
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: params.path,
+                            plannedChanges: {
+                                files: [filePath, path.join(this.configRootPath, CONFIGURATION_XML)],
+                                summary: `Удаление объекта ${params.path}`,
+                            },
                         },
-                    },
-                };
-            }
-
-            const folderName =
-                MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ??
-                `${rootTag}s`;
-            const typeFolderPath = path.join(this.configRootPath, folderName);
-
-            // Удаляем XML-файл объекта
-            try {
-                await fs.promises.unlink(filePath);
-            } catch (err) {
-                if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-                    return { success: false, error: `Файл объекта не найден: ${filePath}` };
+                    };
                 }
-                throw err;
-            }
 
-            // Удаляем директорию объекта если есть
-            const elementDir = path.join(typeFolderPath, objectName);
-            await assertPathWithinRoot(this.configRootPath, elementDir);
-            await fs.promises.rm(elementDir, { recursive: true, force: true });
+                const folderName =
+                    MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ??
+                    `${rootTag}s`;
+                const typeFolderPath = path.join(this.configRootPath, folderName);
 
-            // Снимаем регистрацию из Configuration.xml
-            await removeRootObjectFromConfiguration(this.configRootPath, rootTag, objectName);
+                // Удаляем XML-файл объекта
+                try {
+                    await fs.promises.unlink(filePath);
+                } catch (err) {
+                    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+                        return { success: false, error: `Файл объекта не найден: ${filePath}` };
+                    }
+                    throw err;
+                }
 
-            const newRev = ZERO_REVISION;
-            return {
-                success: true,
-                rev: newRev,
-                target: params.path,
-                data: { rev: newRev, target: params.path },
-            };
+                // Удаляем директорию объекта если есть
+                const elementDir = path.join(typeFolderPath, objectName);
+                await assertPathWithinRoot(this.configRootPath, elementDir);
+                await fs.promises.rm(elementDir, { recursive: true, force: true });
+
+                // Снимаем регистрацию из Configuration.xml
+                await removeRootObjectFromConfiguration(this.configRootPath, rootTag, objectName);
+
+                const newRev = ZERO_REVISION;
+                return {
+                    success: true,
+                    rev: newRev,
+                    target: params.path,
+                    data: { rev: newRev, target: params.path },
+                };
+            });
         } catch (err) {
             return mutationFailure(err);
         }
@@ -956,61 +997,63 @@ export class AgentOperations {
             const oldDir = path.join(typeFolderPath, objectName);
             const newDir = path.join(typeFolderPath, newName);
 
-            const check = await this.checkMutationPreconditions<CreateObjectResult>(filePath, params.path, params);
-            if (!check.proceed) {
-                return check.errorResult!;
-            }
+            return await this.withTargetMutationLock(filePath, async () => {
+                const check = await this.checkMutationPreconditions<CreateObjectResult>(filePath, params.path, params);
+                if (!check.proceed) {
+                    return check.errorResult!;
+                }
 
-            if (params.dryRun) {
-                return {
-                    success: true,
-                    dryRun: true,
-                    rev: check.currentRev,
-                    target: params.path,
-                    data: {
-                        filePath: newFilePath,
+                if (params.dryRun) {
+                    return {
+                        success: true,
                         dryRun: true,
                         rev: check.currentRev,
                         target: params.path,
-                        plannedChanges: {
-                            files: [filePath, newFilePath, path.join(this.configRootPath, CONFIGURATION_XML)],
-                            summary: `Переименование объекта ${params.path} в ${newName}`,
+                        data: {
+                            filePath: newFilePath,
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: params.path,
+                            plannedChanges: {
+                                files: [filePath, newFilePath, path.join(this.configRootPath, CONFIGURATION_XML)],
+                                summary: `Переименование объекта ${params.path} в ${newName}`,
+                            },
                         },
-                    },
+                    };
+                }
+
+                await Promise.all([
+                    assertPathWithinRoot(this.configRootPath, newFilePath),
+                    assertPathWithinRoot(this.configRootPath, oldDir),
+                    assertPathWithinRoot(this.configRootPath, newDir),
+                ]);
+
+                // Обновляем Name в XML
+                await XMLWriter.writeProperties(filePath, { Name: newName });
+
+                // Переименовываем XML-файл
+                await fs.promises.rename(filePath, newFilePath);
+
+                // Переименовываем директорию объекта если есть
+                try {
+                    await fs.promises.access(oldDir);
+                    await fs.promises.rename(oldDir, newDir);
+                } catch {
+                    // Директории нет — ок
+                }
+
+                // Обновляем Configuration.xml
+                await removeRootObjectFromConfiguration(this.configRootPath, rootTag, objectName);
+                await addRootObjectToConfiguration(this.configRootPath, rootTag, newName);
+
+                const newRev = await calculateRevision(newFilePath);
+                return {
+                    success: true,
+                    rev: newRev,
+                    target: params.path,
+                    data: { filePath: newFilePath, rev: newRev, target: params.path },
                 };
-            }
-
-            await Promise.all([
-                assertPathWithinRoot(this.configRootPath, newFilePath),
-                assertPathWithinRoot(this.configRootPath, oldDir),
-                assertPathWithinRoot(this.configRootPath, newDir),
-            ]);
-
-            // Обновляем Name в XML
-            await XMLWriter.writeProperties(filePath, { Name: newName });
-
-            // Переименовываем XML-файл
-            await fs.promises.rename(filePath, newFilePath);
-
-            // Переименовываем директорию объекта если есть
-            try {
-                await fs.promises.access(oldDir);
-                await fs.promises.rename(oldDir, newDir);
-            } catch {
-                // Директории нет — ок
-            }
-
-            // Обновляем Configuration.xml
-            await removeRootObjectFromConfiguration(this.configRootPath, rootTag, objectName);
-            await addRootObjectToConfiguration(this.configRootPath, rootTag, newName);
-
-            const newRev = await calculateRevision(newFilePath);
-            return {
-                success: true,
-                rev: newRev,
-                target: params.path,
-                data: { filePath: newFilePath, rev: newRev, target: params.path },
-            };
+            });
         } catch (err) {
             return mutationFailure(err);
         }
@@ -1046,38 +1089,40 @@ export class AgentOperations {
                 return { success: false, error: nameValidation };
             }
 
-            const check = await this.checkMutationPreconditions(filePath, params.path, params);
-            if (!check.proceed) {
-                return check.errorResult!;
-            }
+            return await this.withTargetMutationLock(filePath, async () => {
+                const check = await this.checkMutationPreconditions(filePath, params.path, params);
+                if (!check.proceed) {
+                    return check.errorResult!;
+                }
 
-            if (params.dryRun) {
-                return {
-                    success: true,
-                    dryRun: true,
-                    rev: check.currentRev,
-                    target: params.path,
-                    data: {
+                if (params.dryRun) {
+                    return {
+                        success: true,
                         dryRun: true,
                         rev: check.currentRev,
                         target: params.path,
-                        plannedChanges: {
-                            files: [filePath],
-                            summary: `Добавление реквизита ${params.name.trim()} в ${params.path}`,
+                        data: {
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: params.path,
+                            plannedChanges: {
+                                files: [filePath],
+                                summary: `Добавление реквизита ${params.name.trim()} в ${params.path}`,
+                            },
                         },
-                    },
+                    };
+                }
+
+                await XMLWriter.addNestedElement(filePath, 'Attribute', params.name.trim(), {}, rootTag as MetadataType, objectName);
+
+                const newRev = await calculateRevision(filePath);
+                return {
+                    success: true,
+                    rev: newRev,
+                    target: params.path,
+                    data: { rev: newRev, target: params.path },
                 };
-            }
-
-            await XMLWriter.addNestedElement(filePath, 'Attribute', params.name.trim(), {}, rootTag as MetadataType, objectName);
-
-            const newRev = await calculateRevision(filePath);
-            return {
-                success: true,
-                rev: newRev,
-                target: params.path,
-                data: { rev: newRev, target: params.path },
-            };
+            });
         } catch (err) {
             return mutationFailure(err);
         }
@@ -1113,38 +1158,40 @@ export class AgentOperations {
                 return { success: false, error: nameValidation };
             }
 
-            const check = await this.checkMutationPreconditions(filePath, params.path, params);
-            if (!check.proceed) {
-                return check.errorResult!;
-            }
+            return await this.withTargetMutationLock(filePath, async () => {
+                const check = await this.checkMutationPreconditions(filePath, params.path, params);
+                if (!check.proceed) {
+                    return check.errorResult!;
+                }
 
-            if (params.dryRun) {
-                return {
-                    success: true,
-                    dryRun: true,
-                    rev: check.currentRev,
-                    target: params.path,
-                    data: {
+                if (params.dryRun) {
+                    return {
+                        success: true,
                         dryRun: true,
                         rev: check.currentRev,
                         target: params.path,
-                        plannedChanges: {
-                            files: [filePath],
-                            summary: `Добавление табличной части ${params.name.trim()} в ${params.path}`,
+                        data: {
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: params.path,
+                            plannedChanges: {
+                                files: [filePath],
+                                summary: `Добавление табличной части ${params.name.trim()} в ${params.path}`,
+                            },
                         },
-                    },
+                    };
+                }
+
+                await XMLWriter.addNestedElement(filePath, 'TabularSection', params.name.trim(), {}, rootTag as MetadataType, objectName);
+
+                const newRev = await calculateRevision(filePath);
+                return {
+                    success: true,
+                    rev: newRev,
+                    target: params.path,
+                    data: { rev: newRev, target: params.path },
                 };
-            }
-
-            await XMLWriter.addNestedElement(filePath, 'TabularSection', params.name.trim(), {}, rootTag as MetadataType, objectName);
-
-            const newRev = await calculateRevision(filePath);
-            return {
-                success: true,
-                rev: newRev,
-                target: params.path,
-                data: { rev: newRev, target: params.path },
-            };
+            });
         } catch (err) {
             return mutationFailure(err);
         }
@@ -1184,38 +1231,40 @@ export class AgentOperations {
                 return { success: false, error: nameValidation };
             }
 
-            const check = await this.checkMutationPreconditions(filePath, params.path, params);
-            if (!check.proceed) {
-                return check.errorResult!;
-            }
+            return await this.withTargetMutationLock(filePath, async () => {
+                const check = await this.checkMutationPreconditions(filePath, params.path, params);
+                if (!check.proceed) {
+                    return check.errorResult!;
+                }
 
-            if (params.dryRun) {
-                return {
-                    success: true,
-                    dryRun: true,
-                    rev: check.currentRev,
-                    target: params.path,
-                    data: {
+                if (params.dryRun) {
+                    return {
+                        success: true,
                         dryRun: true,
                         rev: check.currentRev,
                         target: params.path,
-                        plannedChanges: {
-                            files: [filePath],
-                            summary: `Добавление колонки ${params.name.trim()} в ${params.path}`,
+                        data: {
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: params.path,
+                            plannedChanges: {
+                                files: [filePath],
+                                summary: `Добавление колонки ${params.name.trim()} в ${params.path}`,
+                            },
                         },
-                    },
+                    };
+                }
+
+                await XMLWriter.addAttributeToTabularSection(filePath, nestedName!, params.name.trim(), rootTag as MetadataType, objectName);
+
+                const newRev = await calculateRevision(filePath);
+                return {
+                    success: true,
+                    rev: newRev,
+                    target: params.path,
+                    data: { rev: newRev, target: params.path },
                 };
-            }
-
-            await XMLWriter.addAttributeToTabularSection(filePath, nestedName!, params.name.trim(), rootTag as MetadataType, objectName);
-
-            const newRev = await calculateRevision(filePath);
-            return {
-                success: true,
-                rev: newRev,
-                target: params.path,
-                data: { rev: newRev, target: params.path },
-            };
+            });
         } catch (err) {
             return mutationFailure(err);
         }
@@ -1243,51 +1292,53 @@ export class AgentOperations {
                 return { success: false, error: 'Нельзя менять Name через setProperties. Используйте renameObject.' };
             }
 
-            const check = await this.checkMutationPreconditions(filePath, params.path, params);
-            if (!check.proceed) {
-                return check.errorResult!;
-            }
+            return await this.withTargetMutationLock(filePath, async () => {
+                const check = await this.checkMutationPreconditions(filePath, params.path, params);
+                if (!check.proceed) {
+                    return check.errorResult!;
+                }
 
-            if (params.dryRun) {
-                return {
-                    success: true,
-                    dryRun: true,
-                    rev: check.currentRev,
-                    target: params.path,
-                    data: {
+                if (params.dryRun) {
+                    return {
+                        success: true,
                         dryRun: true,
                         rev: check.currentRev,
                         target: params.path,
-                        plannedChanges: {
-                            files: [filePath],
-                            summary: `Изменение свойств ${params.path}`,
+                        data: {
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: params.path,
+                            plannedChanges: {
+                                files: [filePath],
+                                summary: `Изменение свойств ${params.path}`,
+                            },
                         },
-                    },
+                    };
+                }
+
+                const props = this.normalizeTypeProperty(params.properties);
+
+                if (resolved.nestedType && resolved.nestedName) {
+                    await XMLWriter.writeNestedElementProperties(
+                        filePath,
+                        resolved.nestedType,
+                        resolved.nestedName,
+                        props,
+                        undefined,
+                        { nestedPath: resolved.fileNestedPath ?? resolved.nestedPath }
+                    );
+                } else {
+                    await XMLWriter.writeProperties(filePath, props);
+                }
+
+                const newRev = await calculateRevision(filePath);
+                return {
+                    success: true,
+                    rev: newRev,
+                    target: params.path,
+                    data: { rev: newRev, target: params.path },
                 };
-            }
-
-            const props = this.normalizeTypeProperty(params.properties);
-
-            if (resolved.nestedType && resolved.nestedName) {
-                await XMLWriter.writeNestedElementProperties(
-                    filePath,
-                    resolved.nestedType,
-                    resolved.nestedName,
-                    props,
-                    undefined,
-                    { nestedPath: resolved.fileNestedPath ?? resolved.nestedPath }
-                );
-            } else {
-                await XMLWriter.writeProperties(filePath, props);
-            }
-
-            const newRev = await calculateRevision(filePath);
-            return {
-                success: true,
-                rev: newRev,
-                target: params.path,
-                data: { rev: newRev, target: params.path },
-            };
+            });
         } catch (err) {
             return mutationFailure(err);
         }
@@ -1405,96 +1456,98 @@ export class AgentOperations {
 
             await this.validateExternalDataSourcePath(resolved);
 
-            const check = await this.checkMutationPreconditions(filePath, params.path, params);
-            if (!check.proceed) {
-                return check.errorResult!;
-            }
+            return await this.withTargetMutationLock(filePath, async () => {
+                const check = await this.checkMutationPreconditions(filePath, params.path, params);
+                if (!check.proceed) {
+                    return check.errorResult!;
+                }
 
-            if (params.dryRun) {
-                return {
-                    success: true,
-                    dryRun: true,
-                    rev: check.currentRev,
-                    target: params.path,
-                    data: {
+                if (params.dryRun) {
+                    return {
+                        success: true,
                         dryRun: true,
                         rev: check.currentRev,
                         target: params.path,
-                        plannedChanges: {
-                            files: [filePath],
-                            summary: `Изменение типа ${params.path}`,
-                        },
-                    },
-                };
-            }
-
-            // Строим TypeDefinition из массива строк
-            const typeEntries = params.types.map(typeStr => {
-                if (typeStr === 'xs:string') { return { kind: 'string' as const }; }
-                if (typeStr === 'xs:decimal') { return { kind: 'number' as const }; }
-                if (typeStr === 'xs:boolean') { return { kind: 'boolean' as const }; }
-                if (typeStr === 'xs:date' || typeStr === 'xs:dateTime' || typeStr === 'xs:time') {
-                    const dateFractions = typeStr === 'xs:date'
-                        ? 'Date' as const
-                        : typeStr === 'xs:time'
-                            ? 'Time' as const
-                            : 'DateTime' as const;
-                    return { kind: 'date' as const, qualifiers: { dateFractions } };
-                }
-                if (typeStr.startsWith('cfg:')) {
-                    const withoutPrefix = typeStr.slice(4); // убираем 'cfg:'
-                    const dotIdx = withoutPrefix.indexOf('.');
-                    if (dotIdx === -1) {
-                        throw new Error(`Некорректный формат типа-ссылки: "${typeStr}". Ожидается cfg:ReferenceKind.ObjectName`);
-                    }
-                    const referenceKind = withoutPrefix.slice(0, dotIdx);
-                    const objectName = withoutPrefix.slice(dotIdx + 1);
-                    return {
-                        kind: 'reference' as const,
-                        referenceType: {
-                            referenceKind: referenceKind as import('../types/typeDefinitions').ReferenceTypeInfo['referenceKind'],
-                            objectName,
+                        data: {
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: params.path,
+                            plannedChanges: {
+                                files: [filePath],
+                                summary: `Изменение типа ${params.path}`,
+                            },
                         },
                     };
                 }
-                throw new Error(`Неизвестный тип: "${typeStr}". Поддерживаются xs:string, xs:decimal, xs:boolean, xs:date, xs:dateTime, xs:time, cfg:Kind.Name`);
-            });
 
-            let category: 'primitive' | 'reference' | 'composite';
-            if (typeEntries.length === 0) {
-                category = 'primitive';
-            } else if (typeEntries.length === 1 && typeEntries[0].kind === 'reference') {
-                category = 'reference';
-            } else {
-                category = typeEntries.length === 1 ? 'primitive' : 'composite';
-            }
-
-            const definition = { category, types: typeEntries };
-            const typeProperty = TypeSerializer.serializePropertyValue(definition);
-
-            if (resolved.nestedType && resolved.nestedName) {
-                await XMLWriter.writeNestedElementProperties(
-                    filePath,
-                    resolved.nestedType,
-                    resolved.nestedName,
-                    { Type: typeProperty },
-                    undefined,
-                    {
-                        nestedPath: resolved.fileNestedPath ?? resolved.nestedPath,
-                        ...(resolved.tabularSection ? { scopedTabularSectionName: resolved.tabularSection } : {}),
+                // Строим TypeDefinition из массива строк
+                const typeEntries = params.types.map(typeStr => {
+                    if (typeStr === 'xs:string') { return { kind: 'string' as const }; }
+                    if (typeStr === 'xs:decimal') { return { kind: 'number' as const }; }
+                    if (typeStr === 'xs:boolean') { return { kind: 'boolean' as const }; }
+                    if (typeStr === 'xs:date' || typeStr === 'xs:dateTime' || typeStr === 'xs:time') {
+                        const dateFractions = typeStr === 'xs:date'
+                            ? 'Date' as const
+                            : typeStr === 'xs:time'
+                                ? 'Time' as const
+                                : 'DateTime' as const;
+                        return { kind: 'date' as const, qualifiers: { dateFractions } };
                     }
-                );
-            } else {
-                await XMLWriter.writeProperties(filePath, { Type: typeProperty });
-            }
+                    if (typeStr.startsWith('cfg:')) {
+                        const withoutPrefix = typeStr.slice(4); // убираем 'cfg:'
+                        const dotIdx = withoutPrefix.indexOf('.');
+                        if (dotIdx === -1) {
+                            throw new Error(`Некорректный формат типа-ссылки: "${typeStr}". Ожидается cfg:ReferenceKind.ObjectName`);
+                        }
+                        const referenceKind = withoutPrefix.slice(0, dotIdx);
+                        const objectName = withoutPrefix.slice(dotIdx + 1);
+                        return {
+                            kind: 'reference' as const,
+                            referenceType: {
+                                referenceKind: referenceKind as import('../types/typeDefinitions').ReferenceTypeInfo['referenceKind'],
+                                objectName,
+                            },
+                        };
+                    }
+                    throw new Error(`Неизвестный тип: "${typeStr}". Поддерживаются xs:string, xs:decimal, xs:boolean, xs:date, xs:dateTime, xs:time, cfg:Kind.Name`);
+                });
 
-            const newRev = await calculateRevision(filePath);
-            return {
-                success: true,
-                rev: newRev,
-                target: params.path,
-                data: { rev: newRev, target: params.path },
-            };
+                let category: 'primitive' | 'reference' | 'composite';
+                if (typeEntries.length === 0) {
+                    category = 'primitive';
+                } else if (typeEntries.length === 1 && typeEntries[0].kind === 'reference') {
+                    category = 'reference';
+                } else {
+                    category = typeEntries.length === 1 ? 'primitive' : 'composite';
+                }
+
+                const definition = { category, types: typeEntries };
+                const typeProperty = TypeSerializer.serializePropertyValue(definition);
+
+                if (resolved.nestedType && resolved.nestedName) {
+                    await XMLWriter.writeNestedElementProperties(
+                        filePath,
+                        resolved.nestedType,
+                        resolved.nestedName,
+                        { Type: typeProperty },
+                        undefined,
+                        {
+                            nestedPath: resolved.fileNestedPath ?? resolved.nestedPath,
+                            ...(resolved.tabularSection ? { scopedTabularSectionName: resolved.tabularSection } : {}),
+                        }
+                    );
+                } else {
+                    await XMLWriter.writeProperties(filePath, { Type: typeProperty });
+                }
+
+                const newRev = await calculateRevision(filePath);
+                return {
+                    success: true,
+                    rev: newRev,
+                    target: params.path,
+                    data: { rev: newRev, target: params.path },
+                };
+            });
         } catch (err) {
             return mutationFailure(err);
         }
@@ -1557,40 +1610,42 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${resolved.filePath}` };
             }
 
-            const check = await this.checkMutationPreconditions(resolved.filePath, params.path, params);
-            if (!check.proceed) {
-                return check.errorResult!;
-            }
+            return await this.withTargetMutationLock(resolved.filePath, async () => {
+                const check = await this.checkMutationPreconditions(resolved.filePath, params.path, params);
+                if (!check.proceed) {
+                    return check.errorResult!;
+                }
 
-            if (params.dryRun) {
-                return {
-                    success: true,
-                    dryRun: true,
-                    rev: check.currentRev,
-                    target: params.path,
-                    data: {
+                if (params.dryRun) {
+                    return {
+                        success: true,
                         dryRun: true,
                         rev: check.currentRev,
                         target: params.path,
-                        plannedChanges: {
-                            files: [resolved.filePath],
-                            summary: `Изменение источника ${params.path}`,
+                        data: {
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: params.path,
+                            plannedChanges: {
+                                files: [resolved.filePath],
+                                summary: `Изменение источника ${params.path}`,
+                            },
                         },
-                    },
+                    };
+                }
+
+                await XMLWriter.writeProperties(resolved.filePath, {
+                    Source: ObjectTypeSerializer.serialize(definition),
+                });
+
+                const newRev = await calculateRevision(resolved.filePath);
+                return {
+                    success: true,
+                    rev: newRev,
+                    target: params.path,
+                    data: { rev: newRev, target: params.path },
                 };
-            }
-
-            await XMLWriter.writeProperties(resolved.filePath, {
-                Source: ObjectTypeSerializer.serialize(definition),
             });
-
-            const newRev = await calculateRevision(resolved.filePath);
-            return {
-                success: true,
-                rev: newRev,
-                target: params.path,
-                data: { rev: newRev, target: params.path },
-            };
         } catch (err) {
             return mutationFailure(err);
         }
