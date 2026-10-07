@@ -1451,5 +1451,330 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
       }
     }
   });
+
+  test('opening container nodes with parentFilePath shows empty state instead of error panel', async () => {
+    const parentXml = path.join(path.dirname(tempXmlPath), `temp-container-test-${Date.now()}.xml`);
+    await fs.promises.writeFile(
+      parentXml,
+      `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Catalog uuid="cat-1">
+    <Properties><Name>CatalogWithContainers</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="attr-1">
+        <Properties><Name>Attr1</Name></Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`,
+      'utf8'
+    );
+
+    try {
+      // 1. Attributes container node
+      const attrsContainer: TreeNode = {
+        id: 'Attributes',
+        name: 'Attributes',
+        type: MetadataType.Attribute,
+        properties: {},
+        children: [],
+        parentFilePath: parentXml,
+      };
+
+      const openedAttrs = await provider.showProperties(attrsContainer);
+      assert.strictEqual(openedAttrs, true, 'Attributes container should open successfully');
+      const htmlAttrs = (provider as any).panel?.webview.html || '';
+      assert.ok(!htmlAttrs.includes('error-panel'), 'Attributes container must NOT show error panel');
+      assert.ok(
+        htmlAttrs.includes(MESSAGES.EMPTY_STATE_NO_PROPERTIES_TITLE),
+        'Attributes container must show empty state'
+      );
+
+      // 2. TabularSections container node
+      const tsContainer: TreeNode = {
+        id: 'TabularSections',
+        name: 'Tabular Sections',
+        type: MetadataType.TabularSection,
+        properties: {},
+        children: [],
+        parentFilePath: parentXml,
+      };
+
+      const openedTs = await provider.showProperties(tsContainer);
+      assert.strictEqual(openedTs, true, 'TabularSections container should open successfully');
+      const htmlTs = (provider as any).panel?.webview.html || '';
+      assert.ok(!htmlTs.includes('error-panel'), 'TabularSections container must NOT show error panel');
+      assert.ok(
+        htmlTs.includes(MESSAGES.EMPTY_STATE_NO_PROPERTIES_TITLE),
+        'TabularSections container must show empty state'
+      );
+
+      // 3. Tabular section columns placeholder container (isTabularSectionColumnsContainer)
+      const tsInstanceNode: TreeNode = {
+        id: 'TabularSections.Items',
+        name: 'Items',
+        type: MetadataType.TabularSection,
+        properties: { Name: 'Items' },
+        parentFilePath: parentXml,
+      };
+      const columnsContainer: TreeNode = {
+        id: 'TabularSections.Items.Attributes',
+        name: 'Реквизиты',
+        type: MetadataType.Attribute,
+        properties: { type: 'TabularSectionColumns' },
+        children: [],
+        parent: tsInstanceNode,
+        parentFilePath: parentXml,
+      };
+
+      const openedCols = await provider.showProperties(columnsContainer);
+      assert.strictEqual(openedCols, true, 'Columns container should open successfully');
+      const htmlCols = (provider as any).panel?.webview.html || '';
+      assert.ok(!htmlCols.includes('error-panel'), 'Columns container must NOT show error panel');
+      assert.ok(
+        htmlCols.includes(MESSAGES.EMPTY_STATE_NO_PROPERTIES_TITLE),
+        'Columns container must show empty state'
+      );
+    } finally {
+      if (fs.existsSync(parentXml)) {
+        await fs.promises.unlink(parentXml);
+      }
+    }
+  });
+
+  test('opening EDT PredefinedItem with parentFilePath preserves properties without error panel', async () => {
+    const predefinedXml = path.join(path.dirname(tempXmlPath), `temp-predefined-test-${Date.now()}.xml`);
+    await fs.promises.writeFile(
+      predefinedXml,
+      `<?xml version="1.0" encoding="UTF-8"?>
+<PredefinedData xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Item>
+    <Name>MainItem</Name>
+    <Code>001</Code>
+    <Description>Main Description</Description>
+  </Item>
+</PredefinedData>`,
+      'utf8'
+    );
+
+    try {
+      const predefinedNode: TreeNode = {
+        id: 'PredefinedData.MainItem',
+        name: 'MainItem',
+        type: MetadataType.PredefinedItem,
+        properties: {
+          code: '001',
+          description: 'Main Description',
+        },
+        parentFilePath: predefinedXml,
+      };
+
+      const opened = await provider.showProperties(predefinedNode);
+      assert.strictEqual(opened, true, 'PredefinedItem should open successfully');
+      const html = (provider as any).panel?.webview.html || '';
+      assert.ok(!html.includes('error-panel'), 'PredefinedItem must NOT show error panel');
+      assert.strictEqual(predefinedNode.properties.code, '001');
+      assert.strictEqual(predefinedNode.properties.description, 'Main Description');
+    } finally {
+      if (fs.existsSync(predefinedXml)) {
+        await fs.promises.unlink(predefinedXml);
+      }
+    }
+  });
+
+  test('showProperties scopes tabular section column read when column name collides with another element', async () => {
+    const multiTsXml = path.join(path.dirname(tempXmlPath), `temp-scoped-col-${Date.now()}.xml`);
+    const fixturePath = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogTovaryIZakazyNomenklatura.xml');
+    await fs.promises.copyFile(fixturePath, multiTsXml);
+
+    try {
+      // Optimistic column node under TabularSection 'Заказы' without nestedPath
+      const zakazyTsNode: TreeNode = {
+        id: 'TabularSections.Заказы',
+        name: 'Заказы',
+        type: MetadataType.TabularSection,
+        properties: { Name: 'Заказы' },
+        parentFilePath: multiTsXml,
+      };
+      const zakazyColsContainer: TreeNode = {
+        id: 'TabularSections.Заказы.Attributes',
+        name: 'Реквизиты',
+        type: MetadataType.Attribute,
+        properties: { type: 'TabularSectionColumns' },
+        parent: zakazyTsNode,
+        parentFilePath: multiTsXml,
+      };
+      const columnNode: TreeNode = {
+        id: 'TabularSections.Заказы.Номенклатура',
+        name: 'Номенклатура',
+        type: MetadataType.Attribute,
+        properties: { Name: 'Номенклатура' },
+        parent: zakazyColsContainer,
+        parentFilePath: multiTsXml,
+      };
+
+      const opened = await provider.showProperties(columnNode);
+      assert.strictEqual(opened, true, 'Column should open successfully');
+      assert.strictEqual(
+        columnNode.properties.uuid,
+        'c0000000-0000-0000-0000-000000000321',
+        'Properties must be loaded from section Заказы, not Товары'
+      );
+    } finally {
+      if (fs.existsSync(multiTsXml)) {
+        await fs.promises.unlink(multiTsXml);
+      }
+    }
+  });
+
+  test('opening register Dimensions, Resources, and EnumValues container nodes shows empty state without error', async () => {
+    const parentXml = path.join(path.dirname(tempXmlPath), `temp-reg-containers-${Date.now()}.xml`);
+    await fs.promises.writeFile(
+      parentXml,
+      `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <InformationRegister uuid="ir-1">
+    <Properties><Name>TestRegister</Name></Properties>
+    <ChildObjects>
+      <Dimension uuid="dim-1"><Properties><Name>Dim1</Name></Properties></Dimension>
+      <Resource uuid="res-1"><Properties><Name>Res1</Name></Properties></Resource>
+    </ChildObjects>
+  </InformationRegister>
+</MetaDataObject>`,
+      'utf8'
+    );
+
+    try {
+      // Dimensions container
+      const dimContainer: TreeNode = {
+        id: 'Dimensions',
+        name: 'Измерения',
+        type: MetadataType.Dimension,
+        properties: {},
+        children: [],
+        parentFilePath: parentXml,
+      };
+      assert.strictEqual(await provider.showProperties(dimContainer), true);
+      const htmlDim = (provider as any).panel?.webview.html || '';
+      assert.ok(!htmlDim.includes('error-panel'));
+      assert.ok(htmlDim.includes(MESSAGES.EMPTY_STATE_NO_PROPERTIES_TITLE));
+
+      // Resources container
+      const resContainer: TreeNode = {
+        id: 'Resources',
+        name: 'Ресурсы',
+        type: MetadataType.Resource,
+        properties: {},
+        children: [],
+        parentFilePath: parentXml,
+      };
+      assert.strictEqual(await provider.showProperties(resContainer), true);
+      const htmlRes = (provider as any).panel?.webview.html || '';
+      assert.ok(!htmlRes.includes('error-panel'));
+      assert.ok(htmlRes.includes(MESSAGES.EMPTY_STATE_NO_PROPERTIES_TITLE));
+
+      // EnumValues container
+      const enumContainer: TreeNode = {
+        id: 'EnumValues',
+        name: 'Значения',
+        type: MetadataType.EnumValue,
+        properties: {},
+        children: [],
+        parentFilePath: parentXml,
+      };
+      assert.strictEqual(await provider.showProperties(enumContainer), true);
+      const htmlEnum = (provider as any).panel?.webview.html || '';
+      assert.ok(!htmlEnum.includes('error-panel'));
+      assert.ok(htmlEnum.includes(MESSAGES.EMPTY_STATE_NO_PROPERTIES_TITLE));
+
+      // PredefinedData container
+      const predefContainer: TreeNode = {
+        id: 'PredefinedData',
+        name: 'Предопределённые',
+        type: MetadataType.PredefinedItem,
+        properties: {},
+        children: [],
+        parentFilePath: parentXml,
+      };
+      assert.strictEqual(await provider.showProperties(predefContainer), true);
+      const htmlPredef = (provider as any).panel?.webview.html || '';
+      assert.ok(!htmlPredef.includes('error-panel'));
+      assert.ok(htmlPredef.includes(MESSAGES.EMPTY_STATE_NO_PROPERTIES_TITLE));
+    } finally {
+      if (fs.existsSync(parentXml)) {
+        await fs.promises.unlink(parentXml);
+      }
+    }
+  });
+
+  test('showProperties distinguishes TS column from colliding root-level attribute', async () => {
+    const parentXml = path.join(path.dirname(tempXmlPath), `temp-root-vs-ts-${Date.now()}.xml`);
+    await fs.promises.writeFile(
+      parentXml,
+      `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Catalog uuid="cat-1">
+    <Properties><Name>CatCollision</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="root-attr-uuid">
+        <Properties>
+          <Name>Количество</Name>
+          <Comment>RootComment</Comment>
+        </Properties>
+      </Attribute>
+      <TabularSection uuid="ts-uuid">
+        <Properties><Name>Состав</Name></Properties>
+        <ChildObjects>
+          <Attribute uuid="ts-attr-uuid">
+            <Properties>
+              <Name>Количество</Name>
+              <Comment>TsComment</Comment>
+            </Properties>
+          </Attribute>
+        </ChildObjects>
+      </TabularSection>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`,
+      'utf8'
+    );
+
+    try {
+      const tsNode: TreeNode = {
+        id: 'TabularSections.Состав',
+        name: 'Состав',
+        type: MetadataType.TabularSection,
+        properties: { Name: 'Состав' },
+        parentFilePath: parentXml,
+      };
+      const tsColsContainer: TreeNode = {
+        id: 'TabularSections.Состав.Attributes',
+        name: 'Реквизиты',
+        type: MetadataType.Attribute,
+        properties: { type: 'TabularSectionColumns' },
+        parent: tsNode,
+        parentFilePath: parentXml,
+      };
+      const colNode: TreeNode = {
+        id: 'TabularSections.Состав.Количество',
+        name: 'Количество',
+        type: MetadataType.Attribute,
+        properties: { Name: 'Количество' },
+        parent: tsColsContainer,
+        parentFilePath: parentXml,
+      };
+
+      const opened = await provider.showProperties(colNode);
+      assert.strictEqual(opened, true);
+      assert.strictEqual(colNode.properties.uuid, 'ts-attr-uuid');
+      assert.strictEqual(colNode.properties.Comment, 'TsComment');
+    } finally {
+      if (fs.existsSync(parentXml)) {
+        await fs.promises.unlink(parentXml);
+      }
+    }
+  });
 });
+
+
 

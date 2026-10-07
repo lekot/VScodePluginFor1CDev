@@ -13,6 +13,7 @@ import {
 } from '../constants/propertySections';
 import { getPropertyEnumValues } from '../constants/propertyEnumValues';
 import { MESSAGES } from '../constants/messages';
+import { isContainerNode } from '../utils/treeNormalization';
 import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
 import { FORM_EVENT_CATALOG, FORM_LEVEL_EVENTS } from '../formEditor/formEventCatalog';
 
@@ -989,12 +990,13 @@ export function getWebviewContent(
     return getEmptyStateContent();
   }
 
-  const properties = node.properties || {};
+  const isContainer = isContainerNode(node);
+  const properties = isContainer ? {} : (node.properties || {});
   const hasProperties = Object.keys(properties).length > 0;
 
-  // Switch to read-only mode when file path is missing
+  // Switch to read-only mode when file path is missing or for container nodes
   // For nested elements (Attributes), check parentFilePath; for root elements, check filePath
-  const readOnly = !(node.parentFilePath || node.filePath);
+  const readOnly = isContainer || !(node.parentFilePath || node.filePath);
 
   Logger.debug(`getWebviewContent: node.name="${node.name}", node.type="${node.type}", readOnly=${readOnly}`);
 

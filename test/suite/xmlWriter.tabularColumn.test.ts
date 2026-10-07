@@ -144,4 +144,77 @@ suite('XMLWriter tabular section columns', () => {
       /уже существует/
     );
   });
+
+  test('readNestedElementProperties returns scoped tabular section column when names collide', async () => {
+    const src = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogTovaryIZakazyNomenklatura.xml');
+    const dest = path.join(tmp, 'TwoTsScopedRead.xml');
+    await fs.promises.copyFile(src, dest);
+
+    const propsZakazy = await XMLWriter.readNestedElementProperties(dest, 'Attribute', 'Номенклатура', {
+      scopedTabularSectionName: 'Заказы',
+    });
+    const propsTovary = await XMLWriter.readNestedElementProperties(dest, 'Attribute', 'Номенклатура', {
+      scopedTabularSectionName: 'Товары',
+    });
+
+    assert.strictEqual(propsZakazy.uuid, 'c0000000-0000-0000-0000-000000000321', 'scoped to Заказы');
+    assert.strictEqual(propsTovary.uuid, 'c0000000-0000-0000-0000-000000000311', 'scoped to Товары');
+  });
+
+  test('readNestedElementProperties distinguishes root attribute from same-named tabular section column', async () => {
+    const xmlWithRootAndTs = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Catalog uuid="cat-1">
+    <Properties><Name>CatCollision</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="root-attr-uuid">
+        <Properties>
+          <Name>Количество</Name>
+          <Comment>Root attribute comment</Comment>
+        </Properties>
+      </Attribute>
+      <TabularSection uuid="ts-uuid">
+        <Properties><Name>Состав</Name></Properties>
+        <ChildObjects>
+          <Attribute uuid="ts-attr-uuid">
+            <Properties>
+              <Name>Количество</Name>
+              <Comment>TS column comment</Comment>
+            </Properties>
+          </Attribute>
+        </ChildObjects>
+      </TabularSection>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`;
+    const testFile = path.join(tmp, 'RootVsTsCollision.xml');
+    await fs.promises.writeFile(testFile, xmlWithRootAndTs, 'utf8');
+
+    // Scoped read must return TS column
+    const tsColProps = await XMLWriter.readNestedElementProperties(testFile, 'Attribute', 'Количество', {
+      scopedTabularSectionName: 'Состав',
+    });
+    assert.strictEqual(tsColProps.uuid, 'ts-attr-uuid');
+    assert.strictEqual(tsColProps.Comment, 'TS column comment');
+
+    // Unscoped read finds the root attribute first
+    const rootProps = await XMLWriter.readNestedElementProperties(testFile, 'Attribute', 'Количество');
+    assert.strictEqual(rootProps.uuid, 'root-attr-uuid');
+    assert.strictEqual(rootProps.Comment, 'Root attribute comment');
+  });
+
+  test('readNestedElementProperties throws XmlReadError when scopedTabularSectionName does not exist', async () => {
+    const src = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogTovaryIZakazyNomenklatura.xml');
+    const dest = path.join(tmp, 'NonExistentSection.xml');
+    await fs.promises.copyFile(src, dest);
+
+    await assert.rejects(
+      () =>
+        XMLWriter.readNestedElementProperties(dest, 'Attribute', 'Номенклатура', {
+          scopedTabularSectionName: 'НесуществующаяСекция',
+        }),
+      /Nested element Attribute 'Номенклатура' not found/
+    );
+  });
 });
+

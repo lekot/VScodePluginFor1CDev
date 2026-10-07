@@ -8,6 +8,7 @@ import { ObjectTypeEditorProvider } from './objectTypeEditorProvider';
 import { MESSAGES } from '../constants/messages';
 import { getConfigurationXmlPathForNode } from '../utils/configHelpers';
 import * as path from 'path';
+import { isContainerNode } from '../utils/treeNormalization';
 import * as fs from 'fs';
 import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
 import { isValidWebviewMessage } from './propertiesWebviewTypes';
@@ -303,7 +304,13 @@ export class PropertiesProvider {
           return false;
         }
       }
-    } else if (node.parentFilePath && node.name && node.type) {
+    } else if (
+      node.parentFilePath &&
+      node.name &&
+      node.type &&
+      !isContainerNode(node) &&
+      node.type !== MetadataType.PredefinedItem
+    ) {
       let isReadableFile = false;
       try {
         const stat = await fs.promises.stat(node.parentFilePath);

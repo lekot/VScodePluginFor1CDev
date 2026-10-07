@@ -594,11 +594,17 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
     const { parsed } = await this.readUtf8AndParse(filePath);
     const element = options?.nestedPath
       ? findMetadataElementByPath(parsed, options.nestedPath)
-      : this.findNestedElement(parsed, elementType, elementName);
+      : this.findNestedElement(parsed, elementType, elementName, options?.scopedTabularSectionName);
     if (!element) {
       throw new XmlReadError(`Nested element ${elementType} '${elementName}' not found in ${filePath}`);
     }
-    return extractProperties(element);
+    const props = extractProperties(element);
+    const rawEl = element as Record<string, unknown>;
+    const rawUuid = rawEl['@_uuid'] ?? rawEl.uuid;
+    if (rawUuid !== undefined && rawUuid !== null) {
+      props.uuid = String(rawUuid);
+    }
+    return props;
   }
 
   /** List supported named inline ChildObjects under an exact metadata selector. */
