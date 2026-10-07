@@ -109,6 +109,8 @@ export interface TreeNodeProperties {
   description?: string;
   /** Configuration version string. */
   version?: string;
+  /** Value property for StyleItem or other value-bearing metadata objects. */
+  Value?: unknown;
 }
 
 /**

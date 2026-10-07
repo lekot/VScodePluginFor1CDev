@@ -19,6 +19,7 @@ import { optimisticAppendCreatedNode } from '../helpers/optimisticNodeBuilder';
 import { Logger } from '../utils/logger';
 import { AgentOperations } from '../agent/agentOperations';
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
+import { runChartOfAccountsWizard } from '../wizards/chartOfAccountsWizard';
 
 type RegisterElementCommandsDeps = {
   state: ExtensionState;
@@ -62,6 +63,16 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
       });
       if (!designerCtx) {return;}
       const { configPath, format } = designerCtx;
+
+      if (target.type === MetadataType.ChartOfAccounts || target.id === 'ChartsOfAccounts') {
+        await runChartOfAccountsWizard({
+          state,
+          target,
+          runConfigurationPlan,
+          invalidateCacheAndReload,
+        });
+        return;
+      }
       const name = await vscode.window.showInputBox({
         prompt: 'Имя нового элемента',
         placeHolder: 'Введите имя (латиница, кириллица, цифры, _)',

@@ -16,6 +16,7 @@ import { substituteDesignerTemplate } from '../services/designerTemplateSubstitu
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import { requireProjectWriteFormatProfile } from '../utils/format/formatRank';
+import { generatePredefinedAccountsXml } from '../services/chartOfAccountsWizardService';
 import { generateSimpleUuid } from '../utils/xml/xmlHelpers';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { MetadataType } from '../models/treeNode';
@@ -288,20 +289,29 @@ export class AgentOperations {
         const nextConfigurationContent = buildRootObjectConfigurationContent(configurationContent, {
             type: 'add', rootTag: type, objectName: trimmedName,
         });
+        const steps: MutationStep[] = [
+            { type: 'ensureDirectory', targetPath: folderPath },
+            { type: 'writeFile', targetPath: filePath, content, encoding: 'utf8', expected: fileExpected },
+            { type: 'ensureDirectory', targetPath: elementDir },
+        ];
+        if (type === 'ChartOfAccounts') {
+            const extDir = path.join(elementDir, 'Ext');
+            const predefinedPath = path.join(extDir, 'Predefined.xml');
+            const predefinedContent = generatePredefinedAccountsXml({ name: trimmedName }, targetVersion);
+            const predefinedExpected = await expectationForPath(predefinedPath);
+            steps.push({ type: 'ensureDirectory', targetPath: extDir });
+            steps.push({ type: 'writeFile', targetPath: predefinedPath, content: predefinedContent, encoding: 'utf8', expected: predefinedExpected });
+        }
+        steps.push({
+            type: 'writeFile',
+            targetPath: configurationPath,
+            content: nextConfigurationContent,
+            encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent(configurationContent) },
+        });
         return {
             kind: 'agent.createObject',
-            steps: [
-                { type: 'ensureDirectory', targetPath: folderPath },
-                { type: 'writeFile', targetPath: filePath, content, encoding: 'utf8', expected: fileExpected },
-                { type: 'ensureDirectory', targetPath: elementDir },
-                {
-                    type: 'writeFile',
-                    targetPath: configurationPath,
-                    content: nextConfigurationContent,
-                    encoding: 'utf8',
-                    expected: { state: 'file', hash: hashContent(configurationContent) },
-                },
-            ],
+            steps,
             result: { success: true, data: { filePath } },
         };
     }
