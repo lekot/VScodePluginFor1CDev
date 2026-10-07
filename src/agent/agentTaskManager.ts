@@ -207,7 +207,7 @@ export class AgentTaskManager {
     }
     this.isDisposed = true;
 
-    this.disposePromise = (async () => {
+    this.disposePromise = Promise.resolve().then(async () => {
       for (const task of this.tasks.values()) {
         if (task.status === 'running') {
           task.cancellationRequested = true;
@@ -233,7 +233,7 @@ export class AgentTaskManager {
       }
       this.tasks.clear();
       this.runningPromises.clear();
-    })();
+    });
 
     return this.disposePromise;
   }
