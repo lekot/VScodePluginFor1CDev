@@ -277,4 +277,61 @@ suite('FilterCriterionWizardService', () => {
       /уже существует|already exists/i
     );
   });
+
+  test('generateFilterCriterionXml throws error when content is empty or contains only whitespace', () => {
+    assert.throws(
+      () => {
+        generateFilterCriterionXml({
+          name: 'ПустойКритерий',
+          types: ['xs:string'],
+          content: [],
+        });
+      },
+      /content must contain at least one/i
+    );
+
+    assert.throws(
+      () => {
+        generateFilterCriterionXml({
+          name: 'ПробельныйКритерий',
+          types: ['xs:string'],
+          content: ['   ', ''],
+        });
+      },
+      /content must contain at least one/i
+    );
+  });
+
+  test('planCreateFilterCriterion throws error when content is empty or contains only whitespace', async () => {
+    const configXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration uuid="conf-1"><Properties><Name>Conf</Name></Properties><ChildObjects/></Configuration>
+</MetaDataObject>`;
+    await fs.promises.writeFile(path.join(tmpDir, 'Configuration.xml'), configXml, 'utf-8');
+
+    // Empty array
+    await assert.rejects(
+      async () => {
+        await planCreateFilterCriterion(tmpDir, {
+          name: 'БезСостава',
+          types: ['xs:string'],
+          content: [],
+        });
+      },
+      /content must contain at least one/i
+    );
+
+    // Whitespace only elements
+    await assert.rejects(
+      async () => {
+        await planCreateFilterCriterion(tmpDir, {
+          name: 'СПробелами',
+          types: ['xs:string'],
+          content: ['   ', ' \t '],
+        });
+      },
+      /content must contain at least one/i
+    );
+  });
 });
+

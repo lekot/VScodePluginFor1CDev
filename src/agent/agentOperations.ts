@@ -29,7 +29,7 @@ import {
 import { CfeOwnershipError, type CfeObjectIdentity } from '../extensionSupport/cfeProject/ownership';
 import { getMetadataTypeDescriptorByRootTag } from '../constants/metadataTypeDescriptors';
 import { hashContent } from '../services/configurationSession/atomicFileStorage';
-import type { MutationExpectation, MutationPlan, MutationStep } from '../services/configurationSession/mutationPlan';
+import { MutationPlanExecutor, type MutationExpectation, type MutationPlan, type MutationStep } from '../services/configurationSession/mutationPlan';
 import { planCreateFilterCriterion } from '../services/filterCriterionWizardService';
 
 /** Types whose templates include default ChildObjects (Dimension+Resource); rules engine cannot generate those yet. */
@@ -190,24 +190,28 @@ export class AgentOperations {
         const directoryExpected = await expectationForPath(elementDir);
         if (directoryExpected.state !== 'missing') { throw new Error(`Object directory already exists: ${elementDir}`); }
 
-        if (type === 'FilterCriterion' && properties && (properties['Type'] !== undefined || properties['Content'] !== undefined)) {
-            const types = Array.isArray(properties['Type'])
-                ? (properties['Type'] as unknown[]).map(String)
-                : typeof properties['Type'] === 'string'
-                    ? [properties['Type']]
-                    : [];
-            const contentRefs = Array.isArray(properties['Content'])
-                ? (properties['Content'] as unknown[]).map(String)
-                : typeof properties['Content'] === 'string'
-                    ? [properties['Content']]
-                    : [];
+        if (type === 'FilterCriterion') {
+            const types = properties && properties['Type'] !== undefined
+                ? (Array.isArray(properties['Type'])
+                    ? (properties['Type'] as unknown[]).map(String)
+                    : [String(properties['Type'])])
+                : [];
+            const rawContent = properties && properties['Content'] !== undefined
+                ? (Array.isArray(properties['Content'])
+                    ? (properties['Content'] as unknown[]).map(String)
+                    : [String(properties['Content'])])
+                : [];
+            const contentRefs = rawContent.map((c) => c.trim()).filter((c) => c.length > 0);
+            if (contentRefs.length === 0) {
+                throw new Error('FilterCriterion requires non-empty "Content" property with at least one metadata item reference.');
+            }
             return planCreateFilterCriterion(this.configRootPath, {
                 name: trimmedName,
                 synonym: synonym ?? trimmedName,
-                comment: typeof properties['Comment'] === 'string' ? properties['Comment'] : undefined,
+                comment: typeof properties?.['Comment'] === 'string' ? properties['Comment'] : undefined,
                 types,
                 content: contentRefs,
-                useStandardCommands: typeof properties['UseStandardCommands'] === 'boolean' ? properties['UseStandardCommands'] : false,
+                useStandardCommands: typeof properties?.['UseStandardCommands'] === 'boolean' ? properties['UseStandardCommands'] : false,
             });
         }
 
@@ -375,6 +379,12 @@ export class AgentOperations {
             const typeValidation = validateElementName(type, []);
             if (typeValidation) {
                 return { success: false, error: `Некорректный type "${type}": ${typeValidation}` };
+            }
+
+            if (type === 'FilterCriterion') {
+                const plan = await this.planCreateObject(params);
+                const executor = new MutationPlanExecutor(this.configRootPath);
+                return await executor.execute(plan);
             }
 
             // Проверяем наличие правил или шаблона

@@ -103,7 +103,76 @@ suite('FilterCriterionWizard UI Flow', () => {
     assert.strictEqual(warningShown, true, 'warning message must be shown when no types chosen');
   });
 
+  test('cancels wizard when no candidate attributes exist in configuration for chosen types', async () => {
+    let warningMessage = '';
+    vscode.window.showInputBox = async () => 'ПоДоговору';
+    vscode.window.showQuickPick = (async () => [{ label: 'Строка (xs:string)', description: 'xs:string' }]) as any;
+    vscode.window.showWarningMessage = (async (msg: string) => {
+      warningMessage = msg;
+      return undefined;
+    }) as any;
+
+    const target: TreeNode = {
+      id: 'FilterCriteria',
+      name: 'Критерии отбора',
+      type: MetadataType.FilterCriterion,
+      filePath: path.join(tmpDir, 'FilterCriteria'),
+      properties: {},
+    };
+
+    const executed = await runFilterCriterionWizard({ state, target });
+    assert.strictEqual(executed, false);
+    assert.ok(warningMessage.includes('не найдено подходящих'), `expected candidates warning, got: "${warningMessage}"`);
+  });
+
+  test('cancels wizard when user picks empty content list from quickpick', async () => {
+    // Create a catalog with attribute so candidates exist
+    const catDir = path.join(tmpDir, 'Catalogs');
+    await fs.promises.mkdir(catDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(catDir, 'Товары.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog uuid="c1"><Properties><Name>Товары</Name></Properties><ChildObjects><Attribute uuid="a1"><Properties><Name>Артикул</Name><Type><v8:Type>xs:string</v8:Type></Type></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>`,
+      'utf-8'
+    );
+
+    let warningMessage = '';
+    vscode.window.showInputBox = async () => 'ПоАртикулу';
+    let qpStep = 0;
+    vscode.window.showQuickPick = (async () => {
+      qpStep++;
+      if (qpStep === 1) {
+        return [{ label: 'Строка (xs:string)', description: 'xs:string' }];
+      }
+      return []; // empty selection in content step
+    }) as any;
+    vscode.window.showWarningMessage = (async (msg: string) => {
+      warningMessage = msg;
+      return undefined;
+    }) as any;
+
+    const target: TreeNode = {
+      id: 'FilterCriteria',
+      name: 'Критерии отбора',
+      type: MetadataType.FilterCriterion,
+      filePath: path.join(tmpDir, 'FilterCriteria'),
+      properties: {},
+    };
+
+    const executed = await runFilterCriterionWizard({ state, target });
+    assert.strictEqual(executed, false);
+    assert.ok(warningMessage.includes('не выбран ни один элемент состава') || warningMessage.includes('не может быть пустым'), `expected empty content warning, got: "${warningMessage}"`);
+  });
+
   test('completes successfully on valid user inputs and runs configuration plan', async () => {
+    // Create a catalog fixture so candidates exist for selection
+    const catDir = path.join(tmpDir, 'Catalogs');
+    await fs.promises.mkdir(catDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(catDir, 'Контрагенты.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog uuid="c1"><Properties><Name>Контрагенты</Name></Properties><ChildObjects><Attribute uuid="a1"><Properties><Name>Код</Name><Type><v8:Type>xs:string</v8:Type></Type></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>`,
+      'utf-8'
+    );
+
     let inputStep = 0;
     vscode.window.showInputBox = async () => {
       inputStep++;

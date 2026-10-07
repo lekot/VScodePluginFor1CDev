@@ -92,17 +92,23 @@ export async function runFilterCriterionWizard(options: RunFilterCriterionWizard
     picked: c.matchesSelectedType,
   }));
 
-  let chosenContent: string[] = [];
-  if (candidatePicks.length > 0) {
-    const selectedContentPicks = await vscode.window.showQuickPick(candidatePicks, {
-      title: 'Мастер создания критерия отбора (4/4): Состав критерия',
-      placeHolder: 'Выберите реквизиты/измерения метаданных, входящие в критерий отбора',
-      canPickMany: true,
-    });
-    if (selectedContentPicks === undefined) {
-      return false; // User hit Esc
-    }
-    chosenContent = selectedContentPicks.map((p) => p.label);
+  if (candidatePicks.length === 0) {
+    vscode.window.showWarningMessage('В конфигурации не найдено подходящих реквизитов/измерений для состава критерия отбора.');
+    return false;
+  }
+
+  const selectedContentPicks = await vscode.window.showQuickPick(candidatePicks, {
+    title: 'Мастер создания критерия отбора (4/4): Состав критерия',
+    placeHolder: 'Выберите реквизиты/измерения метаданных, входящие в критерий отбора',
+    canPickMany: true,
+  });
+  if (selectedContentPicks === undefined) {
+    return false; // User hit Esc
+  }
+  const chosenContent = selectedContentPicks.map((p) => p.label);
+  if (chosenContent.length === 0) {
+    vscode.window.showWarningMessage('Не выбран ни один элемент состава критерия отбора (состав не может быть пустым).');
+    return false;
   }
 
   // Step 5: Execute plan

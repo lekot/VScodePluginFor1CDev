@@ -126,6 +126,56 @@ suite('AgentOperations: createObject', () => {
         const content = fs.readFileSync(result.data!.filePath, 'utf-8');
         assert.ok(content.includes('<Enum '), 'XML should contain <Enum root tag');
     });
+
+    test('FilterCriterion: rejects creation when Content is missing, empty array, or whitespace-only', async () => {
+        // Missing properties
+        const r1 = await ops.createObject({ type: 'FilterCriterion', name: 'КритерийБезСвойств' });
+        assert.strictEqual(r1.success, false);
+        assert.ok(r1.error?.includes('Content'), `expected Content error, got: ${r1.error}`);
+
+        // Empty Content array
+        const r2 = await ops.createObject({
+            type: 'FilterCriterion',
+            name: 'КритерийПустойМассив',
+            properties: { Content: [] },
+        });
+        assert.strictEqual(r2.success, false);
+        assert.ok(r2.error?.includes('Content'), `expected Content error, got: ${r2.error}`);
+
+        // Whitespace-only string
+        const r3 = await ops.createObject({
+            type: 'FilterCriterion',
+            name: 'КритерийПробелСтрока',
+            properties: { Content: '   ' },
+        });
+        assert.strictEqual(r3.success, false);
+        assert.ok(r3.error?.includes('Content'), `expected Content error, got: ${r3.error}`);
+
+        // Whitespace-only array
+        const r4 = await ops.createObject({
+            type: 'FilterCriterion',
+            name: 'КритерийПробелМассив',
+            properties: { Content: ['   ', ''] },
+        });
+        assert.strictEqual(r4.success, false);
+        assert.ok(r4.error?.includes('Content'), `expected Content error, got: ${r4.error}`);
+    });
+
+    test('FilterCriterion: creates metadata object successfully with valid Type and Content', async () => {
+        const result = await ops.createObject({
+            type: 'FilterCriterion',
+            name: 'ПоПартнеру',
+            properties: {
+                Type: ['cfg:CatalogRef.Партнеры'],
+                Content: ['Catalog.Партнеры.Attribute.ГоловнойПартнер'],
+            },
+        });
+        assert.ok(result.success, `Expected success, got error: ${result.error}`);
+        assert.ok(fs.existsSync(result.data!.filePath), 'XML file should exist');
+        const content = fs.readFileSync(result.data!.filePath, 'utf-8');
+        assert.ok(content.includes('<FilterCriterion '), 'XML should contain FilterCriterion');
+        assert.ok(content.includes('Catalog.Партнеры.Attribute.ГоловнойПартнер'), 'XML should contain Content item ref');
+    });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

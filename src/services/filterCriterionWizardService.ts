@@ -84,12 +84,17 @@ export function generateFilterCriterionXml(
     ? params.types.map((t) => `\t\t\t\t<v8:Type>${escapeXml(t.trim())}</v8:Type>`).join('\n')
     : '\t\t\t\t<v8:Type>xs:string</v8:Type>';
 
-  const contentXml = params.content.length > 0
-    ? params.content.map((c) => `\t\t\t\t<xr:Item xsi:type="xr:MDObjectRef">${escapeXml(c.trim())}</xr:Item>`).join('\n')
-    : '';
+  const contentRefs = (params.content || []).map((c) => c.trim()).filter((c) => c.length > 0);
+  if (contentRefs.length === 0) {
+    throw new Error('FilterCriterion content must contain at least one metadata item reference');
+  }
+
+  const contentXml = contentRefs
+    .map((c) => `\t\t\t\t<xr:Item xsi:type="xr:MDObjectRef">${escapeXml(c)}</xr:Item>`)
+    .join('\n');
 
   const commentXml = comment ? `<Comment>${comment}</Comment>` : '<Comment/>';
-  const contentWrapper = contentXml ? `<Content>\n${contentXml}\n\t\t\t</Content>` : '<Content/>';
+  const contentWrapper = `<Content>\n${contentXml}\n\t\t\t</Content>`;
   const useStandardCommands = params.useStandardCommands === true ? 'true' : 'false';
 
   const rawXml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -364,6 +369,10 @@ export async function planCreateFilterCriterion(
   params: FilterCriterionWizardParams
 ): Promise<MutationPlan<AgentResult<{ filePath: string }>>> {
   const trimmedName = params.name.trim();
+  const contentRefs = (params.content || []).map((c) => c.trim()).filter((c) => c.length > 0);
+  if (contentRefs.length === 0) {
+    throw new Error('FilterCriterion content must contain at least one metadata item reference');
+  }
   const folderPath = path.join(configRoot, 'FilterCriteria');
   const filePath = path.join(folderPath, `${trimmedName}.xml`);
   const elementDir = path.join(folderPath, trimmedName);
