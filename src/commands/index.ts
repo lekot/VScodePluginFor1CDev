@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { registerExternalProcessorCommands } from './externalProcessorCommands';
+import { registerFilterCriterionCommands } from './filterCriterionCommands';
 import { ExtensionState } from '../state/extensionState';
 import type { MetadataTreeLifecycle } from '../extension/metadataTreeLifecycle';
 import { registerElementCommands } from './elementCommands';
@@ -117,6 +118,7 @@ export async function registerAllCommands({
   context.subscriptions.push(
     configureConfigurationMutationGateway(runConfigurationMutation, runConfigurationPlan),
   );
+  registerFilterCriterionCommands(context, state, runConfigurationPlan, lifecycle.invalidateCacheAndReload);
   registerCfeProjectCommands({
     context,
     state,

@@ -30,6 +30,7 @@ import { CfeOwnershipError, type CfeObjectIdentity } from '../extensionSupport/c
 import { getMetadataTypeDescriptorByRootTag } from '../constants/metadataTypeDescriptors';
 import { hashContent } from '../services/configurationSession/atomicFileStorage';
 import type { MutationExpectation, MutationPlan, MutationStep } from '../services/configurationSession/mutationPlan';
+import { planCreateFilterCriterion } from '../services/filterCriterionWizardService';
 
 /** Types whose templates include default ChildObjects (Dimension+Resource); rules engine cannot generate those yet. */
 const TEMPLATE_ONLY_TYPES = new Set(['InformationRegister', 'AccumulationRegister']);
@@ -188,6 +189,27 @@ export class AgentOperations {
         if (fileExpected.state !== 'missing') { throw new Error(`Object already exists: ${filePath}`); }
         const directoryExpected = await expectationForPath(elementDir);
         if (directoryExpected.state !== 'missing') { throw new Error(`Object directory already exists: ${elementDir}`); }
+
+        if (type === 'FilterCriterion' && properties && (properties['Type'] !== undefined || properties['Content'] !== undefined)) {
+            const types = Array.isArray(properties['Type'])
+                ? (properties['Type'] as unknown[]).map(String)
+                : typeof properties['Type'] === 'string'
+                    ? [properties['Type']]
+                    : [];
+            const contentRefs = Array.isArray(properties['Content'])
+                ? (properties['Content'] as unknown[]).map(String)
+                : typeof properties['Content'] === 'string'
+                    ? [properties['Content']]
+                    : [];
+            return planCreateFilterCriterion(this.configRootPath, {
+                name: trimmedName,
+                synonym: synonym ?? trimmedName,
+                comment: typeof properties['Comment'] === 'string' ? properties['Comment'] : undefined,
+                types,
+                content: contentRefs,
+                useStandardCommands: typeof properties['UseStandardCommands'] === 'boolean' ? properties['UseStandardCommands'] : false,
+            });
+        }
 
         const uuid = generateSimpleUuid();
         let content: string;

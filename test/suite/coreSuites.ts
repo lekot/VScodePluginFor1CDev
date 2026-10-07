@@ -117,6 +117,8 @@ export const coreSuiteFiles: string[] = [
   'suite/commonAttributeContentFileUpdater.test.js',
   'suite/functionalOptionContentFileUpdater.test.js',
   'suite/filterCriterionContentFileUpdater.test.js',
+  'suite/filterCriterionWizardService.test.js',
+  'suite/filterCriterionWizard.test.js',
 'suite/subsystemCompositionRefResolver.test.js',
   'suite/compositionObjectCollector.test.js',
   'suite/compositionCollectorV2.test.js',
