@@ -22,25 +22,27 @@ export interface RevisionValidationResult {
  * If target does not exist, returns 64 zeroes.
  */
 export async function calculateRevision(targetPath: string): Promise<string> {
+  let stat: fs.Stats;
   try {
-    const stat = await fs.promises.lstat(targetPath);
-    if (stat.isSymbolicLink()) {
-      throw new Error(`Символические ссылки не поддерживаются для расчета ревизии метаданных: ${targetPath}`);
-    }
-    if (stat.isFile()) {
-      const bytes = await fs.promises.readFile(targetPath);
-      return hashContent(bytes);
-    }
-    if (stat.isDirectory()) {
-      return await calculateDirectoryRevision(targetPath);
-    }
-    throw new Error(`Неподдерживаемый тип файла метаданных: ${targetPath}`);
+    stat = await fs.promises.lstat(targetPath);
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
       return ZERO_REVISION;
     }
     throw err;
   }
+
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Символические ссылки не поддерживаются для расчета ревизии метаданных: ${targetPath}`);
+  }
+  if (stat.isFile()) {
+    const bytes = await fs.promises.readFile(targetPath);
+    return hashContent(bytes);
+  }
+  if (stat.isDirectory()) {
+    return await calculateDirectoryRevision(targetPath);
+  }
+  throw new Error(`Неподдерживаемый тип файла метаданных: ${targetPath}`);
 }
 
 async function calculateDirectoryRevision(dirPath: string): Promise<string> {

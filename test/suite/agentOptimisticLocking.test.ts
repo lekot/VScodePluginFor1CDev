@@ -6,6 +6,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AgentOperations } from '../../src/agent/agentOperations';
 import { calculateRevision, validateIfRev } from '../../src/agent/agentRevision';
+import { registerAgentCommands } from '../../src/agent/agentCommands';
+import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
+import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
+import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
+import type { AgentResult, CreateObjectResult, MutationResultData } from '../../src/agent/types';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
 
 const MINIMAL_CONFIG_XML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -80,6 +85,31 @@ suite('Agent API — Issue #134 calculateRevision & validateIfRev', () => {
       await assert.rejects(
         () => calculateRevision(filePath),
         /EACCES/
+      );
+    } finally {
+      fs.promises.readFile = origReadFile;
+    }
+  });
+
+  test('calculateRevision throws error when child of existing directory throws ENOENT', async () => {
+    const dirPath = path.join(tmpDir, 'existing-dir');
+    fs.mkdirSync(dirPath, { recursive: true });
+    fs.writeFileSync(path.join(dirPath, 'child.xml'), '<child/>', 'utf-8');
+
+    const origReadFile = fs.promises.readFile;
+    try {
+      (fs.promises as any).readFile = async (p: string) => {
+        if (p.includes('child.xml')) {
+          const err = new Error('ENOENT: no such file or directory');
+          (err as any).code = 'ENOENT';
+          throw err;
+        }
+        return origReadFile(p);
+      };
+
+      await assert.rejects(
+        () => calculateRevision(dirPath),
+        /ENOENT/
       );
     } finally {
       fs.promises.readFile = origReadFile;
@@ -608,4 +638,139 @@ suite('Agent API — Issue #134 ifRev optimistic locking', () => {
     assert.strictEqual(conflicts.length, 1, 'Exactly one concurrent attribute addition must receive conflict');
   });
 });
+
+suite('Agent API — Registered Commands dryRun & ifRev dispatch', () => {
+  let tmpDir: string;
+  let registry: WorkspaceRegistry;
+  let configId: string;
+
+  setup(async () => {
+    resetVscodeTestState();
+    tmpDir = await createTempDir('1cviewer-agent-cmd-lock-');
+    writeConfigXml(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, 'Catalogs'), { recursive: true });
+
+    registry = new WorkspaceRegistry();
+    await registry.refresh([{ configPath: tmpDir }]);
+    configId = registry.list()[0].configurationId;
+
+    const context = { subscriptions: [] as Array<{ dispose(): void }> };
+    registerAgentCommands(
+      context as never,
+      () => null,
+      async () => registry,
+      new DebugSessionRegistry()
+    );
+  });
+
+  teardown(async () => {
+    await registry.dispose();
+    await cleanupTempDir(tmpDir);
+    resetVscodeTestState();
+  });
+
+  test('createObject command with dryRun: true plans creation without writing to disk', async () => {
+    const handler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.createObject')!;
+    const newFilePath = path.join(tmpDir, 'Catalogs', 'DryCatalog.xml');
+
+    const result = await handler({
+      configurationId: configId,
+      type: 'Catalog',
+      name: 'DryCatalog',
+      dryRun: true,
+    }) as AgentResult<CreateObjectResult>;
+
+    assert.strictEqual(result.success, true, result.error);
+    assert.strictEqual(result.dryRun, true);
+    assert.ok(result.data?.plannedChanges);
+    assert.strictEqual(fs.existsSync(newFilePath), false, 'Dry-run must not create XML file on disk');
+
+    const configXml = fs.readFileSync(path.join(tmpDir, 'Configuration.xml'), 'utf-8');
+    assert.strictEqual(configXml.includes('DryCatalog'), false, 'Dry-run must not update Configuration.xml');
+  });
+
+  test('createObject command with mismatched ifRev fails with conflict', async () => {
+    const handler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.createObject')!;
+    const newFilePath = path.join(tmpDir, 'Catalogs', 'StaleCatalog.xml');
+
+    const result = await handler({
+      configurationId: configId,
+      type: 'Catalog',
+      name: 'StaleCatalog',
+      ifRev: '1'.repeat(64), // Mismatched revision for non-existent target (expected ZERO_REVISION)
+    }) as AgentResult;
+
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result.code, 'CONCURRENT_MODIFICATION_ERROR');
+    assert.strictEqual(fs.existsSync(newFilePath), false, 'Failed ifRev must not create file on disk');
+  });
+
+  test('deleteObject command with dryRun: true plans deletion without modifying disk', async () => {
+    const handlerCreate = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.createObject')!;
+    await handlerCreate({ configurationId: configId, type: 'Catalog', name: 'ItemToDelete' });
+
+    const objPath = path.join(tmpDir, 'Catalogs', 'ItemToDelete.xml');
+    assert.strictEqual(fs.existsSync(objPath), true);
+    const revBefore = await calculateRevision(objPath);
+
+    const handlerDelete = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.deleteObject')!;
+    const dryResult = await handlerDelete({
+      configurationId: configId,
+      path: 'Catalog.ItemToDelete',
+      ifRev: revBefore,
+      dryRun: true,
+    }) as AgentResult<MutationResultData>;
+
+    assert.strictEqual(dryResult.success, true, dryResult.error);
+    assert.strictEqual(dryResult.dryRun, true);
+    assert.ok(dryResult.data?.plannedChanges);
+    assert.strictEqual(fs.existsSync(objPath), true, 'File must remain on disk after dryRun delete');
+
+    // Mismatched ifRev fails
+    const failResult = await handlerDelete({
+      configurationId: configId,
+      path: 'Catalog.ItemToDelete',
+      ifRev: 'f'.repeat(64),
+    }) as AgentResult;
+    assert.strictEqual(failResult.success, false);
+    assert.strictEqual(failResult.code, 'CONCURRENT_MODIFICATION_ERROR');
+    assert.strictEqual(fs.existsSync(objPath), true, 'File must remain after mismatched ifRev');
+  });
+
+  test('renameObject command with dryRun: true plans rename without modifying disk', async () => {
+    const handlerCreate = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.createObject')!;
+    await handlerCreate({ configurationId: configId, type: 'Catalog', name: 'ItemToRename' });
+
+    const oldPath = path.join(tmpDir, 'Catalogs', 'ItemToRename.xml');
+    const newPath = path.join(tmpDir, 'Catalogs', 'ItemRenamed.xml');
+    assert.strictEqual(fs.existsSync(oldPath), true);
+    const revBefore = await calculateRevision(oldPath);
+
+    const handlerRename = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.renameObject')!;
+    const dryResult = await handlerRename({
+      configurationId: configId,
+      path: 'Catalog.ItemToRename',
+      newName: 'ItemRenamed',
+      ifRev: revBefore,
+      dryRun: true,
+    }) as AgentResult<CreateObjectResult>;
+
+    assert.strictEqual(dryResult.success, true, dryResult.error);
+    assert.strictEqual(dryResult.dryRun, true);
+    assert.ok(dryResult.data?.plannedChanges);
+    assert.strictEqual(fs.existsSync(oldPath), true, 'Old file must still exist after dryRun');
+    assert.strictEqual(fs.existsSync(newPath), false, 'New file must not exist after dryRun');
+
+    // Mismatched ifRev fails
+    const failResult = await handlerRename({
+      configurationId: configId,
+      path: 'Catalog.ItemToRename',
+      newName: 'ItemRenamed',
+      ifRev: 'e'.repeat(64),
+    }) as AgentResult;
+    assert.strictEqual(failResult.success, false);
+    assert.strictEqual(failResult.code, 'CONCURRENT_MODIFICATION_ERROR');
+  });
+});
+
 

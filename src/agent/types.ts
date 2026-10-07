@@ -140,7 +140,7 @@ export interface AgentRepositoryStatusData {
 
 export type AgentRepositoryOperationData = RepositoryServiceResult;
 
-export interface AgentSetRoleRightsParams extends MutationScopedParams {
+export interface AgentSetRoleRightsParams extends ConfigurationScopedParams {
     roleName: string;
     /** Entries in the role-rights DSL, for example `Catalog.Goods: @edit`. */
     objects: string[];
@@ -373,7 +373,7 @@ export interface PredefinedCotPathParams extends ConfigurationScopedParams {
     predefinedName: string;
 }
 
-export interface SetPredefinedCotTypeParams extends MutationScopedParams {
+export interface SetPredefinedCotTypeParams extends ConfigurationScopedParams {
     /** Agent path: 'ChartOfCharacteristicTypes.Name' or plain 'Name' */
     path: string;
     predefinedName: string;

@@ -507,10 +507,12 @@ export function registerAgentCommands(
                 const { dotPath } = parseSourceAddress(params.type);
                 normalizedParams = { ...params, type: dotPath };
             }
-            const result = await runPlanForConfiguration(params, (configRoot) =>
-                new AgentOperations(configRoot).planCreateObject(normalizedParams));
-            if (result.success) { getTreeDataProvider()?.refresh(); }
-            return result;
+            const dryRun = params?.dryRun === true;
+            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.createObject', async (configRoot) => {
+                const result = await new AgentOperations(configRoot).createObject(normalizedParams);
+                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
+                return result;
+            });
         }
     );
 
@@ -674,10 +676,21 @@ export function registerAgentCommands(
     const deleteObjectCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deleteObject',
         async (params: DeleteObjectParams) => {
-            const result = await runPlanForConfiguration(params, (configRoot) =>
-                new AgentOperations(configRoot).planDeleteObject(params));
-            if (result.success) { getTreeDataProvider()?.refresh(); }
-            return result;
+            const dotPath = typeof params?.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
+            const segmentCount = dotPath ? dotPath.split('.').length : 0;
+            if (segmentCount !== 2) {
+                return {
+                    success: false,
+                    code: 'INVALID_AGENT_PATH',
+                    error: `deleteObject supports only a root object path: "${String(params?.path)}".`,
+                };
+            }
+            const dryRun = params?.dryRun === true;
+            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.deleteObject', async (configRoot) => {
+                const result = await new AgentOperations(configRoot).deleteObject(params);
+                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
+                return result;
+            });
         }
     );
 
@@ -686,10 +699,21 @@ export function registerAgentCommands(
     const renameObjectCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.renameObject',
         async (params: RenameObjectParams) => {
-            const result = await runPlanForConfiguration(params, (configRoot) =>
-                new AgentOperations(configRoot).planRenameObject(params));
-            if (result.success) { getTreeDataProvider()?.refresh(); }
-            return result;
+            const dotPath = typeof params?.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
+            const segmentCount = dotPath ? dotPath.split('.').length : 0;
+            if (segmentCount !== 2) {
+                return {
+                    success: false,
+                    code: 'INVALID_AGENT_PATH',
+                    error: `renameObject supports only a root object path (RootTag.Name): "${String(params?.path)}".`,
+                };
+            }
+            const dryRun = params?.dryRun === true;
+            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.renameObject', async (configRoot) => {
+                const result = await new AgentOperations(configRoot).renameObject(params);
+                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
+                return result;
+            });
         }
     );
 

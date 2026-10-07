@@ -157,7 +157,7 @@ function mutationFailure(error: unknown): AgentResult<never> {
     return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
-        ...(error instanceof CfeOwnershipError ? { code: error.code } : {}),
+        ...(error instanceof CfeOwnershipError || error instanceof AgentPathError ? { code: error.code } : {}),
     };
 }
 
@@ -472,16 +472,10 @@ export class AgentOperations {
                 return { success: false, error: `Некорректный type "${type}": ${typeValidation}` };
             }
 
-            if (type === 'FilterCriterion') {
-                const plan = await this.planCreateObject(params);
-                const executor = new MutationPlanExecutor(this.configRootPath);
-                return await executor.execute(plan);
-            }
-
             // Проверяем наличие правил или шаблона
             const rules = !TEMPLATE_ONLY_TYPES.has(type) ? rulesRegistry.get(type) : undefined;
             const templateXml = !rules ? await getDesignerTemplateXml(type) : null;
-            if (!rules && templateXml === null) {
+            if (!rules && templateXml === null && type !== 'FilterCriterion') {
                 return {
                     success: false,
                     error: `Тип "${type}" не поддерживается. Доступные типы: ${rulesRegistry.allRootTags().join(', ')}`,
@@ -513,6 +507,44 @@ export class AgentOperations {
                 const check = await this.checkMutationPreconditions<CreateObjectResult>(newFilePath, targetPath, params);
                 if (!check.proceed) {
                     return check.errorResult!;
+                }
+
+                if (type === 'FilterCriterion') {
+                    const plan = await this.planCreateObject(params);
+                    if (params.dryRun) {
+                        return {
+                            success: true,
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: targetPath,
+                            data: {
+                                filePath: newFilePath,
+                                dryRun: true,
+                                rev: check.currentRev,
+                                target: targetPath,
+                                plannedChanges: {
+                                    files: [newFilePath, path.join(this.configRootPath, CONFIGURATION_XML)],
+                                    summary: `Создание объекта ${targetPath}`,
+                                },
+                            },
+                        };
+                    }
+                    const executor = new MutationPlanExecutor(this.configRootPath);
+                    const execResult = await executor.execute(plan);
+                    if (execResult.success && execResult.data) {
+                        const newRev = await calculateRevision(newFilePath);
+                        return {
+                            ...execResult,
+                            rev: newRev,
+                            target: targetPath,
+                            data: {
+                                ...execResult.data,
+                                rev: newRev,
+                                target: targetPath,
+                            },
+                        };
+                    }
+                    return execResult;
                 }
 
                 if (params.dryRun) {
@@ -939,7 +971,11 @@ export class AgentOperations {
         try {
             const { dotPath } = parseSourceAddress(params.path);
             if (dotPath.split('.').length !== 2) {
-                return { success: false, error: `deleteObject принимает только корневой путь объекта: "${params.path}".` };
+                return {
+                    success: false,
+                    code: 'INVALID_AGENT_PATH',
+                    error: `deleteObject принимает только корневой путь объекта: "${params.path}".`,
+                };
             }
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { rootTag, objectName, filePath } = resolved;
@@ -1019,9 +1055,20 @@ export class AgentOperations {
         try {
             const { dotPath } = parseSourceAddress(params.path);
             if (dotPath.split('.').length !== 2) {
-                return { success: false, error: `renameObject принимает только корневой путь объекта: "${params.path}".` };
+                return {
+                    success: false,
+                    code: 'INVALID_AGENT_PATH',
+                    error: `renameObject принимает только корневой путь объекта: "${params.path}".`,
+                };
             }
             const resolved = await this.resolveContainedAgentPath(params.path);
+            if (resolved.nestedType !== undefined || resolved.tabularSection !== undefined) {
+                return {
+                    success: false,
+                    code: 'INVALID_AGENT_PATH',
+                    error: `renameObject не поддерживает вложенные пути метаданных: "${params.path}".`,
+                };
+            }
             const { rootTag, objectName, filePath } = resolved;
             await assertCfeGenericMutationAllowed(filePath, 'rename');
 
