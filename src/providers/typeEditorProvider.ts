@@ -195,6 +195,17 @@ export class TypeEditorProvider {
     const refObjs = referenceableObjects ?? [];
     this.updateWebviewContent(typeDefinition, refObjs);
 
+    if (this.rejectPromise) {
+      const reject = this.rejectPromise;
+      this.rejectPromise = undefined;
+      this.resolvePromise = undefined;
+      reject(new Error('Type editor cancelled'));
+    } else if (this.resolvePromise) {
+      const resolve = this.resolvePromise;
+      this.resolvePromise = undefined;
+      resolve(null);
+    }
+
     return new Promise<TypeDefinition | null>((resolve, reject) => {
       this.resolvePromise = resolve;
       this.rejectPromise = reject;

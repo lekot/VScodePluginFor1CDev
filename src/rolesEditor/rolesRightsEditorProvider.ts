@@ -28,6 +28,30 @@ import {
 import { CONFIGURATION_XML } from '../constants/fileNames';
 
 /**
+ * Walk up directory tree from target path to locate folder containing Configuration.xml.
+ */
+export function findConfigurationRootForPath(targetPath: string): string | undefined {
+  if (!targetPath) {
+    return undefined;
+  }
+  let currentDir = path.dirname(path.resolve(targetPath));
+  let previousDir = '';
+  while (currentDir !== previousDir) {
+    const candidateConfigXml = path.join(currentDir, CONFIGURATION_XML);
+    try {
+      if (fs.existsSync(candidateConfigXml)) {
+        return currentDir;
+      }
+    } catch {
+      // ignore
+    }
+    previousDir = currentDir;
+    currentDir = path.dirname(currentDir);
+  }
+  return undefined;
+}
+
+/**
  * Provider for the roles and rights editor webview
  */
 export class RolesRightsEditorProvider {
@@ -95,7 +119,8 @@ export class RolesRightsEditorProvider {
     if (!this.panel || !node.filePath) {
       return;
     }
-    await this.show(node.filePath, undefined, { suppressReveal: true });
+    const configPath = findConfigurationRootForPath(node.filePath);
+    await this.show(node.filePath, configPath, { suppressReveal: true });
   }
 
   /**
@@ -108,10 +133,11 @@ export class RolesRightsEditorProvider {
     const loadGeneration = ++this.objectsLoadGeneration;
     try {
       // Parse the role XML file
-      this.currentRoleModel = await RoleXmlParser.parseRoleXml(roleFilePath);
+      const roleModel = await RoleXmlParser.parseRoleXml(roleFilePath);
       if (loadGeneration !== this.objectsLoadGeneration) {
         return;
       }
+      this.currentRoleModel = roleModel;
       Logger.info(`Loaded role: ${this.currentRoleModel.name}`);
 
       // Create or reveal webview panel immediately; load metadata in the background
@@ -125,7 +151,11 @@ export class RolesRightsEditorProvider {
       this.allObjects = [];
       await this.updateWebviewContent({ initialTableLoading: true });
 
-      if (!configPath) {
+      const resolvedConfigPath = (configPath && configPath.trim().length > 0)
+        ? configPath
+        : findConfigurationRootForPath(roleFilePath);
+
+      if (!resolvedConfigPath) {
         this.saveDisabledNoConfig = true;
         this.configurationRootPath = undefined;
         Logger.warn('Configuration path not found, showing read-only mode');
@@ -145,13 +175,13 @@ export class RolesRightsEditorProvider {
       }
 
       this.saveDisabledNoConfig = false;
-      this.configurationRootPath = configPath;
+      this.configurationRootPath = resolvedConfigPath;
 
       try {
         const objects = await loadMetadataObjects(
           roleFilePath,
           this.currentRoleModel.rights,
-          configPath
+          resolvedConfigPath
         );
         if (loadGeneration !== this.objectsLoadGeneration) {
           return;

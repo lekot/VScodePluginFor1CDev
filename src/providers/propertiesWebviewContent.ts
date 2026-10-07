@@ -785,7 +785,9 @@ export function getWebviewScript(readOnly: boolean, node?: TreeNode, sessionToke
       if (btn && btn.dataset && btn.dataset.property) {
         vscode.postMessage({
           type: 'editType',
-          property: btn.dataset.property
+          propertyName: btn.dataset.property,
+          nodeId: ${escapedNodeId},
+          sessionToken: ${escapedToken}
         });
       }
     }
@@ -804,7 +806,12 @@ export function getWebviewScript(readOnly: boolean, node?: TreeNode, sessionToke
       document.querySelectorAll('.edit-source-btn').forEach(btn => {
         btn.addEventListener('click', () => {
           const propertyName = btn.dataset.property || 'Source';
-          vscode.postMessage({ type: 'editSource', propertyName });
+          vscode.postMessage({
+            type: 'editSource',
+            propertyName,
+            nodeId: ${escapedNodeId},
+            sessionToken: ${escapedToken}
+          });
         });
       });
 
@@ -924,6 +931,14 @@ export function getWebviewScript(readOnly: boolean, node?: TreeNode, sessionToke
           break;
 
         case 'typeUpdated':
+          if (message.sessionToken && state.sessionToken && message.sessionToken !== state.sessionToken) {
+            console.log('Ignored stale typeUpdated for session', message.sessionToken);
+            break;
+          }
+          if (message.nodeId && state.nodeId && message.nodeId !== state.nodeId) {
+            console.log('Ignored stale typeUpdated for node', message.nodeId);
+            break;
+          }
           const propertyName = message.property;
           const newValue = message.value;
           const esc = (s) => (s || '').replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
@@ -947,6 +962,14 @@ export function getWebviewScript(readOnly: boolean, node?: TreeNode, sessionToke
           break;
 
         case 'sourceUpdated': {
+          if (message.sessionToken && state.sessionToken && message.sessionToken !== state.sessionToken) {
+            console.log('Ignored stale sourceUpdated for session', message.sessionToken);
+            break;
+          }
+          if (message.nodeId && state.nodeId && message.nodeId !== state.nodeId) {
+            console.log('Ignored stale sourceUpdated for node', message.nodeId);
+            break;
+          }
           const srcProperty = message.property;
           const srcValue = message.value;
           const escSrc = (s) => (s || '').replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');

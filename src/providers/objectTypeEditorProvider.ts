@@ -119,6 +119,12 @@ export class ObjectTypeEditorProvider {
     this.panel.webview.html = this.getWebviewContent(currentDef, objectableGroups);
     Logger.debug('Object type editor panel updated');
 
+    if (this.resolvePromise) {
+      const resolve = this.resolvePromise;
+      this.resolvePromise = undefined;
+      resolve(null);
+    }
+
     return new Promise<ObjectTypeDefinition | null>((resolve) => {
       this.resolvePromise = resolve;
     });

@@ -266,6 +266,7 @@ export const coreSuiteFiles: string[] = [
   'suite/treeItemBuilder.test.js',
   'suite/commandInterfaceParser.test.js',
   'suite/commandInterfaceOperations.test.js',
+  'suite/subsystemCommandInterfaceProvider.test.js',
   'suite/predefinedCharacteristicsParser.test.js',
   'suite/predefinedCharacteristicOperations.test.js',
   'suite/agentFormsOperations.test.js',

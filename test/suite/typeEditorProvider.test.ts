@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { TypeEditorProvider } from '../../src/providers/typeEditorProvider';
 import { TypeDefinition } from '../../src/types/typeDefinitions';
+import { createFakeWebviewPanel, patchCreateWebviewPanel } from '../helpers/rightsEditorTestHarness';
 
 // Mock VS Code API
 const mockExtensionUri = vscode.Uri.file(path.resolve(__dirname, '../../'));
@@ -365,6 +366,41 @@ suite('TypeEditorProvider', () => {
       };
       const result = provider['validateTypeDefinition'](definition);
       assert.strictEqual(result.length, 0);
+    });
+  });
+
+  suite('show session concurrency and isolation (#192)', () => {
+    test('consecutive show call cancels the first pending promise instead of leaving it unresolved', async () => {
+      const { panel } = createFakeWebviewPanel();
+      const restore = patchCreateWebviewPanel(panel);
+      try {
+        const typeXml1 = '<Type xmlns="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema"><Type>xs:string</Type></Type>';
+        const typeXml2 = '<Type xmlns="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema"><Type>xs:decimal</Type></Type>';
+
+        let p1Settled = false;
+        let p1Error: unknown = null;
+        const p1 = provider.show(typeXml1).catch((err) => {
+          p1Settled = true;
+          p1Error = err;
+          return null;
+        });
+
+        await new Promise((r) => setImmediate(r));
+        assert.strictEqual(p1Settled, false, 'First show call should be pending');
+
+        // Second show call should cancel the first one
+        const p2 = provider.show(typeXml2);
+
+        await p1;
+        assert.strictEqual(p1Settled, true, 'First show promise must be settled when second show is called');
+        assert.ok(p1Error, 'First show call should reject with cancellation error');
+        assert.strictEqual((p1Error as Error).message, 'Type editor cancelled');
+
+        provider.dispose();
+        await p2.catch(() => {});
+      } finally {
+        restore();
+      }
     });
   });
 });

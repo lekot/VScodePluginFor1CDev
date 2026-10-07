@@ -174,8 +174,14 @@ export class RoleXmlParser {
       throw new Error(`Malformed XML in Role.xml: ${message}`);
     }
 
-    // Extract role name from file path
-    const roleName = path.basename(path.dirname(filePath));
+    // Extract role name from XML or file path (support both Designer Role.xml and EDT RoleName.xml)
+    const baseName = path.basename(filePath, path.extname(filePath));
+    const roleNameFromXml = this.extractRoleNameFromXml(parsed);
+    const roleName =
+      roleNameFromXml ||
+      (baseName.toLowerCase() === 'role'
+        ? path.basename(path.dirname(filePath))
+        : baseName);
 
     // Try to find and parse Rights.xml file (EDT format)
     const rights = await this.parseRightsXml(filePath);
@@ -362,6 +368,36 @@ export class RoleXmlParser {
       }
     }
 
+    // Try under MetaDataObject
+    for (const [key, value] of Object.entries(parsed)) {
+      if ((key.endsWith(':MetaDataObject') || key === 'MetaDataObject') && value && typeof value === 'object') {
+        const metaObj = value as Record<string, unknown>;
+        if (metaObj['Role']) {
+          return metaObj['Role'] as Record<string, unknown>;
+        }
+        for (const [mKey, mVal] of Object.entries(metaObj)) {
+          if (mKey.endsWith(':Role') || mKey === 'Role') {
+            return mVal as Record<string, unknown>;
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private static extractRoleNameFromXml(parsed: Record<string, unknown>): string | null {
+    const roleElement = this.findRoleElement(parsed);
+    if (!roleElement) {
+      return null;
+    }
+    const props = (roleElement['Properties'] || roleElement['md:Properties']) as Record<string, unknown> | undefined;
+    if (props && typeof props === 'object') {
+      const name = this.nameValueToString(props['Name'] || props['md:Name']);
+      if (name) {
+        return name;
+      }
+    }
     return null;
   }
 

@@ -116,7 +116,10 @@ export function createFakeWebviewPanel(options?: {
 export function patchCreateWebviewPanel(panel: vscode.WebviewPanel): () => void {
   const w = vscode.window as unknown as { createWebviewPanel: typeof vscode.window.createWebviewPanel };
   const original = w.createWebviewPanel;
-  w.createWebviewPanel = (() => panel) as typeof vscode.window.createWebviewPanel;
+  w.createWebviewPanel = ((viewType: string, title: string) => {
+    panel.title = title;
+    return panel;
+  }) as typeof vscode.window.createWebviewPanel;
   return () => {
     w.createWebviewPanel = original;
   };

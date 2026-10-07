@@ -977,10 +977,20 @@
     function save() {
       setStatus('Сохранение...');
       if (activeTab === 'source') {
-        vscode.postMessage({ type: 'save', source: source.value });
+        vscode.postMessage({
+          type: 'save',
+          source: source.value,
+          schemaPath: data.schemaPath,
+          generation: data.generation,
+        });
         return;
       }
-      vscode.postMessage({ type: 'saveModel', model });
+      vscode.postMessage({
+        type: 'saveModel',
+        model,
+        schemaPath: data.schemaPath,
+        generation: data.generation,
+      });
     }
 
     function render() {
@@ -1102,6 +1112,12 @@
 
     window.addEventListener('message', (event) => {
       const message = event.data || {};
+      if (message.schemaPath && message.schemaPath !== data.schemaPath) {
+        return;
+      }
+      if (typeof message.generation === 'number' && typeof data.generation === 'number' && message.generation !== data.generation) {
+        return;
+      }
       if (message.type === 'saveSuccess') {
         model = normalizeModel(message.model || model);
         if (typeof message.source === 'string') {
