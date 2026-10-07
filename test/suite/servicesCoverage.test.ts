@@ -23,6 +23,13 @@ suite('services coverage helpers', function () {
       assert.strictEqual((xml.match(/<xr:GeneratedType /g) || []).length, 1);
     });
 
+    test('buildInternalInfoXml ChartOfAccounts includes all 7 generated types (§29)', () => {
+      const xml = buildInternalInfoXml('ChartOfAccounts', 'Хозрасчетный', '\t');
+      assert.ok(xml.includes('name="ChartOfAccountsExtDimensionTypes.Хозрасчетный" category="ExtDimensionTypes"'));
+      assert.ok(xml.includes('name="ChartOfAccountsExtDimensionTypesRow.Хозрасчетный" category="ExtDimensionTypesRow"'));
+      assert.strictEqual((xml.match(/<xr:GeneratedType /g) || []).length, 7);
+    });
+
     test('buildInternalInfoXml ChartOfCharacteristicTypes includes Characteristic category (§29)', () => {
       const xml = buildInternalInfoXml('ChartOfCharacteristicTypes', 'ВидыСубконто', '\t');
       assert.ok(xml.includes('category="Characteristic"'));

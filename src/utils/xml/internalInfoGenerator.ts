@@ -152,6 +152,8 @@ function getSpecsForRootTag(rootTag: string): GeneratedTypeSpec[] {
         { namePrefix: 'ChartOfAccountsSelection', category: 'Selection' },
         { namePrefix: 'ChartOfAccountsList', category: 'List' },
         { namePrefix: 'ChartOfAccountsManager', category: 'Manager' },
+        { namePrefix: 'ChartOfAccountsExtDimensionTypes', category: 'ExtDimensionTypes' },
+        { namePrefix: 'ChartOfAccountsExtDimensionTypesRow', category: 'ExtDimensionTypesRow' },
       ];
     case 'ChartOfCharacteristicTypes':
       return [

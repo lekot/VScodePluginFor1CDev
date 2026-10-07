@@ -142,6 +142,11 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.createChartOfAccounts",
+        "title": "Создать план счетов",
+        "category": "CDT 41"
+      },
+      {
         "command": "1c-metadata-tree.duplicateElement",
         "title": "Дублировать элемент",
         "category": "CDT 41"
@@ -1542,6 +1547,11 @@
         {
           "command": "1c-metadata-tree.createForm",
           "when": "view == 1c-metadata-tree && viewItem =~ /^Forms\\b/",
+          "group": "1_modify"
+        },
+        {
+          "command": "1c-metadata-tree.createChartOfAccounts",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^ChartsOfAccounts\\b/",
           "group": "1_modify"
         },
         {

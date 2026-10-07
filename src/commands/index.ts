@@ -7,6 +7,7 @@ import type { MetadataTreeLifecycle } from '../extension/metadataTreeLifecycle';
 import { registerElementCommands } from './elementCommands';
 import { registerNavigationCommands } from './navigationCommands';
 import { registerEditorCommands } from './editorCommands';
+import { registerChartOfAccountsCommands } from './chartOfAccountsCommands';
 import { registerConfigurationCompareCommands } from './configurationCompareCommands';
 import { registerCfCommands } from './cfCommands';
 import { registerFilterCommands } from './filterCommands';
@@ -183,6 +184,13 @@ export async function registerAllCommands({
   // Agent Bridge — HTTP сервер для вызова Agent API команд снаружи VS Code
   const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   state.agentBridge = await activateAgentBridge(context, wsFolder) ?? null;
+
+  registerChartOfAccountsCommands(
+    context,
+    state,
+    runConfigurationPlan,
+    lifecycle.invalidateCacheAndReload
+  );
 
   return [
     ...registerUtilityCommandsLeading(utilityDeps),
