@@ -13,6 +13,10 @@ for /f "tokens=2 delims=:, " %%a in ('findstr /C:"\"version\"" package.json') do
 set NEWVERSION=%NEWVERSION:"=%
 echo New version: %NEWVERSION%
 
+echo Updating package-lock.json...
+call npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+if %errorlevel% neq 0 exit /b %errorlevel%
+
 if not exist releases mkdir releases
 
 echo Building VSIX package...
