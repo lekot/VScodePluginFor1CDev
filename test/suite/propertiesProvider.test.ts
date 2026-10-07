@@ -6,6 +6,7 @@ import { PropertiesProvider } from '../../src/providers/propertiesProvider';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TypeEditorProvider } from '../../src/providers/typeEditorProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
+import { MESSAGES } from '../../src/constants/messages';
 import { validateProperties } from '../../src/providers/propertiesValidation';
 import {
   detectPropertyType,
@@ -500,6 +501,92 @@ suite('PropertiesProvider isOpen / updateIfOpen Test Suite', () => {
     assert.strictEqual(provider.isOpen(), true);
     provider.dispose();
     assert.strictEqual(provider.isOpen(), false, 'panel should be undefined after dispose');
+  });
+
+  test('Finding 3: race condition between rapid selections discards stale picture of previous node', async () => {
+    let htmlContent = '';
+    const fakePanel: any = {
+      webview: {
+        get html() { return htmlContent; },
+        set html(val: string) { htmlContent = val; },
+        postMessage: async () => true,
+        onDidReceiveMessage: () => ({ dispose: () => undefined }),
+      },
+      reveal: () => undefined,
+      onDidDispose: () => ({ dispose: () => undefined }),
+      dispose: () => undefined,
+    };
+    (provider as any).panel = fakePanel;
+
+    const node1: TreeNode = {
+      id: 'CommonPictures.FirstPic',
+      name: 'FirstPic',
+      type: MetadataType.CommonPicture,
+      properties: { Name: 'FirstPic' },
+      filePath: '/nonexistent/FirstPic.xml',
+    };
+
+    const node2: TreeNode = {
+      id: 'CommonPictures.SecondPic',
+      name: 'SecondPic',
+      type: MetadataType.CommonPicture,
+      properties: { Name: 'SecondPic' },
+      filePath: '/nonexistent/SecondPic.xml',
+    };
+
+    let resolveFirstPromise: (value: any) => void;
+    const delayedFirstPromise = new Promise((resolve) => {
+      resolveFirstPromise = resolve;
+    });
+
+    const pictureResolver = await import('../../src/services/picture/commonPictureResolver');
+    const origResolve = pictureResolver.resolveCommonPicture;
+
+    try {
+      (pictureResolver as any).resolveCommonPicture = async (node: TreeNode) => {
+        if (node.id === node1.id) {
+          await delayedFirstPromise;
+          return {
+            success: true,
+            format: 'PNG',
+            dataUri: 'data:image/png;base64,FIRST',
+            resolvedFilePath: '/fake/first.png',
+          };
+        }
+        return {
+          success: true,
+          format: 'PNG',
+          dataUri: 'data:image/png;base64,SECOND',
+          resolvedFilePath: '/fake/second.png',
+        };
+      };
+
+      // node1 begins updateWebviewContent and waits on resolveCommonPicture
+      (provider as any).currentNode = node1;
+      const p1 = (provider as any).updateWebviewContent();
+
+      // Immediately switch to node2
+      (provider as any).currentNode = node2;
+      const p2 = (provider as any).updateWebviewContent();
+
+      await p2;
+      assert.ok(htmlContent.includes('SecondPic'), 'panel must display SecondPic after node2 is shown');
+      assert.ok(htmlContent.includes('SECOND'), 'panel must contain picture of SecondPic');
+
+      // Now node1's delayed picture finishes
+      resolveFirstPromise!({});
+      await p1;
+
+      // Stale node1 resolution MUST NOT overwrite node2's webview with node1's picture
+      assert.ok(htmlContent.includes('SecondPic'), 'panel must still display SecondPic');
+      assert.strictEqual(
+        htmlContent.includes('data:image/png;base64,FIRST'),
+        false,
+        'stale first picture must not overwrite webview under second node'
+      );
+    } finally {
+      (pictureResolver as any).resolveCommonPicture = origResolve;
+    }
   });
 });
 
@@ -1182,6 +1269,185 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
     } finally {
       if (fs.existsSync(nodeBXml)) {
         await fs.promises.unlink(nodeBXml);
+      }
+    }
+  });
+
+  test('delayed dirtyChange from node A via intermediate empty panel is rejected and does not pollute node B', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA', Synonym: 'Synonym A' },
+      filePath: tempXmlPath,
+    };
+
+    const nodeBXml = path.join(path.dirname(tempXmlPath), `temp-node-b-empty-${Date.now()}.xml`);
+    await fs.promises.writeFile(nodeBXml, '<Catalog><Properties><Name>CatalogB</Name></Properties></Catalog>', 'utf8');
+
+    try {
+      const nodeB: TreeNode = {
+        id: 'node-b',
+        name: 'CatalogB',
+        type: MetadataType.Catalog,
+        properties: { Name: 'CatalogB', Synonym: 'Synonym B' },
+        filePath: nodeBXml,
+      };
+
+      // Open Node A and capture session token
+      await provider.showProperties(nodeA);
+      const sessionTokenA = (provider as any).currentSessionToken;
+      assert.ok(sessionTokenA, 'sessionTokenA should exist');
+
+      // User navigates to empty panel (node undefined)
+      await provider.showProperties(undefined);
+      assert.strictEqual((provider as any).currentNode, undefined);
+      assert.strictEqual(provider.isDirty(), false);
+
+      // Delayed dirtyChange from Node A arrives while on empty panel
+      const { handleMessage } = await import('../../src/providers/propertiesMessageHandler');
+      const ctx = (provider as any).buildHandlerContext();
+
+      await handleMessage(
+        {
+          type: 'dirtyChange',
+          isDirty: true,
+          properties: { Name: 'CatalogA', Synonym: 'Polluted Through Empty Panel' },
+          nodeId: 'node-a',
+          sessionToken: sessionTokenA,
+        },
+        ctx
+      );
+
+      // Delayed message for dead session A MUST NOT set pendingProperties
+      assert.strictEqual(provider.isDirty(), false, 'delayed message on empty panel must not set isDirty');
+      assert.strictEqual((provider as any).pendingProperties, undefined, 'delayed message must not set pendingProperties on empty panel');
+
+      // User navigates to Node B
+      await provider.showProperties(nodeB);
+      assert.strictEqual(provider.isDirty(), false);
+      assert.strictEqual((provider as any).pendingProperties, undefined, 'Node B must not inherit dirty state from A');
+    } finally {
+      if (fs.existsSync(nodeBXml)) {
+        await fs.promises.unlink(nodeBXml);
+      }
+    }
+  });
+
+  test('delayed dirtyChange from node A via intermediate form selection panel is rejected and does not pollute node B', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA', Synonym: 'Synonym A' },
+      filePath: tempXmlPath,
+    };
+
+    const nodeBXml = path.join(path.dirname(tempXmlPath), `temp-node-b-form-${Date.now()}.xml`);
+    await fs.promises.writeFile(nodeBXml, '<Catalog><Properties><Name>CatalogB</Name></Properties></Catalog>', 'utf8');
+
+    try {
+      const nodeB: TreeNode = {
+        id: 'node-b',
+        name: 'CatalogB',
+        type: MetadataType.Catalog,
+        properties: { Name: 'CatalogB', Synonym: 'Synonym B' },
+        filePath: nodeBXml,
+      };
+
+      // Open Node A and capture session token
+      await provider.showProperties(nodeA);
+      const sessionTokenA = (provider as any).currentSessionToken;
+
+      // User switches to form selection properties
+      await provider.showFormSelectionProperties({ entityType: 'form' } as any);
+      assert.strictEqual((provider as any).currentNode, undefined);
+      assert.strictEqual(provider.isDirty(), false);
+
+      // Delayed dirtyChange from Node A arrives while on form panel
+      const { handleMessage } = await import('../../src/providers/propertiesMessageHandler');
+      const ctx = (provider as any).buildHandlerContext();
+
+      await handleMessage(
+        {
+          type: 'dirtyChange',
+          isDirty: true,
+          properties: { Name: 'CatalogA', Synonym: 'Polluted Through Form Panel' },
+          nodeId: 'node-a',
+          sessionToken: sessionTokenA,
+        },
+        ctx
+      );
+
+      assert.strictEqual(provider.isDirty(), false, 'delayed message on form panel must not set isDirty');
+      assert.strictEqual((provider as any).pendingProperties, undefined, 'delayed message must not set pendingProperties on form panel');
+
+      // User switches to Node B
+      await provider.showProperties(nodeB);
+      assert.strictEqual(provider.isDirty(), false);
+      assert.strictEqual((provider as any).pendingProperties, undefined, 'Node B must not inherit dirty state from A');
+    } finally {
+      if (fs.existsSync(nodeBXml)) {
+        await fs.promises.unlink(nodeBXml);
+      }
+    }
+  });
+
+  test('refreshIfCurrentNode reports failure and does not show success notification when reading nested element properties fails', async () => {
+    const parentXml = path.join(path.dirname(tempXmlPath), `temp-nested-fail-${Date.now()}.xml`);
+    await fs.promises.writeFile(
+      parentXml,
+      `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Catalog uuid="cat-1">
+    <Properties><Name>CatalogWithAttrs</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="attr-1">
+        <Properties><Name>TestAttr</Name></Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`,
+      'utf8'
+    );
+
+    try {
+      const nestedNode: TreeNode = {
+        id: 'Catalog.CatalogWithAttrs.Attribute.TestAttr',
+        name: 'TestAttr',
+        type: MetadataType.Attribute,
+        properties: { Name: 'TestAttr' },
+        filePath: undefined,
+        parentFilePath: parentXml,
+      };
+
+      await provider.showProperties(nestedNode);
+
+      // Corrupt parent file so reading nested properties throws an XML parsing error
+      await fs.promises.writeFile(parentXml, '<CorruptedXML not closed', 'utf8');
+
+      let notificationShown = false;
+      const originalShowInfo = vscode.window.showInformationMessage;
+      (vscode.window as any).showInformationMessage = async (msg: string) => {
+        if (msg === MESSAGES.FILE_CHANGED_PANEL_REFRESHED) {
+          notificationShown = true;
+        }
+        return undefined;
+      };
+
+      try {
+        await provider.refreshIfCurrentNode(parentXml);
+        assert.strictEqual(
+          notificationShown,
+          false,
+          'FILE_CHANGED_PANEL_REFRESHED notification must NOT be shown when nested property re-read fails'
+        );
+      } finally {
+        vscode.window.showInformationMessage = originalShowInfo;
+      }
+    } finally {
+      if (fs.existsSync(parentXml)) {
+        await fs.promises.unlink(parentXml);
       }
     }
   });

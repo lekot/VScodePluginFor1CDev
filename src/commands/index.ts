@@ -2,11 +2,13 @@ import * as vscode from 'vscode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { registerExternalProcessorCommands } from './externalProcessorCommands';
+import { registerPictureCommands } from './pictureCommands';
 import { ExtensionState } from '../state/extensionState';
 import type { MetadataTreeLifecycle } from '../extension/metadataTreeLifecycle';
 import { registerElementCommands } from './elementCommands';
 import { registerNavigationCommands } from './navigationCommands';
 import { registerEditorCommands } from './editorCommands';
+import { registerChartOfAccountsCommands } from './chartOfAccountsCommands';
 import { registerConfigurationCompareCommands } from './configurationCompareCommands';
 import { registerCfCommands } from './cfCommands';
 import { registerFilterCommands } from './filterCommands';
@@ -71,6 +73,7 @@ export async function registerAllCommands({
     extensionContext: context,
   };
   registerExternalProcessorCommands(context);
+  registerPictureCommands(context);
 
   const configurationRegistry = new WorkspaceRegistry(
     path.join(context.globalStorageUri.fsPath, 'configuration-identities.v1.json'),
@@ -183,6 +186,13 @@ export async function registerAllCommands({
   // Agent Bridge — HTTP сервер для вызова Agent API команд снаружи VS Code
   const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   state.agentBridge = await activateAgentBridge(context, wsFolder) ?? null;
+
+  registerChartOfAccountsCommands(
+    context,
+    state,
+    runConfigurationPlan,
+    lifecycle.invalidateCacheAndReload
+  );
 
   return [
     ...registerUtilityCommandsLeading(utilityDeps),

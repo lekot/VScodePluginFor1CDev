@@ -7,6 +7,7 @@ import {
   PathBoundaryError,
 } from './pathBoundary';
 import { hashContent } from './atomicFileStorage';
+import { Logger } from '../../utils/logger';
 
 export type MutationExpectation =
   | { readonly state: 'missing' }
@@ -54,6 +55,11 @@ interface MutationJournal<T = unknown> {
   readonly snapshots: readonly PathSnapshot[];
 }
 
+export interface OperationOwner {
+  readonly pid: number;
+  readonly createdAt: number;
+}
+
 export class MutationPlanError extends Error {
   constructor(
     readonly code: 'PLAN_CONFLICT' | 'PLAN_FAILED' | 'RECOVERY_REQUIRED',
@@ -81,21 +87,63 @@ export class MutationPlanExecutor {
     }
   }
 
+  private async removeOperationDir(operationPath: string): Promise<void> {
+    await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+
   private async executeLocked<T>(plan: MutationPlan<T>, operationId: string): Promise<T> {
+    if (
+      !operationId ||
+      path.basename(operationId) !== operationId ||
+      operationId.startsWith('.') ||
+      operationId.includes('/') ||
+      operationId.includes('\\')
+    ) {
+      throw new MutationPlanError('PLAN_CONFLICT', `Invalid or unsafe operationId: "${operationId}"`);
+    }
+
     await this.recoverLocked();
     const operationPath = path.join(this.journalRoot, operationId);
     await this.validatePlan(plan);
-    await fs.promises.mkdir(path.join(operationPath, 'backups'), { recursive: true });
-    const snapshots = await this.captureSnapshots(plan, operationPath);
-    const journal: MutationJournal<T> = {
-      version: 1,
-      operationId,
-      plan,
-      state: 'prepared',
-      appliedSteps: 0,
-      snapshots,
-    };
-    await this.writeJournal(operationPath, journal);
+    let snapshots: PathSnapshot[];
+    let journal: MutationJournal<T>;
+    const stagingPath = path.join(this.journalRoot, `.prep-${operationId}-${randomUUID()}`);
+    let isPublished = false;
+    try {
+      await fs.promises.mkdir(stagingPath, { recursive: true });
+      const owner: OperationOwner = {
+        pid: process.pid,
+        createdAt: Date.now(),
+      };
+      await fs.promises.writeFile(
+        path.join(stagingPath, 'owner.json'),
+        JSON.stringify(owner),
+        { encoding: 'utf8', flag: 'wx' },
+      );
+      await fs.promises.rename(stagingPath, operationPath);
+      isPublished = true;
+
+      await fs.promises.mkdir(path.join(operationPath, 'backups'), { recursive: true });
+      snapshots = await this.captureSnapshots(plan, operationPath);
+      journal = {
+        version: 1,
+        operationId,
+        plan,
+        state: 'prepared',
+        appliedSteps: 0,
+        snapshots,
+      };
+      await this.writeJournal(operationPath, journal);
+    } catch (prepError) {
+      await this.removeOperationDir(stagingPath).catch(() => undefined);
+      if (isPublished) {
+        await this.removeOperationDir(operationPath).catch((err) => {
+          Logger.warn(`Failed to clean up preparation directory: ${operationPath}`, err);
+        });
+      }
+      await this.removeJournalRootWhenEmpty().catch(() => undefined);
+      throw prepError;
+    }
 
     try {
       journal.state = 'applying';
@@ -108,7 +156,7 @@ export class MutationPlanExecutor {
       journal.state = 'committed';
       await this.writeJournal(operationPath, journal);
       // Commit is durable; cleanup is best-effort and recovery will remove a committed journal.
-      await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+      await this.removeOperationDir(operationPath).catch(() => undefined);
       await this.removeJournalRootWhenEmpty().catch(() => undefined);
       return plan.result;
     } catch (error) {
@@ -122,7 +170,7 @@ export class MutationPlanExecutor {
         : snapshots;
       try {
         await this.restoreSnapshots(operationPath, snapshotsToRestore);
-        await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        await this.removeOperationDir(operationPath);
         await this.removeJournalRootWhenEmpty();
       } catch (rollbackError) {
         throw new MutationPlanError(
@@ -164,21 +212,114 @@ export class MutationPlanExecutor {
         continue;
       }
       const operationPath = path.join(this.journalRoot, entry.name);
-      let journal: MutationJournal;
+
+      let owner: OperationOwner | undefined;
       try {
-        journal = JSON.parse(await fs.promises.readFile(path.join(operationPath, 'journal.json'), 'utf8')) as MutationJournal;
-        if (journal.version !== 1 || !Array.isArray(journal.snapshots)) {
-          throw new Error('Unsupported or corrupt mutation journal.');
+        const ownerRaw = await fs.promises.readFile(path.join(operationPath, 'owner.json'), 'utf8');
+        const parsed = JSON.parse(ownerRaw) as Partial<OperationOwner>;
+        if (typeof parsed?.pid === 'number' && Number.isInteger(parsed.pid)) {
+          owner = { pid: parsed.pid, createdAt: Number(parsed.createdAt) || 0 };
+        } else {
+          throw new Error('Invalid owner metadata in owner.json.');
         }
-        if (journal.state !== 'committed') {
-          await this.restoreSnapshots(operationPath, journal.snapshots);
+      } catch (ownerError) {
+        if (!isMissingError(ownerError)) {
+          throw new MutationPlanError(
+            'RECOVERY_REQUIRED',
+            `Cannot recover mutation journal ${entry.name}: ${errorMessage(ownerError)}`,
+          );
         }
-        await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-      } catch (error) {
-        throw new MutationPlanError(
-          'RECOVERY_REQUIRED',
-          `Cannot recover mutation journal ${entry.name}: ${errorMessage(error)}`,
-        );
+      }
+
+      let journalRaw: string | undefined;
+      let journalMissing = false;
+      try {
+        journalRaw = await fs.promises.readFile(path.join(operationPath, 'journal.json'), 'utf8');
+      } catch (readError) {
+        if (isMissingError(readError)) {
+          journalMissing = true;
+        } else {
+          throw new MutationPlanError(
+            'RECOVERY_REQUIRED',
+            `Cannot recover mutation journal ${entry.name}: ${errorMessage(readError)}`,
+          );
+        }
+      }
+
+      if (journalRaw !== undefined) {
+        let journal: MutationJournal;
+        try {
+          journal = JSON.parse(journalRaw) as MutationJournal;
+          if (journal.version !== 1 || !Array.isArray(journal.snapshots)) {
+            throw new Error('Unsupported or corrupt mutation journal.');
+          }
+        } catch (error) {
+          throw new MutationPlanError(
+            'RECOVERY_REQUIRED',
+            `Cannot recover mutation journal ${entry.name}: ${errorMessage(error)}`,
+          );
+        }
+
+        // Durable commit: all changes are safe and permanent.
+        // It is completely safe to clean up even if owner process PID is still alive.
+        if (journal.state === 'committed') {
+          try {
+            await this.removeOperationDir(operationPath);
+          } catch (cleanupError) {
+            Logger.warn(`Failed to clean up committed operation directory: ${operationPath}`, cleanupError);
+          }
+          continue;
+        }
+
+        // Uncommitted journal: if owner process is alive, fail-closed against concurrent mutations.
+        if (owner !== undefined && isProcessAlive(owner.pid)) {
+          throw new MutationPlanError(
+            'PLAN_CONFLICT',
+            `Operation "${entry.name}" is actively in progress by process ${owner.pid}.`,
+          );
+        }
+
+        // Owner process is terminated/absent: rollback interrupted plan.
+        await this.restoreSnapshots(operationPath, journal.snapshots);
+        await this.removeOperationDir(operationPath);
+        continue;
+      }
+
+      if (journalMissing) {
+        // If owner is alive, the operation is actively in preparation! Fail-closed.
+        if (owner !== undefined && isProcessAlive(owner.pid)) {
+          throw new MutationPlanError(
+            'PLAN_CONFLICT',
+            `Operation "${entry.name}" is actively in progress by process ${owner.pid}.`,
+          );
+        }
+
+        // If staging directory without owner is recent, another process might be initializing it! Fail-closed.
+        if (owner === undefined && entry.name.startsWith('.')) {
+          try {
+            const stat = await fs.promises.stat(operationPath);
+            const ageMs = Date.now() - stat.mtimeMs;
+            if (ageMs < 5000) {
+              throw new MutationPlanError(
+                'PLAN_CONFLICT',
+                `Operation "${entry.name}" is actively being prepared.`,
+              );
+            }
+          } catch (statError) {
+            if (statError instanceof MutationPlanError) {
+              throw statError;
+            }
+          }
+        }
+
+        // Pre-effect orphan operation directory from terminated process or stale unowned dir:
+        // No mutation steps were ever applied to target files; clean up safely without throwing RECOVERY_REQUIRED.
+        const ownerInfo = owner ? ` from terminated process ${owner.pid}` : '';
+        Logger.warn(`Removed orphan mutation journal dir${ownerInfo} without journal.json: ${operationPath}`);
+        await this.removeOperationDir(operationPath).catch((err) => {
+          Logger.warn(`Failed to remove orphan mutation journal dir: ${operationPath}`, err);
+        });
+        continue;
       }
     }
     await this.removeJournalRootWhenEmpty();
@@ -476,4 +617,16 @@ function isNotEmptyError(error: unknown): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === 'EPERM');
+  }
 }

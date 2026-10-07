@@ -125,6 +125,12 @@ export async function handleMessage(
         await handleGotoHandlerMessage(message, ctx);
         break;
 
+      case 'openPictureFile':
+        if (typeof message.filePath === 'string' && message.filePath) {
+          await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(message.filePath));
+        }
+        break;
+
       default:
         Logger.warn(`Unknown message type: ${message && typeof message === 'object' && 'type' in message ? String((message as WebviewMessage).type) : 'unknown'}`);
     }

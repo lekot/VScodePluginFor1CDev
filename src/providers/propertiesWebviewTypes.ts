@@ -45,6 +45,7 @@ export type WebviewMessage = (
       elementTag: string;
       docUri: string;
     }
+  | { type: 'openPictureFile'; filePath: string }
 ) & {
   nodeId?: string;
   sessionToken?: string;
@@ -77,6 +78,6 @@ export function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
   const m = msg as { type?: unknown };
   if (typeof m.type !== 'string') {return false;}
 
-  const validTypes = ['save', 'cancel', 'dirtyChange', 'validate', 'propertyChanged', 'editType', 'editSource', 'editContent', 'editFormSelectionType', 'gotoEventHandler', 'createEventHandler', 'gotoHandler'];
+  const validTypes = ['save', 'cancel', 'dirtyChange', 'validate', 'propertyChanged', 'editType', 'editSource', 'editContent', 'editFormSelectionType', 'gotoEventHandler', 'createEventHandler', 'gotoHandler', 'openPictureFile'];
   return validTypes.includes(m.type);
 }
