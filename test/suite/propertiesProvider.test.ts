@@ -995,4 +995,80 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
     assert.strictEqual(provider.isDirty(), true);
     assert.strictEqual((provider as any).currentNode, nodeA);
   });
+
+  test('two consecutive dirtyChange message dispatches update pendingProperties with both edits', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA', Synonym: 'Orig', Comment: 'Orig' },
+      filePath: tempXmlPath,
+    };
+
+    await provider.showProperties(nodeA);
+
+    const { handleMessage } = await import('../../src/providers/propertiesMessageHandler');
+    const ctx = (provider as any).buildHandlerContext();
+
+    // 1st edit: Synonym changed
+    await handleMessage(
+      { type: 'dirtyChange', isDirty: true, properties: { Name: 'CatalogA', Synonym: 'First Edit', Comment: 'Orig' } },
+      ctx
+    );
+    assert.strictEqual(provider.isDirty(), true);
+    assert.deepStrictEqual((provider as any).pendingProperties, { Name: 'CatalogA', Synonym: 'First Edit', Comment: 'Orig' });
+
+    // 2nd edit: Comment changed as well
+    await handleMessage(
+      { type: 'dirtyChange', isDirty: true, properties: { Name: 'CatalogA', Synonym: 'First Edit', Comment: 'Second Edit' } },
+      ctx
+    );
+    assert.strictEqual(provider.isDirty(), true);
+    assert.deepStrictEqual((provider as any).pendingProperties, { Name: 'CatalogA', Synonym: 'First Edit', Comment: 'Second Edit' });
+  });
+
+  test('refreshIfCurrentNode re-reads disk content on same node when file changed externally', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA', Synonym: 'Test Catalog Synonym' },
+      filePath: tempXmlPath,
+    };
+
+    await provider.showProperties(nodeA);
+    assert.strictEqual(nodeA.properties.Synonym, 'Test Catalog Synonym');
+
+    // Externally modify XML on disk
+    const { XMLWriter } = await import('../../src/utils/XMLWriter');
+    await XMLWriter.updateProperty(tempXmlPath, 'Synonym', 'Externally Modified Synonym');
+
+    // refreshIfCurrentNode should force reload from disk even though node === currentNode
+    await provider.refreshIfCurrentNode(tempXmlPath);
+
+    assert.strictEqual(nodeA.properties.Synonym, 'Externally Modified Synonym', 'properties must be re-read from disk');
+  });
+
+  test('refreshIfCurrentNode preserves unsaved edit guard when panel is dirty', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA', Synonym: 'Test Catalog Synonym' },
+      filePath: tempXmlPath,
+    };
+
+    await provider.showProperties(nodeA);
+    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'Unsaved Edit' });
+
+    // User chooses "Отмена" on guard prompt
+    (vscode.window as any).showWarningMessage = async () => 'Отмена';
+
+    // External change happens and triggers refresh
+    await provider.refreshIfCurrentNode(tempXmlPath);
+
+    // Refresh was aborted, dirty state and pending properties preserved
+    assert.strictEqual(provider.isDirty(), true);
+    assert.strictEqual((provider as any).pendingProperties?.Synonym, 'Unsaved Edit');
+  });
 });

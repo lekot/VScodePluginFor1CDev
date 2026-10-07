@@ -141,17 +141,17 @@ export class PropertiesProvider {
    * Show properties for a tree node (or empty state when node is undefined)
    * Creates new panel or reuses existing one (singleton pattern)
    */
-  public async showProperties(node: TreeNode | undefined): Promise<void> {
-    if (node && this.currentNode && node === this.currentNode) {
+  public async showProperties(node: TreeNode | undefined, options?: { force?: boolean }): Promise<boolean> {
+    if (node && this.currentNode && node === this.currentNode && !options?.force) {
       if (this.panel) {
         this.panel.reveal(vscode.ViewColumn.Beside);
       }
-      return;
+      return true;
     }
-    if (this._isDirty && this.currentNode && this.currentNode !== node) {
+    if (this._isDirty && this.currentNode && (this.currentNode !== node || options?.force)) {
       const canProceed = await this.promptUnsavedChangesGuard();
       if (!canProceed) {
-        return;
+        return false;
       }
     }
     this.currentFormSelection = null;
@@ -165,7 +165,7 @@ export class PropertiesProvider {
         this.panel.reveal(vscode.ViewColumn.Beside);
       }
       this.updateWebviewContent();
-      return;
+      return true;
     }
 
     // Check if this is a .bsl module file - open it as text instead of properties
@@ -174,11 +174,11 @@ export class PropertiesProvider {
         const uri = vscode.Uri.file(node.filePath);
         await vscode.window.showTextDocument(uri, { preview: false });
         Logger.info(`Opened .bsl module file: ${node.filePath}`);
-        return;
+        return true;
       } catch (error) {
         Logger.error(`Failed to open .bsl file: ${node.filePath}`, error);
         vscode.window.showErrorMessage(`Failed to open module file: ${error instanceof Error ? error.message : String(error)}`);
-        return;
+        return false;
       }
     }
 
@@ -227,7 +227,7 @@ export class PropertiesProvider {
             events: formEventsMap,
             selectedIds: ['__form_root__'],
           });
-          return;
+          return true;
         }
       } catch (error) {
         Logger.error(`Failed to parse Form.xml for tree node ${node.name}`, error);
@@ -266,13 +266,14 @@ export class PropertiesProvider {
             `Failed to read properties from file`,
             error instanceof Error ? error.message : String(error)
           );
-          return;
+          return false;
         }
       }
     }
     // For nested elements with parentFilePath, use already loaded properties from node.properties
 
     this.updateWebviewContent();
+    return true;
   }
 
   public async showFormSelectionProperties(
@@ -320,8 +321,10 @@ export class PropertiesProvider {
     if (!nodePath || path.normalize(nodePath) !== normalized) {
       return;
     }
-    await this.showProperties(node);
-    vscode.window.showInformationMessage(MESSAGES.FILE_CHANGED_PANEL_REFRESHED);
+    const refreshed = await this.showProperties(node, { force: true });
+    if (refreshed) {
+      vscode.window.showInformationMessage(MESSAGES.FILE_CHANGED_PANEL_REFRESHED);
+    }
   }
 
   /**

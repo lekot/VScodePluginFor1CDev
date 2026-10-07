@@ -453,7 +453,8 @@ export function getWebviewScript(readOnly: boolean): string {
         dirtyIndicator.style.display = isDirty ? 'inline' : 'none';
       }
 
-      if (isDirty !== previousIsDirty) {
+      const dirtyStateChanged = isDirty !== previousIsDirty;
+      if (dirtyStateChanged || isDirty) {
         previousIsDirty = isDirty;
         vscode.postMessage({
           type: 'dirtyChange',

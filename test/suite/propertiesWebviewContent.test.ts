@@ -775,4 +775,12 @@ suite('propertiesWebviewContent — Issue #165 Sticky Header & Dirty Indicator',
       'Script must listen for Ctrl+S / Cmd+S'
     );
   });
+
+  test('webview script dispatches dirtyChange on every edit when dirty, not only when isDirty boolean toggles', () => {
+    const script = getWebviewScript(false);
+    assert.ok(
+      script.includes('dirtyStateChanged || isDirty') || script.includes('isDirty || dirtyStateChanged'),
+      'Script must dispatch dirtyChange whenever isDirty is true so subsequent edits are captured'
+    );
+  });
 });
