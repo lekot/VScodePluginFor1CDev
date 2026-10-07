@@ -38,11 +38,13 @@ const mustRegisterInCoreCi: readonly string[] = [
   'suite/errorHandling.test.js',
   'suite/reloadCoordinatorService.test.js',
   'suite/deleteReconcileRecovery.test.js',
+  'suite/mutationPlan.test.js',
   'suite/xmlFileIoBackupRecovery.test.js',
   'suite/typeEditorProvider.test.js',
   'suite/configurationPathIdentity.test.js',
   'suite/configurationMutationGateway.test.js',
 ];
+
 
 suite('coreSuiteFiles registration guard', () => {
   test('guarded suites remain listed for test:ci', () => {

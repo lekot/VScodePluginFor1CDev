@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { validateElementName } from '../../../utils/elementNameValidator';
 import { MetadataType } from '../../../models/treeNode';
+import { parseSourceAddress } from '../../agentPathResolver';
 
 export const configurationId = z.string().optional();
 export const emptyInput = z.strictObject({});
@@ -91,13 +92,18 @@ export const supportGetLastRunInput = z.strictObject({
 const AGENT_PATH_LENGTHS = new Set([2, 4, 6]);
 
 function isAgentPath(value: string, allowedLengths = AGENT_PATH_LENGTHS): boolean {
-  const segments = value.split('.');
-  return allowedLengths.has(segments.length)
-    && segments.every((segment, index) => {
-      const isNestedTypeSegment = index > 0 && index % 2 === 0;
-      return (isNestedTypeSegment && (Object.values(MetadataType) as string[]).includes(segment))
-        || validateElementName(segment, []) === null;
-    });
+  try {
+    const { dotPath } = parseSourceAddress(value);
+    const segments = dotPath.split('.');
+    return allowedLengths.has(segments.length)
+      && segments.every((segment, index) => {
+        const isNestedTypeSegment = index > 0 && index % 2 === 0;
+        return (isNestedTypeSegment && (Object.values(MetadataType) as string[]).includes(segment))
+          || validateElementName(segment, []) === null;
+      });
+  } catch {
+    return false;
+  }
 }
 
 export const agentPath = z.string().refine((value) => isAgentPath(value), {
@@ -117,8 +123,13 @@ export const attributePath = z.string().refine((value) => isAgentPath(value, new
   message: 'must be a valid 4- or 6-segment Agent API path',
 });
 export const tabularSectionPath = z.string().refine((value) => {
-  const segments = value.split('.');
-  return isAgentPath(value, new Set([4])) && segments[2] === 'TabularSection';
+  try {
+    const { dotPath } = parseSourceAddress(value);
+    const segments = dotPath.split('.');
+    return isAgentPath(value, new Set([4])) && segments[2] === 'TabularSection';
+  } catch {
+    return false;
+  }
 }, {
   message: 'must have the form RootTag.ObjectName.TabularSection.Name',
 });

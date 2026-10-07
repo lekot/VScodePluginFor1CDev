@@ -11,6 +11,7 @@ import {
   pathInput,
   rootObjectPath,
   tabularSectionPath,
+  trimmedNonEmptyString,
 } from './schemas';
 
 const createObjectInput = z.strictObject({
@@ -40,6 +41,11 @@ const tabularPathNameInput = z.strictObject({
   ...mutationOptionsShape,
   path: tabularSectionPath,
   name: elementName,
+});
+
+const resolveSourceAddressInput = z.strictObject({
+  ...configurationScopeShape,
+  address: trimmedNonEmptyString,
 });
 
 const renameObjectInput = z.strictObject({
@@ -111,6 +117,13 @@ export const METADATA_TOOLS: readonly McpToolDefinition[] = [
     description: 'List supported named inline metadata children under a root or nested Agent API path.',
     command: '1c-metadata-tree.agent.listChildren',
     inputSchema: pathInput,
+    annotations: READ_CLOSED,
+  },
+  {
+    name: 'cdt_resolve_source_address',
+    description: 'Resolve a semantic source address (e.g. main:Catalog.Goods or ExtShop:Catalog.Goods) to configuration session, file paths, and metadata context.',
+    command: '1c-metadata-tree.agent.resolveSourceAddress',
+    inputSchema: resolveSourceAddressInput,
     annotations: READ_CLOSED,
   },
   {

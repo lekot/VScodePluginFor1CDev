@@ -35,7 +35,7 @@ import { configurationPathKey } from '../utils/configurationPathIdentity';
 /** Types whose templates include default ChildObjects (Dimension+Resource); rules engine cannot generate those yet. */
 const TEMPLATE_ONLY_TYPES = new Set(['InformationRegister', 'AccumulationRegister']);
 import { CONFIGURATION_XML } from '../constants/fileNames';
-import { AgentPathError, resolveAgentPath } from './agentPathResolver';
+import { AgentPathError, parseSourceAddress, resolveAgentPath } from './agentPathResolver';
 import { XMLWriter } from '../utils/XMLWriter';
 import { TypeParser } from '../parsers/typeParser';
 import { TypeSerializer } from '../serializers/typeSerializer';
@@ -308,7 +308,8 @@ export class AgentOperations {
 
     /** Builds the serializable multi-file delete plan without applying filesystem effects. */
     async planDeleteObject(params: DeleteObjectParams): Promise<MutationPlan<AgentResult>> {
-        if (params.path.split('.').length !== 2) {
+        const { dotPath } = parseSourceAddress(params.path);
+        if (dotPath.split('.').length !== 2) {
             throw new AgentPathError('INVALID_AGENT_PATH', `deleteObject supports only a root object path: "${params.path}".`);
         }
         const { rootTag, objectName, filePath } = await this.resolveContainedAgentPath(params.path);
@@ -340,7 +341,8 @@ export class AgentOperations {
 
     /** Builds the serializable multi-file rename plan without applying filesystem effects. */
     async planRenameObject(params: RenameObjectParams): Promise<MutationPlan<AgentResult<{ filePath: string }>>> {
-        const segmentCount = typeof params.path === 'string' ? params.path.split('.').length : 0;
+        const dotPath = typeof params.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
+        const segmentCount = dotPath ? dotPath.split('.').length : 0;
         if (segmentCount !== 2) {
             throw new AgentPathError(
                 'INVALID_AGENT_PATH',
@@ -559,12 +561,13 @@ export class AgentOperations {
             }
 
             // Парсим путь вида 'Catalog.Товары'
-            const dotIdx = objectPath.indexOf('.');
+            const { dotPath: getYamlDotPath } = parseSourceAddress(objectPath);
+            const dotIdx = getYamlDotPath.indexOf('.');
             if (dotIdx === -1) {
                 return { success: false, error: 'Параметр path должен быть вида "Тип.Имя", например "Catalog.Товары".' };
             }
-            const type = objectPath.slice(0, dotIdx);
-            const name = objectPath.slice(dotIdx + 1);
+            const type = getYamlDotPath.slice(0, dotIdx);
+            const name = getYamlDotPath.slice(dotIdx + 1);
 
             if (!type || !name) {
                 return { success: false, error: 'Некорректный путь: тип или имя объекта пустые.' };
@@ -578,7 +581,7 @@ export class AgentOperations {
                 };
             }
 
-            if (type === MetadataType.ExternalDataSource && objectPath.split('.').length !== 2) {
+            if (type === MetadataType.ExternalDataSource && getYamlDotPath.split('.').length !== 2) {
                 return { success: false, error: 'getYaml поддерживает только корневой путь ExternalDataSource. Для таблиц используйте getProperties.' };
             }
 
@@ -770,7 +773,8 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
-            const segments = params.path.split('.');
+            const { dotPath } = parseSourceAddress(params.path);
+            const segments = dotPath.split('.');
             if (segments.length !== 4 && segments.length !== 6) {
                 return { success: false, error: `Некорректный путь для deleteAttribute: "${params.path}". Ожидается 4 или 6 сегментов.` };
             }
@@ -826,7 +830,8 @@ export class AgentOperations {
 
     async deleteTabularSection(params: DeleteTabularSectionParams): Promise<AgentResult<MutationResultData>> {
         try {
-            const segments = params.path.split('.');
+            const { dotPath } = parseSourceAddress(params.path);
+            const segments = dotPath.split('.');
             if (segments.length !== 4 || segments[2] !== 'TabularSection') {
                 return { success: false, error: `Неверный path для deleteTabularSection: "${params.path}". Ожидается формат: RootTag.ObjectName.TabularSection.TSName` };
             }
@@ -885,7 +890,8 @@ export class AgentOperations {
 
     async deleteObject(params: DeleteObjectParams): Promise<AgentResult<MutationResultData>> {
         try {
-            if (params.path.split('.').length !== 2) {
+            const { dotPath } = parseSourceAddress(params.path);
+            if (dotPath.split('.').length !== 2) {
                 return { success: false, error: `deleteObject принимает только корневой путь объекта: "${params.path}".` };
             }
             const resolved = await this.resolveContainedAgentPath(params.path);
@@ -964,7 +970,8 @@ export class AgentOperations {
 
     async renameObject(params: RenameObjectParams): Promise<AgentResult<CreateObjectResult>> {
         try {
-            if (params.path.split('.').length !== 2) {
+            const { dotPath } = parseSourceAddress(params.path);
+            if (dotPath.split('.').length !== 2) {
                 return { success: false, error: `renameObject принимает только корневой путь объекта: "${params.path}".` };
             }
             const resolved = await this.resolveContainedAgentPath(params.path);
@@ -1203,7 +1210,8 @@ export class AgentOperations {
 
     async addTabularSectionColumn(params: AddTabularSectionColumnParams): Promise<AgentResult<MutationResultData>> {
         try {
-            const segments = params.path.split('.');
+            const { dotPath } = parseSourceAddress(params.path);
+            const segments = dotPath.split('.');
             if (segments.length !== 4 || segments[2] !== 'TabularSection') {
                 return {
                     success: false,
@@ -1653,7 +1661,8 @@ export class AgentOperations {
 
     private async resolveEventSubscriptionPath(agentPath: string): Promise<ReturnType<typeof resolveAgentPath>> {
         const resolved = await this.resolveContainedAgentPath(agentPath);
-        if (agentPath.split('.').length !== 2 || resolved.rootTag !== 'EventSubscription') {
+        const { dotPath } = parseSourceAddress(agentPath);
+        if (dotPath.split('.').length !== 2 || resolved.rootTag !== 'EventSubscription') {
             throw new AgentPathError(
                 'INVALID_AGENT_PATH',
                 `Source supports only an EventSubscription root path (EventSubscription.Name): "${agentPath}".`,

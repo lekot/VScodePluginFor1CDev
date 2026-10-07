@@ -662,6 +662,11 @@
         "category": "CDT 41 Agent"
       },
       {
+        "command": "1c-metadata-tree.agent.resolveSourceAddress",
+        "title": "Agent: Разрешить семантический адрес источника",
+        "category": "CDT 41 Agent"
+      },
+      {
         "command": "1c-metadata-tree.agent.getProperties",
         "title": "Agent: Получить свойства объекта",
         "category": "CDT 41 Agent"
