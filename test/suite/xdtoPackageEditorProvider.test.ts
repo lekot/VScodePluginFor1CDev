@@ -181,5 +181,87 @@ suite('XdtoPackageEditorProvider (pure helpers)', () => {
         fs.rmSync(root, { recursive: true, force: true });
       }
     });
+
+    test('saving package B while package A save is in progress queues and completes save for package B', async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xdto-queue-'));
+      try {
+        fs.writeFileSync(
+          path.join(root, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="00000000-0000-0000-0000-000000000000"><Properties><Name>TestConfig</Name></Properties></Configuration></MetaDataObject>',
+          'utf8'
+        );
+        const metaPathA = path.join(root, 'XDTOPackages', 'PackageA.xml');
+        const extPathA = path.join(root, 'XDTOPackages', 'PackageA', 'Ext');
+        fs.mkdirSync(extPathA, { recursive: true });
+        const sourceA = '<package xmlns="http://v8.1c.ru/8.1/xdto"><valueType name="TypeA" base="xs:string"/></package>';
+        fs.writeFileSync(metaPathA, '<MetaDataObject><XDTOPackage name="PackageA"/></MetaDataObject>', 'utf8');
+        fs.writeFileSync(path.join(extPathA, 'Package.bin'), sourceA, 'utf8');
+
+        const metaPathB = path.join(root, 'XDTOPackages', 'PackageB.xml');
+        const extPathB = path.join(root, 'XDTOPackages', 'PackageB', 'Ext');
+        fs.mkdirSync(extPathB, { recursive: true });
+        const sourceB = '<package xmlns="http://v8.1c.ru/8.1/xdto"><valueType name="TypeB" base="xs:string"/></package>';
+        fs.writeFileSync(metaPathB, '<MetaDataObject><XDTOPackage name="PackageB"/></MetaDataObject>', 'utf8');
+        fs.writeFileSync(path.join(extPathB, 'Package.bin'), sourceB, 'utf8');
+
+        const nodeA: TreeNode = {
+          id: 'XDTOPackages.PackageA',
+          name: 'PackageA',
+          type: MetadataType.XDTOPackage,
+          filePath: metaPathA,
+          properties: {},
+        };
+        const nodeB: TreeNode = {
+          id: 'XDTOPackages.PackageB',
+          name: 'PackageB',
+          type: MetadataType.XDTOPackage,
+          filePath: metaPathB,
+          properties: {},
+        };
+
+        const { panel, getPostedMessages } = createFakeWebviewPanel();
+        const restore = patchCreateWebviewPanel(panel);
+        const provider = new XdtoPackageEditorProvider(createFakeExtensionContext());
+
+        try {
+          await provider.show(nodeA);
+
+          const updatedSourceA = '<package xmlns="http://v8.1c.ru/8.1/xdto"><valueType name="TypeAUpdated" base="xs:string"/></package>';
+          const updatedSourceB = '<package xmlns="http://v8.1c.ru/8.1/xdto"><valueType name="TypeBUpdated" base="xs:string"/></package>';
+
+          // Trigger save of package A
+          const saveAPromise = (provider as any).handleMessage({ type: 'save', source: updatedSourceA });
+
+          // Immediately switch editor to Package B and trigger save of package B
+          await provider.show(nodeB);
+          const saveBPromise = (provider as any).handleMessage({ type: 'save', source: updatedSourceB });
+
+          await Promise.all([saveAPromise, saveBPromise]);
+
+          // Package B must be saved to disk
+          const contentB = fs.readFileSync(path.join(extPathB, 'Package.bin'), 'utf8');
+          assert.ok(
+            contentB.includes('TypeBUpdated'),
+            'Package B must be saved to disk even if save A was in progress'
+          );
+
+          // Webview for Package B must receive saveSuccess
+          const saveSuccessMessages = getPostedMessages().filter((m: any) => m.type === 'saveSuccess');
+          const hasPackageBSaveSuccess = saveSuccessMessages.some((m: any) =>
+            m.model?.valueTypes?.some((vt: any) => vt.name === 'TypeBUpdated')
+          );
+          assert.strictEqual(
+            hasPackageBSaveSuccess,
+            true,
+            'Webview must receive saveSuccess for Package B'
+          );
+        } finally {
+          restore();
+          provider.dispose();
+        }
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 });

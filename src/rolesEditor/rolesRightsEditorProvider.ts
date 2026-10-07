@@ -35,7 +35,8 @@ export function findConfigurationRootForPath(targetPath: string): string | undef
     return undefined;
   }
   let currentDir = path.dirname(path.resolve(targetPath));
-  while (true) {
+  let previousDir = '';
+  while (currentDir !== previousDir) {
     const candidateConfigXml = path.join(currentDir, CONFIGURATION_XML);
     try {
       if (fs.existsSync(candidateConfigXml)) {
@@ -44,11 +45,8 @@ export function findConfigurationRootForPath(targetPath: string): string | undef
     } catch {
       // ignore
     }
-    const parentDir = path.dirname(currentDir);
-    if (parentDir === currentDir) {
-      break;
-    }
-    currentDir = parentDir;
+    previousDir = currentDir;
+    currentDir = path.dirname(currentDir);
   }
   return undefined;
 }

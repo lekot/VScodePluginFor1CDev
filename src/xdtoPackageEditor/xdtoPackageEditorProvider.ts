@@ -67,7 +67,7 @@ export function serializeAndValidateXdtoModelForSave(model: XdtoPackageModel): X
 export class XdtoPackageEditorProvider implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined;
   private disposables: vscode.Disposable[] = [];
-  private saveInProgress = false;
+  private saveTail: Promise<void> = Promise.resolve();
   private currentSchemaPath: string | undefined;
   private sessionGeneration = 0;
 
@@ -133,7 +133,6 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
         () => {
           this.panel = undefined;
           this.currentSchemaPath = undefined;
-          this.saveInProgress = false;
         },
         null,
         this.disposables
@@ -210,81 +209,84 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
   ): Promise<void> {
     const targetSchemaPath = requestSchemaPath || this.currentSchemaPath;
     const targetGeneration = requestGeneration ?? this.sessionGeneration;
-    if (this.saveInProgress || !targetSchemaPath || !this.panel) { return; }
-    if (
-      this.sessionGeneration !== targetGeneration ||
-      this.currentSchemaPath !== targetSchemaPath
-    ) {
-      Logger.warn('handleSave: discarded save request for inactive XDTO session');
-      return;
-    }
-    this.saveInProgress = true;
-    try {
-      if (!result.ok) {
+    if (!targetSchemaPath || !this.panel) { return; }
+
+    const runSave = async (): Promise<void> => {
+      if (
+        this.sessionGeneration !== targetGeneration ||
+        this.currentSchemaPath !== targetSchemaPath
+      ) {
+        Logger.warn('handleSave: discarded queued save request for inactive XDTO session');
+        return;
+      }
+      try {
+        if (!result.ok) {
+          if (
+            this.sessionGeneration === targetGeneration &&
+            this.currentSchemaPath === targetSchemaPath
+          ) {
+            this.postMessage({
+              type: 'saveError',
+              message: `${MESSAGES.XDTO_PACKAGE_VALIDATION_FAILED}: ${result.message}`,
+              schemaPath: targetSchemaPath,
+              generation: targetGeneration,
+            });
+          }
+          return;
+        }
+        const expected: MutationExpectation = fs.existsSync(targetSchemaPath)
+          ? { state: 'file', hash: hashContent(fs.readFileSync(targetSchemaPath)) }
+          : { state: 'missing' };
+        await runConfigurationPlan(targetSchemaPath, {
+          kind: 'ui.xdto.editorSave',
+          steps: [
+            { type: 'ensureDirectory', targetPath: path.dirname(targetSchemaPath) },
+            {
+              type: 'writeFile',
+              targetPath: targetSchemaPath,
+              content: result.source,
+              encoding: 'utf8',
+              expected,
+            },
+          ],
+          result: undefined,
+        });
+
+        if (
+          this.sessionGeneration !== targetGeneration ||
+          this.currentSchemaPath !== targetSchemaPath
+        ) {
+          Logger.warn(
+            `XdtoPackageEditorProvider: save succeeded for ${targetSchemaPath}, but editor has navigated away; skipping postMessage`
+          );
+          return;
+        }
+
+        this.postMessage({
+          type: 'saveSuccess',
+          model: result.model,
+          source: result.source,
+          schemaPath: targetSchemaPath,
+          generation: targetGeneration,
+        });
+      } catch (err) {
+        Logger.error('Failed to save XDTO package file', err);
         if (
           this.sessionGeneration === targetGeneration &&
           this.currentSchemaPath === targetSchemaPath
         ) {
           this.postMessage({
             type: 'saveError',
-            message: `${MESSAGES.XDTO_PACKAGE_VALIDATION_FAILED}: ${result.message}`,
+            message: MESSAGES.XDTO_PACKAGE_WRITE_FAILED,
             schemaPath: targetSchemaPath,
             generation: targetGeneration,
           });
         }
-        return;
       }
-      const expected: MutationExpectation = fs.existsSync(targetSchemaPath)
-        ? { state: 'file', hash: hashContent(fs.readFileSync(targetSchemaPath)) }
-        : { state: 'missing' };
-      await runConfigurationPlan(targetSchemaPath, {
-        kind: 'ui.xdto.editorSave',
-        steps: [
-          { type: 'ensureDirectory', targetPath: path.dirname(targetSchemaPath) },
-          {
-            type: 'writeFile',
-            targetPath: targetSchemaPath,
-            content: result.source,
-            encoding: 'utf8',
-            expected,
-          },
-        ],
-        result: undefined,
-      });
+    };
 
-      if (
-        this.sessionGeneration !== targetGeneration ||
-        this.currentSchemaPath !== targetSchemaPath
-      ) {
-        Logger.warn(
-          `XdtoPackageEditorProvider: save succeeded for ${targetSchemaPath}, but editor has navigated away; skipping postMessage`
-        );
-        return;
-      }
-
-      this.postMessage({
-        type: 'saveSuccess',
-        model: result.model,
-        source: result.source,
-        schemaPath: targetSchemaPath,
-        generation: targetGeneration,
-      });
-    } catch (err) {
-      Logger.error('Failed to save XDTO package file', err);
-      if (
-        this.sessionGeneration === targetGeneration &&
-        this.currentSchemaPath === targetSchemaPath
-      ) {
-        this.postMessage({
-          type: 'saveError',
-          message: MESSAGES.XDTO_PACKAGE_WRITE_FAILED,
-          schemaPath: targetSchemaPath,
-          generation: targetGeneration,
-        });
-      }
-    } finally {
-      this.saveInProgress = false;
-    }
+    this.saveTail = this.saveTail.then(runSave, runSave);
+    await this.saveTail;
   }
 
   private postMessage(msg: Record<string, unknown>): void {

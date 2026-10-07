@@ -2021,6 +2021,226 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
       assert.strictEqual(sourceUpdated.nodeId, 'EventSubscriptions.SubA');
       assert.strictEqual(sourceUpdated.sessionToken, 'session-node-A');
     });
+
+    test('slow getReferenceableObjects lookup for Node A does not invoke typeEditorProvider.show if switched to Node B', async () => {
+      const nodeA: TreeNode = {
+        id: 'Attributes.AttrA',
+        name: 'AttrA',
+        type: MetadataType.Attribute,
+        properties: { Name: 'AttrA', Type: '<Type/>' },
+      };
+      const nodeB: TreeNode = {
+        id: 'Attributes.AttrB',
+        name: 'AttrB',
+        type: MetadataType.Attribute,
+        properties: { Name: 'AttrB', Type: '<Type/>' },
+      };
+
+      let typeEditorShowCalled = false;
+      const mockTypeEditor = {
+        show: async () => {
+          typeEditorShowCalled = true;
+          return null;
+        },
+      } as any;
+
+      let resolveLookupA!: (val: any) => void;
+      const lookupAPromise = new Promise<any>((resolve) => {
+        resolveLookupA = resolve;
+      });
+
+      const ctx: MessageHandlerContext = {
+        currentNode: nodeA,
+        currentFormSelection: null,
+        currentFormSelectionRevision: 0,
+        currentSessionToken: 'session-node-A',
+        isSaving: false,
+        treeDataProvider: {
+          getReferenceableObjectsForTypeEditor: async () => lookupAPromise,
+        } as any,
+        typeEditorProvider: mockTypeEditor,
+        objectTypeEditorProvider: {} as any,
+        postMessage: () => {},
+        updateWebviewContent: () => {},
+        setIsSaving: () => {},
+      };
+
+      const editTypeAPromise = handleMessage(
+        {
+          type: 'editType',
+          propertyName: 'Type',
+          nodeId: 'Attributes.AttrA',
+          sessionToken: 'session-node-A',
+        },
+        ctx
+      );
+
+      ctx.currentNode = nodeB;
+      ctx.currentSessionToken = 'session-node-B';
+
+      resolveLookupA([]);
+      await editTypeAPromise;
+
+      assert.strictEqual(
+        typeEditorShowCalled,
+        false,
+        'typeEditorProvider.show must NOT be called for stale Node A after switching to Node B'
+      );
+    });
+
+    test('slow getObjectableObjects lookup for Node A does not invoke objectTypeEditorProvider.show if switched to Node B', async () => {
+      const nodeA: TreeNode = {
+        id: 'EventSubscriptions.SubA',
+        name: 'SubA',
+        type: MetadataType.EventSubscription,
+        properties: { Name: 'SubA', Source: '<Source/>' },
+      };
+      const nodeB: TreeNode = {
+        id: 'EventSubscriptions.SubB',
+        name: 'SubB',
+        type: MetadataType.EventSubscription,
+        properties: { Name: 'SubB', Source: '<Source/>' },
+      };
+
+      let objectEditorShowCalled = false;
+      const mockObjectTypeEditor = {
+        show: async () => {
+          objectEditorShowCalled = true;
+          return null;
+        },
+      } as any;
+
+      let resolveLookupA!: (val: any) => void;
+      const lookupAPromise = new Promise<any>((resolve) => {
+        resolveLookupA = resolve;
+      });
+
+      const ctx: MessageHandlerContext = {
+        currentNode: nodeA,
+        currentFormSelection: null,
+        currentFormSelectionRevision: 0,
+        currentSessionToken: 'session-node-A',
+        isSaving: false,
+        treeDataProvider: {
+          getObjectableObjectsForEditor: async () => lookupAPromise,
+        } as any,
+        typeEditorProvider: {} as any,
+        objectTypeEditorProvider: mockObjectTypeEditor,
+        postMessage: () => {},
+        updateWebviewContent: () => {},
+        setIsSaving: () => {},
+      };
+
+      const editSourceAPromise = handleMessage(
+        {
+          type: 'editSource',
+          propertyName: 'Source',
+          nodeId: 'EventSubscriptions.SubA',
+          sessionToken: 'session-node-A',
+        },
+        ctx
+      );
+
+      ctx.currentNode = nodeB;
+      ctx.currentSessionToken = 'session-node-B';
+
+      resolveLookupA([]);
+      await editSourceAPromise;
+
+      assert.strictEqual(
+        objectEditorShowCalled,
+        false,
+        'objectTypeEditorProvider.show must NOT be called for stale Node A after switching to Node B'
+      );
+    });
+
+    test('reverse completion order: slow lookup A resolving after fast lookup B does not overwrite or show editor A', async () => {
+      const nodeA: TreeNode = {
+        id: 'Attributes.AttrA',
+        name: 'AttrA',
+        type: MetadataType.Attribute,
+        properties: { Name: 'AttrA', Type: '<Type/>' },
+      };
+      const nodeB: TreeNode = {
+        id: 'Attributes.AttrB',
+        name: 'AttrB',
+        type: MetadataType.Attribute,
+        properties: { Name: 'AttrB', Type: '<Type/>' },
+      };
+
+      const shownXmls: string[] = [];
+      const mockTypeEditor = {
+        show: async (xml: string) => {
+          shownXmls.push(xml);
+          return null;
+        },
+      } as any;
+
+      let resolveLookupA!: (val: any) => void;
+      const lookupAPromise = new Promise<any>((resolve) => {
+        resolveLookupA = resolve;
+      });
+
+      const ctx: MessageHandlerContext = {
+        currentNode: nodeA,
+        currentFormSelection: null,
+        currentFormSelectionRevision: 0,
+        currentSessionToken: 'session-node-A',
+        isSaving: false,
+        treeDataProvider: {
+          getReferenceableObjectsForTypeEditor: async (node: TreeNode) => {
+            if (node.id === 'Attributes.AttrA') {
+              return lookupAPromise;
+            }
+            return [];
+          },
+        } as any,
+        typeEditorProvider: mockTypeEditor,
+        objectTypeEditorProvider: {} as any,
+        postMessage: () => {},
+        updateWebviewContent: () => {},
+        setIsSaving: () => {},
+      };
+
+      // Start editType for A (slow lookup)
+      const editTypeAPromise = handleMessage(
+        {
+          type: 'editType',
+          propertyName: 'Type',
+          nodeId: 'Attributes.AttrA',
+          sessionToken: 'session-node-A',
+        },
+        ctx
+      );
+
+      // Switch to B and trigger editType for B (fast lookup)
+      ctx.currentNode = nodeB;
+      ctx.currentSessionToken = 'session-node-B';
+      const editTypeBPromise = handleMessage(
+        {
+          type: 'editType',
+          propertyName: 'Type',
+          nodeId: 'Attributes.AttrB',
+          sessionToken: 'session-node-B',
+        },
+        ctx
+      );
+
+      // B resolves first
+      await editTypeBPromise;
+      assert.deepStrictEqual(shownXmls, ['<Type/>'], 'Only Node B should be shown initially');
+
+      // Now A resolves late
+      resolveLookupA([]);
+      await editTypeAPromise;
+
+      // shownXmls should STILL be only B
+      assert.deepStrictEqual(
+        shownXmls,
+        ['<Type/>'],
+        'Slow Node A lookup must NOT invoke show() after Node B already active'
+      );
+    });
   });
 });
 

@@ -453,6 +453,18 @@ export async function handleEditTypeMessage(
 
   try {
     const referenceableObjects = await ctx.treeDataProvider.getReferenceableObjectsForTypeEditor(ctx.currentNode);
+
+    if (
+      ctx.currentNode !== targetNode ||
+      ctx.currentNode?.id !== targetNodeId ||
+      (ctx.currentSessionToken && targetSessionToken && ctx.currentSessionToken !== targetSessionToken)
+    ) {
+      Logger.warn(
+        `handleEditTypeMessage: target node changed before opening type editor (${targetNodeId} -> ${ctx.currentNode?.id}); aborting`
+      );
+      return;
+    }
+
     Logger.info('handleEditTypeMessage: calling typeEditorProvider.show()');
     const result = await ctx.typeEditorProvider.show(typeXMLForEditor, referenceableObjects);
 
@@ -539,6 +551,18 @@ export async function handleEditSourceMessage(
 
   try {
     const objectableGroups = await ctx.treeDataProvider.getObjectableObjectsForEditor(ctx.currentNode);
+
+    if (
+      ctx.currentNode !== targetNode ||
+      ctx.currentNode?.id !== targetNodeId ||
+      (ctx.currentSessionToken && targetSessionToken && ctx.currentSessionToken !== targetSessionToken)
+    ) {
+      Logger.warn(
+        `handleEditSourceMessage: target node changed before opening source editor (${targetNodeId} -> ${ctx.currentNode?.id}); aborting`
+      );
+      return;
+    }
+
     const result = await ctx.objectTypeEditorProvider.show(sourceXML, objectableGroups);
 
     if (
