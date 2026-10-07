@@ -263,6 +263,98 @@ suite('FilterCriterionWizardService', () => {
     );
   });
 
+  test('planCreateFilterCriterion throws error when content item references a non-existent attribute', async () => {
+    const configXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration uuid="conf-1">
+    <Properties><Name>Conf</Name></Properties>
+    <ChildObjects><Catalog>Товары</Catalog></ChildObjects>
+  </Configuration>
+</MetaDataObject>`;
+    await fs.promises.writeFile(path.join(tmpDir, 'Configuration.xml'), configXml, 'utf-8');
+
+    const catDir = path.join(tmpDir, 'Catalogs');
+    await fs.promises.mkdir(catDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(catDir, 'Товары.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Catalog uuid="cat-goods">
+    <Properties><Name>Товары</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="attr-art">
+        <Properties>
+          <Name>Артикул</Name>
+          <Type><v8:Type>xs:string</v8:Type></Type>
+        </Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`
+    );
+
+    await assert.rejects(
+      async () => {
+        await planCreateFilterCriterion(tmpDir, {
+          name: 'ПоЦене',
+          types: ['xs:string'],
+          content: ['Catalog.Товары.Attribute.Несуществующий'],
+        });
+      },
+      /Attribute "Несуществующий" not found/i
+    );
+  });
+
+  test('planCreateFilterCriterion throws error when content item references a non-existent metadata object file', async () => {
+    const configXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration uuid="conf-1"><Properties><Name>Conf</Name></Properties><ChildObjects/></Configuration>
+</MetaDataObject>`;
+    await fs.promises.writeFile(path.join(tmpDir, 'Configuration.xml'), configXml, 'utf-8');
+
+    await assert.rejects(
+      async () => {
+        await planCreateFilterCriterion(tmpDir, {
+          name: 'ПоНоменклатуре',
+          types: ['xs:string'],
+          content: ['Catalog.Несуществующий.Attribute.Артикул'],
+        });
+      },
+      /missing or inaccessible metadata object file|not found/i
+    );
+  });
+
+  test('planCreateFilterCriterion throws error when content item has malformed syntax or unknown metadata type', async () => {
+    const configXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration uuid="conf-1"><Properties><Name>Conf</Name></Properties><ChildObjects/></Configuration>
+</MetaDataObject>`;
+    await fs.promises.writeFile(path.join(tmpDir, 'Configuration.xml'), configXml, 'utf-8');
+
+    await assert.rejects(
+      async () => {
+        await planCreateFilterCriterion(tmpDir, {
+          name: 'НеверныйСинтаксис',
+          types: ['xs:string'],
+          content: ['НеверныйФормат'],
+        });
+      },
+      /Invalid FilterCriterion content item format/i
+    );
+
+    await assert.rejects(
+      async () => {
+        await planCreateFilterCriterion(tmpDir, {
+          name: 'НеизвестныйТип',
+          types: ['xs:string'],
+          content: ['UnknownMetadataType.Товары.Attribute.Артикул'],
+        });
+      },
+      /Unknown metadata type/i
+    );
+  });
+
+
   test('planCreateFilterCriterion produces a complete valid mutation plan and creates the object', async () => {
     // Setup minimal configuration
     const configXml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -277,6 +369,27 @@ suite('FilterCriterionWizardService', () => {
   </Configuration>
 </MetaDataObject>`;
     await fs.promises.writeFile(path.join(tmpDir, 'Configuration.xml'), configXml, 'utf-8');
+
+    const catDir = path.join(tmpDir, 'Catalogs');
+    await fs.promises.mkdir(catDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(catDir, 'Партнеры.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Catalog uuid="cat-p">
+    <Properties><Name>Партнеры</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="attr-gp">
+        <Properties>
+          <Name>ГоловнойПартнер</Name>
+          <Type><v8:Type>cfg:CatalogRef.Партнеры</v8:Type></Type>
+        </Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`,
+      'utf-8'
+    );
 
     const params: FilterCriterionWizardParams = {
       name: 'ПоПартнеру',

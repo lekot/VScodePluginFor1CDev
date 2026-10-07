@@ -29,6 +29,7 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_get_yaml', 'getYaml', 'readClosed'),
   tool('cdt_list_objects', 'listObjects', 'readClosed'),
   tool('cdt_list_children', 'listChildren', 'readClosed'),
+  tool('cdt_resolve_source_address', 'resolveSourceAddress', 'readClosed'),
   tool('cdt_get_properties', 'getProperties', 'readClosed'),
   tool('cdt_add_attribute', 'addAttribute', 'writeClosed'),
   tool('cdt_add_tabular_section', 'addTabularSection', 'writeClosed'),
@@ -175,6 +176,7 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
   cdt_get_yaml: { configurationId: 'cfg', path: 'Catalog.Goods' },
   cdt_list_objects: { configurationId: 'cfg', type: 'Catalog', query: 'good' },
   cdt_list_children: { configurationId: 'cfg', path: 'HTTPService.Api' },
+  cdt_resolve_source_address: { configurationId: 'cfg', address: 'Catalog.Goods' },
   cdt_get_properties: { configurationId: 'cfg', path: 'Catalog.Goods' },
   cdt_add_attribute: { configurationId: 'cfg', path: 'Catalog.Goods', name: 'VendorCode' },
   cdt_add_tabular_section: { configurationId: 'cfg', path: 'Catalog.Goods', name: 'Items' },
@@ -488,10 +490,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('operation registry has the exact 99 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 99, 'test oracle must enumerate all 99 operations');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 99);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 99);
+  test('operation registry has the exact 100 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 100, 'test oracle must enumerate all 100 operations');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 100);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 100);
 
     assert.deepStrictEqual(
       MCP_OPERATION_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -547,8 +549,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 99);
-    assert.strictEqual(new Set(registered).size, 99);
+    assert.strictEqual(registered.length, 100);
+    assert.strictEqual(new Set(registered).size, 100);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -562,7 +564,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 99 valid operation fixtures pass and every root schema rejects an extra property', () => {
+  test('all 100 valid operation fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];

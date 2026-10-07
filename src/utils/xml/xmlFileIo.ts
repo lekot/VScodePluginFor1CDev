@@ -13,7 +13,12 @@ export function buildXmlString(data: unknown): string {
  * @internal Test hook only.
  */
 export interface WriteUtf8BackupHooks {
-  writeFile?: (path: string, data: string, encoding: BufferEncoding) => Promise<void>;
+  open?: (path: string, flags: string) => Promise<fs.promises.FileHandle>;
+  writeFile?: (
+    path: string,
+    data: string,
+    optionsOrEncoding?: fs.WriteFileOptions | BufferEncoding
+  ) => Promise<void>;
   readFile?: (path: string, encoding: BufferEncoding) => Promise<string>;
   unlink?: (path: string) => Promise<void>;
 }
@@ -24,6 +29,7 @@ export interface WriteUtf8BackupHooks {
  */
 export interface WriteUtf8FileWithBackupOptions {
   hooks?: WriteUtf8BackupHooks;
+  skipLock?: boolean;
 }
 
 /**
@@ -47,6 +53,15 @@ export class XmlWriteRollbackError extends Error {
 }
 
 const fileWriteLocks = new Map<string, Promise<void>>();
+
+export async function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+  const releaseLock = await acquireFileLock(filePath);
+  try {
+    return await fn();
+  } finally {
+    releaseLock();
+  }
+}
 
 async function acquireFileLock(filePath: string): Promise<() => void> {
   const canonical = configurationPathKey(filePath);
@@ -77,14 +92,70 @@ function generateBackupPath(filePath: string): string {
  */
 export async function writeUtf8FileWithBackup(
   filePath: string,
-  originalContent: string,
+  originalContent: string | undefined,
   newContent: string,
   options?: WriteUtf8FileWithBackupOptions
 ): Promise<void> {
-  const releaseLock = await acquireFileLock(filePath);
+  const releaseLock = options?.skipLock ? () => {} : await acquireFileLock(filePath);
   try {
-    const writeFile = options?.hooks?.writeFile ?? ((p, d, e) => fs.promises.writeFile(p, d, e));
+    const defaultWriteFile = (
+      p: string,
+      d: string,
+      opt?: fs.WriteFileOptions | BufferEncoding
+    ) => fs.promises.writeFile(p, d, opt);
+    const defaultReadFile = (p: string, enc: BufferEncoding) => fs.promises.readFile(p, enc);
+    const defaultOpen = (p: string, flags: string) => fs.promises.open(p, flags);
+    const writeFile = options?.hooks?.writeFile ?? defaultWriteFile;
+    const readFile = options?.hooks?.readFile ?? defaultReadFile;
+    const open = options?.hooks?.open ?? defaultOpen;
     const unlink = options?.hooks?.unlink ?? ((p) => fs.promises.unlink(p));
+
+    if (originalContent === undefined) {
+      let fileHandle: fs.promises.FileHandle | undefined;
+      let ownFileCreated = false;
+      try {
+        fileHandle = await open(filePath, 'wx');
+        ownFileCreated = true;
+        await fileHandle.writeFile(newContent, 'utf-8');
+        await fileHandle.close();
+        fileHandle = undefined;
+      } catch (writeError) {
+        if (fileHandle) {
+          await fileHandle.close().catch(() => undefined);
+          fileHandle = undefined;
+        }
+        const isExistError =
+          (writeError as NodeJS.ErrnoException).code === 'EEXIST' ||
+          String(writeError).includes('EEXIST');
+        Logger.error(`Failed to write new file: ${filePath}`, writeError);
+        if (ownFileCreated) {
+          await unlink(filePath).catch(() => undefined);
+        }
+        const writeMsg = writeError instanceof Error ? writeError.message : String(writeError);
+        if (isExistError) {
+          throw new Error(`File already exists: ${filePath}. Cannot create new file without overwriting.`);
+        }
+        throw new Error(
+          `Unable to write to file. Check file permissions and disk space. ${writeMsg}`
+        );
+      }
+      return;
+    }
+
+    // Under lock: check snapshot freshness
+    let diskContent: string | undefined;
+    try {
+      diskContent = await readFile(filePath, 'utf-8');
+    } catch (readErr) {
+      if ((readErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw readErr;
+      }
+    }
+    if (diskContent !== undefined && diskContent !== originalContent) {
+      throw new Error(
+        `Concurrent modification detected: ${filePath} was modified on disk since snapshot was taken.`
+      );
+    }
 
     const backupPath = generateBackupPath(filePath);
     try {

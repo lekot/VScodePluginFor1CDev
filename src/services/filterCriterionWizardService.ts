@@ -245,84 +245,111 @@ async function validateContentItemCompatibility(
   selectedTypes: string[],
   contentRef: string
 ): Promise<void> {
-  if (selectedTypes.length === 0) {
-    return;
-  }
   const parts = contentRef.split('.');
-  if (parts.length < 4) {
-    return;
+  const isAttribute = parts.length === 4 && parts[2] === 'Attribute';
+  const isDimension = parts.length === 4 && parts[2] === 'Dimension';
+  const isTabularSectionAttribute = parts.length === 6 && parts[2] === 'TabularSection' && parts[4] === 'Attribute';
+
+  if (!isAttribute && !isDimension && !isTabularSectionAttribute) {
+    throw new Error(
+      `Invalid FilterCriterion content item format: "${contentRef}". Expected "<MetadataType>.<ObjectName>.Attribute.<AttributeName>", "<MetadataType>.<ObjectName>.Dimension.<DimensionName>", or "<MetadataType>.<ObjectName>.TabularSection.<SectionName>.Attribute.<AttributeName>"`
+    );
   }
+
   const folder = METADATA_SINGULAR_TO_FOLDER[parts[0]];
   if (!folder) {
-    return;
+    throw new Error(`Unknown metadata type "${parts[0]}" in FilterCriterion content item "${contentRef}"`);
   }
+
   const objectFile = path.join(configRoot, folder, `${parts[1]}.xml`);
   let content: string;
   try {
     content = await fs.promises.readFile(objectFile, 'utf-8');
   } catch {
-    return; // file does not exist or not accessible
+    throw new Error(
+      `FilterCriterion content item "${contentRef}" references missing or inaccessible metadata object file: ${objectFile}`
+    );
   }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = XmlParser.parseString(content) as Record<string, unknown>;
+  } catch (err: unknown) {
+    throw new Error(
+      `Failed to parse metadata object XML for FilterCriterion content item "${contentRef}": ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  const metaDataObject = (parsed.MetaDataObject || {}) as Record<string, unknown>;
+  const rootObj = (metaDataObject[parts[0]] || {}) as Record<string, unknown>;
+  if (!rootObj || Object.keys(rootObj).length === 0) {
+    throw new Error(`Metadata object "${parts[0]}.${parts[1]}" not found in ${objectFile}`);
+  }
+  const childObjects = (rootObj.ChildObjects || {}) as Record<string, unknown>;
 
   let types: string[] = [];
-  try {
-    const parsed = XmlParser.parseString(content) as Record<string, unknown>;
-    const metaDataObject = (parsed.MetaDataObject || {}) as Record<string, unknown>;
-    const rootObj = (metaDataObject[parts[0]] || {}) as Record<string, unknown>;
-    const childObjects = (rootObj.ChildObjects || {}) as Record<string, unknown>;
-
-    if (parts.length === 4 && parts[2] === 'Attribute') {
-      const attrName = parts[3];
-      const rawAttrs = childObjects.Attribute;
-      const attributes: Record<string, unknown>[] = Array.isArray(rawAttrs)
-        ? (rawAttrs as Record<string, unknown>[])
-        : rawAttrs && typeof rawAttrs === 'object'
-          ? [rawAttrs as Record<string, unknown>]
-          : [];
-      const attr = attributes.find((a) => (a.Properties as Record<string, unknown> | undefined)?.Name === attrName);
-      if (attr) {
-        types = extractTypesFromXmlObject((attr.Properties as Record<string, unknown> | undefined)?.Type);
-      }
-    } else if (parts.length === 6 && parts[2] === 'TabularSection' && parts[4] === 'Attribute') {
-      const tsName = parts[3];
-      const attrName = parts[5];
-      const rawTs = childObjects.TabularSection;
-      const tss: Record<string, unknown>[] = Array.isArray(rawTs)
-        ? (rawTs as Record<string, unknown>[])
-        : rawTs && typeof rawTs === 'object'
-          ? [rawTs as Record<string, unknown>]
-          : [];
-      const ts = tss.find((t) => (t.Properties as Record<string, unknown> | undefined)?.Name === tsName);
-      if (ts) {
-        const rawTsAttrs = (ts.ChildObjects as Record<string, unknown> | undefined)?.Attribute;
-        const tsAttrs: Record<string, unknown>[] = Array.isArray(rawTsAttrs)
-          ? (rawTsAttrs as Record<string, unknown>[])
-          : rawTsAttrs && typeof rawTsAttrs === 'object'
-            ? [rawTsAttrs as Record<string, unknown>]
-            : [];
-        const tsAttr = tsAttrs.find((a) => (a.Properties as Record<string, unknown> | undefined)?.Name === attrName);
-        if (tsAttr) {
-          types = extractTypesFromXmlObject((tsAttr.Properties as Record<string, unknown> | undefined)?.Type);
-        }
-      }
-    } else if (parts.length === 4 && parts[2] === 'Dimension') {
-      const dimName = parts[3];
-      const rawDims = childObjects.Dimension;
-      const dims: Record<string, unknown>[] = Array.isArray(rawDims)
-        ? (rawDims as Record<string, unknown>[])
-        : rawDims && typeof rawDims === 'object'
-          ? [rawDims as Record<string, unknown>]
-          : [];
-      const dim = dims.find((d) => (d.Properties as Record<string, unknown> | undefined)?.Name === dimName);
-      if (dim) {
-        types = extractTypesFromXmlObject((dim.Properties as Record<string, unknown> | undefined)?.Type);
-      }
+  if (isAttribute) {
+    const attrName = parts[3];
+    const rawAttrs = childObjects.Attribute;
+    const attributes: Record<string, unknown>[] = Array.isArray(rawAttrs)
+      ? (rawAttrs as Record<string, unknown>[])
+      : rawAttrs && typeof rawAttrs === 'object'
+        ? [rawAttrs as Record<string, unknown>]
+        : [];
+    const attr = attributes.find((a) => (a.Properties as Record<string, unknown> | undefined)?.Name === attrName);
+    if (!attr) {
+      throw new Error(`Attribute "${attrName}" not found in ${parts[0]}.${parts[1]} for FilterCriterion content item "${contentRef}"`);
     }
-  } catch {
-    return;
+    types = extractTypesFromXmlObject((attr.Properties as Record<string, unknown> | undefined)?.Type);
+    if (types.length === 0) {
+      throw new Error(`Attribute "${attrName}" in ${parts[0]}.${parts[1]} does not have a valid type definition`);
+    }
+  } else if (isTabularSectionAttribute) {
+    const tsName = parts[3];
+    const attrName = parts[5];
+    const rawTs = childObjects.TabularSection;
+    const tss: Record<string, unknown>[] = Array.isArray(rawTs)
+      ? (rawTs as Record<string, unknown>[])
+      : rawTs && typeof rawTs === 'object'
+        ? [rawTs as Record<string, unknown>]
+        : [];
+    const ts = tss.find((t) => (t.Properties as Record<string, unknown> | undefined)?.Name === tsName);
+    if (!ts) {
+      throw new Error(`Tabular section "${tsName}" not found in ${parts[0]}.${parts[1]} for FilterCriterion content item "${contentRef}"`);
+    }
+    const rawTsAttrs = (ts.ChildObjects as Record<string, unknown> | undefined)?.Attribute;
+    const tsAttrs: Record<string, unknown>[] = Array.isArray(rawTsAttrs)
+      ? (rawTsAttrs as Record<string, unknown>[])
+      : rawTsAttrs && typeof rawTsAttrs === 'object'
+        ? [rawTsAttrs as Record<string, unknown>]
+        : [];
+    const tsAttr = tsAttrs.find((a) => (a.Properties as Record<string, unknown> | undefined)?.Name === attrName);
+    if (!tsAttr) {
+      throw new Error(`Tabular section attribute "${attrName}" not found in ${parts[0]}.${parts[1]}.${tsName} for FilterCriterion content item "${contentRef}"`);
+    }
+    types = extractTypesFromXmlObject((tsAttr.Properties as Record<string, unknown> | undefined)?.Type);
+    if (types.length === 0) {
+      throw new Error(`Tabular section attribute "${attrName}" in ${parts[0]}.${parts[1]}.${tsName} does not have a valid type definition`);
+    }
+  } else if (isDimension) {
+    const dimName = parts[3];
+    const rawDims = childObjects.Dimension;
+    const dims: Record<string, unknown>[] = Array.isArray(rawDims)
+      ? (rawDims as Record<string, unknown>[])
+      : rawDims && typeof rawDims === 'object'
+        ? [rawDims as Record<string, unknown>]
+        : [];
+    const dim = dims.find((d) => (d.Properties as Record<string, unknown> | undefined)?.Name === dimName);
+    if (!dim) {
+      throw new Error(`Dimension "${dimName}" not found in ${parts[0]}.${parts[1]} for FilterCriterion content item "${contentRef}"`);
+    }
+    types = extractTypesFromXmlObject((dim.Properties as Record<string, unknown> | undefined)?.Type);
+    if (types.length === 0) {
+      throw new Error(`Dimension "${dimName}" in ${parts[0]}.${parts[1]} does not have a valid type definition`);
+    }
   }
 
-  if (types.length > 0 && !isTypeMatching(types, selectedTypes)) {
+  if (selectedTypes.length > 0 && !isTypeMatching(types, selectedTypes)) {
     throw new Error(
       `FilterCriterion content item "${contentRef}" of type [${types.join(', ')}] is incompatible with FilterCriterion type(s) [${selectedTypes.join(', ')}]`
     );
@@ -491,16 +518,6 @@ export async function planCreateFilterCriterion(
   params: FilterCriterionWizardParams
 ): Promise<MutationPlan<AgentResult<{ filePath: string }>>> {
   const trimmedName = params.name.trim();
-  const contentRefs = (params.content || []).map((c) => c.trim()).filter((c) => c.length > 0);
-  if (contentRefs.length === 0) {
-    throw new Error('FilterCriterion content must contain at least one metadata item reference');
-  }
-
-  if (params.types && params.types.length > 0) {
-    for (const ref of contentRefs) {
-      await validateContentItemCompatibility(configRoot, params.types, ref);
-    }
-  }
   const folderPath = path.join(configRoot, 'FilterCriteria');
   const filePath = path.join(folderPath, `${trimmedName}.xml`);
   const elementDir = path.join(folderPath, trimmedName);
@@ -521,6 +538,15 @@ export async function planCreateFilterCriterion(
   const fileExpected = await expectationForPath(filePath);
   if (fileExpected.state !== 'missing') {
     throw new Error(`Object already exists: ${filePath}`);
+  }
+
+  const contentRefs = (params.content || []).map((c) => c.trim()).filter((c) => c.length > 0);
+  if (contentRefs.length === 0) {
+    throw new Error('FilterCriterion content must contain at least one metadata item reference');
+  }
+
+  for (const ref of contentRefs) {
+    await validateContentItemCompatibility(configRoot, params.types || [], ref);
   }
 
   const configurationPath = path.join(configRoot, CONFIGURATION_XML);

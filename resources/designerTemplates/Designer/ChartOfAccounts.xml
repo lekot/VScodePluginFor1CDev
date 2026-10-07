@@ -1,4 +1,5 @@
 <?xml version='1.0' encoding='utf-8'?>
+<!-- План счетов: для корректного импорта в 1С (ibcmd/config import) требуются InternalInfo со всеми 7 типами платформы, Ext/Predefined.xml и согласованные настройки субконто (при ExtDimensionTypes — ссылка на ChartOfCharacteristicTypes; при отсутствии субконто — MaxExtDimensionCount=0). Для создания используйте мастер плана счетов (1c-metadata-tree.createChartOfAccounts или контекстное меню папки «Планы счетов»). Статический шаблон — минимальная заготовка. -->
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ChartOfAccounts uuid="{uuid}">
     <Properties>
@@ -19,7 +20,7 @@
       <CodeSeries>WholeChartOfAccounts</CodeSeries>
       <DescriptionLength>120</DescriptionLength>
       <ExtDimensionTypes />
-      <MaxExtDimensionCount>3</MaxExtDimensionCount>
+      <MaxExtDimensionCount>0</MaxExtDimensionCount>
       <OrderLength>5</OrderLength>
 
       <Hierarchical>false</Hierarchical>

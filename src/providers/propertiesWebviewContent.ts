@@ -1,4 +1,6 @@
-import { TreeNode } from '../models/treeNode';
+import * as path from 'path';
+import { TreeNode, MetadataType } from '../models/treeNode';
+import type { ResolvedPicture } from '../services/picture/commonPictureResolver';
 import { Logger } from '../utils/logger';
 import { TypeParser } from '../parsers/typeParser';
 import { TypeFormatter } from '../utils/typeFormatter';
@@ -24,6 +26,308 @@ export const CONTENT_EDITOR_COMMANDS = new Map<string, string>([
   ['FunctionalOption', '1c-metadata-tree.editFunctionalOptionContent'],
   ['FilterCriterion', '1c-metadata-tree.editFilterCriterionContent'],
 ]);
+
+export interface WebviewContentOptions {
+  picture?: ResolvedPicture;
+}
+
+/**
+ * Render visual preview card for CommonPicture elements.
+ */
+export function renderPicturePreviewCard(picture: ResolvedPicture): string {
+  if (!picture.success) {
+    return `
+      <div class="picture-preview-card picture-preview-error">
+        <div class="picture-card-header">
+          <span class="picture-badge badge-error">Изображение</span>
+        </div>
+        <div class="picture-preview-empty">
+          <p>${escapeHtml(picture.error || 'Файл изображения не найден')}</p>
+        </div>
+      </div>
+    `;
+  }
+
+  const fileName = picture.resolvedFilePath ? path.basename(picture.resolvedFilePath) : 'Picture';
+  const badgeText = picture.isZip ? `${picture.format || 'IMG'} (ZIP архив)` : (picture.format || 'IMG');
+  const entryInfo = picture.entryName ? `<span class="picture-entry-name">Вариант: ${escapeHtml(picture.entryName)}</span>` : '';
+
+  return `
+    <div class="picture-preview-card">
+      <div class="picture-card-header">
+        <span class="picture-badge badge-format">${escapeHtml(badgeText)}</span>
+        <span class="picture-filename">${escapeHtml(fileName)}</span>
+        ${entryInfo}
+        ${picture.resolvedFilePath ? `
+          <button class="open-pic-btn" data-file-path="${escapeHtml(picture.resolvedFilePath)}" title="Открыть файл изображения">
+            Открыть файл
+          </button>
+        ` : ''}
+      </div>
+      <div class="picture-preview-container">
+        <div class="picture-checkerboard">
+          <img src="${picture.dataUri}" alt="${escapeHtml(fileName)}" class="picture-preview-img" />
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * Validate that a color string is safe to use in inline CSS style attributes.
+ * Allows hex colors (#rgb, #rrggbb, #rrggbbaa), safe named CSS colors, and rgb/rgba functions.
+ * Strictly prevents quotes, semicolons, injection of url(), expression(), or scripts.
+ */
+export function isSafeCssColor(color: string): boolean {
+  if (!color || typeof color !== 'string') {
+    return false;
+  }
+  const trimmed = color.trim();
+  // Hex color (#fff, #ffffff, #ffffffff)
+  if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(trimmed)) {
+    return true;
+  }
+  // Named CSS color (ASCII letters only, excluding dangerous words)
+  if (/^[a-zA-Z]+$/.test(trimmed)) {
+    const lower = trimmed.toLowerCase();
+    if (lower === 'javascript' || lower === 'expression' || lower === 'url') {
+      return false;
+    }
+    return true;
+  }
+  // rgb/rgba functions with safe numbers
+  if (/^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*(?:0|1|0?\.\d+)\s*)?\)$/i.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Validate that a font family name contains only safe characters (no quotes, semicolons, etc.).
+ */
+export function isSafeFontFamily(face: string): boolean {
+  if (!face || typeof face !== 'string') {
+    return false;
+  }
+  return /^[a-zA-Z0-9\s\-_]+$/.test(face.trim());
+}
+
+interface ExtractedStyleColor {
+  displayVal: string;
+  cssBg: string;
+}
+
+function extractStyleColor(rawValue: unknown): ExtractedStyleColor {
+  let valStr = '';
+  if (typeof rawValue === 'string') {
+    valStr = rawValue.trim();
+  } else if (rawValue && typeof rawValue === 'object') {
+    const obj = rawValue as Record<string, unknown>;
+    if (typeof obj['#text'] === 'string') {
+      valStr = obj['#text'].trim();
+    } else if (obj['#text'] !== undefined && obj['#text'] !== null) {
+      valStr = String(obj['#text']).trim();
+    }
+  }
+
+  let cssBg = 'var(--vscode-editor-foreground)';
+  let displayVal = valStr;
+
+  const hexMatch = /^#([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})$/.exec(valStr.trim());
+  if (hexMatch && isSafeCssColor(hexMatch[0])) {
+    cssBg = hexMatch[0];
+    displayVal = hexMatch[0];
+  } else if (valStr.startsWith('web:')) {
+    const colorName = valStr.slice(4).trim();
+    if (isSafeCssColor(colorName)) {
+      cssBg = colorName;
+    } else {
+      cssBg = 'var(--vscode-editor-foreground)';
+    }
+    displayVal = valStr;
+  } else if (valStr.startsWith('style:')) {
+    displayVal = valStr;
+    cssBg = 'var(--vscode-editor-foreground)';
+  } else if (valStr.startsWith('win:')) {
+    displayVal = valStr;
+    cssBg = 'var(--vscode-button-background)';
+  } else {
+    const rgbMatch = /(?:d\d+p\d+:)?RGB\s*\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)/i.exec(valStr);
+    if (rgbMatch) {
+      const rgbColor = `rgb(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]})`;
+      if (isSafeCssColor(rgbColor)) {
+        cssBg = rgbColor;
+        displayVal = valStr;
+      }
+    } else if (isSafeCssColor(valStr)) {
+      cssBg = valStr;
+      displayVal = valStr;
+    }
+  }
+
+  return { displayVal, cssBg };
+}
+
+interface ExtractedStyleFont {
+  displayStr: string;
+  fontFamily: string;
+  isBold: boolean;
+  isItalic: boolean;
+  isUnderline: boolean;
+  isStrikeout: boolean;
+}
+
+function extractStyleFont(rawValue: unknown): ExtractedStyleFont {
+  let isBold = false;
+  let isItalic = false;
+  let isUnderline = false;
+  let isStrikeout = false;
+  let faceName = '';
+  let ref = '';
+  let height: string | undefined;
+
+  if (rawValue && typeof rawValue === 'object') {
+    const obj = rawValue as Record<string, unknown>;
+    const fontObj = (
+      obj['v8:Font'] && typeof obj['v8:Font'] === 'object'
+        ? obj['v8:Font']
+        : obj['Font'] && typeof obj['Font'] === 'object'
+          ? obj['Font']
+          : obj
+    ) as Record<string, unknown>;
+
+    const getAttr = (key: string): unknown =>
+      fontObj[`@_${key}`] ?? fontObj[key] ?? obj[`@_${key}`] ?? obj[key];
+
+    const parseBool = (v: unknown): boolean =>
+      v === true || v === 'true' || v === 1 || v === '1';
+
+    isBold = parseBool(getAttr('bold'));
+    isItalic = parseBool(getAttr('italic'));
+    isUnderline = parseBool(getAttr('underline'));
+    isStrikeout = parseBool(getAttr('strikeout'));
+
+    const rawFace = getAttr('faceName') ?? getAttr('face');
+    if (typeof rawFace === 'string') {
+      faceName = rawFace.trim();
+    }
+    const rawRef = getAttr('ref');
+    if (typeof rawRef === 'string') {
+      ref = rawRef.trim();
+    }
+    const rawHeight = getAttr('height');
+    if (rawHeight !== undefined && rawHeight !== null) {
+      height = String(rawHeight).trim();
+    }
+  } else {
+    const valStr = typeof rawValue === 'string' ? rawValue : JSON.stringify(rawValue || '');
+    isBold = /bold\s*=\s*["']?true["']?|bold\s*:\s*true/i.test(valStr);
+    isItalic = /italic\s*=\s*["']?true["']?|italic\s*:\s*true/i.test(valStr);
+    isUnderline = /underline\s*=\s*["']?true["']?|underline\s*:\s*true/i.test(valStr);
+    isStrikeout = /strikeout\s*=\s*["']?true["']?|strikeout\s*:\s*true/i.test(valStr);
+
+    const faceMatch = /(?:@_)?faceName\s*[:=]\s*["']([^"']+)["']/i.exec(valStr);
+    if (faceMatch) {
+      faceName = faceMatch[1].trim();
+    }
+    const refMatch = /(?:@_)?ref\s*[:=]\s*["']([^"']+)["']/i.exec(valStr);
+    if (refMatch) {
+      ref = refMatch[1].trim();
+    }
+    const heightMatch = /(?:@_)?height\s*[:=]\s*["']?(\d+)["']?/i.exec(valStr);
+    if (heightMatch) {
+      height = heightMatch[1];
+    }
+  }
+
+  const fontFamily = isSafeFontFamily(faceName) ? faceName : 'inherit';
+
+  let displayStr = '';
+  if (ref) {
+    displayStr = ref;
+  } else if (faceName) {
+    displayStr = `${faceName}${height ? `, ${height}pt` : ''}`;
+  } else if (typeof rawValue === 'string' && rawValue) {
+    displayStr = rawValue;
+  } else {
+    displayStr = 'Стандартный шрифт';
+  }
+
+  const flags: string[] = [];
+  if (isBold) { flags.push('жирный'); }
+  if (isItalic) { flags.push('курсив'); }
+  if (isUnderline) { flags.push('подчёркнутый'); }
+  if (isStrikeout) { flags.push('зачёркнутый'); }
+  if (flags.length > 0 && !displayStr.includes('(')) {
+    displayStr += ` (${flags.join(', ')})`;
+  }
+
+  return { displayStr, fontFamily, isBold, isItalic, isUnderline, isStrikeout };
+}
+
+/**
+ * Render visual swatch / font typography sample for StyleItem elements.
+ */
+export function renderStyleItemPreview(node: TreeNode): string {
+  if (node.type !== MetadataType.StyleItem) {
+    return '';
+  }
+  const props = (node.properties || {}) as Record<string, unknown>;
+  const typeVal = String(props.Type || props['type'] || '').trim();
+  const rawValue = props.Value !== undefined ? props.Value : props['value'];
+
+  if (typeVal.toLowerCase() === 'color') {
+    const { displayVal, cssBg } = extractStyleColor(rawValue);
+
+    return `
+      <div class="style-item-preview">
+        <div class="style-preview-swatch" style="background-color: ${escapeHtml(cssBg)};"></div>
+        <div class="style-preview-details">
+          <span class="style-preview-title">Цвет стиля</span>
+          <span class="style-preview-value">${escapeHtml(displayVal)}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  if (typeVal.toLowerCase() === 'font') {
+    const font = extractStyleFont(rawValue);
+
+    const styleParts: string[] = [
+      `font-family: ${font.fontFamily}`,
+      font.isBold ? 'font-weight: bold' : 'font-weight: normal',
+      font.isItalic ? 'font-style: italic' : 'font-style: normal',
+      font.isUnderline ? 'text-decoration: underline' : '',
+    ].filter(Boolean);
+
+    return `
+      <div class="style-item-preview">
+        <div class="style-font-sample" style="${escapeHtml(styleParts.join('; '))}">
+          Пример текста / Sample Text 123
+        </div>
+        <div class="style-preview-details">
+          <span class="style-preview-title">Шрифт стиля</span>
+          <span class="style-preview-value">${escapeHtml(font.displayStr)}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  if (typeVal.toLowerCase() === 'border') {
+    const valStr = typeof rawValue === 'string' ? rawValue : JSON.stringify(rawValue || '');
+    return `
+      <div class="style-item-preview">
+        <div class="style-border-sample" style="border: 2px solid var(--vscode-editor-foreground); width: 60px; height: 30px;"></div>
+        <div class="style-preview-details">
+          <span class="style-preview-title">Рамка стиля</span>
+          <span class="style-preview-value">${escapeHtml(valStr)}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  return '';
+}
 
 /**
  * Escape HTML to prevent XSS
@@ -484,6 +788,15 @@ export function getWebviewScript(readOnly: boolean): string {
         });
       });
 
+      document.querySelectorAll('.open-pic-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const filePath = btn.dataset.filePath || btn.getAttribute('data-file-path');
+          if (filePath) {
+            vscode.postMessage({ type: 'openPictureFile', filePath });
+          }
+        });
+      });
+
       const saveBtn = document.getElementById('save-btn');
       if (saveBtn) {
         saveBtn.addEventListener('click', handleSave);
@@ -607,7 +920,7 @@ export function getWebviewScript(readOnly: boolean): string {
 /**
  * Generate HTML content for webview
  */
-export function getWebviewContent(node: TreeNode): string {
+export function getWebviewContent(node: TreeNode, options?: WebviewContentOptions): string {
   // Handle empty state when no node is selected
   if (!node) {
     return getEmptyStateContent();
@@ -628,7 +941,7 @@ export function getWebviewContent(node: TreeNode): string {
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data: https:;">
       <title>Properties</title>
       <style>
         body {
@@ -779,12 +1092,140 @@ export function getWebviewContent(node: TreeNode): string {
           padding-bottom: 4px;
           border-bottom: 1px solid var(--vscode-panel-border);
         }
+        .picture-preview-card {
+          margin-bottom: 20px;
+          border: 1px solid var(--vscode-panel-border);
+          border-radius: 4px;
+          background: var(--vscode-editorWidget-background);
+          overflow: hidden;
+        }
+        .picture-preview-error {
+          padding: 12px;
+          color: var(--vscode-errorForeground);
+        }
+        .picture-card-header {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 8px 12px;
+          background: var(--vscode-sideBarSectionHeader-background);
+          border-bottom: 1px solid var(--vscode-panel-border);
+          font-size: 0.9em;
+        }
+        .picture-badge {
+          display: inline-block;
+          padding: 2px 6px;
+          border-radius: 3px;
+          font-size: 0.85em;
+          font-weight: 600;
+          background: var(--vscode-badge-background);
+          color: var(--vscode-badge-foreground);
+        }
+        .badge-error {
+          background: var(--vscode-inputValidation-errorBackground);
+          color: var(--vscode-inputValidation-errorForeground);
+        }
+        .picture-filename {
+          font-weight: 500;
+          color: var(--vscode-foreground);
+        }
+        .picture-entry-name {
+          color: var(--vscode-descriptionForeground);
+          font-size: 0.85em;
+        }
+        .open-pic-btn {
+          margin-left: auto;
+          padding: 3px 10px;
+          font-size: 0.85em;
+          border: 1px solid var(--vscode-button-border, transparent);
+          background: var(--vscode-button-secondaryBackground);
+          color: var(--vscode-button-secondaryForeground);
+          border-radius: 2px;
+          cursor: pointer;
+        }
+        .open-pic-btn:hover {
+          background: var(--vscode-button-secondaryHoverBackground);
+        }
+        .picture-preview-container {
+          padding: 16px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .picture-checkerboard {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 8px;
+          border: 1px solid var(--vscode-panel-border);
+          border-radius: 4px;
+          background-image: linear-gradient(45deg, #80808033 25%, transparent 25%),
+                            linear-gradient(-45deg, #80808033 25%, transparent 25%),
+                            linear-gradient(45deg, transparent 75%, #80808033 75%),
+                            linear-gradient(-45deg, transparent 75%, #80808033 75%);
+          background-size: 16px 16px;
+          background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+          min-width: 64px;
+          min-height: 64px;
+        }
+        .picture-preview-img {
+          max-width: 256px;
+          max-height: 256px;
+          object-fit: contain;
+          image-rendering: auto;
+        }
+        .style-item-preview {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 10px 14px;
+          margin-bottom: 20px;
+          border: 1px solid var(--vscode-panel-border);
+          border-radius: 4px;
+          background: var(--vscode-editorWidget-background);
+        }
+        .style-preview-swatch {
+          width: 28px;
+          height: 28px;
+          border-radius: 4px;
+          border: 1px solid var(--vscode-widget-border, #888);
+          box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+          flex-shrink: 0;
+        }
+        .style-preview-details {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .style-preview-title {
+          font-size: 0.8em;
+          color: var(--vscode-descriptionForeground);
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+        .style-preview-value {
+          font-weight: 600;
+          color: var(--vscode-foreground);
+        }
+        .style-font-sample {
+          padding: 6px 10px;
+          border: 1px solid var(--vscode-panel-border);
+          border-radius: 3px;
+          background: var(--vscode-editor-background);
+          color: var(--vscode-editor-foreground);
+        }
+        .style-border-sample {
+          border-radius: 2px;
+          background: var(--vscode-editor-background);
+        }
       </style>
     </head>
     <body>
       <div class="header">
         <h2>Свойства: ${escapeHtml(node.name)} (${escapeHtml(node.type)})</h2>
       </div>
+      ${options?.picture ? renderPicturePreviewCard(options.picture) : ''}
+      ${node.type === MetadataType.StyleItem ? renderStyleItemPreview(node) : ''}
       ${readOnly ? `
         <div class="read-only-notice">
           <strong>Read-Only Mode:</strong> This element has no associated file path. Properties cannot be saved.

@@ -6,6 +6,7 @@ import type { FormModel } from '../../src/formEditor/formModel';
 import { writeFormXml, buildFormContent, injectXmlnsIntoFormTag, injectMissingFormOpenTagAttrs } from '../../src/formEditor/formXmlWriter';
 import { parseFormXml } from '../../src/formEditor/formXmlParser';
 import { isFormParseError } from '../../src/formEditor/formModel';
+import { XmlWriteRollbackError, type WriteUtf8FileWithBackupOptions } from '../../src/utils/xml/xmlFileIo';
 
 function createBaseModel(): FormModel {
   return {
@@ -451,22 +452,128 @@ suite('FormXmlWriter', () => {
 
   // ── Backup / rollback ────────────────────────────────────────────────────────
 
-  test('backup file is created before write and removed after successful write', async () => {
+  test('Issue #171: backup file is created with unique path and removed after successful write', async () => {
     const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-writer-backup-'));
     const formXmlPath = path.join(tmpRoot, 'Form.xml');
-    const backupPath = `${formXmlPath}.bak`;
     try {
-      // Pre-create the target file so backup captures real content
       const initialContent = '<?xml version="1.0" encoding="UTF-8"?>\n<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">\n</Form>';
       await fs.promises.writeFile(formXmlPath, initialContent, 'utf-8');
 
       await writeFormXml(formXmlPath, createBaseModel());
 
-      // After successful write, backup must be cleaned up
-      assert.ok(!fs.existsSync(backupPath), 'backup file must be deleted after successful write');
-      // Target file must exist with new content
+      const files = await fs.promises.readdir(tmpRoot);
+      const backupFiles = files.filter((f) => f.includes('.bak'));
+      assert.strictEqual(backupFiles.length, 0, 'backup file must be deleted after successful write');
       const written = await fs.promises.readFile(formXmlPath, 'utf-8');
       assert.ok(written.includes('<Form'));
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('Issue #171: write does not start if backup creation fails, leaving target Form.xml intact', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-backup-fail-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      const initialContent = '<?xml version="1.0" encoding="UTF-8"?>\n<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">\n</Form>';
+      await fs.promises.writeFile(formXmlPath, initialContent, 'utf-8');
+
+      const options: WriteUtf8FileWithBackupOptions = {
+        hooks: {
+          writeFile: async (p, d, e) => {
+            if (p.includes('.bak')) {
+              throw new Error('EACCES: permission denied to create backup');
+            }
+            await fs.promises.writeFile(p, d, e);
+          },
+        },
+      };
+
+      await assert.rejects(
+        () => writeFormXml(formXmlPath, createBaseModel(), options),
+        /Failed to create backup/
+      );
+
+      // Target Form.xml must NOT have been touched or corrupted
+      assert.strictEqual(await fs.promises.readFile(formXmlPath, 'utf-8'), initialContent);
+      const files = await fs.promises.readdir(tmpRoot);
+      assert.deepStrictEqual(files, ['Form.xml']);
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('Issue #171: write failure with successful rollback restores original content from memory, not from stale .bak', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-rollback-stale-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    const staleBakPath = `${formXmlPath}.bak`;
+    try {
+      const initialContent = '<?xml version="1.0" encoding="UTF-8"?>\n<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">\n</Form>';
+      await fs.promises.writeFile(formXmlPath, initialContent, 'utf-8');
+      // Place a foreign/stale .bak file from a previous aborted operation
+      await fs.promises.writeFile(staleBakPath, 'STALE_FOREIGN_CONTENT_THAT_MUST_NOT_BE_USED', 'utf-8');
+
+      let targetWrites = 0;
+      const options: WriteUtf8FileWithBackupOptions = {
+        hooks: {
+          writeFile: async (p, d, e) => {
+            if (path.resolve(p) === path.resolve(formXmlPath)) {
+              targetWrites++;
+              if (targetWrites === 1) {
+                // Abort during target write
+                throw new Error('ENOSPC: disk full during Form.xml write');
+              }
+            }
+            await fs.promises.writeFile(p, d, e);
+          },
+        },
+      };
+
+      await assert.rejects(
+        () => writeFormXml(formXmlPath, createBaseModel(), options),
+        /Unable to write to file/
+      );
+
+      // Form.xml must be restored to its TRUE initial content, NOT the stale .bak!
+      assert.strictEqual(await fs.promises.readFile(formXmlPath, 'utf-8'), initialContent);
+      // The stale .bak was not used and remains untouched
+      assert.strictEqual(await fs.promises.readFile(staleBakPath, 'utf-8'), 'STALE_FOREIGN_CONTENT_THAT_MUST_NOT_BE_USED');
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('Issue #171: write failure and rollback failure preserves intact backup and reports exact path via XmlWriteRollbackError', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-rollback-fail-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      const initialContent = '<?xml version="1.0" encoding="UTF-8"?>\n<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">\n</Form>';
+      await fs.promises.writeFile(formXmlPath, initialContent, 'utf-8');
+
+      const options: WriteUtf8FileWithBackupOptions = {
+        hooks: {
+          writeFile: async (p, d, e) => {
+            if (path.resolve(p) === path.resolve(formXmlPath)) {
+              await fs.promises.writeFile(p, 'corrupted-partial', e);
+              throw new Error('EIO: write failure');
+            }
+            await fs.promises.writeFile(p, d, e);
+          },
+        },
+      };
+
+      let caughtError: unknown;
+      try {
+        await writeFormXml(formXmlPath, createBaseModel(), options);
+      } catch (err) {
+        caughtError = err;
+      }
+
+      assert.ok(caughtError instanceof XmlWriteRollbackError, 'Expected XmlWriteRollbackError');
+      const rollbackErr = caughtError as XmlWriteRollbackError;
+      assert.ok(fs.existsSync(rollbackErr.backupPath), 'Preserved backup file must exist on disk');
+      assert.strictEqual(await fs.promises.readFile(rollbackErr.backupPath, 'utf-8'), initialContent);
+      assert.ok(rollbackErr.message.includes(rollbackErr.backupPath), 'Error message must report exact backup path');
     } finally {
       await fs.promises.rm(tmpRoot, { recursive: true, force: true });
     }
@@ -484,6 +591,177 @@ suite('FormXmlWriter', () => {
       assert.ok(fs.existsSync(formXmlPath));
       const written = await fs.promises.readFile(formXmlPath, 'utf-8');
       assert.ok(written.includes('OnOpen'));
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('Issue #172: writeUtf8FileWithBackup for new file creation does not overwrite or unlink concurrently created file', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-writer-conflict-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      // Initially formXmlPath does not exist
+      assert.ok(!fs.existsSync(formXmlPath));
+
+      const concurrentContent = '<ConcurrentForm>DO_NOT_TOUCH</ConcurrentForm>';
+
+      // Simulate another process creating the file concurrently before writeUtf8FileWithBackup creates it
+      const options: WriteUtf8FileWithBackupOptions = {
+        hooks: {
+          open: async (p, flags) => {
+            if (path.resolve(p) === path.resolve(formXmlPath)) {
+              // Concurrently create the file on disk if not already existing
+              if (!fs.existsSync(p)) {
+                await fs.promises.writeFile(p, concurrentContent, 'utf-8');
+              }
+            }
+            return fs.promises.open(p, flags);
+          },
+        },
+      };
+
+      await assert.rejects(
+        () => writeFormXml(formXmlPath, createBaseModel(), options),
+        /already exists/i
+      );
+
+      // CRITICAL ASSERTION: The concurrently created file must NOT be deleted (unlinked) or overwritten!
+      assert.ok(fs.existsSync(formXmlPath), 'Form.xml must NOT be deleted by failed creation');
+      assert.strictEqual(
+        await fs.promises.readFile(formXmlPath, 'utf-8'),
+        concurrentContent,
+        'Form.xml content must remain completely intact'
+      );
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('Issue #172 (Review): creation error with concurrent file creation before cleanup does not delete foreign file', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-writer-foreign-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      assert.ok(!fs.existsSync(formXmlPath));
+      const foreignContent = '<ForeignForm>KEEP_THIS_FILE</ForeignForm>';
+
+      const options: WriteUtf8FileWithBackupOptions = {
+        hooks: {
+          open: async (p, flags) => {
+            if (path.resolve(p) === path.resolve(formXmlPath)) {
+              // Concurrently another process creates Form.xml
+              await fs.promises.writeFile(p, foreignContent, 'utf-8');
+              // And this open failed before creating its own file (non-EEXIST error!)
+              const err = new Error('EACCES: permission denied to create file');
+              (err as any).code = 'EACCES';
+              throw err;
+            }
+            return fs.promises.open(p, flags);
+          },
+        },
+      };
+
+      await assert.rejects(
+        () => writeFormXml(formXmlPath, createBaseModel(), options),
+        /EACCES/i
+      );
+
+      // Foreign Form.xml MUST NOT BE UNLINKED!
+      assert.ok(fs.existsSync(formXmlPath), 'Foreign Form.xml must NOT be unlinked by failed creation cleanup');
+      assert.strictEqual(
+        await fs.promises.readFile(formXmlPath, 'utf-8'),
+        foreignContent,
+        'Foreign file content must remain completely intact'
+      );
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+
+
+  test('Issue #172 (Review): write failure on handle after successful open unlinks own partial file', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-writer-ownpartial-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      assert.ok(!fs.existsSync(formXmlPath));
+
+      const options: WriteUtf8FileWithBackupOptions = {
+        hooks: {
+          open: async (p, flags) => {
+            const handle = await fs.promises.open(p, flags);
+            handle.writeFile = async () => {
+              throw new Error('ENOSPC: disk full during initial write');
+            };
+            return handle;
+          },
+        },
+      };
+
+      await assert.rejects(
+        () => writeFormXml(formXmlPath, createBaseModel(), options),
+        /ENOSPC/i
+      );
+
+      // Own partial file MUST be unlinked
+      assert.ok(!fs.existsSync(formXmlPath), 'Own partial file must be unlinked after write failure');
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('Issue #172: concurrent writeFormXml saves do not overwrite earlier success upon later save failure', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-writer-interleaving-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      const initialContent = '<?xml version="1.0" encoding="UTF-8"?>\n<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">\n</Form>';
+      await fs.promises.writeFile(formXmlPath, initialContent, 'utf-8');
+
+      // Model 1 sets event OnOpen
+      const model1 = createBaseModel();
+      model1.formEvents = [{ name: 'OnOpen', method: 'ПриОткрытии1' }];
+
+      // Model 2 sets event OnClose
+      const model2 = createBaseModel();
+      model2.formEvents = [{ name: 'OnClose', method: 'ПриЗакрытии2' }];
+
+      // Simulate Save 2 failing during its write attempt
+      let save2WriteAttempts = 0;
+      const save2Options: WriteUtf8FileWithBackupOptions = {
+        hooks: {
+          writeFile: async (p, d, opt) => {
+            if (path.resolve(p) === path.resolve(formXmlPath)) {
+              save2WriteAttempts++;
+              if (save2WriteAttempts === 1) {
+                // Failure on target write
+                throw new Error('ENOSPC: disk full during save2 write');
+              }
+            }
+            await fs.promises.writeFile(p, d, opt as any);
+          },
+        },
+      };
+
+      // Launch both saves concurrently
+      const promise1 = writeFormXml(formXmlPath, model1);
+      const promise2 = writeFormXml(formXmlPath, model2, save2Options);
+
+      // Save 1 must succeed
+      await promise1;
+
+      // Save 2 must reject due to write failure
+      await assert.rejects(
+        () => promise2,
+        /Unable to write to file|Concurrent modification detected/
+      );
+
+      // CRITICAL ASSERTION:
+      // Disk must contain Save 1's committed result ('ПриОткрытии1'), NOT rolled back to initialContent!
+      const diskContent = await fs.promises.readFile(formXmlPath, 'utf-8');
+      assert.ok(
+        diskContent.includes('ПриОткрытии1'),
+        'Save 1 content must remain on disk, must not be overwritten by Save 2 rollback'
+      );
+      assert.ok(!diskContent.includes('ПриЗакрытии2'));
     } finally {
       await fs.promises.rm(tmpRoot, { recursive: true, force: true });
     }

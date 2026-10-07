@@ -71,12 +71,12 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('legacy opt-in registers all 99 operations alongside the seven compact tools', () => {
+  test('legacy opt-in registers all 100 operations alongside the seven compact tools', () => {
     const previous = process.env.CDT_MCP_LEGACY_TOOLS;
     process.env.CDT_MCP_LEGACY_TOOLS = '1';
     try {
       const tools = captureRegisteredTools(async () => ({ success: true }));
-      assert.strictEqual(tools.length, 106);
+      assert.strictEqual(tools.length, 107);
       assert.deepStrictEqual(
         tools.slice(0, MCP_TOOL_CATALOG.length).map(({ name }) => name),
         MCP_TOOL_CATALOG.map(({ name }) => name),
@@ -95,7 +95,7 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('cdt_catalog lists all operations and serializes all 99 input schemas', async () => {
+  test('cdt_catalog lists all operations and serializes all 100 input schemas', async () => {
     const tools = captureRegisteredTools(async () => {
       assert.fail('cdt_catalog must not dispatch Agent commands');
     });
@@ -110,7 +110,7 @@ suite('MCP adapter: tool contract', () => {
       listed.data.operations.map(({ name, profile }) => ({ name, profile })),
       MCP_OPERATION_CATALOG.map(({ name, profile }) => ({ name, profile })),
     );
-    assert.strictEqual(listed.data.operations.length, 99);
+    assert.strictEqual(listed.data.operations.length, 100);
     assert.ok(!listed.data.operations.some(({ name }) => name === 'cdt_forms_exec'));
 
     for (const operation of MCP_OPERATION_CATALOG) {
@@ -206,6 +206,63 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
     }
 
     assert.deepStrictEqual(calls, cases.map(([, , args, command]) => ({ command, args })));
+  });
+
+  test('cdt_resolve_source_address dispatches cleanly through MCP with a found tree node', async () => {
+    const tools = captureRegisteredTools(async (command, args) => {
+      if (command === '1c-metadata-tree.agent.resolveSourceAddress') {
+        return {
+          success: true,
+          configurationId: 'cfg-1',
+          data: {
+            sourceSet: 'main',
+            dotPath: 'Catalog.Goods',
+            configRoot: 'C:/base',
+            configurationId: 'cfg-1',
+            resolvedPath: {
+              rootTag: 'Catalog',
+              objectName: 'Goods',
+              fullPath: 'C:/base/Catalogs/Goods.xml',
+              metadataDir: 'Catalogs',
+              relativeXmlPath: 'Catalogs/Goods.xml',
+            },
+            treeNode: {
+              id: 'Catalog.Goods',
+              name: 'Goods',
+              type: 'Catalog',
+              filePath: 'C:/base/Catalogs/Goods.xml',
+              hasChildren: false,
+              properties: { Synonym: 'Goods' },
+            },
+          },
+        };
+      }
+      return { success: false, error: 'unknown command' };
+    });
+
+    const target = tools.find((candidate) => candidate.name === 'cdt_read')!;
+    const result = await target.handler({
+      operation: 'cdt_resolve_source_address',
+      arguments: { address: 'main:Catalog.Goods' },
+    }, { signal: signal() });
+
+    assert.strictEqual(result.isError, undefined);
+    assert.strictEqual(result.content.length, 1);
+    assert.strictEqual(result.content[0].type, 'text');
+    const parsed = JSON.parse(result.content[0].text) as {
+      success: boolean;
+      data: {
+        treeNode: {
+          id: string;
+          name: string;
+          type: string;
+          properties?: { Synonym?: string };
+        };
+      };
+    };
+    assert.strictEqual(parsed.success, true);
+    assert.strictEqual(parsed.data.treeNode.name, 'Goods');
+    assert.strictEqual(parsed.data.treeNode.properties?.Synonym, 'Goods');
   });
 
   test('invalid inner strict arguments fail before Agent dispatch', async () => {

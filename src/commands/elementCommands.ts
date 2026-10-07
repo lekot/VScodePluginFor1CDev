@@ -18,8 +18,9 @@ import { getSelectedNode, requireDesignerFormat } from '../helpers/commandHelper
 import { optimisticAppendCreatedNode } from '../helpers/optimisticNodeBuilder';
 import { Logger } from '../utils/logger';
 import { AgentOperations } from '../agent/agentOperations';
-import type { MutationPlan } from '../services/configurationSession/mutationPlan';
 import { runFilterCriterionWizard } from '../wizards/filterCriterionWizard';
+import { runChartOfAccountsWizard } from '../wizards/chartOfAccountsWizard';
+import type { MutationPlan } from '../services/configurationSession/mutationPlan';
 
 type RegisterElementCommandsDeps = {
   state: ExtensionState;
@@ -66,6 +67,16 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
 
       if (target.type === MetadataType.FilterCriterion || target.id === 'FilterCriteria') {
         await runFilterCriterionWizard({
+          state,
+          target,
+          runConfigurationPlan,
+          invalidateCacheAndReload,
+        });
+        return;
+      }
+
+      if (target.type === MetadataType.ChartOfAccounts || target.id === 'ChartsOfAccounts') {
+        await runChartOfAccountsWizard({
           state,
           target,
           runConfigurationPlan,

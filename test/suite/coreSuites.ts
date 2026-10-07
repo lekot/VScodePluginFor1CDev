@@ -187,6 +187,8 @@ export const coreSuiteFiles: string[] = [
   'suite/servicesCoverage.test.js',
   'suite/fixtureMatrix.test.js',
   'suite/propertiesWebviewContent.test.js',
+  'suite/commonPictureResolver.test.js',
+  'suite/propertiesCommonPicture.test.js',
   'suite/metadataTreeSettings.test.js',
   'suite/objectFileCollector.test.js',
   'suite/rules/converters.test.js',
@@ -238,6 +240,7 @@ export const coreSuiteFiles: string[] = [
   'suite/agentCommands.debug.test.js',
   'suite/agentConfigurationRouting.test.js',
   'suite/agentCfeProjectOperations.test.js',
+  'suite/agentSourceAddressResolver.test.js',
   'suite/agentSafety.test.js',
   'suite/startDebuggingFromConfigPath.test.js',
   'suite/agentDebugOperations.startFromBinding.test.js',
@@ -289,6 +292,9 @@ export const coreSuiteFiles: string[] = [
   'suite/queryBuilder/provider.test.js',
   'suite/queryBuilder/astVisitor.test.js',
   'suite/queryBuilder/astVisitorParity.test.js',
+  'suite/chartOfAccountsWizardService.test.js',
+  'suite/chartOfAccountsWizard.test.js',
+  'suite/chartOfAccountsIbcmdImport.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),
