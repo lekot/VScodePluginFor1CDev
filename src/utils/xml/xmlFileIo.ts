@@ -13,6 +13,7 @@ export function buildXmlString(data: unknown): string {
  * @internal Test hook only.
  */
 export interface WriteUtf8BackupHooks {
+  open?: (path: string, flags: string) => Promise<fs.promises.FileHandle>;
   writeFile?: (
     path: string,
     data: string,
@@ -103,19 +104,31 @@ export async function writeUtf8FileWithBackup(
       opt?: fs.WriteFileOptions | BufferEncoding
     ) => fs.promises.writeFile(p, d, opt);
     const defaultReadFile = (p: string, enc: BufferEncoding) => fs.promises.readFile(p, enc);
+    const defaultOpen = (p: string, flags: string) => fs.promises.open(p, flags);
     const writeFile = options?.hooks?.writeFile ?? defaultWriteFile;
     const readFile = options?.hooks?.readFile ?? defaultReadFile;
+    const open = options?.hooks?.open ?? defaultOpen;
     const unlink = options?.hooks?.unlink ?? ((p) => fs.promises.unlink(p));
 
     if (originalContent === undefined) {
+      let fileHandle: fs.promises.FileHandle | undefined;
+      let ownFileCreated = false;
       try {
-        await writeFile(filePath, newContent, { encoding: 'utf-8', flag: 'wx' });
+        fileHandle = await open(filePath, 'wx');
+        ownFileCreated = true;
+        await fileHandle.writeFile(newContent, 'utf-8');
+        await fileHandle.close();
+        fileHandle = undefined;
       } catch (writeError) {
+        if (fileHandle) {
+          await fileHandle.close().catch(() => undefined);
+          fileHandle = undefined;
+        }
         const isExistError =
           (writeError as NodeJS.ErrnoException).code === 'EEXIST' ||
           String(writeError).includes('EEXIST');
         Logger.error(`Failed to write new file: ${filePath}`, writeError);
-        if (!isExistError) {
+        if (ownFileCreated) {
           await unlink(filePath).catch(() => undefined);
         }
         const writeMsg = writeError instanceof Error ? writeError.message : String(writeError);

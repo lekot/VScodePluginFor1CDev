@@ -608,14 +608,14 @@ suite('FormXmlWriter', () => {
       // Simulate another process creating the file concurrently before writeUtf8FileWithBackup creates it
       const options: WriteUtf8FileWithBackupOptions = {
         hooks: {
-          writeFile: async (p, d, opt) => {
+          open: async (p, flags) => {
             if (path.resolve(p) === path.resolve(formXmlPath)) {
               // Concurrently create the file on disk if not already existing
               if (!fs.existsSync(p)) {
                 await fs.promises.writeFile(p, concurrentContent, 'utf-8');
               }
             }
-            await fs.promises.writeFile(p, d, opt as any);
+            return fs.promises.open(p, flags);
           },
         },
       };
@@ -632,6 +632,78 @@ suite('FormXmlWriter', () => {
         concurrentContent,
         'Form.xml content must remain completely intact'
       );
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('Issue #172 (Review): creation error with concurrent file creation before cleanup does not delete foreign file', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-writer-foreign-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      assert.ok(!fs.existsSync(formXmlPath));
+      const foreignContent = '<ForeignForm>KEEP_THIS_FILE</ForeignForm>';
+
+      const options: WriteUtf8FileWithBackupOptions = {
+        hooks: {
+          open: async (p, flags) => {
+            if (path.resolve(p) === path.resolve(formXmlPath)) {
+              // Concurrently another process creates Form.xml
+              await fs.promises.writeFile(p, foreignContent, 'utf-8');
+              // And this open failed before creating its own file (non-EEXIST error!)
+              const err = new Error('EACCES: permission denied to create file');
+              (err as any).code = 'EACCES';
+              throw err;
+            }
+            return fs.promises.open(p, flags);
+          },
+        },
+      };
+
+      await assert.rejects(
+        () => writeFormXml(formXmlPath, createBaseModel(), options),
+        /EACCES/i
+      );
+
+      // Foreign Form.xml MUST NOT BE UNLINKED!
+      assert.ok(fs.existsSync(formXmlPath), 'Foreign Form.xml must NOT be unlinked by failed creation cleanup');
+      assert.strictEqual(
+        await fs.promises.readFile(formXmlPath, 'utf-8'),
+        foreignContent,
+        'Foreign file content must remain completely intact'
+      );
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+
+
+  test('Issue #172 (Review): write failure on handle after successful open unlinks own partial file', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-writer-ownpartial-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      assert.ok(!fs.existsSync(formXmlPath));
+
+      const options: WriteUtf8FileWithBackupOptions = {
+        hooks: {
+          open: async (p, flags) => {
+            const handle = await fs.promises.open(p, flags);
+            handle.writeFile = async () => {
+              throw new Error('ENOSPC: disk full during initial write');
+            };
+            return handle;
+          },
+        },
+      };
+
+      await assert.rejects(
+        () => writeFormXml(formXmlPath, createBaseModel(), options),
+        /ENOSPC/i
+      );
+
+      // Own partial file MUST be unlinked
+      assert.ok(!fs.existsSync(formXmlPath), 'Own partial file must be unlinked after write failure');
     } finally {
       await fs.promises.rm(tmpRoot, { recursive: true, force: true });
     }
