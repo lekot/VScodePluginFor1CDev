@@ -251,9 +251,69 @@ suite('CommonPictureResolver', () => {
     assert.ok(result.error);
   });
 
+  test('returns failure and does not return zip path when extraction writeFile fails', async () => {
+    const picDir = path.join(tempDir, 'CommonPictures', 'FailWriteZip');
+    const extDir = path.join(picDir, 'Ext');
+    const subPicDir = path.join(extDir, 'Picture');
+    await fs.promises.mkdir(subPicDir, { recursive: true });
+
+    const metadataXml = path.join(tempDir, 'CommonPictures', 'FailWriteZip.xml');
+    await fs.promises.writeFile(metadataXml, '<CommonPicture><Name>FailWriteZip</Name></CommonPicture>', 'utf8');
+
+    const pictureXml = path.join(extDir, 'Picture.xml');
+    await fs.promises.writeFile(pictureXml, '<ExtPicture><Picture><xr:Abs>Picture.zip</xr:Abs></Picture></ExtPicture>', 'utf8');
+
+    const pngData = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]);
+    const zipBuf = createZipBuffer([{ name: 'icon.png', content: pngData }]);
+    const zipPath = path.join(subPicDir, 'Picture.zip');
+    await fs.promises.writeFile(zipPath, zipBuf);
+
+    const originalWriteFile = fs.promises.writeFile;
+    try {
+      (fs.promises as any).writeFile = async (...args: any[]) => {
+        const filePath = String(args[0]);
+        if (filePath.includes('1cviewer-pictures')) {
+          throw new Error('EACCES: disk write failure simulated');
+        }
+        return (originalWriteFile as any).apply(fs.promises, args);
+      };
+
+      const result = await resolveCommonPicture(metadataXml);
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('Не удалось сохранить'));
+      assert.strictEqual(result.resolvedFilePath, undefined, 'resolvedFilePath must NOT be set on extraction write failure');
+      assert.strictEqual(result.zipFilePath, zipPath);
+    } finally {
+      fs.promises.writeFile = originalWriteFile;
+    }
+  });
+
+  test('returns failure and undefined resolvedFilePath when zip contains no supported image', async () => {
+    const picDir = path.join(tempDir, 'CommonPictures', 'NoImageZip');
+    const extDir = path.join(picDir, 'Ext');
+    const subPicDir = path.join(extDir, 'Picture');
+    await fs.promises.mkdir(subPicDir, { recursive: true });
+
+    const metadataXml = path.join(tempDir, 'CommonPictures', 'NoImageZip.xml');
+    await fs.promises.writeFile(metadataXml, '<CommonPicture><Name>NoImageZip</Name></CommonPicture>', 'utf8');
+
+    const pictureXml = path.join(extDir, 'Picture.xml');
+    await fs.promises.writeFile(pictureXml, '<ExtPicture><Picture><xr:Abs>Picture.zip</xr:Abs></Picture></ExtPicture>', 'utf8');
+
+    const zipBuf = createZipBuffer([{ name: 'readme.txt', content: 'no image here' }]);
+    const zipPath = path.join(subPicDir, 'Picture.zip');
+    await fs.promises.writeFile(zipPath, zipBuf);
+
+    const result = await resolveCommonPicture(metadataXml);
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result.resolvedFilePath, undefined, 'resolvedFilePath must not point to zip file');
+    assert.strictEqual(result.zipFilePath, zipPath);
+  });
+
   test('returns graceful failure for non-existent path', async () => {
     const result = await resolveCommonPicture(path.join(tempDir, 'nonexistent.xml'));
     assert.strictEqual(result.success, false);
     assert.ok(result.error);
   });
 });
+

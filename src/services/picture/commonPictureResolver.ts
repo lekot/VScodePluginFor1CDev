@@ -219,7 +219,12 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
       const zipBuffer = await fs.promises.readFile(resolvedAssetPath);
       const entries = parseCentralDirectory(zipBuffer);
       if (entries.length === 0) {
-        return { success: false, error: 'Архив Picture.zip пуст или поврежден', resolvedFilePath: resolvedAssetPath };
+        return {
+          success: false,
+          error: 'Архив Picture.zip пуст или поврежден',
+          isZip: true,
+          zipFilePath: resolvedAssetPath,
+        };
       }
 
       // Prioritize: 1) SVG variant, 2) PNG density variant (higher or 100/150/200), 3) any image
@@ -243,7 +248,8 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
         return {
           success: false,
           error: 'В архиве Picture.zip не найдено поддерживаемых графических файлов',
-          resolvedFilePath: resolvedAssetPath,
+          isZip: true,
+          zipFilePath: resolvedAssetPath,
         };
       }
 
@@ -252,7 +258,9 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
         return {
           success: false,
           error: `Не удалось извлечь изображение ${chosenEntry.name} из архива`,
-          resolvedFilePath: resolvedAssetPath,
+          isZip: true,
+          zipFilePath: resolvedAssetPath,
+          entryName: chosenEntry.name,
         };
       }
 
@@ -261,7 +269,7 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
       const dataUri = `data:${mimeType};base64,${decompressed.toString('base64')}`;
 
       // Extract specific entry to temp file so VS Code can open the image directly
-      let extractedFilePath = resolvedAssetPath;
+      let extractedFilePath: string | undefined;
       try {
         const hash = crypto
           .createHash('sha256')
@@ -271,10 +279,19 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
         const safeEntryBase = path.basename(chosenEntry.name);
         const tempPicDir = path.join(os.tmpdir(), '1cviewer-pictures', hash);
         await fs.promises.mkdir(tempPicDir, { recursive: true });
-        extractedFilePath = path.join(tempPicDir, safeEntryBase);
-        await fs.promises.writeFile(extractedFilePath, decompressed);
+        const targetPath = path.join(tempPicDir, safeEntryBase);
+        await fs.promises.writeFile(targetPath, decompressed);
+        extractedFilePath = targetPath;
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
         Logger.warn(`Failed to cache extracted picture entry ${chosenEntry.name} to disk`, err);
+        return {
+          success: false,
+          error: `Не удалось сохранить извлеченное изображение ${chosenEntry.name} на диск: ${msg}`,
+          isZip: true,
+          zipFilePath: resolvedAssetPath,
+          entryName: chosenEntry.name,
+        };
       }
 
       return {
