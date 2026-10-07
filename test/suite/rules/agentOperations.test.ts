@@ -126,6 +126,110 @@ suite('AgentOperations: createObject', () => {
         const content = fs.readFileSync(result.data!.filePath, 'utf-8');
         assert.ok(content.includes('<Enum '), 'XML should contain <Enum root tag');
     });
+
+    test('FilterCriterion: rejects creation when Content is missing, empty array, or whitespace-only', async () => {
+        // Missing properties
+        const r1 = await ops.createObject({ type: 'FilterCriterion', name: 'КритерийБезСвойств' });
+        assert.strictEqual(r1.success, false);
+        assert.ok(r1.error?.includes('Content'), `expected Content error, got: ${r1.error}`);
+
+        // Empty Content array
+        const r2 = await ops.createObject({
+            type: 'FilterCriterion',
+            name: 'КритерийПустойМассив',
+            properties: { Content: [] },
+        });
+        assert.strictEqual(r2.success, false);
+        assert.ok(r2.error?.includes('Content'), `expected Content error, got: ${r2.error}`);
+
+        // Whitespace-only string
+        const r3 = await ops.createObject({
+            type: 'FilterCriterion',
+            name: 'КритерийПробелСтрока',
+            properties: { Content: '   ' },
+        });
+        assert.strictEqual(r3.success, false);
+        assert.ok(r3.error?.includes('Content'), `expected Content error, got: ${r3.error}`);
+
+        // Whitespace-only array
+        const r4 = await ops.createObject({
+            type: 'FilterCriterion',
+            name: 'КритерийПробелМассив',
+            properties: { Content: ['   ', ''] },
+        });
+        assert.strictEqual(r4.success, false);
+        assert.ok(r4.error?.includes('Content'), `expected Content error, got: ${r4.error}`);
+    });
+
+    test('FilterCriterion: rejects creation when Content references non-existent attribute, missing file, or malformed format', async () => {
+        const catDir = path.join(tmpDir, 'Catalogs');
+        fs.mkdirSync(catDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(catDir, 'Партнеры.xml'),
+            `<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog uuid="c1"><Properties><Name>Партнеры</Name></Properties><ChildObjects><Attribute uuid="a1"><Properties><Name>ГоловнойПартнер</Name><Type><v8:Type>cfg:CatalogRef.Партнеры</v8:Type></Type></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>`,
+            'utf-8'
+        );
+
+        // Non-existent attribute on existing catalog
+        const r1 = await ops.createObject({
+            type: 'FilterCriterion',
+            name: 'ПоНесуществующемуРеквизиту',
+            properties: {
+                Type: ['cfg:CatalogRef.Партнеры'],
+                Content: ['Catalog.Партнеры.Attribute.НесуществующийРеквизит'],
+            },
+        });
+        assert.strictEqual(r1.success, false);
+        assert.ok(r1.error?.includes('Attribute "НесуществующийРеквизит" not found'), `expected attribute not found error, got: ${r1.error}`);
+
+        // Non-existent metadata object file
+        const r2 = await ops.createObject({
+            type: 'FilterCriterion',
+            name: 'ПоНесуществующемуОбъекту',
+            properties: {
+                Type: ['cfg:CatalogRef.Партнеры'],
+                Content: ['Catalog.Несуществующий.Attribute.Реквизит'],
+            },
+        });
+        assert.strictEqual(r2.success, false);
+        assert.ok(r2.error?.includes('missing or inaccessible metadata object file'), `expected file not found error, got: ${r2.error}`);
+
+        // Malformed content reference
+        const r3 = await ops.createObject({
+            type: 'FilterCriterion',
+            name: 'ПоНеверномуФормату',
+            properties: {
+                Type: ['cfg:CatalogRef.Партнеры'],
+                Content: ['НеверныйФормат'],
+            },
+        });
+        assert.strictEqual(r3.success, false);
+        assert.ok(r3.error?.includes('Invalid FilterCriterion content item format'), `expected format error, got: ${r3.error}`);
+    });
+
+    test('FilterCriterion: creates metadata object successfully with valid Type and Content', async () => {
+        const catDir = path.join(tmpDir, 'Catalogs');
+        fs.mkdirSync(catDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(catDir, 'Партнеры.xml'),
+            `<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog uuid="c1"><Properties><Name>Партнеры</Name></Properties><ChildObjects><Attribute uuid="a1"><Properties><Name>ГоловнойПартнер</Name><Type><v8:Type>cfg:CatalogRef.Партнеры</v8:Type></Type></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>`,
+            'utf-8'
+        );
+
+        const result = await ops.createObject({
+            type: 'FilterCriterion',
+            name: 'ПоПартнеру',
+            properties: {
+                Type: ['cfg:CatalogRef.Партнеры'],
+                Content: ['Catalog.Партнеры.Attribute.ГоловнойПартнер'],
+            },
+        });
+        assert.ok(result.success, `Expected success, got error: ${result.error}`);
+        assert.ok(fs.existsSync(result.data!.filePath), 'XML file should exist');
+        const content = fs.readFileSync(result.data!.filePath, 'utf-8');
+        assert.ok(content.includes('<FilterCriterion '), 'XML should contain FilterCriterion');
+        assert.ok(content.includes('Catalog.Партнеры.Attribute.ГоловнойПартнер'), 'XML should contain Content item ref');
+    });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
