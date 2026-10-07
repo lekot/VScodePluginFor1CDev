@@ -34,7 +34,6 @@ suite('ChartOfAccountsWizardService Test Suite', () => {
       codeLength: 8,
       descriptionLength: 120,
       orderLength: 5,
-      hierarchical: false,
       extDimensionTypes: 'ChartOfCharacteristicTypes.ВидыСубконто',
       maxExtDimensionCount: 3,
       accountingFlags: [
@@ -70,7 +69,18 @@ suite('ChartOfAccountsWizardService Test Suite', () => {
     assert.ok(xml.includes('<OrderLength>5</OrderLength>'));
     assert.ok(xml.includes('<ExtDimensionTypes>ChartOfCharacteristicTypes.ВидыСубконто</ExtDimensionTypes>'));
     assert.ok(xml.includes('<MaxExtDimensionCount>3</MaxExtDimensionCount>'));
-    assert.ok(xml.includes('<Hierarchical>false</Hierarchical>'));
+    assert.ok(xml.includes('<Characteristics/>') || xml.includes('<Characteristics />'));
+    assert.ok(xml.includes('<BasedOn/>') || xml.includes('<BasedOn />'));
+
+    // Verify catalog-only properties are absent
+    assert.ok(!xml.includes('<Hierarchical>'), 'ChartOfAccounts must not have Hierarchical tag');
+    assert.ok(!xml.includes('<FoldersOnTop>'), 'ChartOfAccounts must not have FoldersOnTop tag');
+    assert.ok(!xml.includes('<CodeAllowedLength>'), 'ChartOfAccounts must not have CodeAllowedLength tag');
+    assert.ok(!xml.includes('<Autonumbering>'), 'ChartOfAccounts must not have Autonumbering tag');
+    assert.ok(!xml.includes('<DefaultFolderForm>'), 'ChartOfAccounts must not have DefaultFolderForm tag');
+    assert.ok(!xml.includes('<DefaultFolderChoiceForm>'), 'ChartOfAccounts must not have DefaultFolderChoiceForm tag');
+    assert.ok(!xml.includes('<AuxiliaryFolderForm>'), 'ChartOfAccounts must not have AuxiliaryFolderForm tag');
+    assert.ok(!xml.includes('<AuxiliaryFolderChoiceForm>'), 'ChartOfAccounts must not have AuxiliaryFolderChoiceForm tag');
 
     // Check ChildObjects
     assert.ok(xml.includes('<AccountingFlag uuid="'));

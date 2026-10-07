@@ -56,8 +56,6 @@ export interface ChartOfAccountsWizardParams {
   orderLength?: number;
   codeSeries?: 'WholeChartOfAccounts' | 'WithinSubordination';
   checkUnique?: boolean;
-  autonumbering?: boolean;
-  hierarchical?: boolean;
   useStandardCommands?: boolean;
   extDimensionTypes?: string;
   maxExtDimensionCount?: number;
@@ -145,8 +143,6 @@ export function generateChartOfAccountsXml(
   const orderLength = params.orderLength ?? 5;
   const codeSeries = params.codeSeries ?? 'WholeChartOfAccounts';
   const checkUnique = params.checkUnique !== false ? 'true' : 'false';
-  const autonumbering = params.autonumbering !== false ? 'true' : 'false';
-  const hierarchical = params.hierarchical === true ? 'true' : 'false';
   const useStandardCommands = params.useStandardCommands !== false ? 'true' : 'false';
 
   const hasSubconto = Boolean(params.extDimensionTypes && params.extDimensionTypes.trim());
@@ -298,20 +294,16 @@ export function generateChartOfAccountsXml(
 \t\t\t${commentTag}
 \t\t\t<UseStandardCommands>${useStandardCommands}</UseStandardCommands>
 \t\t\t<IncludeHelpInContents>false</IncludeHelpInContents>
-\t\t\t<AutoOrderByCode>true</AutoOrderByCode>
-\t\t\t<CodeLength>${codeLength}</CodeLength>
-\t\t\t<CodeMask>${codeMask}</CodeMask>
-\t\t\t<CodeSeries>${codeSeries}</CodeSeries>
-\t\t\t<DescriptionLength>${descriptionLength}</DescriptionLength>
+\t\t\t<BasedOn/>
 \t\t\t${extDimensionTypesTag}
 \t\t\t<MaxExtDimensionCount>${maxExtDimensionCount}</MaxExtDimensionCount>
-\t\t\t<OrderLength>${orderLength}</OrderLength>
-\t\t\t<Hierarchical>${hierarchical}</Hierarchical>
-\t\t\t<FoldersOnTop>true</FoldersOnTop>
-\t\t\t<CodeAllowedLength>Variable</CodeAllowedLength>
+\t\t\t<CodeMask>${codeMask}</CodeMask>
+\t\t\t<CodeLength>${codeLength}</CodeLength>
+\t\t\t<DescriptionLength>${descriptionLength}</DescriptionLength>
+\t\t\t<CodeSeries>${codeSeries}</CodeSeries>
 \t\t\t<CheckUnique>${checkUnique}</CheckUnique>
-\t\t\t<Autonumbering>${autonumbering}</Autonumbering>
 \t\t\t<DefaultPresentation>AsDescription</DefaultPresentation>
+\t\t\t<Characteristics/>
 \t\t\t<PredefinedDataUpdate>Auto</PredefinedDataUpdate>
 \t\t\t<EditType>InDialog</EditType>
 \t\t\t<QuickChoice>false</QuickChoice>
@@ -326,16 +318,13 @@ export function generateChartOfAccountsXml(
 \t\t\t<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>
 \t\t\t<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
 \t\t\t<DefaultObjectForm/>
-\t\t\t<DefaultFolderForm/>
 \t\t\t<DefaultListForm/>
 \t\t\t<DefaultChoiceForm/>
-\t\t\t<DefaultFolderChoiceForm/>
 \t\t\t<AuxiliaryObjectForm/>
-\t\t\t<AuxiliaryFolderForm/>
 \t\t\t<AuxiliaryListForm/>
 \t\t\t<AuxiliaryChoiceForm/>
-\t\t\t<AuxiliaryFolderChoiceForm/>
-\t\t\t<BasedOn/>
+\t\t\t<AutoOrderByCode>true</AutoOrderByCode>
+\t\t\t<OrderLength>${orderLength}</OrderLength>
 \t\t\t<DataLockFields/>
 \t\t\t<DataLockControlMode>Managed</DataLockControlMode>
 \t\t\t<FullTextSearch>Use</FullTextSearch>

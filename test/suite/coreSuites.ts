@@ -289,6 +289,7 @@ export const coreSuiteFiles: string[] = [
   'suite/queryBuilder/astVisitorParity.test.js',
   'suite/chartOfAccountsWizardService.test.js',
   'suite/chartOfAccountsWizard.test.js',
+  'suite/chartOfAccountsIbcmdImport.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),
