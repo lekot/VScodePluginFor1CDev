@@ -22,6 +22,7 @@ export interface MessageHandlerContext {
   currentNode: TreeNode | undefined;
   currentFormSelection: FormSelectionPayload | null;
   currentFormSelectionRevision: number;
+  currentSessionToken?: string;
   isSaving: boolean;
   treeDataProvider: MetadataTreeDataProvider;
   typeEditorProvider: TypeEditorProvider;
@@ -227,9 +228,21 @@ export async function handleEditFormSelectionTypeMessage(
     return;
   }
 
+  const targetFormSelection = ctx.currentFormSelection;
+  const targetRevision = ctx.currentFormSelectionRevision;
+
   try {
     const result = await ctx.typeEditorProvider.show(typeXMLForEditor, []);
     if (result === null) {
+      return;
+    }
+    if (
+      ctx.currentFormSelection !== targetFormSelection ||
+      ctx.currentFormSelectionRevision !== targetRevision
+    ) {
+      Logger.warn(
+        'handleEditFormSelectionTypeMessage: form selection changed while editing type; discarding result'
+      );
       return;
     }
     const { TypeSerializer: typeSerializer } = await import('../serializers/typeSerializer');
@@ -357,10 +370,9 @@ export function handleValidateMessage(
 }
 
 export async function handleEditTypeMessage(
-  _message: WebviewMessage,
+  message: WebviewMessage,
   ctx: MessageHandlerContext
 ): Promise<void> {
-  void _message;
   if (!ctx.currentNode) {
     Logger.warn('Edit type attempted with no current node');
     ctx.postMessage({
@@ -435,10 +447,25 @@ export async function handleEditTypeMessage(
     return;
   }
 
+  const targetNode = ctx.currentNode;
+  const targetNodeId = message.nodeId || targetNode.id;
+  const targetSessionToken = message.sessionToken || ctx.currentSessionToken;
+
   try {
     const referenceableObjects = await ctx.treeDataProvider.getReferenceableObjectsForTypeEditor(ctx.currentNode);
     Logger.info('handleEditTypeMessage: calling typeEditorProvider.show()');
     const result = await ctx.typeEditorProvider.show(typeXMLForEditor, referenceableObjects);
+
+    if (
+      ctx.currentNode !== targetNode ||
+      ctx.currentNode?.id !== targetNodeId ||
+      (ctx.currentSessionToken && targetSessionToken && ctx.currentSessionToken !== targetSessionToken)
+    ) {
+      Logger.warn(
+        `handleEditTypeMessage: target node changed while editing type (${targetNodeId} -> ${ctx.currentNode?.id}); discarding result`
+      );
+      return;
+    }
 
     // If result not null, serialize TypeDefinition back to XML string
     if (result !== null) {
@@ -453,6 +480,8 @@ export async function handleEditTypeMessage(
         type: 'typeUpdated',
         property: 'Type',
         value: updatedTypeXML,
+        nodeId: targetNodeId,
+        sessionToken: targetSessionToken,
       });
 
       Logger.info('Type updated successfully');
@@ -475,15 +504,18 @@ export async function handleEditTypeMessage(
 }
 
 export async function handleEditSourceMessage(
-  _message: WebviewMessage,
+  message: WebviewMessage,
   ctx: MessageHandlerContext
 ): Promise<void> {
-  void _message;
   if (!ctx.currentNode) {
     Logger.warn('Edit source attempted with no current node');
     ctx.postMessage({ type: 'error', message: 'No element selected' });
     return;
   }
+
+  const targetNode = ctx.currentNode;
+  const targetNodeId = message.nodeId || targetNode.id;
+  const targetSessionToken = message.sessionToken || ctx.currentSessionToken;
 
   const rawSource = ctx.currentNode.properties['Source'];
 
@@ -508,10 +540,28 @@ export async function handleEditSourceMessage(
   try {
     const objectableGroups = await ctx.treeDataProvider.getObjectableObjectsForEditor(ctx.currentNode);
     const result = await ctx.objectTypeEditorProvider.show(sourceXML, objectableGroups);
+
+    if (
+      ctx.currentNode !== targetNode ||
+      ctx.currentNode?.id !== targetNodeId ||
+      (ctx.currentSessionToken && targetSessionToken && ctx.currentSessionToken !== targetSessionToken)
+    ) {
+      Logger.warn(
+        `handleEditSourceMessage: target node changed while editing source (${targetNodeId} -> ${ctx.currentNode?.id}); discarding result`
+      );
+      return;
+    }
+
     if (result !== null) {
       const { ObjectTypeSerializer } = await import('../serializers/objectTypeSerializer');
       const updatedSourceXML = ObjectTypeSerializer.serialize(result);
-      ctx.postMessage({ type: 'sourceUpdated', property: 'Source', value: updatedSourceXML });
+      ctx.postMessage({
+        type: 'sourceUpdated',
+        property: 'Source',
+        value: updatedSourceXML,
+        nodeId: targetNodeId,
+        sessionToken: targetSessionToken,
+      });
       Logger.info('Source updated successfully');
     } else {
       Logger.info('Source editing cancelled by user');

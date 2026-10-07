@@ -59,8 +59,8 @@ export type ExtensionMessage =
   | { type: 'saved' }
   | { type: 'error'; message: string }
   | { type: 'validationError'; errors: Record<string, string> }
-  | { type: 'typeUpdated'; property: string; value: string }
-  | { type: 'sourceUpdated'; property: string; value: string };
+  | { type: 'typeUpdated'; property: string; value: string; nodeId?: string; sessionToken?: string }
+  | { type: 'sourceUpdated'; property: string; value: string; nodeId?: string; sessionToken?: string };
 
 /**
  * Validation result

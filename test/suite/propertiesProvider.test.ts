@@ -15,6 +15,7 @@ import {
   renderPropertyInput,
 } from '../../src/providers/propertiesWebviewContent';
 import {
+  handleMessage,
   isMatchingCurrentFormSelection,
   saveProperties,
   type MessageHandlerContext,
@@ -1773,6 +1774,253 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
         await fs.promises.unlink(parentXml);
       }
     }
+  });
+
+  suite('Target node isolation during in-flight Type/Source editor (#191)', () => {
+    test('editType result is discarded if selected node changes while TypeEditor is open', async () => {
+      const nodeA: TreeNode = {
+        id: 'Attributes.AttrA',
+        name: 'AttrA',
+        type: MetadataType.Attribute,
+        properties: {
+          Name: 'AttrA',
+          Type: '<Type xmlns="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema"><Type>xs:string</Type></Type>',
+        },
+      };
+      const nodeB: TreeNode = {
+        id: 'Attributes.AttrB',
+        name: 'AttrB',
+        type: MetadataType.Attribute,
+        properties: {
+          Name: 'AttrB',
+          Type: '<Type xmlns="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema"><Type>xs:decimal</Type></Type>',
+        },
+      };
+
+      let resolveShow!: (value: any) => void;
+      const showPromise = new Promise<any>((res) => {
+        resolveShow = res;
+      });
+
+      const mockTypeEditor = {
+        show: async () => showPromise,
+      } as unknown as TypeEditorProvider;
+
+      const postedMessages: any[] = [];
+      const ctx: MessageHandlerContext = {
+        currentNode: nodeA,
+        currentFormSelection: null,
+        currentFormSelectionRevision: 0,
+        currentSessionToken: 'session-node-A',
+        isSaving: false,
+        treeDataProvider: {
+          getReferenceableObjectsForTypeEditor: async () => [],
+        } as any,
+        typeEditorProvider: mockTypeEditor,
+        objectTypeEditorProvider: {} as any,
+        postMessage: (msg) => postedMessages.push(msg),
+        updateWebviewContent: () => {},
+        setIsSaving: () => {},
+      };
+
+      const msgPromise = handleMessage(
+        {
+          type: 'editType',
+          propertyName: 'Type',
+          nodeId: 'Attributes.AttrA',
+          sessionToken: 'session-node-A',
+        },
+        ctx
+      );
+
+      // Node selection changes to Node B while editor is open
+      ctx.currentNode = nodeB;
+      ctx.currentSessionToken = 'session-node-B';
+
+      // Type editor finishes with Date type
+      resolveShow({
+        category: 'primitive',
+        types: [{ kind: 'date', qualifiers: { dateFractions: 'Date' } }],
+      });
+
+      await msgPromise;
+
+      // Stale typeUpdated message must NOT be posted for Node B
+      const typeUpdated = postedMessages.find((m) => m.type === 'typeUpdated');
+      assert.strictEqual(
+        typeUpdated,
+        undefined,
+        'typeUpdated must not be sent when currentNode has changed during edit'
+      );
+    });
+
+    test('editSource result is discarded if selected node changes while ObjectTypeEditor is open', async () => {
+      const nodeA: TreeNode = {
+        id: 'EventSubscriptions.SubA',
+        name: 'SubA',
+        type: MetadataType.EventSubscription,
+        properties: { Name: 'SubA', Source: '<Source/>' },
+      };
+      const nodeB: TreeNode = {
+        id: 'EventSubscriptions.SubB',
+        name: 'SubB',
+        type: MetadataType.EventSubscription,
+        properties: { Name: 'SubB', Source: '<Source/>' },
+      };
+
+      let resolveShow!: (value: any) => void;
+      const showPromise = new Promise<any>((res) => {
+        resolveShow = res;
+      });
+
+      const mockObjectTypeEditor = {
+        show: async () => showPromise,
+      } as any;
+
+      const postedMessages: any[] = [];
+      const ctx: MessageHandlerContext = {
+        currentNode: nodeA,
+        currentFormSelection: null,
+        currentFormSelectionRevision: 0,
+        currentSessionToken: 'session-node-A',
+        isSaving: false,
+        treeDataProvider: {
+          getObjectableObjectsForEditor: async () => [],
+        } as any,
+        typeEditorProvider: {} as any,
+        objectTypeEditorProvider: mockObjectTypeEditor,
+        postMessage: (msg) => postedMessages.push(msg),
+        updateWebviewContent: () => {},
+        setIsSaving: () => {},
+      };
+
+      const msgPromise = handleMessage(
+        {
+          type: 'editSource',
+          propertyName: 'Source',
+          nodeId: 'EventSubscriptions.SubA',
+          sessionToken: 'session-node-A',
+        },
+        ctx
+      );
+
+      // Node selection changes to Node B while editor is open
+      ctx.currentNode = nodeB;
+      ctx.currentSessionToken = 'session-node-B';
+
+      // Source editor finishes with new types
+      resolveShow({
+        types: [{ objectKind: 'CatalogObject', objectName: 'Goods' }],
+      });
+
+      await msgPromise;
+
+      // Stale sourceUpdated message must NOT be posted for Node B
+      const sourceUpdated = postedMessages.find((m) => m.type === 'sourceUpdated');
+      assert.strictEqual(
+        sourceUpdated,
+        undefined,
+        'sourceUpdated must not be sent when currentNode has changed during edit'
+      );
+    });
+
+    test('editType result is applied when node remains unchanged', async () => {
+      const nodeA: TreeNode = {
+        id: 'Attributes.AttrA',
+        name: 'AttrA',
+        type: MetadataType.Attribute,
+        properties: {
+          Name: 'AttrA',
+          Type: '<Type xmlns="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema"><Type>xs:string</Type></Type>',
+        },
+      };
+
+      const mockTypeEditor = {
+        show: async () => ({
+          category: 'primitive',
+          types: [{ kind: 'date', qualifiers: { dateFractions: 'Date' } }],
+        }),
+      } as unknown as TypeEditorProvider;
+
+      const postedMessages: any[] = [];
+      const ctx: MessageHandlerContext = {
+        currentNode: nodeA,
+        currentFormSelection: null,
+        currentFormSelectionRevision: 0,
+        currentSessionToken: 'session-node-A',
+        isSaving: false,
+        treeDataProvider: {
+          getReferenceableObjectsForTypeEditor: async () => [],
+        } as any,
+        typeEditorProvider: mockTypeEditor,
+        objectTypeEditorProvider: {} as any,
+        postMessage: (msg) => postedMessages.push(msg),
+        updateWebviewContent: () => {},
+        setIsSaving: () => {},
+      };
+
+      await handleMessage(
+        {
+          type: 'editType',
+          propertyName: 'Type',
+          nodeId: 'Attributes.AttrA',
+          sessionToken: 'session-node-A',
+        },
+        ctx
+      );
+
+      const typeUpdated = postedMessages.find((m) => m.type === 'typeUpdated');
+      assert.ok(typeUpdated, 'typeUpdated message must be posted');
+      assert.strictEqual(typeUpdated.nodeId, 'Attributes.AttrA');
+      assert.strictEqual(typeUpdated.sessionToken, 'session-node-A');
+    });
+
+    test('editSource result is applied when node remains unchanged', async () => {
+      const nodeA: TreeNode = {
+        id: 'EventSubscriptions.SubA',
+        name: 'SubA',
+        type: MetadataType.EventSubscription,
+        properties: { Name: 'SubA', Source: '<Source/>' },
+      };
+
+      const mockObjectTypeEditor = {
+        show: async () => ({
+          types: [{ objectKind: 'CatalogObject', objectName: 'Goods' }],
+        }),
+      } as any;
+
+      const postedMessages: any[] = [];
+      const ctx: MessageHandlerContext = {
+        currentNode: nodeA,
+        currentFormSelection: null,
+        currentFormSelectionRevision: 0,
+        currentSessionToken: 'session-node-A',
+        isSaving: false,
+        treeDataProvider: {
+          getObjectableObjectsForEditor: async () => [],
+        } as any,
+        typeEditorProvider: {} as any,
+        objectTypeEditorProvider: mockObjectTypeEditor,
+        postMessage: (msg) => postedMessages.push(msg),
+        updateWebviewContent: () => {},
+        setIsSaving: () => {},
+      };
+
+      await handleMessage(
+        {
+          type: 'editSource',
+          propertyName: 'Source',
+          nodeId: 'EventSubscriptions.SubA',
+          sessionToken: 'session-node-A',
+        },
+        ctx
+      );
+
+      const sourceUpdated = postedMessages.find((m) => m.type === 'sourceUpdated');
+      assert.ok(sourceUpdated, 'sourceUpdated message must be posted');
+      assert.strictEqual(sourceUpdated.nodeId, 'EventSubscriptions.SubA');
+      assert.strictEqual(sourceUpdated.sessionToken, 'session-node-A');
+    });
   });
 });
 

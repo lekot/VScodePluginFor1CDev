@@ -19,6 +19,7 @@ import {
   serializeRightsDomToXml as serializeRightsDomToXmlImpl,
 } from '../../src/rolesEditor/rightsXmlEditWriter';
 import { RolesRightsEditorProvider } from '../../src/rolesEditor/rolesRightsEditorProvider';
+import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import {
   createFakeExtensionContext,
   createFakeWebviewPanel,
@@ -731,4 +732,246 @@ suite('rightsEditor integration', () => {
     });
   });
 
+  suite('axis 5 — session isolation and updateIfOpen concurrency (#177, #178)', () => {
+    test('#178: stale RoleXmlParser result does not overwrite currentRoleModel or save target', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-race-178-'));
+      try {
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDirA = path.join(rolesDir, 'RoleA');
+        const roleDirB = path.join(rolesDir, 'RoleB');
+        await fs.promises.mkdir(path.join(roleDirA, 'Ext'), { recursive: true });
+        await fs.promises.mkdir(path.join(roleDirB, 'Ext'), { recursive: true });
+        await fs.promises.mkdir(path.join(tmpRoot, 'Catalogs'), { recursive: true });
+
+        const configXml = [
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+          '  <Configuration uuid="00000000-0000-0000-0000-000000000000">',
+          '    <Properties><Name>RaceTestConfig</Name></Properties>',
+          '    <ChildObjects><Catalog>Goods</Catalog><Role>RoleA</Role><Role>RoleB</Role></ChildObjects>',
+          '  </Configuration>',
+          '</MetaDataObject>',
+        ].join('\n');
+        await fs.promises.writeFile(path.join(tmpRoot, 'Configuration.xml'), configXml, 'utf-8');
+
+        const rolePathA = path.join(rolesDir, 'RoleA.xml');
+        const rolePathB = path.join(rolesDir, 'RoleB.xml');
+        const makeRoleXml = (name: string) => [
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+          `  <Properties><Name>${name}</Name></Properties>`,
+          '  <Rights/>',
+          '</Role>',
+        ].join('\n');
+        await fs.promises.writeFile(rolePathA, makeRoleXml('RoleA'), 'utf-8');
+        await fs.promises.writeFile(rolePathB, makeRoleXml('RoleB'), 'utf-8');
+
+        const rightsPathA = path.join(roleDirA, 'Ext', 'Rights.xml');
+        const rightsPathB = path.join(roleDirB, 'Ext', 'Rights.xml');
+        await fs.promises.writeFile(rightsPathA, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+        await fs.promises.writeFile(rightsPathB, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+
+        const originalParseRoleXml = RoleXmlParser.parseRoleXml;
+        let resolveRoleAParser!: () => void;
+        const roleADeferred = new Promise<void>((resolve) => {
+          resolveRoleAParser = resolve;
+        });
+
+        RoleXmlParser.parseRoleXml = async function (filePath: string) {
+          if (filePath.includes('RoleA')) {
+            await roleADeferred;
+          }
+          return originalParseRoleXml.call(this, filePath);
+        };
+
+        const mockContext = createFakeExtensionContext();
+        const { panel, getOnMessageHandler } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          const showAPromise = provider.show(rolePathA, tmpRoot);
+          const showBPromise = provider.show(rolePathB, tmpRoot);
+
+          await showBPromise;
+          assert.strictEqual(priv.currentRoleModel?.name, 'RoleB');
+          assert.strictEqual(panel.title, 'Rights: RoleB');
+
+          // Release slow RoleA parse
+          resolveRoleAParser();
+          await showAPromise;
+
+          // RoleA MUST NOT overwrite RoleB
+          assert.strictEqual(
+            priv.currentRoleModel?.name,
+            'RoleB',
+            'Stale RoleA parse must not overwrite currentRoleModel of RoleB',
+          );
+          assert.strictEqual(panel.title, 'Rights: RoleB');
+
+          const h = getOnMessageHandler();
+          assert.ok(h);
+          await h({
+            command: 'updateRight',
+            data: { objectName: 'Catalog.Goods', rightType: 'read', value: true },
+          });
+          await h({
+            command: 'save',
+            data: { restrictionTemplatesText: '' },
+          });
+
+          const contentA = await fs.promises.readFile(rightsPathA, 'utf-8');
+          const contentB = await fs.promises.readFile(rightsPathB, 'utf-8');
+          assert.ok(!contentA.includes('Catalog.Goods'), 'RoleA must not be modified by RoleB save');
+          assert.ok(contentB.includes('Catalog.Goods'), 'RoleB must receive the modified right');
+        } finally {
+          RoleXmlParser.parseRoleXml = originalParseRoleXml;
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+
+    test('#177: updateIfOpen resolves configuration root and keeps saving enabled', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-updateifopen-177-'));
+      try {
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDirA = path.join(rolesDir, 'RoleA');
+        const roleDirB = path.join(rolesDir, 'RoleB');
+        await fs.promises.mkdir(path.join(roleDirA, 'Ext'), { recursive: true });
+        await fs.promises.mkdir(path.join(roleDirB, 'Ext'), { recursive: true });
+        await fs.promises.mkdir(path.join(tmpRoot, 'Catalogs'), { recursive: true });
+
+        const configXml = [
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+          '  <Configuration uuid="00000000-0000-0000-0000-000000000000">',
+          '    <Properties><Name>UpdateIfOpenConfig</Name></Properties>',
+          '    <ChildObjects><Catalog>Goods</Catalog><Role>RoleA</Role><Role>RoleB</Role></ChildObjects>',
+          '  </Configuration>',
+          '</MetaDataObject>',
+        ].join('\n');
+        await fs.promises.writeFile(path.join(tmpRoot, 'Configuration.xml'), configXml, 'utf-8');
+
+        const rolePathA = path.join(rolesDir, 'RoleA.xml');
+        const rolePathB = path.join(rolesDir, 'RoleB.xml');
+        const makeRoleXml = (name: string) => [
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+          `  <Properties><Name>${name}</Name></Properties>`,
+          '  <Rights/>',
+          '</Role>',
+        ].join('\n');
+        await fs.promises.writeFile(rolePathA, makeRoleXml('RoleA'), 'utf-8');
+        await fs.promises.writeFile(rolePathB, makeRoleXml('RoleB'), 'utf-8');
+
+        const rightsPathA = path.join(roleDirA, 'Ext', 'Rights.xml');
+        const rightsPathB = path.join(roleDirB, 'Ext', 'Rights.xml');
+        await fs.promises.writeFile(rightsPathA, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+        await fs.promises.writeFile(rightsPathB, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel, getPostedMessages } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          // Open editor for RoleA
+          await provider.show(rolePathA, tmpRoot);
+          assert.strictEqual(priv.saveDisabledNoConfig, false);
+          assert.strictEqual(priv.configurationRootPath, tmpRoot);
+          assert.ok(priv.allObjects.length > 0);
+
+          // Simulate tree selection switch to RoleB
+          const nodeB: TreeNode = {
+            id: 'Roles.RoleB',
+            name: 'RoleB',
+            type: MetadataType.Role,
+            filePath: rolePathB,
+            properties: {},
+          };
+
+          await provider.updateIfOpen(nodeB);
+
+          // RoleB must maintain configPath and not switch to read-only
+          assert.strictEqual(priv.saveDisabledNoConfig, false, 'Save must remain enabled after updateIfOpen');
+          assert.strictEqual(priv.configurationRootPath, tmpRoot, 'Configuration root must be resolved');
+          assert.ok(priv.allObjects.length > 0, 'Metadata objects must be loaded for RoleB');
+          assert.strictEqual(priv.currentRoleModel?.name, 'RoleB');
+
+          // Trigger save - no saveDisabled error
+          const msgCountBefore = getPostedMessages().length;
+          await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+          const newMessages = getPostedMessages().slice(msgCountBefore);
+          const saveErrorMsg = newMessages.find(
+            (m) => m.command === 'saveError' && String(m.data?.message).includes('Save is disabled'),
+          );
+          assert.strictEqual(saveErrorMsg, undefined, 'Must not emit saveDisabled error');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+
+    test('updateIfOpen switches to read-only when role is standalone without configuration root', async () => {
+      const standaloneDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-standalone-'));
+      try {
+        const rolePath = path.join(standaloneDir, 'StandaloneRole.xml');
+        const rightsPath = path.join(standaloneDir, 'Ext', 'Rights.xml');
+        await fs.promises.mkdir(path.join(standaloneDir, 'Ext'), { recursive: true });
+        await fs.promises.writeFile(
+          rolePath,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>StandaloneRole</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        await fs.promises.writeFile(rightsPath, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          const standaloneNode: TreeNode = {
+            id: 'Roles.StandaloneRole',
+            name: 'StandaloneRole',
+            type: MetadataType.Role,
+            filePath: rolePath,
+            properties: {},
+          };
+
+          // Initially show standalone role
+          await provider.show(rolePath, undefined);
+          assert.strictEqual(priv.saveDisabledNoConfig, true);
+          assert.strictEqual(priv.configurationRootPath, undefined);
+
+          // updateIfOpen on standalone node should remain read-only safely
+          await provider.updateIfOpen(standaloneNode);
+          assert.strictEqual(priv.saveDisabledNoConfig, true);
+          assert.strictEqual(priv.configurationRootPath, undefined);
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        await rmRfTestDir(standaloneDir);
+      }
+    });
+  });
+
 });
+

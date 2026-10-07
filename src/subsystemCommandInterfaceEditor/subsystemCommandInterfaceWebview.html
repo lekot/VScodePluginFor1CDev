@@ -176,7 +176,7 @@
 
         const model = data.model;
         let dirty = false;
-        const visibilityChanges = {};
+        let visibilityChanges = {};
 
         document.getElementById('headerTitle').textContent =
             (data.strings && data.strings.title ? data.strings.title : 'Командный интерфейс') +
@@ -304,12 +304,19 @@
                         : e.common
                 };
             });
-            vscode.postMessage({ type: 'save', visibility: updated });
+            vscode.postMessage({
+                type: 'save',
+                visibility: updated,
+                filePath: data.filePath,
+                generation: data.generation
+            });
         });
 
         // ── Messages from host ────────────────────────────────────────────────
         window.addEventListener('message', function(event) {
             const msg = event.data;
+            if (msg.filePath && msg.filePath !== data.filePath) { return; }
+            if (msg.generation !== undefined && msg.generation !== data.generation) { return; }
             const statusEl = document.getElementById('statusMsg');
             if (msg.type === 'saveSuccess') {
                 statusEl.textContent = data.strings && data.strings.saved ? data.strings.saved : 'Сохранено.';

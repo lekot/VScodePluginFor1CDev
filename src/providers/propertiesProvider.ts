@@ -586,6 +586,7 @@ export class PropertiesProvider {
       currentNode: this.currentNode,
       currentFormSelection: this.currentFormSelection,
       currentFormSelectionRevision: this.currentFormSelectionRevision,
+      currentSessionToken: this.currentSessionToken,
       isSaving: this._isSaving,
       treeDataProvider: this.treeDataProvider,
       typeEditorProvider: this.typeEditorProvider,

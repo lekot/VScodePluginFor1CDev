@@ -9,7 +9,7 @@ import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 
 type CiWebviewMessage =
-  | { type: 'save'; visibility: CommandVisibilityEntry[] };
+  | { type: 'save'; visibility: CommandVisibilityEntry[]; filePath?: string; generation?: number };
 
 export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined;
@@ -17,6 +17,7 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
   private saveInProgress = false;
   private currentFilePath: string | undefined;
   private currentModel: CommandInterfaceModel | undefined;
+  private sessionGeneration = 0;
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -58,6 +59,7 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
       return;
     }
 
+    const generation = ++this.sessionGeneration;
     this.currentFilePath = ciFilePath;
     this.currentModel = model;
 
@@ -102,6 +104,8 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
     const payload = {
       model,
       subsystemName: node.name,
+      filePath: ciFilePath,
+      generation,
       strings: {
         title: MESSAGES.SUBSYSTEM_COMMAND_INTERFACE_TITLE,
         saved: MESSAGES.SUBSYSTEM_COMMAND_INTERFACE_SAVED,
@@ -119,26 +123,53 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
 
   private async handleMessage(msg: CiWebviewMessage): Promise<void> {
     if (msg.type === 'save') {
-      await this.handleSave(msg.visibility);
+      await this.handleSave(msg.visibility, msg.filePath, msg.generation);
     }
   }
 
-  private async handleSave(newVisibility: CommandVisibilityEntry[]): Promise<void> {
+  private async handleSave(
+    newVisibility: CommandVisibilityEntry[],
+    requestFilePath?: string,
+    requestGeneration?: number
+  ): Promise<void> {
     if (this.saveInProgress || !this.currentFilePath || !this.currentModel) { return; }
+    if (requestFilePath !== undefined && requestFilePath !== this.currentFilePath) {
+      Logger.warn(
+        `Discarding stale command interface save request: target path '${requestFilePath}' does not match active path '${this.currentFilePath}'`
+      );
+      return;
+    }
+    if (requestGeneration !== undefined && requestGeneration !== this.sessionGeneration) {
+      Logger.warn(
+        `Discarding stale command interface save request: target generation ${requestGeneration} does not match active generation ${this.sessionGeneration}`
+      );
+      return;
+    }
+
     this.saveInProgress = true;
+    const targetFilePath = this.currentFilePath;
+    const targetGeneration = this.sessionGeneration;
     try {
       const updatedModel: CommandInterfaceModel = {
         ...this.currentModel,
         visibility: newVisibility,
       };
       const xml = serializeCommandInterface(updatedModel);
-      fs.writeFileSync(this.currentFilePath, xml, 'utf8');
-      this.currentModel = updatedModel;
-      this.postMessage({ type: 'saveSuccess' });
+      fs.writeFileSync(targetFilePath, xml, 'utf8');
+      if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
+        this.currentModel = updatedModel;
+      }
+      this.postMessage({
+        type: 'saveSuccess',
+        filePath: targetFilePath,
+        generation: targetGeneration,
+      });
     } catch (err) {
       Logger.error('Failed to save CommandInterface.xml', err);
       this.postMessage({
         type: 'saveError',
+        filePath: targetFilePath,
+        generation: targetGeneration,
         message: MESSAGES.SUBSYSTEM_COMMAND_INTERFACE_WRITE_FAILED,
       });
     } finally {

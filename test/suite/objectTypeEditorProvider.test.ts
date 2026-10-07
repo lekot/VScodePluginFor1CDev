@@ -4,6 +4,8 @@ import { OBJECT_KINDS_WITHOUT_NAME } from '../../src/types/objectTypeDefinitions
 import { ObjectTypeParser } from '../../src/parsers/objectTypeParser';
 import { ObjectTypeSerializer } from '../../src/serializers/objectTypeSerializer';
 import { ALL_MANAGER_KINDS } from '../../src/constants/metadataTypeObjectKinds';
+import { ObjectTypeEditorProvider } from '../../src/providers/objectTypeEditorProvider';
+import { createFakeWebviewPanel, patchCreateWebviewPanel, createFakeExtensionContext } from '../helpers/rightsEditorTestHarness';
 
 // ObjectTypeEditorProvider wraps a webview which cannot be tested without VS Code runtime.
 // We test the pure helper logic: parsing, tree-building, and serialization round-trips.
@@ -255,6 +257,41 @@ suite('ObjectTypeEditorProvider (pure helpers)', () => {
       const reparsed = ObjectTypeParser.parse(serialized);
       assert.deepStrictEqual(new Set(reparsed.types.map((t) => `${t.objectKind}:${t.objectName}`)),
         new Set(parsed.types.map((t) => `${t.objectKind}:${t.objectName}`)));
+    });
+  });
+
+  suite('show session concurrency and isolation (#192)', () => {
+    test('consecutive show call resolves previous pending promise to null instead of hanging', async () => {
+      const { panel } = createFakeWebviewPanel();
+      const restore = patchCreateWebviewPanel(panel);
+      const provider = new ObjectTypeEditorProvider(createFakeExtensionContext());
+      try {
+        const sourceXml1 = '<Source><v8:Type>cfg:CatalogObject.Goods</v8:Type></Source>';
+        const sourceXml2 = '<Source><v8:Type>cfg:CatalogObject.Customers</v8:Type></Source>';
+
+        let p1Settled = false;
+        let p1Result: unknown = 'NOT_SETTLED';
+        const p1 = provider.show(sourceXml1, []).then((res) => {
+          p1Settled = true;
+          p1Result = res;
+          return res;
+        });
+
+        await new Promise((r) => setImmediate(r));
+        assert.strictEqual(p1Settled, false, 'First show call should be pending');
+
+        // Second show call should cancel (resolve to null) the first one
+        const p2 = provider.show(sourceXml2, []);
+
+        await p1;
+        assert.strictEqual(p1Settled, true, 'First show promise must be settled when second show is called');
+        assert.strictEqual(p1Result, null, 'First show promise must resolve to null upon cancellation');
+
+        provider.dispose();
+        await p2;
+      } finally {
+        restore();
+      }
     });
   });
 });
