@@ -179,6 +179,11 @@ suite('FilterCriterionWizardService', () => {
     const refs = candidates.map((c: AvailableFilterCandidate) => c.ref);
     assert.ok(refs.includes('Catalog.Договоры.Attribute.Партнер'), 'must include matching attribute');
     assert.strictEqual(candidates.find((c: AvailableFilterCandidate) => c.ref === 'Catalog.Договоры.Attribute.Партнер')?.matchesSelectedType, true);
+    assert.strictEqual(
+      refs.includes('Catalog.Договоры.TabularSection.Контакты.Attribute.КонтактноеЛицо'),
+      false,
+      'must filter out incompatible attribute when specific types are selected'
+    );
 
     // Candidates with both types
     const candidatesBoth = await collectAvailableFilterCandidates(tmpDir, [
@@ -188,6 +193,74 @@ suite('FilterCriterionWizardService', () => {
     const refsBoth = candidatesBoth.map((c: AvailableFilterCandidate) => c.ref);
     assert.ok(refsBoth.includes('Catalog.Договоры.Attribute.Партнер'));
     assert.ok(refsBoth.includes('Catalog.Договоры.TabularSection.Контакты.Attribute.КонтактноеЛицо'));
+  });
+
+  test('collectAvailableFilterCandidates returns empty array for completely incompatible type set', async () => {
+    const catDir = path.join(tmpDir, 'Catalogs');
+    await fs.promises.mkdir(catDir, { recursive: true });
+
+    await fs.promises.writeFile(
+      path.join(catDir, 'Товары.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Catalog uuid="cat-goods">
+    <Properties><Name>Товары</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="attr-art">
+        <Properties>
+          <Name>Артикул</Name>
+          <Type><v8:Type>xs:string</v8:Type></Type>
+        </Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`
+    );
+
+    const candidates = await collectAvailableFilterCandidates(tmpDir, ['cfg:CatalogRef.Склады', 'xs:decimal']);
+    assert.strictEqual(candidates.length, 0, 'must return empty array when all attributes are incompatible');
+  });
+
+  test('planCreateFilterCriterion throws error when content items have incompatible types', async () => {
+    const configXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration uuid="conf-1">
+    <Properties><Name>ТестоваяКонфигурация</Name></Properties>
+    <ChildObjects><Catalog>Товары</Catalog></ChildObjects>
+  </Configuration>
+</MetaDataObject>`;
+    await fs.promises.writeFile(path.join(tmpDir, 'Configuration.xml'), configXml, 'utf-8');
+
+    const catDir = path.join(tmpDir, 'Catalogs');
+    await fs.promises.mkdir(catDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(catDir, 'Товары.xml'),
+      `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Catalog uuid="cat-goods">
+    <Properties><Name>Товары</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="attr-desc">
+        <Properties>
+          <Name>Описание</Name>
+          <Type><v8:Type>xs:string</v8:Type></Type>
+        </Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`
+    );
+
+    await assert.rejects(
+      async () => {
+        await planCreateFilterCriterion(tmpDir, {
+          name: 'ПоСкладу',
+          types: ['cfg:CatalogRef.Склады'],
+          content: ['Catalog.Товары.Attribute.Описание'],
+        });
+      },
+      /incompatible|несовместим/i
+    );
   });
 
   test('planCreateFilterCriterion produces a complete valid mutation plan and creates the object', async () => {

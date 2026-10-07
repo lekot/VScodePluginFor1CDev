@@ -215,6 +215,120 @@ function extractTypesFromXmlObject(typeNode: unknown): string[] {
   return [];
 }
 
+function normalizeTypeName(t: string): string {
+  return t.trim().replace(/^cfg:/, '');
+}
+
+function isTypeMatching(attrTypes: string[], selectedTypes: string[]): boolean {
+  if (selectedTypes.length === 0) {
+    return true;
+  }
+  const selectedNorm = new Set(selectedTypes.map(normalizeTypeName));
+  return attrTypes.some((t) => selectedNorm.has(normalizeTypeName(t)));
+}
+
+const METADATA_SINGULAR_TO_FOLDER: Record<string, string> = {
+  Catalog: 'Catalogs',
+  Document: 'Documents',
+  InformationRegister: 'InformationRegisters',
+  AccumulationRegister: 'AccumulationRegisters',
+  AccountingRegister: 'AccountingRegisters',
+  CalculationRegister: 'CalculationRegisters',
+  ChartOfCharacteristicTypes: 'ChartsOfCharacteristicTypes',
+  ChartOfAccounts: 'ChartsOfAccounts',
+  ChartOfCalculationTypes: 'ChartsOfCalculationTypes',
+  ExchangePlan: 'ExchangePlans',
+};
+
+async function validateContentItemCompatibility(
+  configRoot: string,
+  selectedTypes: string[],
+  contentRef: string
+): Promise<void> {
+  if (selectedTypes.length === 0) {
+    return;
+  }
+  const parts = contentRef.split('.');
+  if (parts.length < 4) {
+    return;
+  }
+  const folder = METADATA_SINGULAR_TO_FOLDER[parts[0]];
+  if (!folder) {
+    return;
+  }
+  const objectFile = path.join(configRoot, folder, `${parts[1]}.xml`);
+  let content: string;
+  try {
+    content = await fs.promises.readFile(objectFile, 'utf-8');
+  } catch {
+    return; // file does not exist or not accessible
+  }
+
+  let types: string[] = [];
+  try {
+    const parsed = XmlParser.parseString(content) as Record<string, unknown>;
+    const metaDataObject = (parsed.MetaDataObject || {}) as Record<string, unknown>;
+    const rootObj = (metaDataObject[parts[0]] || {}) as Record<string, unknown>;
+    const childObjects = (rootObj.ChildObjects || {}) as Record<string, unknown>;
+
+    if (parts.length === 4 && parts[2] === 'Attribute') {
+      const attrName = parts[3];
+      const rawAttrs = childObjects.Attribute;
+      const attributes: Record<string, unknown>[] = Array.isArray(rawAttrs)
+        ? (rawAttrs as Record<string, unknown>[])
+        : rawAttrs && typeof rawAttrs === 'object'
+          ? [rawAttrs as Record<string, unknown>]
+          : [];
+      const attr = attributes.find((a) => (a.Properties as Record<string, unknown> | undefined)?.Name === attrName);
+      if (attr) {
+        types = extractTypesFromXmlObject((attr.Properties as Record<string, unknown> | undefined)?.Type);
+      }
+    } else if (parts.length === 6 && parts[2] === 'TabularSection' && parts[4] === 'Attribute') {
+      const tsName = parts[3];
+      const attrName = parts[5];
+      const rawTs = childObjects.TabularSection;
+      const tss: Record<string, unknown>[] = Array.isArray(rawTs)
+        ? (rawTs as Record<string, unknown>[])
+        : rawTs && typeof rawTs === 'object'
+          ? [rawTs as Record<string, unknown>]
+          : [];
+      const ts = tss.find((t) => (t.Properties as Record<string, unknown> | undefined)?.Name === tsName);
+      if (ts) {
+        const rawTsAttrs = (ts.ChildObjects as Record<string, unknown> | undefined)?.Attribute;
+        const tsAttrs: Record<string, unknown>[] = Array.isArray(rawTsAttrs)
+          ? (rawTsAttrs as Record<string, unknown>[])
+          : rawTsAttrs && typeof rawTsAttrs === 'object'
+            ? [rawTsAttrs as Record<string, unknown>]
+            : [];
+        const tsAttr = tsAttrs.find((a) => (a.Properties as Record<string, unknown> | undefined)?.Name === attrName);
+        if (tsAttr) {
+          types = extractTypesFromXmlObject((tsAttr.Properties as Record<string, unknown> | undefined)?.Type);
+        }
+      }
+    } else if (parts.length === 4 && parts[2] === 'Dimension') {
+      const dimName = parts[3];
+      const rawDims = childObjects.Dimension;
+      const dims: Record<string, unknown>[] = Array.isArray(rawDims)
+        ? (rawDims as Record<string, unknown>[])
+        : rawDims && typeof rawDims === 'object'
+          ? [rawDims as Record<string, unknown>]
+          : [];
+      const dim = dims.find((d) => (d.Properties as Record<string, unknown> | undefined)?.Name === dimName);
+      if (dim) {
+        types = extractTypesFromXmlObject((dim.Properties as Record<string, unknown> | undefined)?.Type);
+      }
+    }
+  } catch {
+    return;
+  }
+
+  if (types.length > 0 && !isTypeMatching(types, selectedTypes)) {
+    throw new Error(
+      `FilterCriterion content item "${contentRef}" of type [${types.join(', ')}] is incompatible with FilterCriterion type(s) [${selectedTypes.join(', ')}]`
+    );
+  }
+}
+
 /**
  * Scan configuration objects to collect attributes that can participate in FilterCriterion Content.
  */
@@ -223,7 +337,6 @@ export async function collectAvailableFilterCandidates(
   selectedTypes: string[]
 ): Promise<AvailableFilterCandidate[]> {
   const candidates: AvailableFilterCandidate[] = [];
-  const selectedTypesSet = new Set(selectedTypes.map((t) => t.trim()));
 
   const targetFolders = [
     { folder: 'Catalogs', singular: 'Catalog', label: 'Справочник' },
@@ -267,7 +380,10 @@ export async function collectAvailableFilterCandidates(
               continue;
             }
             const types = extractTypesFromXmlObject(attrProps.Type);
-            const matches = types.some((t) => selectedTypesSet.has(t) || selectedTypesSet.has(t.replace('cfg:', '')));
+            const matches = isTypeMatching(types, selectedTypes);
+            if (selectedTypes.length > 0 && !matches) {
+              continue;
+            }
             candidates.push({
               ref: `${target.singular}.${objectName}.Attribute.${attrName}`,
               label: `${target.label} ${objectName} → Реквизит: ${attrName}`,
@@ -304,7 +420,10 @@ export async function collectAvailableFilterCandidates(
                 continue;
               }
               const types = extractTypesFromXmlObject(tsAttrProps.Type);
-              const matches = types.some((t) => selectedTypesSet.has(t) || selectedTypesSet.has(t.replace('cfg:', '')));
+              const matches = isTypeMatching(types, selectedTypes);
+              if (selectedTypes.length > 0 && !matches) {
+                continue;
+              }
               candidates.push({
                 ref: `${target.singular}.${objectName}.TabularSection.${tsName}.Attribute.${tsAttrName}`,
                 label: `${target.label} ${objectName} → ТЧ ${tsName} → Реквизит: ${tsAttrName}`,
@@ -329,7 +448,10 @@ export async function collectAvailableFilterCandidates(
               continue;
             }
             const types = extractTypesFromXmlObject(dimProps.Type);
-            const matches = types.some((t) => selectedTypesSet.has(t) || selectedTypesSet.has(t.replace('cfg:', '')));
+            const matches = isTypeMatching(types, selectedTypes);
+            if (selectedTypes.length > 0 && !matches) {
+              continue;
+            }
             candidates.push({
               ref: `${target.singular}.${objectName}.Dimension.${dimName}`,
               label: `${target.label} ${objectName} → Измерение: ${dimName}`,
@@ -372,6 +494,12 @@ export async function planCreateFilterCriterion(
   const contentRefs = (params.content || []).map((c) => c.trim()).filter((c) => c.length > 0);
   if (contentRefs.length === 0) {
     throw new Error('FilterCriterion content must contain at least one metadata item reference');
+  }
+
+  if (params.types && params.types.length > 0) {
+    for (const ref of contentRefs) {
+      await validateContentItemCompatibility(configRoot, params.types, ref);
+    }
   }
   const folderPath = path.join(configRoot, 'FilterCriteria');
   const filePath = path.join(folderPath, `${trimmedName}.xml`);
