@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { compareCodeUnits } from '../utils/compareCodeUnits';
 
 export interface DedupKey {
   readonly bindingId: string;
@@ -32,7 +33,7 @@ function makeKey(key: DedupKey): string {
 }
 
 function hashFiles(relativeFiles: readonly string[]): string {
-  const sorted = [...relativeFiles].map((f) => f.toLowerCase()).sort((a, b) => a.localeCompare(b));
+  const sorted = [...relativeFiles].map((f) => f.toLowerCase()).sort(compareCodeUnits);
   return crypto.createHash('sha256').update(JSON.stringify(sorted)).digest('hex');
 }
 

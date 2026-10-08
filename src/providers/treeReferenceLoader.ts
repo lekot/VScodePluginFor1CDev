@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { compareCodeUnits } from '../utils/compareCodeUnits';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import type { ReferenceableGroup } from '../types/typeDefinitions';
@@ -75,7 +76,7 @@ export function getTypeEditorReferenceableScopeKey(
   if (configRoot) {
     return `cfg:${configRootScopeFingerprint(configRoot, cache)}`;
   }
-  return `all:${[...rootNodes].map((r) => configRootScopeFingerprint(r, cache)).sort((a, b) => a.localeCompare(b)).join('|')}`;
+  return `all:${[...rootNodes].map((r) => configRootScopeFingerprint(r, cache)).sort(compareCodeUnits).join('|')}`;
 }
 
 /**

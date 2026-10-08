@@ -9,6 +9,7 @@
 
 import { XMLValidator } from 'fast-xml-parser';
 import { createHash } from 'crypto';
+import { compareCodeUnits } from '../utils/compareCodeUnits';
 import type { FormAttribute, FormChildItem, FormCommand, FormEventItem, FormModel } from './formModel';
 
 export interface FormXmlSelector {
@@ -1109,7 +1110,7 @@ function stable(value: unknown): string {
   if (Array.isArray(value)) { return `[${value.map(stable).join(',')}]`; }
   if (value && typeof value === 'object') {
     const object = value as Record<string, unknown>;
-    return `{${Object.keys(object).sort((a, b) => a.localeCompare(b)).map((key) => `${JSON.stringify(key)}:${stable(object[key])}`).join(',')}}`;
+    return `{${Object.keys(object).sort(compareCodeUnits).map((key) => `${JSON.stringify(key)}:${stable(object[key])}`).join(',')}}`;
   }
   return JSON.stringify(value) ?? String(value);
 }

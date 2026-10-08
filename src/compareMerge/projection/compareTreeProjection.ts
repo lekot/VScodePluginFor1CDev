@@ -1,3 +1,4 @@
+import { compareCodeUnits } from '../../utils/compareCodeUnits';
 import type { BslModuleDiagnostic } from '../bsl/bslModuleIndexer';
 import type { BslRoutineDiffResult, BslRoutineDiffStatus } from '../bsl/bslRoutineDiff';
 import type {
@@ -531,7 +532,7 @@ function stableIdentityConflictKey(conflict: IdentityConflict): string {
     .filter((part): part is string => Boolean(part));
   return [
     conflictContext,
-    ...[...new Set(identityContexts)].sort((a, b) => a.localeCompare(b)).map((context) => `identity:${context}`),
+    ...[...new Set(identityContexts)].sort(compareCodeUnits).map((context) => `identity:${context}`),
   ]
     .filter(Boolean)
     .join(';');
@@ -565,7 +566,7 @@ function metadataDiagnosticIdentitiesContext(
         ['uuid', identity.uuid],
       ])
     )
-    .sort((a, b) => a.localeCompare(b))
+    .sort(compareCodeUnits)
     .join(',');
 }
 

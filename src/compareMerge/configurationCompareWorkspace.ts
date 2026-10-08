@@ -2,6 +2,7 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { fileURLToPath, pathToFileURL } from 'url';
 
+import { compareCodeUnits } from '../utils/compareCodeUnits';
 import type { CompareTreeNode, CompareTreeStats } from './compareTreeTypes';
 import type { CompareTreeProjection } from './projection/compareTreeProjection';
 import { CompareSession } from './domain/compareSession';
@@ -227,7 +228,7 @@ export class ConfigurationCompareWorkspace {
   }
 
   listMergeableNodeIds(): string[] {
-    return this.disposed ? [] : [...this.candidateFactories.keys()].sort((a, b) => a.localeCompare(b));
+    return this.disposed ? [] : [...this.candidateFactories.keys()].sort(compareCodeUnits);
   }
 
   async setStrategy(strategy: CompareJoinStrategy): Promise<WorkspaceStrategyResult> {

@@ -3,6 +3,7 @@ import * as path from 'path';
 import { createHash } from 'crypto';
 import { pathToFileURL } from 'url';
 
+import { compareCodeUnits } from '../utils/compareCodeUnits';
 import {
   buildBslModuleIndex,
   indexBslModuleSource,
@@ -935,7 +936,7 @@ function buildBslProjectionInputs(input: {
   const matchedDiagnostics = new Set<BslModuleDiagnostic>();
   const candidateFactories = new Map<string, ExecutableCandidateFactory>();
 
-  for (const moduleId of [...moduleIds].sort((a, b) => a.localeCompare(b))) {
+  for (const moduleId of [...moduleIds].sort(compareCodeUnits)) {
     const leftMatches = leftByModuleId.get(moduleId) ?? [];
     const rightMatches = rightByModuleId.get(moduleId) ?? [];
 

@@ -58,6 +58,23 @@ suite('TypeParser', () => {
       assert.strictEqual(result.types[0].kind, 'string');
       assert.strictEqual(result.types[0].qualifiers, undefined);
     });
+
+    test('should parse string type with object qualifier text node', () => {
+      const result = TypeParser.parseFromObject({
+        'v8:Type': 'xs:string',
+        'v8:StringQualifiers': {
+          'v8:Length': { '#text': '75' },
+          'v8:AllowedLength': 'Variable',
+        },
+      });
+
+      assert.strictEqual(result.category, 'primitive');
+      assert.strictEqual(result.types[0].kind, 'string');
+      assert.deepStrictEqual(result.types[0].qualifiers, {
+        length: 75,
+        allowedLength: 'Variable',
+      });
+    });
   });
 
   suite('parse number type', () => {

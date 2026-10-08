@@ -474,6 +474,41 @@ suite('CompareTreeProjection', () => {
     assert.ok(shiftedConflict.payloadRef?.includes('uuid=left-uuid'));
     assert.ok(shiftedConflict.payloadRef?.includes('uuid=right-uuid'));
   });
+
+  test('projects metadata diagnostic with multiple identities and deterministic sorting', () => {
+    const id1 = metadataIdentity('left', 'Catalog.B', 'uuid-b');
+    const id2 = metadataIdentity('right', 'Catalog.A', 'uuid-a');
+    const buildTree = (identities: MetadataIdentity[]) => buildCompareTreeProjection({
+      metadata: matchResult({
+        diagnostics: [
+          {
+            severity: 'error',
+            code: 'MULTI_ID',
+            phase: 'compare',
+            sourceId: 's1',
+            path: 'Catalogs',
+            message: 'Metadata identities could not be matched.',
+            blocking: true,
+            identities,
+          },
+        ],
+      }),
+    });
+    const forward = requireOnlyDiagnostic(buildTree([id1, id2]).root);
+    const reversed = requireOnlyDiagnostic(buildTree([id2, id1]).root);
+
+    assert.strictEqual(reversed.id, forward.id, 'reordering identities must preserve the diagnostic identity');
+    assert.strictEqual(reversed.payloadRef, forward.payloadRef);
+    assert.strictEqual(forward.leftValue, 'Catalogs');
+    assert.strictEqual(forward.rightValue, 'Metadata identities could not be matched.');
+    const encodedContexts = forward.payloadRef?.split(';identities=')[1];
+    assert.ok(encodedContexts, 'payload must preserve both identity contexts');
+    const identityContexts = decodeURIComponent(encodedContexts).split(',').map(decodeURIComponent);
+    assert.deepStrictEqual(identityContexts, [
+      'sourceId=left-source;side=left;path=left/Catalog.B.xml;qualifiedName=Catalog.B;uuid=uuid-b',
+      'sourceId=right-source;side=right;path=right/Catalog.A.xml;qualifiedName=Catalog.A;uuid=uuid-a',
+    ]);
+  });
 });
 
 function requireNode(root: CompareTreeNode, id: string): CompareTreeNode {
@@ -488,6 +523,12 @@ function requireDiagnosticByMessage(root: CompareTreeNode, message: string): Com
     (node) => node.kind === 'diagnostic' && node.rightValue === message
   );
   assert.strictEqual(found.length, 1, `Expected exactly one diagnostic with message ${message}.`);
+  return found[0]!;
+}
+
+function requireOnlyDiagnostic(root: CompareTreeNode): CompareTreeNode {
+  const found = collectNodes(root, (node) => node.kind === 'diagnostic');
+  assert.strictEqual(found.length, 1, 'Expected exactly one diagnostic node.');
   return found[0]!;
 }
 

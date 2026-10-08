@@ -4,6 +4,7 @@ import { pathToFileURL } from 'url';
 
 import { XMLParser } from 'fast-xml-parser';
 
+import { compareCodeUnits } from '../../utils/compareCodeUnits';
 import type { CompareTreeNode, CompareTreeStatus } from '../compareTreeTypes';
 import type { CompareMessage } from '../domain/compareContracts';
 import type { MergeCandidate } from '../merge/mergePreview';
@@ -236,7 +237,7 @@ function compareChildren(
   ];
   const leftChildren = indexChildren(leftParent.children, leftParent);
   const rightChildren = indexChildren(rightParent.children, rightParent);
-  const keys = [...new Set([...leftChildren.keys(), ...rightChildren.keys()])].sort((a, b) => a.localeCompare(b));
+  const keys = [...new Set([...leftChildren.keys(), ...rightChildren.keys()])].sort(compareCodeUnits);
 
   for (const key of keys) {
     const left = leftChildren.get(key);
@@ -310,7 +311,7 @@ function compareAttributes(
   parentLocation: XmlCompareLocation,
   context: XmlCompareContext
 ): CompareTreeNode[] {
-  const names = [...new Set([...Object.keys(left.attributes), ...Object.keys(right.attributes)])].sort((a, b) => a.localeCompare(b));
+  const names = [...new Set([...Object.keys(left.attributes), ...Object.keys(right.attributes)])].sort(compareCodeUnits);
   return names
     .map((name) => {
       const leftValue = left.attributes[name];
@@ -478,7 +479,7 @@ function readonlyAttributeNodes(input: {
   context: XmlCompareContext;
 }): CompareTreeNode[] {
   return Object.keys(input.element.attributes)
-    .sort((a, b) => a.localeCompare(b))
+    .sort(compareCodeUnits)
     .map((name) =>
       readOnlyPropertyNode({
         element: {
