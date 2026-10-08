@@ -1988,7 +1988,7 @@ suite('MutationPlanExecutor', () => {
 
     const origRealpath = fs.promises.realpath;
     (fs.promises as any).realpath = async (p: any, opts: any) => {
-      if (path.resolve(String(p)) === path.resolve(journalRoot)) {
+      if (path.basename(String(p)) === '.cdt-journal') {
         return path.join(os.tmpdir(), 'foreign-journal');
       }
       return origRealpath.call(fs.promises, p, opts);
@@ -2002,6 +2002,67 @@ suite('MutationPlanExecutor', () => {
       );
     } finally {
       (fs.promises as any).realpath = origRealpath;
+    }
+  });
+
+  test('#215: removeOperationDir rejects symlink and escaped path with PATH_OUTSIDE_ROOT', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+
+    const symlinkTarget = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'rm-victim-'));
+    try {
+      const symlinkPath = path.join(journalRoot, 'symlink-dir');
+      await createDirectorySymlink(symlinkTarget, symlinkPath);
+
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        (executor as any).removeOperationDir(symlinkPath),
+        (err: PathBoundaryError) => err.code === 'PATH_OUTSIDE_ROOT',
+      );
+
+      const escapedPath = path.join(journalRoot, 'escaped-dir');
+      await fs.promises.mkdir(escapedPath, { recursive: true });
+      const origRealpath = fs.promises.realpath;
+      (fs.promises as any).realpath = async (p: any, opts: any) => {
+        if (path.resolve(String(p)) === path.resolve(escapedPath)) {
+          return path.join(os.tmpdir(), 'other-place');
+        }
+        return origRealpath.call(fs.promises, p, opts);
+      };
+      try {
+        await assert.rejects(
+          (executor as any).removeOperationDir(escapedPath),
+          (err: PathBoundaryError) => err.code === 'PATH_OUTSIDE_ROOT',
+        );
+      } finally {
+        (fs.promises as any).realpath = origRealpath;
+      }
+    } finally {
+      await fs.promises.rm(symlinkTarget, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  test('#215: recover fails with RECOVERY_REQUIRED if reading operation directory throws unexpected error', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const unreadableOp = path.join(journalRoot, 'unreadable-op');
+    await fs.promises.mkdir(unreadableOp, { recursive: true });
+
+    const origReaddir = fs.promises.readdir;
+    (fs.promises as any).readdir = async (p: any, opts: any) => {
+      if (path.resolve(String(p)) === path.resolve(unreadableOp)) {
+        throw new Error('EACCES: permission denied');
+      }
+      return origReaddir.call(fs.promises, p, opts);
+    };
+
+    try {
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        executor.recover(),
+        (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('Cannot read operation directory'),
+      );
+    } finally {
+      (fs.promises as any).readdir = origReaddir;
     }
   });
 });

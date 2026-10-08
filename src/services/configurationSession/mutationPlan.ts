@@ -130,7 +130,7 @@ export class MutationPlanExecutor {
   }
 
   private async acquireRootLease(operationId: string): Promise<ActiveRootLease> {
-    const { canonicalJournalRoot } = await assertJournalNamespace(this.rootPath);
+    await assertJournalNamespace(this.rootPath);
 
     try {
       await fs.promises.mkdir(this.journalRoot, { recursive: false });
@@ -139,22 +139,7 @@ export class MutationPlanExecutor {
         throw mkdirError;
       }
     }
-    const postStat = await fs.promises.lstat(this.journalRoot);
-    if (postStat.isSymbolicLink() || !postStat.isDirectory()) {
-      throw new PathBoundaryError(
-        'PATH_OUTSIDE_ROOT',
-        `Каталог журнала не может быть символической ссылкой или файлом: ${this.journalRoot}`,
-        this.journalRoot,
-      );
-    }
-    const postRealJournal = await fs.promises.realpath(this.journalRoot);
-    if (!isSamePath(postRealJournal, canonicalJournalRoot)) {
-      throw new PathBoundaryError(
-        'PATH_OUTSIDE_ROOT',
-        `Каталог журнала выходит за границы корня: ${this.journalRoot}`,
-        this.journalRoot,
-      );
-    }
+    await assertJournalNamespace(this.rootPath);
 
     const leasePath = path.join(this.journalRoot, ROOT_LEASE_FILE);
     const leaseId = randomUUID();
