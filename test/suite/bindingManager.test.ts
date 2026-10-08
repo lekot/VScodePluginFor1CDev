@@ -227,4 +227,131 @@ suite('BindingManager', () => {
     const m = makeManager(createMemoryFs());
     assert.strictEqual(await m.delete('unknown-ws', 'c.xml'), false);
   });
+
+  test('upsert fails closed and preserves file when bindings JSON is malformed (#190)', async () => {
+    const fs = createMemoryFs();
+    const bindingsPath = path.join(root, '.vscode', 'infobase-bindings.json');
+    const corruptedContent = '<<<<<<< HEAD: merge conflict corrupted json';
+    await fs.writeFile(vscode.Uri.file(bindingsPath), Buffer.from(corruptedContent, 'utf8'));
+
+    const m = makeManager(fs);
+    await assert.rejects(
+      () => m.upsert({
+        workspaceFolder: folder.name,
+        configRelativePath: 'src/Configuration.xml',
+        infobaseIds: ['base1'],
+        massDeployment: false,
+      }),
+      /corrupt|invalid|Некорректный JSON|не удалось/i,
+    );
+
+    const current = Buffer.from(await fs.readFile(vscode.Uri.file(bindingsPath))).toString('utf8');
+    assert.strictEqual(current, corruptedContent, 'corrupted file must not be overwritten');
+  });
+
+  test('upsert fails closed and preserves file when schemaVersion is unsupported (#190)', async () => {
+    const fs = createMemoryFs();
+    const bindingsPath = path.join(root, '.vscode', 'infobase-bindings.json');
+    const unsupportedContent = JSON.stringify({ schemaVersion: 999, bindings: [{ workspaceFolder: 'ws', configRelativePath: 'c.xml' }] });
+    await fs.writeFile(vscode.Uri.file(bindingsPath), Buffer.from(unsupportedContent, 'utf8'));
+
+    const m = makeManager(fs);
+    await assert.rejects(
+      () => m.upsert({
+        workspaceFolder: folder.name,
+        configRelativePath: 'src/Configuration.xml',
+        infobaseIds: ['base1'],
+        massDeployment: false,
+      }),
+      /schemaVersion|unsupported|неподдерживаемая/i,
+    );
+
+    const current = Buffer.from(await fs.readFile(vscode.Uri.file(bindingsPath))).toString('utf8');
+    assert.strictEqual(current, unsupportedContent, 'file with unsupported schema must not be overwritten');
+  });
+
+  test('delete fails closed when bindings JSON is malformed (#190)', async () => {
+    const fs = createMemoryFs();
+    const bindingsPath = path.join(root, '.vscode', 'infobase-bindings.json');
+    const corruptedContent = '{ "malformed json": ';
+    await fs.writeFile(vscode.Uri.file(bindingsPath), Buffer.from(corruptedContent, 'utf8'));
+
+    const m = makeManager(fs);
+    await assert.rejects(
+      () => m.delete(folder.name, 'src/Configuration.xml'),
+      /corrupt|invalid|Некорректный JSON|не удалось/i,
+    );
+  });
+
+  test('upsert fails closed and preserves bytes when valid JSON contains invalid UTF-8', async () => {
+    const files = new Map<string, Uint8Array>();
+    const fs = {
+      async readFile(uri: vscode.Uri): Promise<Uint8Array> {
+        const bytes = files.get(uri.fsPath);
+        if (!bytes) { throw vscode.FileSystemError.FileNotFound(uri); }
+        return Buffer.from(bytes);
+      },
+      async writeFile(uri: vscode.Uri, content: Uint8Array): Promise<void> {
+        files.set(uri.fsPath, Buffer.from(content));
+      },
+      async createDirectory(): Promise<void> {},
+    } as unknown as vscode.FileSystem;
+    const uri = vscode.Uri.file(path.join(root, '.vscode', 'infobase-bindings.json'));
+    const corruptedBytes = Buffer.from(
+      '{"schemaVersion":1,"bindings":[{"workspaceFolder":"bind-ws","configRelativePath":"src/Configuration.xml","infobaseIds":["base1"],"massDeployment":false,"extra":"bad"}]}',
+      'utf8',
+    );
+    const invalidByteIndex = corruptedBytes.indexOf(Buffer.from('bad'));
+    assert.ok(invalidByteIndex >= 0);
+    corruptedBytes[invalidByteIndex] = 0xFF;
+    files.set(uri.fsPath, corruptedBytes);
+
+    const m = makeManager(fs);
+    await assert.rejects(
+      () => m.upsert({
+        workspaceFolder: folder.name,
+        configRelativePath: 'src/Configuration.xml',
+        infobaseIds: ['base2'],
+        massDeployment: true,
+      }),
+      /corrupt|invalid|utf-8|encoding|прочитать/i,
+    );
+    assert.deepStrictEqual(Buffer.from(await fs.readFile(uri)), corruptedBytes);
+  });
+
+  test('delete fails closed and preserves bytes when valid JSON contains invalid UTF-8', async () => {
+    const files = new Map<string, Uint8Array>();
+    const fs = {
+      async readFile(uri: vscode.Uri): Promise<Uint8Array> {
+        const bytes = files.get(uri.fsPath);
+        if (!bytes) { throw vscode.FileSystemError.FileNotFound(uri); }
+        return Buffer.from(bytes);
+      },
+      async writeFile(uri: vscode.Uri, content: Uint8Array): Promise<void> {
+        files.set(uri.fsPath, Buffer.from(content));
+      },
+      async createDirectory(): Promise<void> {},
+    } as unknown as vscode.FileSystem;
+    const uri = vscode.Uri.file(path.join(root, '.vscode', 'infobase-bindings.json'));
+    const corruptedBytes = Buffer.from(
+      '{"schemaVersion":1,"bindings":[{"workspaceFolder":"bind-ws","configRelativePath":"src/Configuration.xml","infobaseIds":["base1"],"massDeployment":false,"extra":"bad"}]}',
+      'utf8',
+    );
+    const invalidByteIndex = corruptedBytes.indexOf(Buffer.from('bad'));
+    assert.ok(invalidByteIndex >= 0);
+    corruptedBytes[invalidByteIndex] = 0xFF;
+    files.set(uri.fsPath, corruptedBytes);
+
+    const m = makeManager(fs);
+    await assert.rejects(
+      () => m.delete(folder.name, 'src/Configuration.xml'),
+      /corrupt|invalid|utf-8|encoding|прочитать/i,
+    );
+    assert.deepStrictEqual(Buffer.from(await fs.readFile(uri)), corruptedBytes);
+  });
+
+
+
+
+
 });

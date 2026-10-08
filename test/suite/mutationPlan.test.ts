@@ -1,9 +1,22 @@
 import * as assert from 'assert';
+import { spawn, type ChildProcess } from 'child_process';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { hashContent } from '../../src/services/configurationSession/atomicFileStorage';
 import { MutationPlanExecutor, MutationPlanError } from '../../src/services/configurationSession/mutationPlan';
+
+function collectChildOutput(child: ChildProcess): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.on('data', (chunk: Buffer | string) => { stdout += chunk.toString(); });
+  child.stderr?.on('data', (chunk: Buffer | string) => { stderr += chunk.toString(); });
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
 
 suite('MutationPlanExecutor', () => {
   let tempDir: string;
@@ -745,5 +758,988 @@ suite('MutationPlanExecutor', () => {
       (fs.promises as any).rm = origRm;
     }
   });
-});
 
+  test('#183: recover() rolls back journal with state rollback-required from same process rather than throwing PLAN_CONFLICT', async () => {
+    const fileA = path.join(tempDir, 'fileA.txt');
+    await fs.promises.writeFile(fileA, 'initial-content', 'utf8');
+
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const opDir = path.join(journalRoot, 'failed-op-123');
+    const backupsDir = path.join(opDir, 'backups');
+    await fs.promises.mkdir(backupsDir, { recursive: true });
+
+    const backupFile = path.join(backupsDir, '0');
+    await fs.promises.writeFile(backupFile, 'initial-content', 'utf8');
+
+    await fs.promises.writeFile(fileA, 'corrupted-partial-mutation', 'utf8');
+
+    await fs.promises.writeFile(
+      path.join(opDir, 'owner.json'),
+      JSON.stringify({ pid: process.pid, createdAt: Date.now() - 5000 }),
+      'utf8',
+    );
+
+    await fs.promises.writeFile(
+      path.join(opDir, 'journal.json'),
+      JSON.stringify({
+        version: 1,
+        operationId: 'failed-op-123',
+        plan: {
+          kind: 'test.failed',
+          steps: [{
+            type: 'writeFile', targetPath: fileA, content: 'mutated', encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent('initial-content') },
+          }],
+          result: null,
+        },
+        state: 'rollback-required',
+        appliedSteps: 1,
+        snapshots: [{
+          targetPath: fileA,
+          state: 'file',
+          hash: hashContent('initial-content'),
+          backupName: '0',
+          contentsBackedUp: true,
+        }],
+      }),
+      'utf8',
+    );
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await executor.recover();
+
+    assert.strictEqual(
+      await fs.promises.readFile(fileA, 'utf8'),
+      'initial-content',
+      'recover() must restore snapshots for rollback-required operations from the same process',
+    );
+    assert.strictEqual(fs.existsSync(opDir), false, 'operation directory must be removed after successful recovery');
+  });
+
+  test('#212: recover() recovers stale journal with live PID when heartbeat has expired (reused PID)', async () => {
+    const fileA = path.join(tempDir, 'fileA.txt');
+    await fs.promises.writeFile(fileA, 'initial-content', 'utf8');
+
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const opDir = path.join(journalRoot, 'stale-reused-pid-op');
+    const backupsDir = path.join(opDir, 'backups');
+    await fs.promises.mkdir(backupsDir, { recursive: true });
+
+    const backupFile = path.join(backupsDir, '0');
+    await fs.promises.writeFile(backupFile, 'initial-content', 'utf8');
+
+    await fs.promises.writeFile(fileA, 'abandoned-mutation', 'utf8');
+
+    await fs.promises.writeFile(
+      path.join(opDir, 'owner.json'),
+      JSON.stringify({
+        pid: process.pid,
+        createdAt: Date.now() - 60000,
+        heartbeatAt: Date.now() - 60000,
+      }),
+      'utf8',
+    );
+
+    await fs.promises.writeFile(
+      path.join(opDir, 'journal.json'),
+      JSON.stringify({
+        version: 1,
+        operationId: 'stale-reused-pid-op',
+        plan: {
+          kind: 'test.stale',
+          steps: [{
+            type: 'writeFile', targetPath: fileA, content: 'mutated', encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent('initial-content') },
+          }],
+          result: null,
+        },
+        state: 'applying',
+        appliedSteps: 1,
+        snapshots: [{
+          targetPath: fileA,
+          state: 'file',
+          hash: hashContent('initial-content'),
+          backupName: '0',
+          contentsBackedUp: true,
+        }],
+      }),
+      'utf8',
+    );
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await executor.recover();
+
+    assert.strictEqual(
+      await fs.promises.readFile(fileA, 'utf8'),
+      'initial-content',
+      'recover() must restore snapshots when lease has expired despite live PID',
+    );
+    assert.strictEqual(fs.existsSync(opDir), false);
+  });
+
+  test('#184: active root lease from another process blocks execution with PLAN_CONFLICT', async () => {
+    const fileA = path.join(tempDir, 'fileA.txt');
+    await fs.promises.writeFile(fileA, 'initial-content', 'utf8');
+
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    await fs.promises.writeFile(
+      leasePath,
+      JSON.stringify({
+        pid: process.pid,
+        leaseId: 'other-process-lease',
+        createdAt: Date.now(),
+        heartbeatAt: Date.now(),
+        operationId: 'other-process-operation',
+      }),
+      'utf8',
+    );
+
+    const executor = new MutationPlanExecutor(tempDir);
+
+    await assert.rejects(
+      () => executor.execute({
+        kind: 'test.concurrent',
+        steps: [{
+          type: 'writeFile', targetPath: fileA, content: 'mutated-2', encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('initial-content') },
+        }],
+        result: 'success',
+      }),
+      (err: MutationPlanError) => err.code === 'PLAN_CONFLICT',
+    );
+  });
+
+  test('#219: fresh heartbeat sidecar keeps an aged live lease active', async () => {
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    const leaseId = 'aged-but-active-lease';
+    const agedAt = Date.now() - 60000;
+    const freshAt = Date.now();
+    const heartbeatPath = path.join(
+      journalRoot,
+      `.root-lease.json.${createHash('sha256').update(leaseId, 'utf8').digest('hex')}.heartbeat`,
+    );
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(target, 'original', 'utf8');
+    await fs.promises.writeFile(leasePath, JSON.stringify({
+      leaseId,
+      pid: process.pid,
+      createdAt: agedAt,
+      heartbeatAt: agedAt,
+      operationId: 'active-aged-operation',
+    }), 'utf8');
+    await fs.promises.writeFile(heartbeatPath, JSON.stringify({ leaseId, heartbeatAt: freshAt }), 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      () => executor.execute({
+        kind: 'test.freshHeartbeatSidecar',
+        steps: [{
+          type: 'writeFile', targetPath: target, content: 'mutated', encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('original') },
+        }],
+        result: 'success',
+      }),
+      (err: MutationPlanError) => err instanceof MutationPlanError && err.code === 'PLAN_CONFLICT',
+    );
+
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'original');
+    assert.strictEqual(JSON.parse(await fs.promises.readFile(leasePath, 'utf8')).leaseId, leaseId);
+    assert.strictEqual(JSON.parse(await fs.promises.readFile(heartbeatPath, 'utf8')).heartbeatAt, freshAt);
+  });
+
+  test('#219: malformed root lease JSON fails closed and remains untouched', async () => {
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    const malformedLease = '{"leaseId":"partial"';
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(target, 'original', 'utf8');
+    await fs.promises.writeFile(leasePath, malformedLease, 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      () => executor.execute({
+        kind: 'test.malformedLease',
+        steps: [{
+          type: 'writeFile', targetPath: target, content: 'mutated', encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('original') },
+        }],
+        result: 'success',
+      }),
+      (err: MutationPlanError) => err instanceof MutationPlanError && err.code === 'PLAN_CONFLICT',
+    );
+
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'original');
+    assert.strictEqual(await fs.promises.readFile(leasePath, 'utf8'), malformedLease);
+  });
+
+  test('#219: structurally invalid root lease JSON fails closed', async () => {
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    const malformedLease = JSON.stringify({ leaseId: '', pid: 'current', createdAt: -1, heartbeatAt: 'now' });
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(target, 'original', 'utf8');
+    await fs.promises.writeFile(leasePath, malformedLease, 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      () => executor.execute({
+        kind: 'test.invalidLeaseFields',
+        steps: [{
+          type: 'writeFile', targetPath: target, content: 'mutated', encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('original') },
+        }],
+        result: 'success',
+      }),
+      (err: MutationPlanError) => err instanceof MutationPlanError && err.code === 'PLAN_CONFLICT',
+    );
+
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'original');
+    assert.strictEqual(await fs.promises.readFile(leasePath, 'utf8'), malformedLease);
+  });
+
+  test('#219: unreadable root lease fails closed instead of assuming it is free', async () => {
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(target, 'original', 'utf8');
+    await fs.promises.writeFile(leasePath, JSON.stringify({
+      leaseId: 'unreadable-lease',
+      pid: process.pid,
+      createdAt: Date.now(),
+      heartbeatAt: Date.now(),
+      operationId: 'other-operation',
+    }), 'utf8');
+
+    const originalDescriptor = Object.getOwnPropertyDescriptor(fs.promises, 'readFile');
+    if (!originalDescriptor || typeof originalDescriptor.value !== 'function') {
+      throw new Error('fs.promises.readFile must be a configurable data property for this test.');
+    }
+    const originalReadFile = originalDescriptor.value as typeof fs.promises.readFile;
+    Object.defineProperty(fs.promises, 'readFile', {
+      ...originalDescriptor,
+      value: async (...args: unknown[]) => {
+        if (path.resolve(String(args[0])) === path.resolve(leasePath)) {
+          const error = new Error('simulated EACCES') as NodeJS.ErrnoException;
+          error.code = 'EACCES';
+          throw error;
+        }
+        return (originalReadFile as (...readArgs: unknown[]) => Promise<unknown>).apply(fs.promises, args);
+      },
+    });
+
+    try {
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        () => executor.execute({
+          kind: 'test.unreadableLease',
+          steps: [{
+            type: 'writeFile', targetPath: target, content: 'mutated', encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent('original') },
+          }],
+          result: 'success',
+        }),
+        (err: MutationPlanError) => err instanceof MutationPlanError && err.code === 'PLAN_CONFLICT',
+      );
+    } finally {
+      Object.defineProperty(fs.promises, 'readFile', originalDescriptor);
+    }
+
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'original');
+    assert.strictEqual(fs.existsSync(leasePath), true);
+  });
+
+  test('#219: a fresh claim marker blocks execution and remains untouched', async () => {
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const claimPath = path.join(journalRoot, '.root-lease.json.claim-active');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(target, 'original', 'utf8');
+    const activeClaim = JSON.stringify({
+      leaseId: 'active-claim',
+      pid: process.pid,
+      createdAt: Date.now(),
+      heartbeatAt: Date.now(),
+      operationId: 'active-operation',
+    });
+    await fs.promises.writeFile(claimPath, activeClaim, 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      () => executor.execute({
+        kind: 'test.activeClaimMarker',
+        steps: [{
+          type: 'writeFile', targetPath: target, content: 'mutated', encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('original') },
+        }],
+        result: 'success',
+      }),
+      (err: MutationPlanError) => err instanceof MutationPlanError && err.code === 'PLAN_CONFLICT',
+    );
+
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'original');
+    assert.strictEqual(await fs.promises.readFile(claimPath, 'utf8'), activeClaim);
+  });
+
+  test('#219: stale claim left by a crashed process is recovered automatically', async () => {
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const claimPath = path.join(
+      journalRoot,
+      '.root-lease.json.claim-v2-' + String(Date.now() - 60000)
+        + '-2147483647-00000000-0000-4000-8000-000000000001',
+    );
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(target, 'original', 'utf8');
+    await fs.promises.writeFile(claimPath, JSON.stringify({
+      leaseId: 'crashed-claim',
+      pid: 2147483647,
+      createdAt: Date.now() - 60000,
+      heartbeatAt: Date.now() - 60000,
+      operationId: 'crashed-operation',
+    }), 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await executor.execute({
+      kind: 'test.recoverStaleClaim',
+      steps: [{
+        type: 'writeFile', targetPath: target, content: 'mutated', encoding: 'utf8',
+        expected: { state: 'file', hash: hashContent('original') },
+      }],
+      result: 'success',
+    });
+
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'mutated');
+    assert.strictEqual(fs.existsSync(claimPath), false);
+  });
+
+  test('#219: stale lease takeover removes the old heartbeat sidecar', async () => {
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    const leaseId = 'stale-sidecar-lease';
+    const staleAt = Date.now() - 60000;
+    const heartbeatPath = path.join(
+      journalRoot,
+      `.root-lease.json.${createHash('sha256').update(leaseId, 'utf8').digest('hex')}.heartbeat`,
+    );
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(target, 'original', 'utf8');
+    await fs.promises.writeFile(leasePath, JSON.stringify({
+      leaseId,
+      pid: 2147483647,
+      createdAt: staleAt,
+      heartbeatAt: staleAt,
+      operationId: 'stale-sidecar-operation',
+    }), 'utf8');
+    await fs.promises.writeFile(heartbeatPath, JSON.stringify({ leaseId, heartbeatAt: staleAt }), 'utf8');
+
+    await new MutationPlanExecutor(tempDir).execute({
+      kind: 'test.cleanupStaleHeartbeatSidecar',
+      steps: [{
+        type: 'writeFile', targetPath: target, content: 'mutated', encoding: 'utf8',
+        expected: { state: 'file', hash: hashContent('original') },
+      }],
+      result: 'success',
+    });
+
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'mutated');
+    assert.strictEqual(fs.existsSync(heartbeatPath), false);
+    assert.strictEqual(fs.existsSync(journalRoot), false);
+  });
+
+  test('#219: a competing process cannot clear a fresh stale-lease claim marker', async function () {
+    this.timeout(10000);
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(target, 'original', 'utf8');
+    await fs.promises.writeFile(leasePath, JSON.stringify({
+      leaseId: 'stale-claim-race-lease',
+      pid: 2147483647,
+      createdAt: Date.now() - 60000,
+      heartbeatAt: Date.now() - 60000,
+      operationId: 'stale-claim-race-operation',
+    }), 'utf8');
+
+    const mutationModule = path.resolve(__dirname, '../../src/services/configurationSession/mutationPlan.js');
+    const storageModule = path.resolve(__dirname, '../../src/services/configurationSession/atomicFileStorage.js');
+    const vscodeStub = path.resolve(__dirname, '../helpers/vscodeStubRegister.js');
+    const childScript = `
+      const fs = require('fs');
+      const path = require('path');
+      require(${JSON.stringify(vscodeStub)});
+      const { MutationPlanExecutor, MutationPlanError } = require(${JSON.stringify(mutationModule)});
+      const { hashContent } = require(${JSON.stringify(storageModule)});
+      const [root, target, content, role] = process.argv.slice(1);
+      if (role === 'holder') {
+        const originalRename = fs.promises.rename;
+        let signaled = false;
+        fs.promises.rename = async function (source, destination) {
+          const result = await originalRename.call(fs.promises, source, destination);
+          if (!signaled && path.basename(String(destination)).startsWith('.root-lease.json.claim-')) {
+            signaled = true;
+            process.stdout.write('CLAIMED\\n');
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+          return result;
+        };
+      }
+      new MutationPlanExecutor(root).execute({
+        kind: 'test.freshClaimRace',
+        steps: [{
+          type: 'writeFile', targetPath: target, content, encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('original') },
+        }],
+        result: content,
+      }).then(() => {
+        process.stdout.write('ACQUIRED\\n');
+        process.exitCode = 0;
+      }).catch((error) => {
+        if (error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT') {
+          process.stdout.write('CONFLICT\\n');
+          process.exitCode = 2;
+          return;
+        }
+        process.stderr.write(String(error && (error.stack || error)));
+        process.exitCode = 3;
+      });
+    `;
+    const startChild = (content: string, role: string): ChildProcess => spawn(
+      process.execPath,
+      ['-e', childScript, tempDir, target, content, role],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+
+    const holder = startChild('holder-content', 'holder');
+    const holderResult = collectChildOutput(holder);
+    let holderOutput = '';
+    const holderReady = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`Holder did not fence stale lease: ${holderOutput}`)), 5000);
+      holder.stdout?.on('data', (chunk: Buffer | string) => {
+        holderOutput += chunk.toString();
+        if (holderOutput.includes('CLAIMED\n')) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      holder.once('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      holder.once('close', (code) => {
+        if (!holderOutput.includes('CLAIMED\n')) {
+          clearTimeout(timer);
+          reject(new Error(`Holder exited before creating claim marker (code ${code}): ${holderOutput}`));
+        }
+      });
+    });
+
+    let contender: ChildProcess | undefined;
+    try {
+      await holderReady;
+      const claimEntry = (await fs.promises.readdir(journalRoot))
+        .find((entry) => entry.startsWith('.root-lease.json.claim-'));
+      assert.ok(claimEntry, 'holder must leave its fenced lease in a claim marker');
+
+      contender = startChild('contender-content', 'contender');
+      const contenderResult = await collectChildOutput(contender);
+      assert.strictEqual(contenderResult.code, 2, contenderResult.stderr);
+      assert.ok(contenderResult.stdout.includes('CONFLICT'));
+      assert.strictEqual(fs.existsSync(path.join(journalRoot, claimEntry)), true);
+
+      const firstResult = await holderResult;
+      assert.strictEqual(firstResult.code, 0, firstResult.stderr);
+      assert.ok(firstResult.stdout.includes('ACQUIRED'));
+    } finally {
+      if (contender && contender.exitCode === null) { contender.kill(); }
+      if (holder.exitCode === null) { holder.kill(); }
+    }
+
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'holder-content');
+    assert.strictEqual(fs.existsSync(leasePath), false);
+    assert.strictEqual(fs.existsSync(journalRoot), false);
+  });
+
+  test('#219: stale lease takeover preserves a replacement installed after the stale read', async () => {
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    const staleLease = JSON.stringify({
+      leaseId: 'stale-lease',
+      pid: 2147483647,
+      createdAt: Date.now() - 60000,
+      heartbeatAt: Date.now() - 60000,
+      operationId: 'stale-operation',
+    });
+    const replacementLease = JSON.stringify({
+      leaseId: 'replacement-lease',
+      pid: process.pid,
+      createdAt: Date.now(),
+      heartbeatAt: Date.now(),
+      operationId: 'replacement-operation',
+    });
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(target, 'original', 'utf8');
+    await fs.promises.writeFile(leasePath, staleLease, 'utf8');
+
+    const originalDescriptor = Object.getOwnPropertyDescriptor(fs.promises, 'readFile');
+    if (!originalDescriptor || typeof originalDescriptor.value !== 'function') {
+      throw new Error('fs.promises.readFile must be a configurable data property for this test.');
+    }
+    const originalReadFile = originalDescriptor.value as typeof fs.promises.readFile;
+    let replacementInstalled = false;
+    Object.defineProperty(fs.promises, 'readFile', {
+      ...originalDescriptor,
+      value: async (...args: unknown[]) => {
+        const result = await (originalReadFile as (...readArgs: unknown[]) => Promise<unknown>).apply(fs.promises, args);
+        if (!replacementInstalled && path.resolve(String(args[0])) === path.resolve(leasePath)) {
+          replacementInstalled = true;
+          await fs.promises.writeFile(leasePath, replacementLease, 'utf8');
+        }
+        return result;
+      },
+    });
+
+    try {
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        () => executor.execute({
+          kind: 'test.staleLeaseReplacement',
+          steps: [{
+            type: 'writeFile', targetPath: target, content: 'mutated', encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent('original') },
+          }],
+          result: 'success',
+        }),
+        (err: MutationPlanError) => err instanceof MutationPlanError && err.code === 'PLAN_CONFLICT',
+      );
+    } finally {
+      Object.defineProperty(fs.promises, 'readFile', originalDescriptor);
+    }
+
+    assert.strictEqual(replacementInstalled, true);
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'original');
+    assert.strictEqual(await fs.promises.readFile(leasePath, 'utf8'), replacementLease);
+  });
+
+  test('#219: stale lease takeover stops if a new lease wins the rename-to-restore window', async () => {
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    const staleLease = JSON.stringify({
+      leaseId: 'stale-before-restore',
+      pid: 2147483647,
+      createdAt: Date.now() - 60000,
+      heartbeatAt: Date.now() - 60000,
+      operationId: 'stale-operation',
+    });
+    const replacedLease = JSON.stringify({
+      leaseId: 'replaced-during-takeover',
+      pid: process.pid,
+      createdAt: Date.now(),
+      heartbeatAt: Date.now(),
+      operationId: 'replacement-operation',
+    });
+    const winningLease = JSON.stringify({
+      leaseId: 'winner-during-restore',
+      pid: process.pid,
+      createdAt: Date.now(),
+      heartbeatAt: Date.now(),
+      operationId: 'winning-operation',
+    });
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(target, 'original', 'utf8');
+    await fs.promises.writeFile(leasePath, staleLease, 'utf8');
+
+    const originalDescriptor = Object.getOwnPropertyDescriptor(fs.promises, 'readFile');
+    if (!originalDescriptor || typeof originalDescriptor.value !== 'function') {
+      throw new Error('fs.promises.readFile must be a configurable data property for this test.');
+    }
+    const originalReadFile = originalDescriptor.value as typeof fs.promises.readFile;
+    let replacedAfterRead = false;
+    let winnerCreatedDuringRestore = false;
+    Object.defineProperty(fs.promises, 'readFile', {
+      ...originalDescriptor,
+      value: async (...args: unknown[]) => {
+        const requestedPath = path.resolve(String(args[0]));
+        const result = await (originalReadFile as (...readArgs: unknown[]) => Promise<unknown>).apply(fs.promises, args);
+        if (!replacedAfterRead && requestedPath === path.resolve(leasePath)) {
+          replacedAfterRead = true;
+          await fs.promises.writeFile(leasePath, replacedLease, 'utf8');
+        } else if (!winnerCreatedDuringRestore
+          && path.basename(requestedPath).startsWith('.root-lease.json.claim-')) {
+          winnerCreatedDuringRestore = true;
+          await fs.promises.writeFile(leasePath, winningLease, 'utf8');
+        }
+        return result;
+      },
+    });
+
+    try {
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        () => executor.execute({
+          kind: 'test.staleLeaseRestoreRace',
+          steps: [{
+            type: 'writeFile', targetPath: target, content: 'mutated', encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent('original') },
+          }],
+          result: 'success',
+        }),
+        (err: MutationPlanError) => err instanceof MutationPlanError && err.code === 'PLAN_CONFLICT',
+      );
+    } finally {
+      Object.defineProperty(fs.promises, 'readFile', originalDescriptor);
+    }
+
+    assert.strictEqual(replacedAfterRead, true);
+    assert.strictEqual(winnerCreatedDuringRestore, true);
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'original');
+    assert.strictEqual(await fs.promises.readFile(leasePath, 'utf8'), winningLease);
+    const claimName = (await fs.promises.readdir(journalRoot)).find((name) => name.startsWith('.root-lease.json.claim-'));
+    assert.ok(claimName, 'the prior replacement must remain preserved behind a claim marker');
+    assert.strictEqual(await fs.promises.readFile(path.join(journalRoot, claimName!), 'utf8'), replacedLease);
+  });
+
+  test('#219: competing processes on one stale lease produce one winner and one typed conflict', async function () {
+    this.timeout(10000);
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(target, 'original', 'utf8');
+    await fs.promises.writeFile(leasePath, JSON.stringify({
+      leaseId: 'stale-competing-lease',
+      pid: 2147483647,
+      createdAt: Date.now() - 60000,
+      heartbeatAt: Date.now() - 60000,
+      operationId: 'stale-operation',
+    }), 'utf8');
+
+    const mutationModule = path.resolve(__dirname, '../../src/services/configurationSession/mutationPlan.js');
+    const storageModule = path.resolve(__dirname, '../../src/services/configurationSession/atomicFileStorage.js');
+    const vscodeStub = path.resolve(__dirname, '../helpers/vscodeStubRegister.js');
+    const childScript = `
+      const fs = require('fs');
+      const path = require('path');
+      require(${JSON.stringify(vscodeStub)});
+      const { MutationPlanExecutor, MutationPlanError } = require(${JSON.stringify(mutationModule)});
+      const { hashContent } = require(${JSON.stringify(storageModule)});
+      const [root, target, content, role] = process.argv.slice(1);
+      if (role === 'holder') {
+        const originalRename = fs.promises.rename;
+        let signaled = false;
+        fs.promises.rename = async function (source, destination) {
+          if (!signaled && String(source).includes('.cdt-plan-')) {
+            signaled = true;
+            process.stdout.write('READY\\n');
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+          return originalRename.call(fs.promises, source, destination);
+        };
+      }
+      new MutationPlanExecutor(root).execute({
+        kind: 'test.crossProcessLease',
+        steps: [{
+          type: 'writeFile', targetPath: target, content, encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('original') },
+        }],
+        result: content,
+      }).then(() => {
+        process.stdout.write('ACQUIRED\\n');
+        process.exitCode = 0;
+      }).catch((error) => {
+        if (error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT') {
+          process.stdout.write('CONFLICT\\n');
+          process.exitCode = 2;
+          return;
+        }
+        process.stderr.write(String(error && (error.stack || error)));
+        process.exitCode = 3;
+      });
+    `;
+    const startChild = (content: string, role: string): ChildProcess => spawn(
+      process.execPath,
+      ['-e', childScript, tempDir, target, content, role],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+
+    const holder = startChild('holder-content', 'holder');
+    const holderResult = collectChildOutput(holder);
+    let holderOutput = '';
+    const holderReady = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`Holder did not reach mutation step: ${holderOutput}`)), 5000);
+      holder.stdout?.on('data', (chunk: Buffer | string) => {
+        holderOutput += chunk.toString();
+        if (holderOutput.includes('READY\n')) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      holder.once('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      holder.once('close', (code) => {
+        if (!holderOutput.includes('READY\n')) {
+          clearTimeout(timer);
+          reject(new Error(`Holder exited before acquiring the lease (code ${code}): ${holderOutput}`));
+        }
+      });
+    });
+
+    let contender: ChildProcess | undefined;
+    try {
+      await holderReady;
+      contender = startChild('contender-content', 'contender');
+      const contenderResult = await collectChildOutput(contender);
+      const firstResult = await holderResult;
+      assert.strictEqual(firstResult.code, 0, firstResult.stderr);
+      assert.ok(firstResult.stdout.includes('ACQUIRED'));
+      assert.strictEqual(contenderResult.code, 2, contenderResult.stderr);
+      assert.ok(contenderResult.stdout.includes('CONFLICT'));
+    } finally {
+      if (contender && contender.exitCode === null) { contender.kill(); }
+      if (holder.exitCode === null) { holder.kill(); }
+    }
+
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'holder-content');
+    assert.strictEqual(fs.existsSync(leasePath), false);
+  });
+
+  test('#219: release preserves a replacement lease installed after its ownership read', async () => {
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    const replacementLease = JSON.stringify({
+      leaseId: 'replacement-after-release-read',
+      pid: process.pid,
+      createdAt: Date.now(),
+      heartbeatAt: Date.now(),
+      operationId: 'replacement-operation',
+    });
+    await fs.promises.writeFile(target, 'original', 'utf8');
+
+    const readDescriptor = Object.getOwnPropertyDescriptor(fs.promises, 'readFile');
+    const rmDescriptor = Object.getOwnPropertyDescriptor(fs.promises, 'rm');
+    if (!readDescriptor || typeof readDescriptor.value !== 'function'
+      || !rmDescriptor || typeof rmDescriptor.value !== 'function') {
+      throw new Error('fs.promises read/rm methods must be configurable data properties for this test.');
+    }
+    const originalReadFile = readDescriptor.value as typeof fs.promises.readFile;
+    const originalRm = rmDescriptor.value as typeof fs.promises.rm;
+    const operationPath = path.join(journalRoot, 'release-race-operation');
+    let planApplied = false;
+    let replacementInstalled = false;
+    Object.defineProperty(fs.promises, 'rm', {
+      ...rmDescriptor,
+      value: async (...args: unknown[]) => {
+        const result = await (originalRm as (...rmArgs: unknown[]) => Promise<unknown>).apply(fs.promises, args);
+        if (path.resolve(String(args[0])) === path.resolve(operationPath)) {
+          planApplied = true;
+        }
+        return result;
+      },
+    });
+    Object.defineProperty(fs.promises, 'readFile', {
+      ...readDescriptor,
+      value: async (...args: unknown[]) => {
+        const result = await (originalReadFile as (...readArgs: unknown[]) => Promise<unknown>).apply(fs.promises, args);
+        if (planApplied && !replacementInstalled
+          && path.resolve(String(args[0])) === path.resolve(leasePath)) {
+          replacementInstalled = true;
+          await fs.promises.writeFile(
+            leasePath,
+            replacementLease,
+            'utf8',
+          );
+        }
+        return result;
+      },
+    });
+
+    try {
+      const executor = new MutationPlanExecutor(tempDir);
+      await executor.execute({
+        kind: 'test.releaseLeaseReplacement',
+        steps: [{
+          type: 'writeFile', targetPath: target, content: 'mutated', encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('original') },
+        }],
+        result: 'success',
+      }, 'release-race-operation');
+    } finally {
+      Object.defineProperty(fs.promises, 'readFile', readDescriptor);
+      Object.defineProperty(fs.promises, 'rm', rmDescriptor);
+    }
+
+    assert.strictEqual(planApplied, true);
+    assert.strictEqual(replacementInstalled, true);
+    assert.strictEqual(await fs.promises.readFile(leasePath, 'utf8'), replacementLease);
+  });
+
+  test('#219: partial heartbeat write cannot corrupt the active root lease', async function () {
+    this.timeout(8000);
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.writeFile(target, 'original', 'utf8');
+
+    const writeDescriptor = Object.getOwnPropertyDescriptor(fs.promises, 'writeFile');
+    if (!writeDescriptor || typeof writeDescriptor.value !== 'function') {
+      throw new Error('fs.promises.writeFile must be a configurable data property for this test.');
+    }
+    const originalWriteFile = writeDescriptor.value as typeof fs.promises.writeFile;
+    let markJournalWriteEntered!: () => void;
+    let releaseJournalWrite!: () => void;
+    const journalWriteEntered = new Promise<void>((resolve) => { markJournalWriteEntered = resolve; });
+    const journalWriteGate = new Promise<void>((resolve) => { releaseJournalWrite = resolve; });
+    let holdFirstJournalWrite = true;
+    let injectPartialHeartbeat = false;
+    let partialHeartbeatInjected = false;
+    Object.defineProperty(fs.promises, 'writeFile', {
+      ...writeDescriptor,
+      value: async (...args: unknown[]) => {
+        const requestedPath = path.resolve(String(args[0]));
+        const fileName = path.basename(requestedPath);
+        if (holdFirstJournalWrite && fileName.startsWith('.journal-') && fileName.endsWith('.tmp')) {
+          holdFirstJournalWrite = false;
+          markJournalWriteEntered();
+          await journalWriteGate;
+        }
+        if (injectPartialHeartbeat && !partialHeartbeatInjected
+          && fileName.startsWith('.root-lease.json')) {
+          partialHeartbeatInjected = true;
+          await (originalWriteFile as (...writeArgs: unknown[]) => Promise<unknown>).apply(fs.promises, [
+            args[0],
+            '{"leaseId":"partial',
+            'utf8',
+          ]);
+          throw new Error('simulated interrupted heartbeat write');
+        }
+        return (originalWriteFile as (...writeArgs: unknown[]) => Promise<unknown>).apply(fs.promises, args);
+      },
+    });
+
+    let execution: Promise<string> | undefined;
+    try {
+      const executor = new MutationPlanExecutor(tempDir);
+      execution = executor.execute({
+        kind: 'test.partialHeartbeat',
+        steps: [{
+          type: 'writeFile', targetPath: target, content: 'mutated', encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('original') },
+        }],
+        result: 'success',
+      });
+      await journalWriteEntered;
+      injectPartialHeartbeat = true;
+      await new Promise<void>((resolve) => setTimeout(resolve, 2200));
+
+      const leasePath = path.join(journalRoot, '.root-lease.json');
+      const activeLease = JSON.parse(await fs.promises.readFile(leasePath, 'utf8')) as { leaseId?: unknown; pid?: unknown };
+      assert.strictEqual(partialHeartbeatInjected, true, 'the heartbeat failure must be exercised');
+      assert.strictEqual(typeof activeLease.leaseId, 'string');
+      assert.strictEqual(activeLease.pid, process.pid);
+      assert.ok(!(await fs.promises.readdir(journalRoot)).some((name) => name.startsWith('.root-lease.json.')
+        && name.endsWith('.tmp')), 'partial heartbeat temp files should be cleaned up');
+    } finally {
+      releaseJournalWrite();
+      Object.defineProperty(fs.promises, 'writeFile', writeDescriptor);
+      await execution?.catch(() => undefined);
+    }
+  });
+
+  test('#219: heartbeat for a lease read before replacement cannot overwrite its new owner', async function () {
+    this.timeout(8000);
+    const target = path.join(tempDir, 'protected.txt');
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    const replacementLease = JSON.stringify({
+      leaseId: 'heartbeat-replacement-owner',
+      pid: process.pid,
+      createdAt: Date.now(),
+      heartbeatAt: Date.now(),
+      operationId: 'replacement-operation',
+    });
+    await fs.promises.writeFile(target, 'original', 'utf8');
+
+    const writeDescriptor = Object.getOwnPropertyDescriptor(fs.promises, 'writeFile');
+    const readDescriptor = Object.getOwnPropertyDescriptor(fs.promises, 'readFile');
+    if (!writeDescriptor || typeof writeDescriptor.value !== 'function'
+      || !readDescriptor || typeof readDescriptor.value !== 'function') {
+      throw new Error('fs.promises read/write methods must be configurable data properties for this test.');
+    }
+    const originalWriteFile = writeDescriptor.value as typeof fs.promises.writeFile;
+    const originalReadFile = readDescriptor.value as typeof fs.promises.readFile;
+    let markJournalWriteEntered!: () => void;
+    let releaseJournalWrite!: () => void;
+    const journalWriteEntered = new Promise<void>((resolve) => { markJournalWriteEntered = resolve; });
+    const journalWriteGate = new Promise<void>((resolve) => { releaseJournalWrite = resolve; });
+    let holdFirstJournalWrite = true;
+    let replaceAfterHeartbeatRead = false;
+    let replacementInstalled = false;
+    Object.defineProperty(fs.promises, 'writeFile', {
+      ...writeDescriptor,
+      value: async (...args: unknown[]) => {
+        const fileName = path.basename(String(args[0]));
+        if (holdFirstJournalWrite && fileName.startsWith('.journal-') && fileName.endsWith('.tmp')) {
+          holdFirstJournalWrite = false;
+          markJournalWriteEntered();
+          await journalWriteGate;
+        }
+        return (originalWriteFile as (...writeArgs: unknown[]) => Promise<unknown>).apply(fs.promises, args);
+      },
+    });
+    Object.defineProperty(fs.promises, 'readFile', {
+      ...readDescriptor,
+      value: async (...args: unknown[]) => {
+        const result = await (originalReadFile as (...readArgs: unknown[]) => Promise<unknown>).apply(fs.promises, args);
+        if (replaceAfterHeartbeatRead && !replacementInstalled
+          && path.resolve(String(args[0])) === path.resolve(leasePath)) {
+          replacementInstalled = true;
+          await (originalWriteFile as (...writeArgs: unknown[]) => Promise<unknown>).apply(fs.promises, [
+            leasePath,
+            replacementLease,
+            'utf8',
+          ]);
+        }
+        return result;
+      },
+    });
+
+    let execution: Promise<string> | undefined;
+    try {
+      const executor = new MutationPlanExecutor(tempDir);
+      execution = executor.execute({
+        kind: 'test.heartbeatReplacement',
+        steps: [{
+          type: 'writeFile', targetPath: target, content: 'mutated', encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('original') },
+        }],
+        result: 'success',
+      });
+      await journalWriteEntered;
+      replaceAfterHeartbeatRead = true;
+      await new Promise<void>((resolve) => setTimeout(resolve, 2200));
+      assert.strictEqual(replacementInstalled, true, 'the heartbeat ownership read must be raced');
+      assert.strictEqual(await fs.promises.readFile(leasePath, 'utf8'), replacementLease);
+    } finally {
+      releaseJournalWrite();
+      Object.defineProperty(fs.promises, 'readFile', readDescriptor);
+      Object.defineProperty(fs.promises, 'writeFile', writeDescriptor);
+      await execution?.catch(() => undefined);
+    }
+
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'original');
+    assert.strictEqual(await fs.promises.readFile(leasePath, 'utf8'), replacementLease);
+  });
+});

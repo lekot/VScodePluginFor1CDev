@@ -66,6 +66,7 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
   private saveTail: Promise<void> = Promise.resolve();
   private currentSchemaPath: string | undefined;
   private sessionGeneration = 0;
+  private sessionExpected: MutationExpectation | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -109,6 +110,7 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
 
     const model = parseXdtoPackage(source);
     this.currentSchemaPath = schemaPath;
+    this.sessionExpected = { state: 'file', hash: hashContent(source) };
 
     const title = `${MESSAGES.XDTO_PACKAGE_TITLE}: ${node.name}`;
     if (this.panel) {
@@ -129,6 +131,7 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
         () => {
           this.panel = undefined;
           this.currentSchemaPath = undefined;
+          this.sessionExpected = undefined;
         },
         null,
         this.disposables
@@ -230,9 +233,12 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
           }
           return;
         }
-        const expected: MutationExpectation = fs.existsSync(targetSchemaPath)
-          ? { state: 'file', hash: hashContent(fs.readFileSync(targetSchemaPath)) }
-          : { state: 'missing' };
+        const expected: MutationExpectation =
+          (this.sessionGeneration === targetGeneration && this.currentSchemaPath === targetSchemaPath && this.sessionExpected)
+            ? this.sessionExpected
+            : (fs.existsSync(targetSchemaPath)
+                ? { state: 'file', hash: hashContent(fs.readFileSync(targetSchemaPath)) }
+                : { state: 'missing' });
         await runConfigurationPlan(targetSchemaPath, {
           kind: 'ui.xdto.editorSave',
           steps: [
@@ -258,6 +264,8 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
           return;
         }
 
+        this.sessionExpected = { state: 'file', hash: hashContent(result.source) };
+
         this.postMessage({
           type: 'saveSuccess',
           model: result.model,
@@ -271,9 +279,16 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
           this.sessionGeneration === targetGeneration &&
           this.currentSchemaPath === targetSchemaPath
         ) {
+          const isConflict =
+            err instanceof Error &&
+            (err.message.includes('Pre-state changed') ||
+              ('code' in err && (err as { code: unknown }).code === 'PLAN_CONFLICT'));
+          const message = isConflict
+            ? 'Файл схемы XDTO был изменён на диске внешним процессом. Сохранение отменено для предотвращения потери данных.'
+            : MESSAGES.XDTO_PACKAGE_WRITE_FAILED;
           this.postMessage({
             type: 'saveError',
-            message: MESSAGES.XDTO_PACKAGE_WRITE_FAILED,
+            message,
             schemaPath: targetSchemaPath,
             generation: targetGeneration,
           });
