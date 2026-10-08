@@ -39,6 +39,7 @@ suite('FormatRank and Version Detection Tests', () => {
 
   test('normalizeFormatVersion falls back to default on invalid input', () => {
     assert.strictEqual(normalizeFormatVersion('2.20'), '2.20');
+    assert.strictEqual(normalizeFormatVersion('2.16'), '2.16');
     assert.strictEqual(normalizeFormatVersion('2.17'), '2.17');
     assert.strictEqual(normalizeFormatVersion(''), DEFAULT_FORMAT_VERSION);
     assert.strictEqual(normalizeFormatVersion(undefined), DEFAULT_FORMAT_VERSION);
@@ -46,6 +47,12 @@ suite('FormatRank and Version Detection Tests', () => {
   });
 
   test('detectFormatVersionFromXml extracts a root format version and never invents one', () => {
+    const xml216 = '<?xml version="1.0"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.16"><Catalog/></MetaDataObject>';
+    const info216 = detectFormatVersionFromXml(xml216);
+    assert.strictEqual(info216.version, '2.16');
+    assert.strictEqual(info216.rank, 216);
+    assert.strictEqual(info216.isVerified, true);
+
     const xml217 = '<?xml version="1.0"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17"><Catalog/></MetaDataObject>';
     const info217 = detectFormatVersionFromXml(xml217);
     assert.strictEqual(info217.version, '2.17');
@@ -71,7 +78,7 @@ suite('FormatRank and Version Detection Tests', () => {
     const innerOnly = '<MetaDataObject><Configuration version="2.21"/></MetaDataObject>';
     assert.strictEqual(detectFormatVersionFromXml(innerOnly).version, '');
     assert.throws(() => requireProjectWriteFormatProfile(innerOnly), /формат XML/);
-    for (const version of ['', '2.16', '2.22', 'bad', '2.x']) {
+    for (const version of ['', '2.15', '2.22', 'bad', '2.x']) {
       assert.throws(() => requireWriteFormatProfile(version), /формат XML/);
       const info = detectFormatVersionFromXml(`<MetaDataObject version="${version}"/>`);
       assert.strictEqual(info.isVerified, false, `${version} must not become a verified default`);
@@ -79,7 +86,27 @@ suite('FormatRank and Version Detection Tests', () => {
     }
   });
 
+  test('2.16 write profile preserves its exact version and excludes later format features', () => {
+    const profile = requireProjectWriteFormatProfile(
+      '<MetaDataObject version="2.16"><Configuration/></MetaDataObject>'
+    );
+    assert.strictEqual(profile.version, '2.16');
+    assert.strictEqual(profile.rank, 216);
+    assert.strictEqual(profile.hasTypeReductionMode, false);
+    assert.strictEqual(profile.hasLineNumberLength, false);
+    assert.strictEqual(profile.hasPalNamespace, false);
+    assert.throws(
+      () => requireWriteFormatProfile('2.15'),
+      /Поддерживается запись только для форматов 2\.16–2\.21/
+    );
+  });
+
   test('buildCanonicalMetaDataObjectOpenTag generates canonical header for given version', () => {
+    const tag216 = buildCanonicalMetaDataObjectOpenTag('2.16');
+    assert.ok(tag216.startsWith('<MetaDataObject'));
+    assert.ok(tag216.includes('version="2.16"'));
+    assert.ok(!tag216.includes('xmlns:pal'));
+
     const tag217 = buildCanonicalMetaDataObjectOpenTag('2.17');
     assert.ok(tag217.startsWith('<MetaDataObject'));
     assert.ok(tag217.includes('version="2.17"'));
@@ -95,15 +122,18 @@ suite('FormatRank and Version Detection Tests', () => {
   });
 
   test('feature gate helpers correctly check format rank', () => {
+    assert.strictEqual(hasLineNumberLength(216), false);
     assert.strictEqual(hasLineNumberLength(217), false);
     assert.strictEqual(hasLineNumberLength(218), false);
     assert.strictEqual(hasLineNumberLength(220), true);
     assert.strictEqual(hasLineNumberLength(221), true);
 
+    assert.strictEqual(hasTypeReductionMode(216), false);
     assert.strictEqual(hasTypeReductionMode(217), false);
     assert.strictEqual(hasTypeReductionMode(218), true);
     assert.strictEqual(hasTypeReductionMode(220), true);
 
+    assert.strictEqual(hasPalNamespace(216), false);
     assert.strictEqual(hasPalNamespace(217), false);
     assert.strictEqual(hasPalNamespace(220), false);
     assert.strictEqual(hasPalNamespace(221), true);
@@ -111,6 +141,11 @@ suite('FormatRank and Version Detection Tests', () => {
 
   test('normalizeMetaDataObjectRoot injects requested format version dynamically', () => {
     const rawXml = '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog uuid="123"><Properties><Name>Test</Name></Properties></Catalog></MetaDataObject>';
+
+    const normalized216 = normalizeMetaDataObjectRoot(rawXml, '2.16');
+    assert.ok(normalized216.includes('version="2.16"'));
+    assert.ok(!normalized216.includes('xmlns:pal'));
+    assert.ok(normalized216.includes('<Name>Test</Name>'));
 
     const normalized217 = normalizeMetaDataObjectRoot(rawXml, '2.17');
     assert.ok(normalized217.includes('version="2.17"'));
@@ -125,7 +160,11 @@ suite('FormatRank and Version Detection Tests', () => {
 
   test('profiles generated template properties without rewriting unrelated XML', () => {
     const generated = '<MetaDataObject><Properties><TypeReductionMode>TransformValues</TypeReductionMode><xr:TypeReductionMode>TransformValues</xr:TypeReductionMode><LineNumberLength>12</LineNumberLength><xr:LineNumberLength>12</xr:LineNumberLength><Name>Keep</Name></Properties></MetaDataObject>';
+    const v216 = profileGeneratedMetadataXml(generated, '2.16');
     const v217 = profileGeneratedMetadataXml(generated, '2.17');
+    assert.ok(!v216.includes('TypeReductionMode'));
+    assert.ok(!v216.includes('LineNumberLength'));
+    assert.ok(v216.includes('<Name>Keep</Name>'));
     assert.ok(!v217.includes('TypeReductionMode'));
     assert.ok(!v217.includes('LineNumberLength'));
     assert.ok(v217.includes('<Name>Keep</Name>'));
@@ -135,24 +174,28 @@ suite('FormatRank and Version Detection Tests', () => {
     assert.ok(!v218.includes('LineNumberLength'));
   });
 
-  test('profiles all known TypeReductionMode spellings out of a 2.17 Catalog template', async () => {
+  test('profiles all known TypeReductionMode spellings out of a 2.16 Catalog template', async () => {
     const templatePath = path.resolve(
       __dirname,
       '../../../resources/designerTemplates/Designer/Catalog.xml'
     );
     const template = await fs.promises.readFile(templatePath, 'utf8');
-    const profiled = profileGeneratedMetadataXml(template, '2.17');
+    const profiled = profileGeneratedMetadataXml(template, '2.16');
     assert.ok(!/<(?:xr:)?TypeReductionMode\b/.test(profiled));
     assert.ok(!/<(?:xr:)?LineNumberLength\b/.test(profiled));
   });
 
   test('nested InformationRegister Dimension emits TypeReductionMode only from 2.18', () => {
+    const v216 = JSON.stringify(
+      buildDesignerDimensionBlock('Dimension216', MetadataType.InformationRegister, true, 216)
+    );
     const v217 = JSON.stringify(
       buildDesignerDimensionBlock('Dimension217', MetadataType.InformationRegister, true, 217)
     );
     const v218 = JSON.stringify(
       buildDesignerDimensionBlock('Dimension218', MetadataType.InformationRegister, true, 218)
     );
+    assert.ok(!v216.includes('TypeReductionMode'));
     assert.ok(!v217.includes('TypeReductionMode'));
     assert.ok(v218.includes('TypeReductionMode'));
   });
