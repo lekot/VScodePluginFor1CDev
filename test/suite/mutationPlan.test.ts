@@ -6,7 +6,12 @@ import * as os from 'os';
 import * as path from 'path';
 import { hashContent } from '../../src/services/configurationSession/atomicFileStorage';
 import { MutationPlanExecutor, MutationPlanError } from '../../src/services/configurationSession/mutationPlan';
-import { PathBoundaryError } from '../../src/services/configurationSession/pathBoundary';
+import {
+  assertJournalNamespace,
+  assertLexicallyInside,
+  isSamePath,
+  PathBoundaryError,
+} from '../../src/services/configurationSession/pathBoundary';
 
 function collectChildOutput(child: ChildProcess): Promise<{ code: number | null; stdout: string; stderr: string }> {
   let stdout = '';
@@ -1887,5 +1892,116 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(fs.existsSync(secretFile), true, 'internal folder pointed to by symlink must not be deleted or corrupted');
     assert.strictEqual(await fs.promises.readFile(secretFile, 'utf8'), 'sensitive-bsl-code');
     assert.strictEqual(fs.existsSync(path.join(internalVictim, '.root-lease.json')), false, 'lease file must not be written to redirected target');
+  });
+
+  test('#215: assertJournalNamespace directly validates canonical paths and rejects non-directory file', async () => {
+    const { canonicalRoot, canonicalJournalRoot } = await assertJournalNamespace(tempDir);
+    assert.strictEqual(path.basename(canonicalJournalRoot), '.cdt-journal');
+    assert.ok(canonicalJournalRoot.startsWith(canonicalRoot));
+
+    const fileJournal = path.join(tempDir, '.cdt-journal');
+    await fs.promises.writeFile(fileJournal, 'not-a-directory', 'utf8');
+    await assert.rejects(
+      assertJournalNamespace(tempDir),
+      (err: PathBoundaryError) => err.code === 'PATH_OUTSIDE_ROOT',
+    );
+  });
+
+  test('#215: assertJournalNamespace rejects non-existent workspace root with PATH_UNAVAILABLE', async () => {
+    const nonExistent = path.join(tempDir, 'does-not-exist');
+    await assert.rejects(
+      assertJournalNamespace(nonExistent),
+      (err: PathBoundaryError) => err.code === 'PATH_UNAVAILABLE',
+    );
+  });
+
+  test('#215: assertLexicallyInside and isSamePath edge cases', () => {
+    assert.strictEqual(isSamePath(tempDir, tempDir), true);
+    assert.strictEqual(isSamePath(tempDir, path.join(tempDir, 'sub')), false);
+
+    assert.doesNotThrow(() => assertLexicallyInside(tempDir, path.join(tempDir, 'sub')));
+    assert.throws(
+      () => assertLexicallyInside(path.join(tempDir, 'sub'), tempDir),
+      (err: PathBoundaryError) => err.code === 'PATH_OUTSIDE_ROOT',
+    );
+  });
+
+  test('#215: recover skips .journal-*.tmp and non-directory files without error', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(path.join(journalRoot, '.journal-skip-test.tmp'), 'temp-data', 'utf8');
+    await fs.promises.writeFile(path.join(journalRoot, 'skip-file.txt'), 'file-data', 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await executor.recover();
+    assert.strictEqual(fs.existsSync(path.join(journalRoot, 'skip-file.txt')), true);
+  });
+
+  test('#215: recover rejects unrecognized dot directory in journal with RECOVERY_REQUIRED', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.mkdir(path.join(journalRoot, '.unrecognized-hidden'), { recursive: true });
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('.unrecognized-hidden'),
+    );
+  });
+
+  test('#215: recover rejects when operation directory escapes journal root via canonical realpath', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const validOp = path.join(journalRoot, 'valid-op');
+    await fs.promises.mkdir(validOp, { recursive: true });
+    await fs.promises.writeFile(path.join(validOp, 'owner.json'), JSON.stringify({ pid: 9999999, createdAt: 100 }), 'utf8');
+    await fs.promises.writeFile(path.join(validOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'valid-op',
+      plan: { kind: 'test', steps: [], result: null },
+      state: 'committed',
+      appliedSteps: 0,
+      snapshots: [],
+    }), 'utf8');
+
+    const origRealpath = fs.promises.realpath;
+    (fs.promises as any).realpath = async (p: any, opts: any) => {
+      if (path.resolve(String(p)) === path.resolve(validOp)) {
+        return path.join(os.tmpdir(), 'escaped-path');
+      }
+      return origRealpath.call(fs.promises, p, opts);
+    };
+
+    try {
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        executor.recover(),
+        (err: PathBoundaryError) => err.code === 'PATH_OUTSIDE_ROOT',
+      );
+    } finally {
+      (fs.promises as any).realpath = origRealpath;
+    }
+  });
+
+  test('#215: acquireRootLease rejects when journalRoot realpath escapes canonical root', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+
+    const origRealpath = fs.promises.realpath;
+    (fs.promises as any).realpath = async (p: any, opts: any) => {
+      if (path.resolve(String(p)) === path.resolve(journalRoot)) {
+        return path.join(os.tmpdir(), 'foreign-journal');
+      }
+      return origRealpath.call(fs.promises, p, opts);
+    };
+
+    try {
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        executor.recover(),
+        (err: PathBoundaryError) => err.code === 'PATH_OUTSIDE_ROOT',
+      );
+    } finally {
+      (fs.promises as any).realpath = origRealpath;
+    }
   });
 });
