@@ -54,7 +54,7 @@ function upsertChildNode(parent: TreeNode, def: PlaceholderDef, ctx: NormalizeCo
     id: def.id,
     name: def.name,
     type: def.type,
-    properties: def.typeDirName ? { type: def.id } : { type: def.id },
+    properties: { type: def.id },
     children: [],
     filePath: def.typeDirName ? getPlaceholderTypeFilePath(ctx, def.typeDirName) : undefined,
     parent,

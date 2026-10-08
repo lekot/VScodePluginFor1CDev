@@ -38,6 +38,7 @@ export const coreSuiteFiles: string[] = [
   'suite/deleteReconcileRecovery.test.js',
   'suite/typeContentsCache.test.js',
   'suite/metadataDefaultValues.test.js',
+  'suite/compareCodeUnits.test.js',
   'suite/metadataFileLocator.test.js',
   'suite/metadataTypeMapper.test.js',
   'suite/metadataLoader.test.js',

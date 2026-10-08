@@ -165,4 +165,68 @@ suite('ChartOfAccountsWizard UI Flow', () => {
     assert.ok(fs.existsSync(path.join(tmpDir, 'ChartsOfAccounts', 'Хозрасчетный.xml')), 'xml file must exist');
     assert.ok(fs.existsSync(path.join(tmpDir, 'ChartsOfAccounts', 'Хозрасчетный', 'Ext', 'Predefined.xml')), 'predefined.xml must exist');
   });
+
+  test('completes wizard with subconto selection and validates max subconto input', async () => {
+    let inputStep = 0;
+    vscode.window.showInputBox = async (options) => {
+      inputStep++;
+      if (inputStep === 1) {
+        return 'Управленческий';
+      }
+      if (inputStep === 2) {
+        return 'План счетов упр';
+      }
+      if (inputStep === 3) {
+        const validateInput = options?.validateInput;
+        assert.strictEqual(typeof validateInput, 'function', 'max subconto input must provide validation');
+        assert.strictEqual(validateInput!('99'), 'Введите число от 1 до 50');
+        assert.strictEqual(validateInput!('5'), undefined);
+        return '5';
+      }
+      return undefined;
+    };
+
+    let quickPickStep = 0;
+    vscode.window.showQuickPick = (async () => {
+      quickPickStep++;
+      if (quickPickStep === 1) {
+        return { label: 'ВидыСубконто', ref: 'ChartOfCharacteristicTypes.ВидыСубконто' };
+      }
+      if (quickPickStep === 2) {
+        return { label: '@@@.@@.@ (маска, длина 8)', mask: '@@@.@@.@', length: 8 };
+      }
+      return [];
+    }) as any;
+
+    const target: TreeNode = {
+      id: 'ChartsOfAccounts',
+      name: 'Планы счетов',
+      type: MetadataType.ChartOfAccounts,
+      filePath: path.join(tmpDir, 'ChartsOfAccounts'),
+      properties: {},
+    };
+
+    const executed = await runChartOfAccountsWizard({
+      state,
+      target,
+      runConfigurationPlan: async (_configPath: string, plan: any) => {
+        for (const step of plan.steps) {
+          if (step.type === 'ensureDirectory') {
+            await fs.promises.mkdir(step.targetPath, { recursive: true });
+          } else if (step.type === 'writeFile') {
+            await fs.promises.mkdir(path.dirname(step.targetPath), { recursive: true });
+            await fs.promises.writeFile(step.targetPath, step.content, 'utf-8');
+          }
+        }
+        return plan.result;
+      },
+    });
+
+    assert.strictEqual(executed, true);
+    const chartPath = path.join(tmpDir, 'ChartsOfAccounts', 'Управленческий.xml');
+    assert.ok(fs.existsSync(chartPath), 'wizard must create the selected chart of accounts');
+    const chartXml = await fs.promises.readFile(chartPath, 'utf-8');
+    assert.match(chartXml, /<ExtDimensionTypes>ChartOfCharacteristicTypes\.ВидыСубконто<\/ExtDimensionTypes>/);
+    assert.match(chartXml, /<MaxExtDimensionCount>5<\/MaxExtDimensionCount>/);
+  });
 });

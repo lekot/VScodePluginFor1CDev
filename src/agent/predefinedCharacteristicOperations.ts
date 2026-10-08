@@ -4,6 +4,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { XMLParser } from 'fast-xml-parser';
+import { compareCodeUnits } from '../utils/compareCodeUnits';
 import { Logger } from '../utils/logger';
 import { parsePredefinedCharacteristics } from '../parsers/predefinedCharacteristicsParser';
 import { buildXmlString, writeUtf8FileWithBackup } from '../utils/xml/xmlFileIo';
@@ -221,5 +222,5 @@ export async function getCharacteristicValueRegisters(
     }
   }
 
-  return Array.from(found).sort();
+  return Array.from(found).sort(compareCodeUnits);
 }

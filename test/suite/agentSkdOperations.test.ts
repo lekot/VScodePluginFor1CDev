@@ -293,6 +293,34 @@ suite('PowerShell runner process-tree termination', () => {
             child.completeExit(null, 'SIGTERM');
         }
     });
+
+    test('skdCompile parses compilation statistics and output path', async () => {
+        const operations = new SkdOperations({
+            extensionPath: FAKE_EXTENSION_PATH,
+            runPowerShellScript: async () => ({
+                stdout: 'OK  /workspace/out.xml\n    DataSets: 3  Fields: 10  Calculated: 2  Totals: 4  Params: 5  Variants: 1\n    Size: 2048 bytes\n',
+                stderr: '',
+                exitCode: 0,
+            }),
+        });
+
+        const result = await operations.skdCompile({ outputPath: '/workspace/out.xml', value: '<Schema/>' });
+        assert.strictEqual(result.success, true);
+        assert.ok(result.data && 'stats' in result.data, 'successful compilation must return parsed data and statistics');
+        if (!result.data || !('stats' in result.data)) {
+            assert.fail('successful compilation must return parsed data and statistics');
+        }
+        assert.strictEqual(result.data.output, '/workspace/out.xml');
+        assert.deepStrictEqual(result.data.stats, {
+            dataSets: 3,
+            fields: 10,
+            calculated: 2,
+            totals: 4,
+            parameters: 5,
+            variants: 1,
+            sizeBytes: 2048,
+        });
+    });
 });
 
 class InjectedPowerShellChild extends EventEmitter {

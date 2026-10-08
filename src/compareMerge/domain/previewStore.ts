@@ -1,3 +1,4 @@
+import { compareCodeUnits } from '../../utils/compareCodeUnits';
 import type { ComparePreview, PreviewGuard, PreviewStoreCreateInput } from './compareContracts';
 
 export class PreviewStore {
@@ -153,7 +154,7 @@ function formatSnapshotIds(snapshotIds: PreviewGuard['snapshotIds']): string {
   const entries = Object.entries(snapshotIds)
     .filter(([, snapshotId]) => snapshotId)
     .map(([side, snapshotId]) => `${side}=${snapshotId}`)
-    .sort();
+    .sort(compareCodeUnits);
 
   return entries.length > 0 ? entries.join(', ') : 'none';
 }

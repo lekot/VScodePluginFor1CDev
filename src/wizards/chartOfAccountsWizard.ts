@@ -99,7 +99,7 @@ export async function runChartOfAccountsWizard(options: RunChartOfAccountsWizard
       prompt: 'Укажите максимальное количество субконто на счете (от 1 до 50)',
       value: '3',
       validateInput: (val) => {
-        const num = parseInt(val.trim(), 10);
+        const num = Number.parseInt(val.trim(), 10);
         if (isNaN(num) || num < 1 || num > 50) {
           return 'Введите число от 1 до 50';
         }
@@ -109,7 +109,7 @@ export async function runChartOfAccountsWizard(options: RunChartOfAccountsWizard
     if (maxCountStr === undefined) {
       return false;
     }
-    maxExtDimensionCount = parseInt(maxCountStr.trim(), 10);
+    maxExtDimensionCount = Number.parseInt(maxCountStr.trim(), 10);
   }
 
   // Step 4: Code Mask & Length

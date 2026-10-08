@@ -17,6 +17,7 @@ import {
 import {
   handleMessage,
   isMatchingCurrentFormSelection,
+  parseDisplayTypeString,
   saveProperties,
   type MessageHandlerContext,
 } from '../../src/providers/propertiesMessageHandler';
@@ -2240,6 +2241,23 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
         ['<Type/>'],
         'Slow Node A lookup must NOT invoke show() after Node B already active'
       );
+    });
+
+    test('parseDisplayTypeString parses numeric and string qualifiers correctly', () => {
+      const numType = parseDisplayTypeString('Number(15,2)');
+      assert.strictEqual(numType?.category, 'primitive');
+      assert.deepStrictEqual(numType?.types[0].qualifiers, {
+        digits: 15,
+        fractionDigits: 2,
+        allowedSign: 'Any',
+      });
+
+      const strType = parseDisplayTypeString('String(50)');
+      assert.strictEqual(strType?.category, 'primitive');
+      assert.deepStrictEqual(strType?.types[0].qualifiers, {
+        length: 50,
+        allowedLength: 'Variable',
+      });
     });
   });
 });

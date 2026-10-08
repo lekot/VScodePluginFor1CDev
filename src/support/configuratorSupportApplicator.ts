@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { compareCodeUnits } from '../utils/compareCodeUnits';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import {
   resolveInfobaseCanonicalIdentity,
@@ -462,8 +463,8 @@ export class ConfiguratorSupportApplicator implements SupportApplicator {
         fileName,
       };
     });
-    const actualSet = [...actualCfNames].map((name) => name.toLocaleLowerCase()).sort();
-    const expectedSet = expected.map((file) => file.fileName.toLocaleLowerCase()).sort();
+    const actualSet = [...actualCfNames].map((name) => name.toLocaleLowerCase()).sort(compareCodeUnits);
+    const expectedSet = expected.map((file) => file.fileName.toLocaleLowerCase()).sort(compareCodeUnits);
     if (JSON.stringify(actualSet) !== JSON.stringify(expectedSet)) {
       throw new Error('Minimal dump supplier payload set is missing, duplicated, or unexpected.');
     }
@@ -534,7 +535,7 @@ export class ConfiguratorSupportApplicator implements SupportApplicator {
         supplierConfigurationIds: Object.freeze(
           snapshot.supplierConfigurations
             .map((supplier) => supplier.supplierConfigurationId)
-            .sort(),
+            .sort(compareCodeUnits),
         ),
         formatRevision: snapshot.formatRevision,
       });
@@ -835,8 +836,8 @@ function sortedEqual(left: readonly string[], right: readonly string[]): boolean
   if (left.length !== right.length) {
     return false;
   }
-  const leftSorted = [...left].sort();
-  const rightSorted = [...right].sort();
+  const leftSorted = [...left].sort(compareCodeUnits);
+  const rightSorted = [...right].sort(compareCodeUnits);
   return leftSorted.every((value, index) => value === rightSorted[index]);
 }
 

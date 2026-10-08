@@ -118,12 +118,7 @@ export function createSupportServiceComposition(
     if (!acceptingOperations) {
       return Promise.resolve(rejection);
     }
-    let promise: Promise<T>;
-    try {
-      promise = operation();
-    } catch (error) {
-      promise = Promise.reject(error);
-    }
+    const promise = Promise.resolve().then(operation);
     activeOperations.add(promise);
     void promise.then(
       () => activeOperations.delete(promise),

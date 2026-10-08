@@ -221,7 +221,12 @@ suite('ChartOfAccountsWizardService Test Suite', () => {
       const updatedConfigXml = await fs.promises.readFile(path.join(tmpDir, 'Configuration.xml'), 'utf8');
       assert.ok(updatedConfigXml.includes('<ChartOfAccounts>Хозрасчетный</ChartOfAccounts>'));
     } finally {
-      await fs.promises.rm(tmpDir, { recursive: true, force: true });
+      await fs.promises.rm(tmpDir, {
+        recursive: true,
+        force: true,
+        maxRetries: process.platform === 'win32' ? 5 : 0,
+        retryDelay: 100,
+      });
     }
   });
 

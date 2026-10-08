@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { randomBytes } from 'crypto';
 import * as path from 'path';
 import { parseXmlDocument } from '../../compareMerge/xml/xmlDom';
 import {
@@ -1126,7 +1127,7 @@ function validTimeout(timeoutMs: number | undefined): number {
 
 function defaultStagingName(destinationPath: string): string {
   const baseName = path.basename(destinationPath);
-  const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const nonce = `${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
   return `.${baseName}.cdt-staging-${nonce}`;
 }
 

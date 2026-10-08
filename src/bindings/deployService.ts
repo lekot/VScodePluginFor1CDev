@@ -108,8 +108,8 @@ export function vscodeSupportsDeployReadonlyLock(): boolean {
   if (!m) {
     return false;
   }
-  const major = parseInt(m[1]!, 10);
-  const minor = parseInt(m[2]!, 10);
+  const major = Number.parseInt(m[1]!, 10);
+  const minor = Number.parseInt(m[2]!, 10);
   return major > 1 || (major === 1 && minor >= 88);
 }
 

@@ -653,14 +653,14 @@ export class TypeEditorProvider {
             if (k === 'string') {
               const lenEl = document.getElementById('string-length');
               const allowedEl = document.getElementById('string-allowed-length');
-              const len = lenEl && lenEl.value !== '' ? parseInt(lenEl.value, 10) : undefined;
+              const len = lenEl && lenEl.value !== '' ? Number.parseInt(lenEl.value, 10) : undefined;
               qualifierState.string = len !== undefined ? { length: len, allowedLength: (allowedEl && allowedEl.value) || 'Variable' } : undefined;
             } else if (k === 'number') {
               const d = document.getElementById('number-digits');
               const f = document.getElementById('number-fraction-digits');
               const s = document.getElementById('number-allowed-sign');
-              const digits = d && d.value !== '' ? parseInt(d.value, 10) : undefined;
-              const fractionDigits = f && f.value !== '' ? parseInt(f.value, 10) : undefined;
+              const digits = d && d.value !== '' ? Number.parseInt(d.value, 10) : undefined;
+              const fractionDigits = f && f.value !== '' ? Number.parseInt(f.value, 10) : undefined;
               qualifierState.number = (digits !== undefined && fractionDigits !== undefined) ? { digits, fractionDigits, allowedSign: (s && s.value) || 'Any' } : undefined;
             } else if (k === 'date') {
               const df = document.getElementById('date-fractions');

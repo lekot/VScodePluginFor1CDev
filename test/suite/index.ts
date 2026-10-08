@@ -58,13 +58,13 @@ export function run(): Promise<void> {
     }).filter((f) => !coreOnly.has(f.replace(/\\/g, '/')));
 
     testFiles.forEach((file) => mocha.addFile(path.resolve(testsRoot, file)));
-    const discoveredSuites = testFiles.map((file) => file.replace(/\\/g, '/')).sort();
+    const discoveredSuites = testFiles.map((file) => file.replace(/\\/g, '/')).sort((a, b) => a.localeCompare(b));
     const executedSuitesSet = new Set<string>();
     const mandatoryRaw = process.env.MANDATORY_SUITES_VSCODE;
 
     try {
       const runner = mocha.run((failures: number) => {
-        const executedSuites = Array.from(executedSuitesSet).sort();
+        const executedSuites = Array.from(executedSuitesSet).sort((a, b) => a.localeCompare(b));
         const missingMandatorySuites = resolveMissingMandatorySuites(executedSuites, mandatoryRaw);
 
         writeSuiteExecutionReport(process.env.SUITE_REPORT_PATH_VSCODE, {
