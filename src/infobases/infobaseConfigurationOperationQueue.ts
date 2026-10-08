@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'async_hooks';
+import { compareCodeUnits } from '../utils/compareCodeUnits';
 import type { InfobaseEntry } from './models/infobaseEntry';
 import {
   resolveInfobaseCanonicalIdentity,
@@ -66,7 +67,7 @@ export class InfobaseConfigurationOperationQueue {
     reason: string,
   ): readonly InfobaseConfigurationQueueQuarantine[] {
     const quarantinedAt = new Date().toISOString();
-    const entries = [...new Set(identities.map(identityKey))].sort().map((canonicalTargetId) => {
+    const entries = [...new Set(identities.map(identityKey))].sort(compareCodeUnits).map((canonicalTargetId) => {
       const existing = this.quarantines.get(canonicalTargetId);
       if (existing) {
         return existing;
@@ -87,7 +88,7 @@ export class InfobaseConfigurationOperationQueue {
   ): readonly InfobaseConfigurationQueueQuarantine[] {
     return Object.freeze(
       [...new Set(identities.map(identityKey))]
-        .sort()
+        .sort(compareCodeUnits)
         .flatMap((key) => {
           const quarantine = this.quarantines.get(key);
           return quarantine ? [quarantine] : [];
@@ -106,7 +107,7 @@ export class InfobaseConfigurationOperationQueue {
     identities: readonly InfobaseConfigurationQueueIdentity[],
     operation: (lease: InfobaseConfigurationOperationLease) => Promise<T>,
   ): Promise<T> {
-    const requestedKeys = [...new Set(identities.map(identityKey))].sort();
+    const requestedKeys = [...new Set(identities.map(identityKey))].sort(compareCodeUnits);
     const current = this.ownership.getStore();
     if (current?.active) {
       if (requestedKeys.every((key) => current.keys.has(key))) {

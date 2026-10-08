@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import * as net from 'net';
 import * as os from 'os';
+import { compareCodeUnits } from '../../utils/compareCodeUnits';
 import type {
   NativeFormsAction,
   NativeFormsActionResult,
@@ -745,14 +746,14 @@ function encodeGotoRow(
 }
 
 function rowKey(row: Record<string, string | null>): string {
-  return JSON.stringify(Object.keys(row).sort().map((key) => [key, row[key]]));
+  return JSON.stringify(Object.keys(row).sort(compareCodeUnits).map((key) => [key, row[key]]));
 }
 
 function rowsEqual(
   left: Array<Record<string, string | null>>,
   right: Array<Record<string, string | null>>,
 ): boolean {
-  const ordered = (rows: Array<Record<string, string | null>>) => rows.map(rowKey).sort();
+  const ordered = (rows: Array<Record<string, string | null>>) => rows.map(rowKey).sort(compareCodeUnits);
   return JSON.stringify(ordered(left)) === JSON.stringify(ordered(right));
 }
 
@@ -794,7 +795,7 @@ function diffValues(before: unknown, after: unknown, limit = 1000): Array<{ path
       return;
     }
     if (isRecord(left) && isRecord(right)) {
-      const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])].sort();
+      const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])].sort(compareCodeUnits);
       for (const key of keys) {
         visit(left[key], right[key], path ? `${path}.${key}` : key);
         if (changes.length >= limit) {break;}

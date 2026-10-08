@@ -446,7 +446,7 @@ function parseDocument(text: string): JournalDocument {
   if (root.version !== JOURNAL_VERSION || !Array.isArray(root.runs)) {
     throw new SupportRunJournalError('SUPPORT_JOURNAL_INVALID', 'Unsupported support journal schema.');
   }
-  const runs = root.runs.map(parseStoredRun);
+  const runs = root.runs.map((run, index) => parseStoredRun(run, index));
   const configurationIds = new Set<string>();
   for (const run of runs) {
     const configurationId = configurationIdOf(run);
@@ -533,9 +533,7 @@ function parseSummary(value: unknown, location: string): SupportRunSummary {
     if (state !== 'complete' || record.targets.length !== 0) {
       throw invalid(location);
     }
-    return operation === 'sync'
-      ? { ...header, operation, scope, targets: [], state }
-      : { ...header, operation, scope, targets: [], state };
+    return { ...header, operation, scope, targets: [], state };
   }
   const parsedTargets = record.targets.map((target, index) =>
     requireTerminal(parseTargetState(target, `${location}.targets[${index}]`), `${location}.targets[${index}]`));

@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { randomBytes } from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -1127,7 +1128,7 @@ export async function publishConfigurationTree(
     throw new Error(`Источник выгрузки не является каталогом: ${source}`);
   }
 
-  const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const suffix = `${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
   // Keep transaction artefacts inside the destination volume. We never move
   // the workspace root itself, which also avoids a cross-volume rename on Windows.
   const transactionRoot = path.join(destination, `.cdt-config-publish-${suffix}`);
@@ -1262,7 +1263,7 @@ export async function runInfobaseConfigExportToDirectory(
   if (!prep.ok) {
     return { status: 'error', exitCode: null, userMessage: prep.userMessage, logExcerpt: '' };
   }
-  const tempExportDir = path.join(os.tmpdir(), `1cviewer-export-config-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const tempExportDir = path.join(os.tmpdir(), `1cviewer-export-config-${Date.now()}-${randomBytes(4).toString('hex')}`);
   await fs.promises.mkdir(tempExportDir, { recursive: true });
   const outputBuffer = createOperationOutputBuffer();
   const ch = getOutputChannel();

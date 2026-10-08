@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 
+import { compareCodeUnits } from '../../utils/compareCodeUnits';
 import type { CompareTreeNode } from '../compareTreeTypes';
 import { MISSING_TARGET_HASH, type MergeCandidate } from '../merge/mergePreview';
 import type {
@@ -88,7 +89,7 @@ function compareFileArtifacts(
 
   const leftArtifacts = fileArtifactsFor(input.leftInventory, input.match.left);
   const rightArtifacts = fileArtifactsFor(input.rightInventory, input.match.right);
-  const relativePaths = [...new Set([...leftArtifacts.keys(), ...rightArtifacts.keys()])].sort();
+  const relativePaths = [...new Set([...leftArtifacts.keys(), ...rightArtifacts.keys()])].sort(compareCodeUnits);
   const nodes: CompareTreeNode[] = [];
 
   for (const relativePath of relativePaths) {

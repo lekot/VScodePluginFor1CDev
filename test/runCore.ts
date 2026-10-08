@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     try {
       const runner = mocha.run((failures: number) => {
-        const executedSuites = Array.from(executedSuitesSet).sort();
+        const executedSuites = Array.from(executedSuitesSet).sort((a, b) => a.localeCompare(b));
         const missingMandatorySuites = resolveMissingMandatorySuites(executedSuites, mandatoryRaw);
 
         writeSuiteExecutionReport(process.env.SUITE_REPORT_PATH_CORE, {

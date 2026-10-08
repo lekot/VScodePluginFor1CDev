@@ -116,7 +116,9 @@ function scanVersionTree(installRoot: string, deps: PlatformDetectorDeps, bitnes
 function defaultFindExeOnPath(deps: PlatformDetectorDeps, exeName: string): string | null {
   try {
     if (deps.platform === 'win32') {
-      const out = execFileSync('where.exe', [exeName], {
+      const systemRoot = deps.env.SystemRoot ?? deps.env.WINDIR ?? 'C:\\Windows';
+      const whereExe = path.join(systemRoot, 'System32', 'where.exe');
+      const out = execFileSync(whereExe, [exeName], {
         encoding: 'utf-8',
         windowsHide: true,
         timeout: 8000,
@@ -130,7 +132,8 @@ function defaultFindExeOnPath(deps: PlatformDetectorDeps, exeName: string): stri
         return line;
       }
     } else {
-      const out = execFileSync('which', [exeName], {
+      const whichExe = deps.existsSync('/usr/bin/which') ? '/usr/bin/which' : '/bin/which';
+      const out = execFileSync(whichExe, [exeName], {
         encoding: 'utf8',
         timeout: 8000,
         maxBuffer: 65536,

@@ -291,13 +291,13 @@ export class TypeParser {
       return element;
     }
     if (typeof element === 'string') {
-      const num = parseInt(element, 10);
+      const num = Number.parseInt(element, 10);
       return isNaN(num) ? undefined : num;
     }
     if (element && typeof element === 'object') {
       const textValue = (element as Record<string, unknown>)['#text'];
       if (typeof textValue === 'string') {
-        const num = parseInt(textValue, 10);
+        const num = Number.parseInt(textValue, 10);
         return isNaN(num) ? undefined : num;
       }
     }

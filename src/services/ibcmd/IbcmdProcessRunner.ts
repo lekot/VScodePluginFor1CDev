@@ -29,7 +29,7 @@ export function resolveIbcmdTimeoutMs(settingsTimeoutMs: number | undefined, env
   if (typeof settingsTimeoutMs === 'number' && settingsTimeoutMs > 0 && Number.isFinite(settingsTimeoutMs)) {
     return settingsTimeoutMs;
   }
-  const envMs = parseInt(envTimeoutRaw ?? '', 10);
+  const envMs = Number.parseInt(envTimeoutRaw ?? '', 10);
   if (Number.isFinite(envMs) && envMs > 0) {
     return envMs;
   }

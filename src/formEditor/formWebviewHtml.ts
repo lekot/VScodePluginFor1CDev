@@ -1577,7 +1577,7 @@ function buildWebviewJs(): string {
       var sv = document.getElementById('splitter-v');
       var sh = document.getElementById('splitter-h');
       function px(val) { return val + 'px'; }
-      function parsePx(str) { return str ? parseInt(str, 10) || 0 : 0; }
+      function parsePx(str) { return str ? Number.parseInt(str, 10) || 0 : 0; }
       if (sv) {
         sv.addEventListener('mousedown', function(e) {
           e.preventDefault();

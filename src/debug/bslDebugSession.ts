@@ -169,25 +169,25 @@ function parseHitCondition(raw: string): number | undefined {
 
     // Plain integer: '5'
     if (/^\d+$/.test(trimmed)) {
-        return parseInt(trimmed, 10);
+        return Number.parseInt(trimmed, 10);
     }
 
     // '>= N'
     const geMatch = /^>=\s*(\d+)$/.exec(trimmed);
     if (geMatch) {
-        return parseInt(geMatch[1], 10);
+        return Number.parseInt(geMatch[1], 10);
     }
 
     // '> N'  — pause when hit count EXCEEDS N, so first pause at N+1
     const gtMatch = /^>\s*(\d+)$/.exec(trimmed);
     if (gtMatch) {
-        return parseInt(gtMatch[1], 10) + 1;
+        return Number.parseInt(gtMatch[1], 10) + 1;
     }
 
     // '% N'  — every N-th hit
     const modMatch = /^%\s*(\d+)$/.exec(trimmed);
     if (modMatch) {
-        return parseInt(modMatch[1], 10);
+        return Number.parseInt(modMatch[1], 10);
     }
 
     return undefined;

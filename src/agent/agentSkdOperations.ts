@@ -363,7 +363,7 @@ function parseCompileStats(statsLine: string, sizeLine: string): SkdCompileResul
 
 function extractNum(text: string, re: RegExp): number | undefined {
     const m = text.match(re);
-    return m ? parseInt(m[1], 10) : undefined;
+    return m ? Number.parseInt(m[1], 10) : undefined;
 }
 
 /** Парсит сохранённый путь из строки "[OK] Saved {path}". */

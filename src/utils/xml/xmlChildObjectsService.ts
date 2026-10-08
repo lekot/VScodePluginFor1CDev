@@ -634,13 +634,7 @@ function updateNestedElementPropertiesObject(
 
     // Do not write raw objects; preserve existing structured content for non-user keys
     if (typeof newVal === 'object' && newVal !== null && !Array.isArray(newVal)) {
-      // Only overwrite if we have a structured Type object parse from XML
-      if (key === 'Type' && !Array.isArray(existing) && existing && typeof existing === 'object') {
-        // Keep existing Type object (structured v8:Type/v8:Qualifiers), do not flatten
-        result[key] = existing; // already set by spread
-      } else {
-        result[key] = existing; // keep existing for other object props
-      }
+      result[key] = existing;
       continue;
     }
 
@@ -734,13 +728,7 @@ function updateNestedElementProperties(
 
         // Keep raw object references as-is (except for Type structured handling below)
         if (typeof newValue === 'object' && newValue !== null && !Array.isArray(newValue)) {
-          if (key === 'Type' && value && typeof value === 'object') {
-            // preserve existing structured Type element (v8:Type and qualifiers)
-            result[key] = value; // keeps existing child object structure
-          } else {
-            // skip corruption for other raw object props
-            result[key] = value;
-          }
+          result[key] = value;
           continue;
         }
 

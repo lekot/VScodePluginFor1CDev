@@ -123,7 +123,7 @@ export function parseV8iConnectString(connectRaw: string): V8iConnectParsed | { 
 }
 
 function parseIntSafe(raw: string): number | undefined {
-  const n = parseInt(raw, 10);
+  const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) ? n : undefined;
 }
 

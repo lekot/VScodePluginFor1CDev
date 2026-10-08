@@ -232,23 +232,23 @@ function fileConnectionArgv(filePath: string, platform: NodeJS.Platform): string
   return ['/F', safe];
 }
 
-function ibNameArg(name: string, platform: NodeJS.Platform): string {
+function ibNameArg(name: string, _platform: NodeJS.Platform): string {
   const safe = name.replace(/"/g, '');
-  return platform === 'win32' ? `/IBName"${safe}"` : `/IBName"${safe}"`;
+  return `/IBName"${safe}"`;
 }
 
-function serverArg(server: string, platform: NodeJS.Platform): string {
+function serverArg(server: string, _platform: NodeJS.Platform): string {
   const safe = server.replace(/"/g, '');
-  return platform === 'win32' ? `/S"${safe}"` : `/S"${safe}"`;
+  return `/S"${safe}"`;
 }
 
-function userArg(user: string, platform: NodeJS.Platform): string {
+function userArg(user: string, _platform: NodeJS.Platform): string {
   const safe = user.replace(/"/g, '');
-  return platform === 'win32' ? `/N"${safe}"` : `/N"${safe}"`;
+  return `/N"${safe}"`;
 }
 
-function passwordArg(password: string, platform: NodeJS.Platform): string {
-  return platform === 'win32' ? `/P"${password.replace(/"/g, '')}"` : `/P"${password.replace(/"/g, '')}"`;
+function passwordArg(password: string, _platform: NodeJS.Platform): string {
+  return `/P"${password.replace(/"/g, '')}"`;
 }
 
 /**

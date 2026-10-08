@@ -800,7 +800,7 @@ export function parseDisplayTypeString(display: string): TypeDefinition | null {
       category: 'primitive',
       types: [{
         kind: 'number',
-        qualifiers: { digits: parseInt(numMatch[1], 10), fractionDigits: parseInt(numMatch[2], 10), allowedSign: 'Any' },
+        qualifiers: { digits: Number.parseInt(numMatch[1], 10), fractionDigits: Number.parseInt(numMatch[2], 10), allowedSign: 'Any' },
       }],
     };
   }
@@ -808,7 +808,7 @@ export function parseDisplayTypeString(display: string): TypeDefinition | null {
   if (strMatch) {
     return {
       category: 'primitive',
-      types: [{ kind: 'string', qualifiers: { length: parseInt(strMatch[1], 10), allowedLength: 'Variable' } }],
+      types: [{ kind: 'string', qualifiers: { length: Number.parseInt(strMatch[1], 10), allowedLength: 'Variable' } }],
     };
   }
   if (/^Boolean$/i.test(s)) {

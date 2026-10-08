@@ -1,6 +1,7 @@
 import type { ConfigurationId } from '../services/configurationSession/types';
 import type { LockedObjectRef } from '../services/ibcmd/ibcmdLockedObjectsParser';
 import type { SupportApplicationFacade } from '../support/supportApplicationServiceRegistry';
+import { compareCodeUnits } from '../utils/compareCodeUnits';
 import type {
   MasterSupportSnapshot,
   MetadataUniverseEntry,
@@ -196,7 +197,7 @@ export function filterFilesByMasterLocks(
     return {
       kept: [],
       filtered: [],
-      lockedSupportSubjectIds: [...lockedSupportSubjectIds].sort(),
+      lockedSupportSubjectIds: [...lockedSupportSubjectIds].sort(compareCodeUnits),
       mappingDiagnostics,
     };
   }
@@ -217,7 +218,7 @@ export function filterFilesByMasterLocks(
   return {
     kept,
     filtered,
-    lockedSupportSubjectIds: [...lockedSupportSubjectIds].sort(),
+    lockedSupportSubjectIds: [...lockedSupportSubjectIds].sort(compareCodeUnits),
     mappingDiagnostics: [],
   };
 }
