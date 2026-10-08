@@ -6,7 +6,7 @@ import { Logger } from '../utils/logger';
 import { normalizeConfigRelativePath } from './bindingPathUtils';
 
 const TEXT_ENCODER = new TextEncoder();
-const TEXT_DECODER = new TextDecoder('utf-8');
+const TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 export { parseBindingsFileJson, serializeBindingsFileJson } from './bindingFileCodec';
 

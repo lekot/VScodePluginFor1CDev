@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import {
   assertNoSymlinkSegments,
   assertPathWithinRoot,
@@ -63,6 +63,7 @@ export interface OperationOwner {
 }
 
 const ROOT_LEASE_FILE = '.root-lease.json';
+const ROOT_LEASE_QUARANTINE_PREFIX = `${ROOT_LEASE_FILE}.claim-`;
 const LEASE_TTL_MS = 15000;
 const LEASE_HEARTBEAT_INTERVAL_MS = 2000;
 
@@ -76,7 +77,13 @@ interface RootLeaseRecord {
 
 interface ActiveRootLease {
   leaseId: string;
+  assertOwned(): Promise<void>;
   release(): Promise<void>;
+}
+
+interface RootLeaseHeartbeatRecord {
+  leaseId: string;
+  heartbeatAt: number;
 }
 
 export class MutationPlanError extends Error {
@@ -86,6 +93,13 @@ export class MutationPlanError extends Error {
   ) {
     super(message);
     this.name = 'MutationPlanError';
+  }
+}
+
+class RootLeaseOwnershipError extends MutationPlanError {
+  constructor(message: string) {
+    super('PLAN_CONFLICT', message);
+    this.name = 'RootLeaseOwnershipError';
   }
 }
 
@@ -115,24 +129,35 @@ export class MutationPlanExecutor {
     await fs.promises.mkdir(this.journalRoot, { recursive: true });
     const leasePath = path.join(this.journalRoot, ROOT_LEASE_FILE);
     const leaseId = randomUUID();
+    const heartbeatPath = rootLeaseHeartbeatPath(this.journalRoot, leaseId);
+
+    await ensureRootLeaseQuarantineClear(this.journalRoot);
 
     const tryAcquire = async (): Promise<boolean> => {
+      const now = Date.now();
       const record: RootLeaseRecord = {
         leaseId,
         pid: process.pid,
-        createdAt: Date.now(),
-        heartbeatAt: Date.now(),
+        createdAt: now,
+        heartbeatAt: now,
         operationId,
       };
       try {
         await fs.promises.writeFile(leasePath, JSON.stringify(record), { encoding: 'utf8', flag: 'wx' });
-        return true;
       } catch (err: unknown) {
         if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'EEXIST') {
           return false;
         }
         throw err;
       }
+      try {
+        await ensureRootLeaseQuarantineClear(this.journalRoot);
+      } catch (error) {
+        await removeRootLeaseIfUnchanged(leasePath, leaseId).catch(() => false);
+        await fs.promises.rm(heartbeatPath, { force: true }).catch(() => undefined);
+        throw error;
+      }
+      return true;
     };
 
     let acquired = await tryAcquire();
@@ -140,16 +165,22 @@ export class MutationPlanExecutor {
       let existingRecord: RootLeaseRecord | undefined;
       try {
         const raw = await fs.promises.readFile(leasePath, 'utf8');
-        existingRecord = JSON.parse(raw) as RootLeaseRecord;
+        existingRecord = parseRootLeaseRecord(raw);
       } catch (err) {
         if (isMissingError(err)) {
           acquired = await tryAcquire();
+        } else {
+          throw new MutationPlanError(
+            'PLAN_CONFLICT',
+            `Cannot inspect configuration root lease: ${errorMessage(err)}`,
+          );
         }
       }
 
       if (!acquired && existingRecord) {
+        const existingHeartbeatPath = rootLeaseHeartbeatPath(this.journalRoot, existingRecord.leaseId);
+        const lastHeartbeat = await readRootLeaseHeartbeat(existingHeartbeatPath, existingRecord);
         const isHolderAlive = isProcessAlive(existingRecord.pid);
-        const lastHeartbeat = existingRecord.heartbeatAt || existingRecord.createdAt || 0;
         const isHeartbeatFresh = Date.now() - lastHeartbeat <= LEASE_TTL_MS;
 
         if (isHolderAlive && isHeartbeatFresh) {
@@ -159,7 +190,14 @@ export class MutationPlanExecutor {
           );
         }
 
-        await fs.promises.rm(leasePath, { force: true }).catch(() => undefined);
+        const removed = await removeRootLeaseIfUnchanged(leasePath, existingRecord.leaseId);
+        if (!removed) {
+          throw new MutationPlanError(
+            'PLAN_CONFLICT',
+            'Configuration root lease changed while attempting stale lease takeover.',
+          );
+        }
+        await fs.promises.rm(existingHeartbeatPath, { force: true }).catch(() => undefined);
         acquired = await tryAcquire();
         if (!acquired) {
           throw new MutationPlanError(
@@ -170,42 +208,48 @@ export class MutationPlanExecutor {
       }
     }
 
+    if (!acquired) {
+      throw new MutationPlanError('PLAN_CONFLICT', 'Configuration root lease acquisition conflict.');
+    }
+
+    let released = false;
+    let heartbeatInFlight: Promise<void> | undefined;
     const heartbeatTimer = setInterval(() => {
-      void (async () => {
-        try {
-          const raw = await fs.promises.readFile(leasePath, 'utf8');
-          const current = JSON.parse(raw) as RootLeaseRecord;
-          if (current.leaseId === leaseId) {
-            current.heartbeatAt = Date.now();
-            await fs.promises.writeFile(leasePath, JSON.stringify(current), 'utf8');
-          }
-        } catch {
-          // ignore transient error
-        }
-      })();
+      if (released || heartbeatInFlight) { return; }
+      heartbeatInFlight = (async () => {
+        await assertRootLeaseOwned(leasePath, this.journalRoot, leaseId);
+        await writeRootLeaseHeartbeat(heartbeatPath, leaseId, Date.now());
+      })().catch(() => undefined).finally(() => {
+        heartbeatInFlight = undefined;
+      });
     }, LEASE_HEARTBEAT_INTERVAL_MS);
     if (typeof heartbeatTimer.unref === 'function') {
       heartbeatTimer.unref();
     }
 
-    let released = false;
+    const assertOwned = async (): Promise<void> => {
+      if (released) {
+        throw new RootLeaseOwnershipError('Configuration root lease ownership was lost.');
+      }
+      await assertRootLeaseOwned(leasePath, this.journalRoot, leaseId);
+    };
+
     const release = async (): Promise<void> => {
       if (released) { return; }
       released = true;
       clearInterval(heartbeatTimer);
+      await heartbeatInFlight?.catch(() => undefined);
       try {
-        const raw = await fs.promises.readFile(leasePath, 'utf8');
-        const current = JSON.parse(raw) as RootLeaseRecord;
-        if (current.leaseId === leaseId) {
-          await fs.promises.rm(leasePath, { force: true });
-        }
+        await assertRootLeaseOwned(leasePath, this.journalRoot, leaseId);
+        await removeRootLeaseIfUnchanged(leasePath, leaseId);
       } catch {
-        // ignore error
+        // A different lease owner must never be removed during release.
       }
+      await fs.promises.rm(heartbeatPath, { force: true }).catch(() => undefined);
       await this.removeJournalRootWhenEmpty().catch(() => undefined);
     };
 
-    return { leaseId, release };
+    return { leaseId, assertOwned, release };
   }
 
   private async removeOperationDir(operationPath: string): Promise<void> {
@@ -223,7 +267,8 @@ export class MutationPlanExecutor {
       throw new MutationPlanError('PLAN_CONFLICT', `Invalid or unsafe operationId: "${operationId}"`);
     }
 
-    await this.recoverLocked();
+    await lease.assertOwned();
+    await this.recoverLocked(lease);
     const operationPath = path.join(this.journalRoot, operationId);
     await this.validatePlan(plan);
     let snapshots: PathSnapshot[];
@@ -272,10 +317,12 @@ export class MutationPlanExecutor {
       journal.state = 'applying';
       await this.writeJournal(operationPath, journal);
       for (let index = 0; index < plan.steps.length; index++) {
+        await lease.assertOwned();
         await this.applyStep(plan.steps[index]!);
         journal.appliedSteps = index + 1;
         await this.writeJournal(operationPath, journal);
       }
+      await lease.assertOwned();
       journal.state = 'committed';
       await this.writeJournal(operationPath, journal);
       // Commit is durable; cleanup is best-effort and recovery will remove a committed journal.
@@ -283,6 +330,13 @@ export class MutationPlanExecutor {
       await this.removeJournalRootWhenEmpty().catch(() => undefined);
       return plan.result;
     } catch (error) {
+      const leaseWasLost = error instanceof RootLeaseOwnershipError;
+      if (leaseWasLost) {
+        throw new MutationPlanError(
+          'RECOVERY_REQUIRED',
+          `Mutation stopped after root lease ownership changed: ${errorMessage(error)}`,
+        );
+      }
       journal.state = 'rollback-required';
       await this.writeJournal(operationPath, journal).catch(() => undefined);
       const isPreEffectConflict =
@@ -316,7 +370,8 @@ export class MutationPlanExecutor {
     try {
       const lease = await this.acquireRootLease('recovery');
       try {
-        await this.recoverLocked();
+        await lease.assertOwned();
+        await this.recoverLocked(lease);
       } finally {
         await lease.release();
       }
@@ -325,7 +380,7 @@ export class MutationPlanExecutor {
     }
   }
 
-  private async recoverLocked(): Promise<void> {
+  private async recoverLocked(lease: ActiveRootLease): Promise<void> {
     let entries: fs.Dirent[];
     try {
       entries = await fs.promises.readdir(this.journalRoot, { withFileTypes: true });
@@ -340,6 +395,7 @@ export class MutationPlanExecutor {
         continue;
       }
       const operationPath = path.join(this.journalRoot, entry.name);
+      await lease.assertOwned();
 
       let owner: OperationOwner | undefined;
       try {
@@ -397,6 +453,7 @@ export class MutationPlanExecutor {
         // It is completely safe to clean up even if owner process PID is still alive.
         if (journal.state === 'committed') {
           try {
+            await lease.assertOwned();
             await this.removeOperationDir(operationPath);
           } catch (cleanupError) {
             Logger.warn(`Failed to clean up committed operation directory: ${operationPath}`, cleanupError);
@@ -407,7 +464,9 @@ export class MutationPlanExecutor {
         // #183: Rollback was explicitly required after an error.
         // It must be restored and removed rather than blocking with PLAN_CONFLICT.
         if (journal.state === 'rollback-required') {
+          await lease.assertOwned();
           await this.restoreSnapshots(operationPath, journal.snapshots);
+          await lease.assertOwned();
           await this.removeOperationDir(operationPath);
           continue;
         }
@@ -423,7 +482,9 @@ export class MutationPlanExecutor {
         }
 
         // Owner process is terminated/absent or stale: rollback interrupted plan.
+        await lease.assertOwned();
         await this.restoreSnapshots(operationPath, journal.snapshots);
+        await lease.assertOwned();
         await this.removeOperationDir(operationPath);
         continue;
       }
@@ -459,12 +520,14 @@ export class MutationPlanExecutor {
         // No mutation steps were ever applied to target files; clean up safely without throwing RECOVERY_REQUIRED.
         const ownerInfo = owner ? ` from terminated process ${owner.pid}` : '';
         Logger.warn(`Removed orphan mutation journal dir${ownerInfo} without journal.json: ${operationPath}`);
+        await lease.assertOwned();
         await this.removeOperationDir(operationPath).catch((err) => {
           Logger.warn(`Failed to remove orphan mutation journal dir: ${operationPath}`, err);
         });
         continue;
       }
     }
+    await lease.assertOwned();
     await this.removeJournalRootWhenEmpty();
   }
 
@@ -754,6 +817,275 @@ function isMissingError(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT');
 }
 
+function rootLeaseHeartbeatPath(journalRoot: string, leaseId: string): string {
+  const leaseKey = createHash('sha256').update(leaseId, 'utf8').digest('hex');
+  return path.join(journalRoot, `${ROOT_LEASE_FILE}.${leaseKey}.heartbeat`);
+}
+
+function parseRootLeaseClaimTimestamp(name: string): number | undefined {
+  const suffix = name.slice(ROOT_LEASE_QUARANTINE_PREFIX.length);
+  if (!suffix.startsWith('v2-')) { return undefined; }
+  const match = /^v2-(\d+)-(\d+)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(suffix);
+  if (!match) {
+    throw new MutationPlanError('PLAN_CONFLICT', 'Configuration root lease claim name is malformed.');
+  }
+  const claimedAt = Number(match[1]);
+  const claimantPid = Number(match[2]);
+  if (!Number.isSafeInteger(claimedAt) || claimedAt < 0
+    || !Number.isSafeInteger(claimantPid) || claimantPid <= 0) {
+    throw new MutationPlanError('PLAN_CONFLICT', 'Configuration root lease claim metadata is invalid.');
+  }
+  return claimedAt;
+}
+
+function parseRootLeaseRecord(raw: string): RootLeaseRecord {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    throw new MutationPlanError(
+      'PLAN_CONFLICT',
+      `Configuration root lease contains malformed JSON: ${errorMessage(error)}`,
+    );
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new MutationPlanError('PLAN_CONFLICT', 'Configuration root lease record must be an object.');
+  }
+  const record = parsed as Partial<RootLeaseRecord>;
+  const now = Date.now();
+  if (
+    typeof record.leaseId !== 'string'
+    || record.leaseId.trim().length === 0
+    || record.leaseId.length > 256
+    || !Number.isSafeInteger(record.pid)
+    || (record.pid as number) <= 0
+    || typeof record.createdAt !== 'number'
+    || !Number.isFinite(record.createdAt)
+    || record.createdAt < 0
+    || record.createdAt > now + LEASE_TTL_MS
+    || typeof record.heartbeatAt !== 'number'
+    || !Number.isFinite(record.heartbeatAt)
+    || record.heartbeatAt < 0
+    || record.heartbeatAt > now + LEASE_TTL_MS
+    || typeof record.operationId !== 'string'
+    || record.operationId.trim().length === 0
+  ) {
+    throw new MutationPlanError('PLAN_CONFLICT', 'Configuration root lease record has invalid fields.');
+  }
+  return record as RootLeaseRecord;
+}
+
+function parseRootLeaseHeartbeat(raw: string, leaseId: string): RootLeaseHeartbeatRecord {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    throw new MutationPlanError(
+      'PLAN_CONFLICT',
+      `Configuration root lease heartbeat is malformed: ${errorMessage(error)}`,
+    );
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new MutationPlanError('PLAN_CONFLICT', 'Configuration root lease heartbeat must be an object.');
+  }
+  const heartbeat = parsed as Partial<RootLeaseHeartbeatRecord>;
+  if (
+    heartbeat.leaseId !== leaseId
+    || typeof heartbeat.heartbeatAt !== 'number'
+    || !Number.isFinite(heartbeat.heartbeatAt)
+    || heartbeat.heartbeatAt < 0
+    || heartbeat.heartbeatAt > Date.now() + LEASE_TTL_MS
+  ) {
+    throw new MutationPlanError('PLAN_CONFLICT', 'Configuration root lease heartbeat has invalid fields.');
+  }
+  return heartbeat as RootLeaseHeartbeatRecord;
+}
+
+async function readRootLeaseHeartbeat(
+  heartbeatPath: string,
+  lease: RootLeaseRecord,
+): Promise<number> {
+  try {
+    const raw = await fs.promises.readFile(heartbeatPath, 'utf8');
+    return parseRootLeaseHeartbeat(raw, lease.leaseId).heartbeatAt;
+  } catch (error) {
+    if (isMissingError(error)) {
+      return lease.heartbeatAt;
+    }
+    throw new MutationPlanError(
+      'PLAN_CONFLICT',
+      `Cannot inspect configuration root lease heartbeat: ${errorMessage(error)}`,
+    );
+  }
+}
+
+async function writeRootLeaseHeartbeat(
+  heartbeatPath: string,
+  leaseId: string,
+  heartbeatAt: number,
+): Promise<void> {
+  const tempPath = `${heartbeatPath}.${randomUUID()}.tmp`;
+  try {
+    const heartbeat: RootLeaseHeartbeatRecord = { leaseId, heartbeatAt };
+    await fs.promises.writeFile(tempPath, JSON.stringify(heartbeat), { encoding: 'utf8', flag: 'wx' });
+    await fs.promises.rename(tempPath, heartbeatPath);
+  } catch (error) {
+    await fs.promises.rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function ensureRootLeaseQuarantineClear(journalRoot: string): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await fs.promises.readdir(journalRoot);
+  } catch (error) {
+    if (isMissingError(error)) { return; }
+    throw new MutationPlanError(
+      'PLAN_CONFLICT',
+      `Cannot inspect configuration root lease state: ${errorMessage(error)}`,
+    );
+  }
+  for (const name of entries.filter((entryName) => entryName.startsWith(ROOT_LEASE_QUARANTINE_PREFIX))) {
+    const claimPath = path.join(journalRoot, name);
+    let claim: RootLeaseRecord;
+    try {
+      claim = parseRootLeaseRecord(await fs.promises.readFile(claimPath, 'utf8'));
+    } catch (error) {
+      throw new MutationPlanError(
+        'PLAN_CONFLICT',
+        `Configuration root lease claim cannot be validated: ${errorMessage(error)}`,
+      );
+    }
+    const claimedAt = parseRootLeaseClaimTimestamp(name);
+    if (claimedAt !== undefined && Date.now() - claimedAt < LEASE_TTL_MS) {
+      throw new MutationPlanError(
+        'PLAN_CONFLICT',
+        'Configuration root lease is being fenced by an active process.',
+      );
+    }
+    const heartbeatPath = rootLeaseHeartbeatPath(journalRoot, claim.leaseId);
+    const lastHeartbeat = await readRootLeaseHeartbeat(heartbeatPath, claim);
+    if (isProcessAlive(claim.pid) && Date.now() - lastHeartbeat <= LEASE_TTL_MS) {
+      throw new MutationPlanError(
+        'PLAN_CONFLICT',
+        'Configuration root lease is being fenced by an active process.',
+      );
+    }
+    try {
+      await fs.promises.rm(claimPath, { force: true });
+      await fs.promises.rm(heartbeatPath, { force: true });
+    } catch (error) {
+      throw new MutationPlanError(
+        'PLAN_CONFLICT',
+        `Cannot recover stale configuration root lease claim: ${errorMessage(error)}`,
+      );
+    }
+  }
+}
+
+async function assertRootLeaseOwned(
+  leasePath: string,
+  journalRoot: string,
+  expectedLeaseId: string,
+): Promise<void> {
+  try {
+    await ensureRootLeaseQuarantineClear(journalRoot);
+    const raw = await fs.promises.readFile(leasePath, 'utf8');
+    const current = parseRootLeaseRecord(raw);
+    if (current.leaseId !== expectedLeaseId) {
+      throw new RootLeaseOwnershipError('Configuration root lease ownership was lost.');
+    }
+  } catch (error) {
+    if (error instanceof RootLeaseOwnershipError) { throw error; }
+    throw new RootLeaseOwnershipError(
+      `Configuration root lease ownership could not be verified: ${errorMessage(error)}`,
+    );
+  }
+}
+
+async function restoreRootLeaseClaim(claimPath: string, leasePath: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      await fs.promises.link(claimPath, leasePath);
+      break;
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST') {
+        if (attempt === 9) { return false; }
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        continue;
+      }
+      throw new MutationPlanError(
+        'PLAN_CONFLICT',
+        `Cannot restore a replaced configuration root lease: ${errorMessage(error)}`,
+      );
+    }
+  }
+  try {
+    await fs.promises.rm(claimPath, { force: true });
+  } catch (error) {
+    throw new MutationPlanError(
+      'PLAN_CONFLICT',
+      `Configuration root lease was restored but its claim marker remains: ${errorMessage(error)}`,
+    );
+  }
+  return true;
+}
+
+/** Removes a lease only after atomically moving and validating the exact file at the path. */
+async function removeRootLeaseIfUnchanged(leasePath: string, expectedLeaseId: string): Promise<boolean> {
+  const claimPath = path.join(
+    path.dirname(leasePath),
+    `${ROOT_LEASE_QUARANTINE_PREFIX}v2-${Date.now()}-${process.pid}-${randomUUID()}`,
+  );
+  try {
+    await fs.promises.rename(leasePath, claimPath);
+  } catch (error) {
+    if (isMissingError(error)) { return false; }
+    throw new MutationPlanError(
+      'PLAN_CONFLICT',
+      `Cannot fence configuration root lease: ${errorMessage(error)}`,
+    );
+  }
+
+  let movedLease: RootLeaseRecord;
+  try {
+    movedLease = parseRootLeaseRecord(await fs.promises.readFile(claimPath, 'utf8'));
+  } catch (error) {
+    const restored = await restoreRootLeaseClaim(claimPath, leasePath).catch(() => false);
+    if (!restored) {
+      throw new MutationPlanError(
+        'PLAN_CONFLICT',
+        'Configuration root lease could not be validated or restored; the claim marker was preserved.',
+      );
+    }
+    throw error instanceof MutationPlanError
+      ? error
+      : new MutationPlanError('PLAN_CONFLICT', `Cannot validate moved root lease: ${errorMessage(error)}`);
+  }
+
+  if (movedLease.leaseId !== expectedLeaseId) {
+    const restored = await restoreRootLeaseClaim(claimPath, leasePath);
+    if (!restored) {
+      throw new MutationPlanError(
+        'PLAN_CONFLICT',
+        'A replacement root lease appeared during fencing; its predecessor was preserved in a claim marker.',
+      );
+    }
+    return false;
+  }
+
+  try {
+    await fs.promises.rm(claimPath, { force: true });
+  } catch (error) {
+    throw new MutationPlanError(
+      'PLAN_CONFLICT',
+      `Configuration root lease was fenced but its claim marker could not be removed: ${errorMessage(error)}`,
+    );
+  }
+  return true;
+}
+
 function isNotEmptyError(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOTEMPTY');
 }
@@ -783,4 +1115,3 @@ export function isOwnerActivelyRunning(owner: OperationOwner | undefined): boole
   }
   return true;
 }
-
