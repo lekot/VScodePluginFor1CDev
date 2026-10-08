@@ -6,7 +6,7 @@
  * particular, an absent version must never become 2.17 before a write.
  */
 
-export const FORMAT_VERIFIED_MIN = 217;
+export const FORMAT_VERIFIED_MIN = 216;
 export const FORMAT_VERIFIED_MAX = 221;
 /** Kept only for callers that intentionally need a sample version. */
 export const DEFAULT_FORMAT_VERSION = '2.17';
@@ -21,7 +21,7 @@ export interface FormatVersionInfo {
 export interface WriteFormatProfile {
   /** Exact root `version` value, including an optional patch component. */
   version: string;
-  rank: 217 | 218 | 219 | 220 | 221;
+  rank: 216 | 217 | 218 | 219 | 220 | 221;
   hasTypeReductionMode: boolean;
   hasLineNumberLength: boolean;
   hasPalNamespace: boolean;
@@ -37,7 +37,7 @@ export class UnsupportedMetadataFormatError extends Error {
     const suffix = reason ? ` (${reason})` : '';
     super(
       `Запись метаданных остановлена: формат XML «${shownVersion}» не поддерживается. ` +
-      'Поддерживается запись только для форматов 2.17–2.21; обновите расширение или откройте конфигурацию в совместимой версии платформы.' +
+      'Поддерживается запись только для форматов 2.16–2.21; обновите расширение или откройте конфигурацию в совместимой версии платформы.' +
       suffix
     );
     this.name = 'UnsupportedMetadataFormatError';

@@ -2195,6 +2195,66 @@ suite('elementOperations', () => {
     }
   });
 
+  test('2.16 profile creates root, nested metadata and form XML without converting the project', async () => {
+    const dir = await createTempDir('1cviewer-fmt-216-');
+    try {
+      const configXmlPath = path.join(dir, 'Configuration.xml');
+      const configXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.16">
+  <Configuration uuid="42bff091-dd0b-4592-a67f-70c38db7993f">
+    <Properties>
+      <Name>TestConfig216</Name>
+      <DatabaseTablespacesUseMode>DontUse</DatabaseTablespacesUseMode>
+      <DefaultReportAppearanceTemplate/>
+    </Properties>
+    <ChildObjects/>
+  </Configuration>
+</MetaDataObject>`;
+      await fs.promises.writeFile(configXmlPath, configXml, 'utf-8');
+
+      const catalogsPath = path.join(dir, 'Catalogs');
+      const confNode = createConfigNode();
+      const catTypeNode = createCatalogsTypeNode(confNode, catalogsPath);
+      await createElement(catTypeNode, 'Product216');
+
+      const productXmlPath = path.join(catalogsPath, 'Product216.xml');
+      const productXml = await readFileContent(productXmlPath);
+      assert.ok(productXml.includes('version="2.16"'), 'new object must retain the project format');
+      assert.ok(!productXml.includes('xmlns:pal'), '2.16 objects must not emit the 2.21 namespace');
+      assert.ok(!productXml.includes('TypeReductionMode'), '2.16 objects must not emit 2.18 properties');
+      assert.ok(!productXml.includes('LineNumberLength'), '2.16 objects must not emit 2.20 properties');
+
+      const productNode = createCatalogNode('Product216', catTypeNode, productXmlPath);
+      await createElement(productNode, 'InternalCode');
+      const productWithNested = await readFileContent(productXmlPath);
+      assert.ok(productWithNested.includes('<Attribute'), 'nested attribute must be created');
+      assert.ok(productWithNested.includes('<Name>InternalCode</Name>'));
+      assert.ok(productWithNested.includes('version="2.16"'));
+      assert.ok(!productWithNested.includes('xmlns:pal'));
+      assert.ok(!productWithNested.includes('TypeReductionMode'));
+      assert.ok(!productWithNested.includes('LineNumberLength'));
+
+      const formsPath = path.join(catalogsPath, 'Product216', 'Forms');
+      const formsNode = createFormsNode(productNode, formsPath);
+      await createForm(formsNode, 'Main216');
+      const formMeta = await readFileContent(path.join(formsPath, 'Main216.xml'));
+      const extForm = await readFileContent(path.join(formsPath, 'Main216', 'Ext', 'Form.xml'));
+      assert.ok(formMeta.includes('version="2.16"'), 'form metadata must use the project format');
+      assert.ok(extForm.includes('version="2.16"'), 'Ext/Form.xml must use the project format');
+      assert.ok(!formMeta.includes('xmlns:pal') && !extForm.includes('xmlns:pal'));
+
+      const configAfter = await readFileContent(configXmlPath);
+      assert.ok(configAfter.includes('version="2.16"'), 'Configuration.xml version must remain unchanged');
+      assert.ok(configAfter.includes('<DatabaseTablespacesUseMode>DontUse</DatabaseTablespacesUseMode>'));
+      assert.ok(!configAfter.includes('AllowedIncomingShareRequestTypes'), '2.17 root property must not be inserted');
+      const configDom = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' }).parse(configAfter);
+      const registered = configDom.MetaDataObject.Configuration.ChildObjects.Catalog;
+      assert.strictEqual(registered, 'Product216', 'new object must be registered in Configuration.xml');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
   test('createElement respects project format version 2.17 (8.3.24)', async () => {
     const dir = await createTempDir('1cviewer-fmt-217-');
     try {
@@ -2251,7 +2311,7 @@ suite('elementOperations', () => {
     }
   });
 
-  for (const version of ['missing', '2.16', '2.22', 'malformed']) {
+  for (const version of ['missing', '2.15', '2.22', 'malformed']) {
     test(`createElement rejects project format ${version} before creating filesystem artifacts`, async () => {
       const dir = await createTempDir('1cviewer-fmt-reject-');
       try {
