@@ -2,8 +2,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createHash, randomUUID } from 'crypto';
 import {
+  assertJournalNamespace,
+  assertLexicallyInside,
   assertNoSymlinkSegments,
   assertPathWithinRoot,
+  isPathInside,
+  isSamePath,
   PathBoundaryError,
 } from './pathBoundary';
 import { hashContent } from './atomicFileStorage';
@@ -105,7 +109,7 @@ class RootLeaseOwnershipError extends MutationPlanError {
 
 /** Executes serializable filesystem plans with a write-ahead journal and reverse recovery. */
 export class MutationPlanExecutor {
-  private readonly journalRoot: string;
+  private journalRoot: string;
 
   constructor(private readonly rootPath: string) {
     this.journalRoot = path.join(rootPath, '.cdt-journal');
@@ -126,7 +130,32 @@ export class MutationPlanExecutor {
   }
 
   private async acquireRootLease(operationId: string): Promise<ActiveRootLease> {
-    await fs.promises.mkdir(this.journalRoot, { recursive: true });
+    const { canonicalJournalRoot } = await assertJournalNamespace(this.rootPath);
+
+    try {
+      await fs.promises.mkdir(this.journalRoot, { recursive: false });
+    } catch (mkdirError) {
+      if (!isAlreadyExistsError(mkdirError)) {
+        throw mkdirError;
+      }
+    }
+    const postStat = await fs.promises.lstat(this.journalRoot);
+    if (postStat.isSymbolicLink() || !postStat.isDirectory()) {
+      throw new PathBoundaryError(
+        'PATH_OUTSIDE_ROOT',
+        `Каталог журнала не может быть символической ссылкой или файлом: ${this.journalRoot}`,
+        this.journalRoot,
+      );
+    }
+    const postRealJournal = await fs.promises.realpath(this.journalRoot);
+    if (!isSamePath(postRealJournal, canonicalJournalRoot)) {
+      throw new PathBoundaryError(
+        'PATH_OUTSIDE_ROOT',
+        `Каталог журнала выходит за границы корня: ${this.journalRoot}`,
+        this.journalRoot,
+      );
+    }
+
     const leasePath = path.join(this.journalRoot, ROOT_LEASE_FILE);
     const leaseId = randomUUID();
     const heartbeatPath = rootLeaseHeartbeatPath(this.journalRoot, leaseId);
@@ -253,6 +282,32 @@ export class MutationPlanExecutor {
   }
 
   private async removeOperationDir(operationPath: string): Promise<void> {
+    assertLexicallyInside(this.journalRoot, operationPath);
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.lstat(operationPath);
+    } catch (error) {
+      if (isMissingError(error)) {
+        return;
+      }
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new PathBoundaryError(
+        'PATH_OUTSIDE_ROOT',
+        `Refusing to remove symbolic link operation directory: ${operationPath}`,
+        operationPath,
+      );
+    }
+    const { canonicalJournalRoot } = await assertJournalNamespace(this.rootPath);
+    const canonicalTarget = await fs.promises.realpath(operationPath);
+    if (!isPathInside(canonicalJournalRoot, canonicalTarget)) {
+      throw new PathBoundaryError(
+        'PATH_OUTSIDE_ROOT',
+        `Operation directory escapes journal root: ${operationPath}`,
+        operationPath,
+      );
+    }
     await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 
@@ -381,6 +436,7 @@ export class MutationPlanExecutor {
   }
 
   private async recoverLocked(lease: ActiveRootLease): Promise<void> {
+    const { canonicalJournalRoot } = await assertJournalNamespace(this.rootPath);
     let entries: fs.Dirent[];
     try {
       entries = await fs.promises.readdir(this.journalRoot, { withFileTypes: true });
@@ -391,10 +447,77 @@ export class MutationPlanExecutor {
       throw new MutationPlanError('RECOVERY_REQUIRED', errorMessage(error));
     }
     for (const entry of entries) {
-      if (!entry.isDirectory()) {
+      if (entry.name === ROOT_LEASE_FILE || entry.name.startsWith(ROOT_LEASE_FILE)) {
         continue;
       }
+      if (entry.name.startsWith('.journal-') && entry.name.endsWith('.tmp')) {
+        continue;
+      }
+
       const operationPath = path.join(this.journalRoot, entry.name);
+      let stat: fs.Stats;
+      try {
+        stat = await fs.promises.lstat(operationPath);
+      } catch (error) {
+        if (isMissingError(error)) {
+          continue;
+        }
+        throw new MutationPlanError('RECOVERY_REQUIRED', errorMessage(error));
+      }
+
+      if (stat.isSymbolicLink()) {
+        throw new MutationPlanError(
+          'RECOVERY_REQUIRED',
+          `Forbidden symbolic link in journal directory: "${entry.name}"`,
+        );
+      }
+
+      if (!stat.isDirectory()) {
+        continue;
+      }
+
+      const canonicalOp = await fs.promises.realpath(operationPath);
+      const expectedCanonicalOp = path.join(canonicalJournalRoot, entry.name);
+      if (!isSamePath(canonicalOp, expectedCanonicalOp)) {
+        throw new PathBoundaryError(
+          'PATH_OUTSIDE_ROOT',
+          `Operation path escapes journal root: ${operationPath}`,
+          operationPath,
+        );
+      }
+
+      const isStaging = entry.name.startsWith('.prep-');
+      const isNormalOp = !entry.name.startsWith('.')
+        && path.basename(entry.name) === entry.name
+        && !entry.name.includes('/')
+        && !entry.name.includes('\\');
+
+      if (!isStaging && !isNormalOp) {
+        throw new MutationPlanError(
+          'RECOVERY_REQUIRED',
+          `Unrecognized directory in journal: "${entry.name}"`,
+        );
+      }
+
+      let opEntries: string[];
+      try {
+        opEntries = await fs.promises.readdir(operationPath);
+      } catch (opReadError) {
+        throw new MutationPlanError(
+          'RECOVERY_REQUIRED',
+          `Cannot read operation directory "${entry.name}": ${errorMessage(opReadError)}`,
+        );
+      }
+      const hasAlienFiles = opEntries.some((name) =>
+        name !== 'owner.json' && name !== 'journal.json' && name !== 'backups' && !(name.startsWith('.journal-') && name.endsWith('.tmp'))
+      );
+      if (hasAlienFiles) {
+        throw new MutationPlanError(
+          'RECOVERY_REQUIRED',
+          `Operation directory contains unrecognized files: "${entry.name}"`,
+        );
+      }
+
       await lease.assertOwned();
 
       let owner: OperationOwner | undefined;
@@ -499,7 +622,7 @@ export class MutationPlanExecutor {
         }
 
         // If staging directory without owner is recent, another process might be initializing it! Fail-closed.
-        if (owner === undefined && entry.name.startsWith('.')) {
+        if (owner === undefined && isStaging) {
           try {
             const stat = await fs.promises.stat(operationPath);
             const ageMs = Date.now() - stat.mtimeMs;
@@ -1088,6 +1211,10 @@ async function removeRootLeaseIfUnchanged(leasePath: string, expectedLeaseId: st
 
 function isNotEmptyError(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOTEMPTY');
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code: string }).code === 'EEXIST');
 }
 
 function errorMessage(error: unknown): string {

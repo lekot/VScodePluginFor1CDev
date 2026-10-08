@@ -187,7 +187,7 @@ async function canonicalizeTargetFrom(
   }
 }
 
-function assertLexicallyInside(rootPath: string, targetPath: string): void {
+export function assertLexicallyInside(rootPath: string, targetPath: string): void {
   if (!isPathInside(rootPath, targetPath)) {
     throw new PathBoundaryError(
       'PATH_OUTSIDE_ROOT',
@@ -197,6 +197,68 @@ function assertLexicallyInside(rootPath: string, targetPath: string): void {
   }
 }
 
+export function isSamePath(a: string, b: string): boolean {
+  const normA = path.resolve(a);
+  const normB = path.resolve(b);
+  return process.platform === 'win32'
+    ? normA.toLocaleLowerCase() === normB.toLocaleLowerCase()
+    : normA === normB;
+}
+
+/**
+ * Validates that .cdt-journal is located strictly inside the canonical workspace root,
+ * is not a symbolic link or junction, and canonicalizes its path.
+ */
+export async function assertJournalNamespace(
+  rootPath: string,
+): Promise<{ canonicalRoot: string; canonicalJournalRoot: string }> {
+  const absoluteRoot = path.resolve(rootPath);
+  let canonicalRoot: string;
+  try {
+    canonicalRoot = await fs.promises.realpath(absoluteRoot);
+  } catch (error) {
+    throw new PathBoundaryError(
+      'PATH_UNAVAILABLE',
+      `Не удалось канонизировать корень конфигурации: ${errorMessage(error)}`,
+      rootPath,
+    );
+  }
+
+  const expectedJournalRoot = path.join(canonicalRoot, '.cdt-journal');
+  let stat: fs.Stats | undefined;
+  try {
+    stat = await fs.promises.lstat(expectedJournalRoot);
+  } catch (error) {
+    if (!isMissingError(error)) {
+      throw new PathBoundaryError(
+        'PATH_UNAVAILABLE',
+        `Не удалось проверить каталог журнала: ${errorMessage(error)}`,
+        expectedJournalRoot,
+      );
+    }
+  }
+
+  if (stat) {
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new PathBoundaryError(
+        'PATH_OUTSIDE_ROOT',
+        `Каталог журнала не может быть символической ссылкой или файлом: ${expectedJournalRoot}`,
+        expectedJournalRoot,
+      );
+    }
+    const realJournal = await fs.promises.realpath(expectedJournalRoot);
+    if (!isSamePath(realJournal, expectedJournalRoot)) {
+      throw new PathBoundaryError(
+        'PATH_OUTSIDE_ROOT',
+        `Каталог журнала выходит за границы корня: ${expectedJournalRoot}`,
+        expectedJournalRoot,
+      );
+    }
+  }
+
+  return { canonicalRoot, canonicalJournalRoot: expectedJournalRoot };
+}
+
 function isMissingError(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT');
 }
@@ -204,3 +266,4 @@ function isMissingError(error: unknown): boolean {
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
