@@ -107,7 +107,7 @@ suite('typeContentsCache', () => {
     await fs.promises.rm(storagePath, { recursive: true, force: true });
   });
 
-  test('loadTypeContentsFromCache matches case-insensitively and slash-independently for configPath', async () => {
+  test('loadTypeContentsFromCache matches case-insensitively on Windows and case-distinctly on POSIX (#198, #207)', async () => {
     const configPath = await makeTempDir('1cviewer-type-cache-cfg-');
     const storagePath = await makeTempDir('1cviewer-type-cache-store-');
     const typePath = path.join(configPath, 'Catalogs');
@@ -117,17 +117,35 @@ suite('typeContentsCache', () => {
     const signature = await computeTypeContentsSignature(typePath, ConfigFormat.Designer);
     assert.ok(signature);
 
-    const lowerConfigPath = configPath.toLowerCase().replace(/\\/g, '/');
-    const upperConfigPath = configPath.toUpperCase().replace(/\//g, '\\');
+    const testItem = [{ id: 'Catalogs.Item', name: 'Item', type: MetadataType.Catalog, properties: {} }];
 
-    await saveTypeContentsToCache(storagePath, lowerConfigPath, 'Catalogs', signature, [
-      { id: 'Catalogs.Item', name: 'Item', type: MetadataType.Catalog, properties: {} },
-    ]);
+    // 1. Explicit Windows platform: case aliases and slash differences hit
+    await saveTypeContentsToCache(storagePath, 'C:\\workspace\\config', 'Catalogs', signature, testItem, 'contents', 'win32');
+    const loadedWin = await loadTypeContentsFromCache(storagePath, 'c:/WORKSPACE/CONFIG', 'Catalogs', signature, 'contents', 'win32');
+    assert.ok(loadedWin, 'Cache must hit on win32 even when configPath differs by drive letter case or slashes');
+    assert.strictEqual(loadedWin.length, 1);
+    assert.strictEqual(loadedWin[0].id, 'Catalogs.Item');
 
-    const loaded = await loadTypeContentsFromCache(storagePath, upperConfigPath, 'Catalogs', signature);
-    assert.ok(loaded, 'Cache must hit even when configPath differs by drive letter case or slashes');
-    assert.strictEqual(loaded.length, 1);
-    assert.strictEqual(loaded[0].id, 'Catalogs.Item');
+    // 2. Explicit POSIX platform: case-distinct configPath must miss
+    await saveTypeContentsToCache(storagePath, '/workspace/config', 'Catalogs', signature, testItem, 'contents', 'linux');
+    const loadedPosixUpper = await loadTypeContentsFromCache(storagePath, '/workspace/Config', 'Catalogs', signature, 'contents', 'linux');
+    assert.strictEqual(loadedPosixUpper, null, 'Cache must miss on POSIX when configPath differs by case');
+
+    // 3. Current host platform behavior
+    if (process.platform === 'win32') {
+      const lowerConfigPath = configPath.toLowerCase().replace(/\\/g, '/');
+      const upperConfigPath = configPath.toUpperCase().replace(/\//g, '\\');
+      await saveTypeContentsToCache(storagePath, lowerConfigPath, 'Catalogs', signature, testItem);
+      const loadedHost = await loadTypeContentsFromCache(storagePath, upperConfigPath, 'Catalogs', signature);
+      assert.ok(loadedHost, 'Host win32 cache must hit across case and slash aliases');
+      assert.strictEqual(loadedHost.length, 1);
+    } else {
+      const lowerConfigPath = configPath.toLowerCase();
+      const upperConfigPath = configPath.toUpperCase();
+      await saveTypeContentsToCache(storagePath, lowerConfigPath, 'Catalogs', signature, testItem);
+      const loadedHost = await loadTypeContentsFromCache(storagePath, upperConfigPath, 'Catalogs', signature);
+      assert.strictEqual(loadedHost, null, 'Host POSIX cache must miss when case differs');
+    }
 
     await fs.promises.rm(configPath, { recursive: true, force: true });
     await fs.promises.rm(storagePath, { recursive: true, force: true });
