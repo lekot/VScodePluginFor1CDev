@@ -6,6 +6,12 @@ import * as os from 'os';
 import * as path from 'path';
 import { hashContent } from '../../src/services/configurationSession/atomicFileStorage';
 import { MutationPlanExecutor, MutationPlanError } from '../../src/services/configurationSession/mutationPlan';
+import {
+  assertJournalNamespace,
+  assertLexicallyInside,
+  isSamePath,
+  PathBoundaryError,
+} from '../../src/services/configurationSession/pathBoundary';
 
 function collectChildOutput(child: ChildProcess): Promise<{ code: number | null; stdout: string; stderr: string }> {
   let stdout = '';
@@ -16,6 +22,11 @@ function collectChildOutput(child: ChildProcess): Promise<{ code: number | null;
     child.once('error', reject);
     child.once('close', (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+async function createDirectorySymlink(target: string, linkPath: string): Promise<void> {
+  const type = process.platform === 'win32' ? 'junction' : 'dir';
+  await fs.promises.symlink(target, linkPath, type);
 }
 
 suite('MutationPlanExecutor', () => {
@@ -333,9 +344,10 @@ suite('MutationPlanExecutor', () => {
     await fs.promises.writeFile(targetA, 'interrupted-effect', 'utf8');
     await fs.promises.writeFile(targetB, 'initial-B', 'utf8');
 
-    // 1. Orphan operation folder with no journal.json
+    // 1. Orphan operation folder with no journal.json but with CDT temp journal marker
     const orphanOp = path.join(tempDir, '.cdt-journal', 'orphan-op-empty');
     await fs.promises.mkdir(path.join(orphanOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(orphanOp, '.journal-abandoned.tmp'), '{"partial":true}', 'utf8');
 
     // 2. Real interrupted operation folder with valid journal.json
     const interruptedOp = path.join(tempDir, '.cdt-journal', 'real-interrupted');
@@ -1742,4 +1754,421 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'original');
     assert.strictEqual(await fs.promises.readFile(leasePath, 'utf8'), replacementLease);
   });
+
+  test('#215: execute rejects and preserves external target when .cdt-journal is a symlink or junction', async () => {
+    const victimDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'victim-target-'));
+    try {
+      const victimSub = path.join(victimDir, 'victim-sub');
+      const victimSecret = path.join(victimSub, 'secret.txt');
+      await fs.promises.mkdir(victimSub, { recursive: true });
+      await fs.promises.writeFile(victimSecret, 'victim-payload', 'utf8');
+
+      const journalLink = path.join(tempDir, '.cdt-journal');
+      await createDirectorySymlink(victimDir, journalLink);
+
+      const targetFile = path.join(tempDir, 'file.txt');
+      await fs.promises.writeFile(targetFile, 'original', 'utf8');
+
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        executor.execute({
+          kind: 'test.symlinkEscape',
+          steps: [{
+            type: 'writeFile',
+            targetPath: targetFile,
+            content: 'mutated',
+            encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent('original') },
+          }],
+          result: 'done',
+        }),
+        (err: Error) => err instanceof PathBoundaryError || (err instanceof MutationPlanError && err.code === 'PLAN_CONFLICT'),
+      );
+
+      assert.strictEqual(fs.existsSync(victimSub), true, 'victim subdirectory must not be deleted');
+      assert.strictEqual(await fs.promises.readFile(victimSecret, 'utf8'), 'victim-payload');
+      assert.strictEqual(fs.existsSync(path.join(victimDir, '.root-lease.json')), false, 'lease file must not be written to external victim');
+    } finally {
+      await fs.promises.rm(victimDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+    }
+  });
+
+  test('#215: recover rejects and preserves external target when .cdt-journal is a symlink or junction', async () => {
+    const victimDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'victim-target-'));
+    try {
+      const victimSub = path.join(victimDir, 'victim-sub');
+      const victimSecret = path.join(victimSub, 'secret.txt');
+      await fs.promises.mkdir(victimSub, { recursive: true });
+      await fs.promises.writeFile(victimSecret, 'victim-payload', 'utf8');
+
+      const journalLink = path.join(tempDir, '.cdt-journal');
+      await createDirectorySymlink(victimDir, journalLink);
+
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        executor.recover(),
+        (err: Error) => err instanceof PathBoundaryError || (err instanceof MutationPlanError && (err.code === 'PLAN_CONFLICT' || err.code === 'RECOVERY_REQUIRED')),
+      );
+
+      assert.strictEqual(fs.existsSync(victimSub), true, 'victim subdirectory must not be deleted by recovery');
+      assert.strictEqual(await fs.promises.readFile(victimSecret, 'utf8'), 'victim-payload');
+      assert.strictEqual(fs.existsSync(path.join(victimDir, '.root-lease.json')), false, 'lease file must not be written to external victim');
+    } finally {
+      await fs.promises.rm(victimDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+    }
+  });
+
+  test('#215: recover rejects and preserves external target when an operation directory inside .cdt-journal is a symlink or junction', async () => {
+    const victimDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'victim-op-'));
+    try {
+      const victimSecret = path.join(victimDir, 'external-data.txt');
+      await fs.promises.writeFile(victimSecret, 'important', 'utf8');
+
+      const journalRoot = path.join(tempDir, '.cdt-journal');
+      await fs.promises.mkdir(journalRoot, { recursive: true });
+
+      const symlinkOp = path.join(journalRoot, 'symlink-operation');
+      await createDirectorySymlink(victimDir, symlinkOp);
+
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        executor.recover(),
+        (err: Error) => err instanceof PathBoundaryError || (err instanceof MutationPlanError && (err.code === 'PLAN_CONFLICT' || err.code === 'RECOVERY_REQUIRED')),
+      );
+
+      assert.strictEqual(fs.existsSync(victimSecret), true, 'external target file must not be deleted');
+      assert.strictEqual(await fs.promises.readFile(victimSecret, 'utf8'), 'important');
+    } finally {
+      await fs.promises.rm(victimDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+    }
+  });
+
+  test('#215: recover fails closed and preserves unrecognized non-CDT directory in .cdt-journal', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+
+    const unrecognizedDir = path.join(journalRoot, 'unrecognized-user-folder');
+    const secretFile = path.join(unrecognizedDir, 'user-file.txt');
+    await fs.promises.mkdir(unrecognizedDir, { recursive: true });
+    await fs.promises.writeFile(secretFile, 'preserve-me', 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: Error) => err instanceof MutationPlanError && (err.code === 'RECOVERY_REQUIRED' || err.code === 'PLAN_CONFLICT'),
+    );
+
+    assert.strictEqual(fs.existsSync(secretFile), true, 'unrecognized directory must NOT be blindly deleted');
+    assert.strictEqual(await fs.promises.readFile(secretFile, 'utf8'), 'preserve-me');
+  });
+
+  test('#215: execute rejects and preserves target when .cdt-journal is an internal symlink pointing within root', async () => {
+    const internalVictim = path.join(tempDir, 'internal-subfolder');
+    const secretFile = path.join(internalVictim, 'user-code.bsl');
+    await fs.promises.mkdir(internalVictim, { recursive: true });
+    await fs.promises.writeFile(secretFile, 'sensitive-bsl-code', 'utf8');
+
+    const journalLink = path.join(tempDir, '.cdt-journal');
+    await createDirectorySymlink(internalVictim, journalLink);
+
+    const targetFile = path.join(tempDir, 'file.txt');
+    await fs.promises.writeFile(targetFile, 'original', 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.execute({
+        kind: 'test.internalSymlinkEscape',
+        steps: [{
+          type: 'writeFile',
+          targetPath: targetFile,
+          content: 'mutated',
+          encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('original') },
+        }],
+        result: 'done',
+      }),
+      (err: Error) => err instanceof PathBoundaryError || (err instanceof MutationPlanError && err.code === 'PLAN_CONFLICT'),
+    );
+
+    assert.strictEqual(fs.existsSync(secretFile), true, 'internal folder pointed to by symlink must not be deleted or corrupted');
+    assert.strictEqual(await fs.promises.readFile(secretFile, 'utf8'), 'sensitive-bsl-code');
+    assert.strictEqual(fs.existsSync(path.join(internalVictim, '.root-lease.json')), false, 'lease file must not be written to redirected target');
+  });
+
+  test('#215: assertJournalNamespace directly validates canonical paths and rejects non-directory file', async () => {
+    const { canonicalRoot, canonicalJournalRoot } = await assertJournalNamespace(tempDir);
+    assert.strictEqual(path.basename(canonicalJournalRoot), '.cdt-journal');
+    assert.ok(canonicalJournalRoot.startsWith(canonicalRoot));
+
+    const fileJournal = path.join(tempDir, '.cdt-journal');
+    await fs.promises.writeFile(fileJournal, 'not-a-directory', 'utf8');
+    await assert.rejects(
+      assertJournalNamespace(tempDir),
+      (err: PathBoundaryError) => err.code === 'PATH_OUTSIDE_ROOT',
+    );
+  });
+
+  test('#215: assertJournalNamespace rejects non-existent workspace root with PATH_UNAVAILABLE', async () => {
+    const nonExistent = path.join(tempDir, 'does-not-exist');
+    await assert.rejects(
+      assertJournalNamespace(nonExistent),
+      (err: PathBoundaryError) => err.code === 'PATH_UNAVAILABLE',
+    );
+  });
+
+  test('#215: assertLexicallyInside and isSamePath edge cases', () => {
+    assert.strictEqual(isSamePath(tempDir, tempDir), true);
+    assert.strictEqual(isSamePath(tempDir, path.join(tempDir, 'sub')), false);
+
+    assert.doesNotThrow(() => assertLexicallyInside(tempDir, path.join(tempDir, 'sub')));
+    assert.throws(
+      () => assertLexicallyInside(path.join(tempDir, 'sub'), tempDir),
+      (err: PathBoundaryError) => err.code === 'PATH_OUTSIDE_ROOT',
+    );
+  });
+
+  test('#215: recover skips .journal-*.tmp and non-directory files without error', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(path.join(journalRoot, '.journal-skip-test.tmp'), 'temp-data', 'utf8');
+    await fs.promises.writeFile(path.join(journalRoot, 'skip-file.txt'), 'file-data', 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await executor.recover();
+    assert.strictEqual(fs.existsSync(path.join(journalRoot, 'skip-file.txt')), true);
+  });
+
+  test('#215: recover rejects unrecognized dot directory in journal with RECOVERY_REQUIRED', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.mkdir(path.join(journalRoot, '.unrecognized-hidden'), { recursive: true });
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('.unrecognized-hidden'),
+    );
+  });
+
+  test('#215: recover rejects when operation directory escapes journal root via canonical realpath', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const validOp = path.join(journalRoot, 'valid-op');
+    await fs.promises.mkdir(validOp, { recursive: true });
+    await fs.promises.writeFile(path.join(validOp, 'owner.json'), JSON.stringify({ pid: 9999999, createdAt: 100 }), 'utf8');
+    await fs.promises.writeFile(path.join(validOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'valid-op',
+      plan: { kind: 'test', steps: [], result: null },
+      state: 'committed',
+      appliedSteps: 0,
+      snapshots: [],
+    }), 'utf8');
+
+    const origRealpath = fs.promises.realpath;
+    (fs.promises as any).realpath = async (p: any, opts: any) => {
+      if (path.resolve(String(p)) === path.resolve(validOp)) {
+        return path.join(os.tmpdir(), 'escaped-path');
+      }
+      return origRealpath.call(fs.promises, p, opts);
+    };
+
+    try {
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        executor.recover(),
+        (err: PathBoundaryError) => err.code === 'PATH_OUTSIDE_ROOT',
+      );
+    } finally {
+      (fs.promises as any).realpath = origRealpath;
+    }
+  });
+
+  test('#215: acquireRootLease rejects when journalRoot realpath escapes canonical root', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+
+    const origRealpath = fs.promises.realpath;
+    (fs.promises as any).realpath = async (p: any, opts: any) => {
+      if (path.basename(String(p)) === '.cdt-journal') {
+        return path.join(os.tmpdir(), 'foreign-journal');
+      }
+      return origRealpath.call(fs.promises, p, opts);
+    };
+
+    try {
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        executor.recover(),
+        (err: PathBoundaryError) => err.code === 'PATH_OUTSIDE_ROOT',
+      );
+    } finally {
+      (fs.promises as any).realpath = origRealpath;
+    }
+  });
+
+  test('#215: removeOperationDir rejects symlink and escaped path with PATH_OUTSIDE_ROOT', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+
+    const symlinkTarget = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'rm-victim-'));
+    try {
+      const symlinkPath = path.join(journalRoot, 'symlink-dir');
+      await createDirectorySymlink(symlinkTarget, symlinkPath);
+
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        (executor as any).removeOperationDir(symlinkPath),
+        (err: PathBoundaryError) => err.code === 'PATH_OUTSIDE_ROOT',
+      );
+
+      const escapedPath = path.join(journalRoot, 'escaped-dir');
+      await fs.promises.mkdir(escapedPath, { recursive: true });
+      const origRealpath = fs.promises.realpath;
+      (fs.promises as any).realpath = async (p: any, opts: any) => {
+        if (path.resolve(String(p)) === path.resolve(escapedPath)) {
+          return path.join(os.tmpdir(), 'other-place');
+        }
+        return origRealpath.call(fs.promises, p, opts);
+      };
+      try {
+        await assert.rejects(
+          (executor as any).removeOperationDir(escapedPath),
+          (err: PathBoundaryError) => err.code === 'PATH_OUTSIDE_ROOT',
+        );
+      } finally {
+        (fs.promises as any).realpath = origRealpath;
+      }
+    } finally {
+      await fs.promises.rm(symlinkTarget, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  test('#215: recover fails with RECOVERY_REQUIRED if reading operation directory throws unexpected error', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const unreadableOp = path.join(journalRoot, 'unreadable-op');
+    await fs.promises.mkdir(unreadableOp, { recursive: true });
+
+    const origReaddir = fs.promises.readdir;
+    (fs.promises as any).readdir = async (p: any, opts: any) => {
+      if (path.resolve(String(p)) === path.resolve(unreadableOp)) {
+        throw new Error('EACCES: permission denied');
+      }
+      return origReaddir.call(fs.promises, p, opts);
+    };
+
+    try {
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        executor.recover(),
+        (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('Cannot read operation directory'),
+      );
+    } finally {
+      (fs.promises as any).readdir = origReaddir;
+    }
+  });
+
+  test('#215 (Codex P1): recover fails closed and preserves alien directory data/backups/user-file without deleting it', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const dataDir = path.join(journalRoot, 'data');
+    const backupsDir = path.join(dataDir, 'backups');
+    const userFilePath = path.join(backupsDir, 'user-file');
+    await fs.promises.mkdir(backupsDir, { recursive: true });
+    await fs.promises.writeFile(userFilePath, 'important user data', 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED',
+    );
+
+    // Critical: user file and data dir must remain intact, NOT deleted as orphan!
+    assert.strictEqual(fs.existsSync(userFilePath), true);
+    assert.strictEqual(await fs.promises.readFile(userFilePath, 'utf8'), 'important user data');
+  });
+
+  test('#215 (Codex P1): recover fails closed and preserves unowned directory data without CDT markers', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const dataDir = path.join(journalRoot, 'data');
+    await fs.promises.mkdir(dataDir, { recursive: true });
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED',
+    );
+
+    // Critical: unowned directory without any CDT markers must NOT be deleted as orphan!
+    assert.strictEqual(fs.existsSync(dataDir), true);
+  });
+
+  test('#215 (Codex P1): recover successfully restores interrupted deletePath of nested directory from backups/0 directory', async () => {
+    const targetDir = path.join(tempDir, 'nested-dir');
+    await fs.promises.mkdir(targetDir, { recursive: true });
+    const targetFile = path.join(targetDir, 'subfile.txt');
+    await fs.promises.writeFile(targetFile, 'original-content', 'utf8');
+
+    const interruptedOp = path.join(tempDir, '.cdt-journal', 'interrupted-delete-dir');
+    await fs.promises.mkdir(path.join(interruptedOp, 'backups', '0'), { recursive: true });
+    await fs.promises.writeFile(path.join(interruptedOp, 'backups', '0', 'subfile.txt'), 'original-content', 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'interrupted-delete-dir',
+      plan: { kind: 'test.deleteDir', steps: [], result: null },
+      state: 'applying',
+      appliedSteps: 1,
+      snapshots: [{
+        targetPath: targetDir,
+        state: 'directory',
+        backupName: '0',
+        contentsBackedUp: true,
+      }],
+    }), 'utf8');
+
+    // Simulate deletePath step effect
+    await fs.promises.rm(targetDir, { recursive: true, force: true });
+    assert.strictEqual(fs.existsSync(targetDir), false);
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await executor.recover();
+
+    assert.strictEqual(fs.existsSync(targetDir), true);
+    assert.strictEqual(await fs.promises.readFile(targetFile, 'utf8'), 'original-content');
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+  });
+
+  test('#215 (Codex P1): recover rejects with RECOVERY_REQUIRED if directory backup contains a symlink', async () => {
+    const targetDir = path.join(tempDir, 'symlink-backup-target');
+    const interruptedOp = path.join(tempDir, '.cdt-journal', 'symlink-backup-op');
+    const backupDir = path.join(interruptedOp, 'backups', '0');
+    await fs.promises.mkdir(backupDir, { recursive: true });
+
+    const symlinkTarget = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'symlink-backup-victim-'));
+    try {
+      await createDirectorySymlink(symlinkTarget, path.join(backupDir, 'nested-symlink'));
+      await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+      await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+        version: 1,
+        operationId: 'symlink-backup-op',
+        plan: { kind: 'test.symlinkBackup', steps: [], result: null },
+        state: 'applying',
+        appliedSteps: 1,
+        snapshots: [{
+          targetPath: targetDir,
+          state: 'directory',
+          backupName: '0',
+          contentsBackedUp: true,
+        }],
+      }), 'utf8');
+
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        executor.recover(),
+        (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED',
+      );
+    } finally {
+      await fs.promises.rm(symlinkTarget, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
 });
+
