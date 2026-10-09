@@ -1,8 +1,10 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { isSameOrDescendantPath } from '../utils/configurationPathIdentity';
 
 /**
  * Finds the exact workspace folder containing targetPath without arbitrary fallbacks.
+ * When folders are nested, selects the deepest/most specific enclosing workspace folder.
  * Handles Windows case-insensitivity and path normalization.
  */
 export function findWorkspaceFolderForPath(targetPath: string): vscode.WorkspaceFolder | undefined {
@@ -12,27 +14,29 @@ export function findWorkspaceFolderForPath(targetPath: string): vscode.Workspace
   }
 
   // 1. Try native vscode.workspace.getWorkspaceFolder
+  let nativeCandidate: vscode.WorkspaceFolder | undefined;
   try {
-    const uriFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(targetPath));
-    if (uriFolder) {
-      return uriFolder;
-    }
+    nativeCandidate = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(targetPath));
   } catch {
     // ignore URI parsing errors
   }
 
-  // 2. Lexical prefix matching (handles case differences and trailing slashes on Windows)
-  const isWin = process.platform === 'win32';
-  const resolvedTarget = path.resolve(targetPath);
-  const targetNorm = isWin ? resolvedTarget.toLowerCase() : resolvedTarget;
+  // 2. Select the deepest/most specific enclosing workspace folder (longest matching path)
+  let bestFolder = nativeCandidate;
+  let bestLength = nativeCandidate ? path.resolve(nativeCandidate.uri.fsPath).length : -1;
 
   for (const folder of folders) {
-    const resolvedFolder = path.resolve(folder.uri.fsPath);
-    const folderNorm = isWin ? resolvedFolder.toLowerCase() : resolvedFolder;
-    if (targetNorm === folderNorm || targetNorm.startsWith(folderNorm + path.sep)) {
-      return folder;
+    if (!folder?.uri?.fsPath) {
+      continue;
+    }
+    if (isSameOrDescendantPath(folder.uri.fsPath, targetPath)) {
+      const len = path.resolve(folder.uri.fsPath).length;
+      if (len > bestLength) {
+        bestFolder = folder;
+        bestLength = len;
+      }
     }
   }
 
-  return undefined;
+  return bestFolder;
 }

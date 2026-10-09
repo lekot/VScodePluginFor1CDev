@@ -9,7 +9,7 @@ import { resolveSourceAddress } from '../../src/agent/agentSourceAddressResolver
 import { AgentPathError } from '../../src/agent/agentPathResolver';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
 import { CfeProjectManifestStorage } from '../../src/extensionSupport/cfeProject/manifest';
-import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
+import { resetVscodeTestState, vscodeTestState, vscodeStub } from '../helpers/vscodeModuleStub';
 import type { ConfigurationBinding } from '../../src/bindings/models/configurationBinding';
 
 suite('Agent Multi-Root Fail-Closed Routing (Issue #197)', () => {
@@ -49,6 +49,86 @@ suite('Agent Multi-Root Fail-Closed Routing (Issue #197)', () => {
     const folder = findWorkspaceFolderForPath(insideB);
     assert.ok(folder);
     assert.strictEqual(folder?.name, 'folderB');
+  });
+
+  test('findWorkspaceFolderForPath selects deepest nested folder over outer folder when native returns undefined (#229)', () => {
+    const outerDir = tmpA;
+    const nestedDir = path.join(outerDir, 'nested');
+    vscodeTestState.mockWorkspaceFolders = [
+      { uri: { fsPath: outerDir, scheme: 'file' }, name: 'outer', index: 0 },
+      { uri: { fsPath: nestedDir, scheme: 'file' }, name: 'nested', index: 1 },
+    ];
+
+    const originalGetWorkspaceFolder = vscodeStub.workspace.getWorkspaceFolder;
+    try {
+      (vscodeStub.workspace as any).getWorkspaceFolder = () => undefined;
+
+      const targetPath = path.join(nestedDir, 'src', 'Configuration.xml');
+      const folder = findWorkspaceFolderForPath(targetPath);
+      assert.ok(folder, 'Must find a matching workspace folder');
+      assert.strictEqual(folder?.name, 'nested', 'Must choose deepest nested folder instead of outer folder');
+    } finally {
+      (vscodeStub.workspace as any).getWorkspaceFolder = originalGetWorkspaceFolder;
+    }
+  });
+
+  test('findWorkspaceFolderForPath selects deepest nested folder across three-level nesting (#229)', () => {
+    const rootDir = tmpA;
+    const sub1Dir = path.join(rootDir, 'sub1');
+    const sub2Dir = path.join(sub1Dir, 'sub2');
+    vscodeTestState.mockWorkspaceFolders = [
+      { uri: { fsPath: rootDir, scheme: 'file' }, name: 'root', index: 0 },
+      { uri: { fsPath: sub1Dir, scheme: 'file' }, name: 'sub1', index: 1 },
+      { uri: { fsPath: sub2Dir, scheme: 'file' }, name: 'sub2', index: 2 },
+    ];
+
+    const originalGetWorkspaceFolder = vscodeStub.workspace.getWorkspaceFolder;
+    try {
+      (vscodeStub.workspace as any).getWorkspaceFolder = () => undefined;
+
+      const targetDeep = path.join(sub2Dir, 'deep', 'Configuration.xml');
+      const folderDeep = findWorkspaceFolderForPath(targetDeep);
+      assert.strictEqual(folderDeep?.name, 'sub2');
+
+      const targetMid = path.join(sub1Dir, 'mid', 'Configuration.xml');
+      const folderMid = findWorkspaceFolderForPath(targetMid);
+      assert.strictEqual(folderMid?.name, 'sub1');
+
+      const targetRoot = path.join(rootDir, 'root', 'Configuration.xml');
+      const folderRoot = findWorkspaceFolderForPath(targetRoot);
+      assert.strictEqual(folderRoot?.name, 'root');
+    } finally {
+      (vscodeStub.workspace as any).getWorkspaceFolder = originalGetWorkspaceFolder;
+    }
+  });
+
+  test('findWorkspaceFolderForPath selects deepest nested folder regardless of folder order and with native lookup (#229)', () => {
+    const outerDir = tmpA;
+    const nestedDir = path.join(outerDir, 'nested');
+    vscodeTestState.mockWorkspaceFolders = [
+      { uri: { fsPath: nestedDir, scheme: 'file' }, name: 'nested', index: 0 },
+      { uri: { fsPath: outerDir, scheme: 'file' }, name: 'outer', index: 1 },
+    ];
+
+    const targetPath = path.join(nestedDir, 'src', 'Configuration.xml');
+    const folder = findWorkspaceFolderForPath(targetPath);
+    assert.strictEqual(folder?.name, 'nested');
+  });
+
+  test('findWorkspaceFolderForPath handles case differences on nested folders on Windows (#229)', () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+    const outerDir = tmpA.toLowerCase();
+    const nestedDir = path.join(outerDir, 'nested').toLowerCase();
+    vscodeTestState.mockWorkspaceFolders = [
+      { uri: { fsPath: outerDir, scheme: 'file' }, name: 'outer', index: 0 },
+      { uri: { fsPath: nestedDir, scheme: 'file' }, name: 'nested', index: 1 },
+    ];
+
+    const mixedTargetPath = path.join(nestedDir.toUpperCase(), 'src', 'Configuration.xml');
+    const folder = findWorkspaceFolderForPath(mixedTargetPath);
+    assert.strictEqual(folder?.name, 'nested');
   });
 
   test('resolveBindingCommand fails closed when matched.workspaceFolder does not exist', async () => {
