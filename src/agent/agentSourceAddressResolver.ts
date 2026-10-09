@@ -51,32 +51,50 @@ export async function resolveSourceAddress(
     const { sourceSet: explicitSourceSet, dotPath } = parseSourceAddress(params.address);
     let sourceSet = explicitSourceSet ?? 'main';
 
-    let workspaceRoot = context.workspaceRoot;
-    if (!workspaceRoot) {
+    const cfeProjects: CfeProjectContext[] = [];
+    const candidateRoots = new Set<string>();
+    if (context.workspaceRoot) {
+        candidateRoots.add(context.workspaceRoot);
+    } else {
         try {
             // eslint-disable-next-line @typescript-eslint/no-var-requires
             const vscode = require('vscode');
-            workspaceRoot = vscode.workspace?.workspaceFolders?.[0]?.uri?.fsPath;
+            const folders = vscode.workspace?.workspaceFolders;
+            if (folders && folders.length > 0) {
+                for (const f of folders) {
+                    if (f?.uri?.fsPath) {
+                        candidateRoots.add(f.uri.fsPath);
+                    }
+                }
+            }
         } catch {
             // Not running in VS Code runtime
         }
-    }
-    if (!workspaceRoot) {
-        const list = context.registry.list();
-        if (list.length > 0) {
-            workspaceRoot = path.dirname(list[0].rootPath);
+        if (candidateRoots.size === 0) {
+            for (const item of context.registry.list()) {
+                candidateRoots.add(path.dirname(item.rootPath));
+                candidateRoots.add(path.dirname(path.dirname(item.rootPath)));
+            }
         }
     }
 
-    let cfeProjects: CfeProjectContext[] = [];
-    if (workspaceRoot) {
+    for (const wsRoot of candidateRoots) {
         try {
-            const cfeRegistry = new CfeProjectRegistry(workspaceRoot, context.registry);
-            cfeProjects = await cfeRegistry.list();
+            const cfeRegistry = new CfeProjectRegistry(wsRoot, context.registry);
+            const found = await cfeRegistry.list();
+            for (const proj of found) {
+                if (!cfeProjects.some((p) =>
+                    p.extensionSession.identity.configurationId === proj.extensionSession.identity.configurationId
+                    && p.baseSession.identity.configurationId === proj.baseSession.identity.configurationId
+                )) {
+                    cfeProjects.push(proj);
+                }
+            }
         } catch {
-            // Manifest may not exist or workspace has no CFE projects
+            // Manifest may not exist or folder has no CFE projects
         }
     }
+
 
     let targetSession: ConfigurationSession;
     let cfeContext: CfeProjectContext | undefined;
@@ -138,19 +156,33 @@ export async function resolveSourceAddress(
         }
     } else {
         // Specific extension name or configuration label
-        const project = cfeProjects.find(
+        const matchingProjects = cfeProjects.filter(
             (p) => p.extensionName.toLowerCase() === sourceSet.toLowerCase()
                 || path.basename(p.extensionRoot).toLowerCase() === sourceSet.toLowerCase(),
         );
-        if (project) {
-            targetSession = project.extensionSession;
-            cfeContext = project;
-            if (params.configurationId && targetSession.identity.configurationId !== params.configurationId) {
+        if (matchingProjects.length > 0) {
+            let project: CfeProjectContext;
+            if (params.configurationId) {
+                const found = matchingProjects.find(
+                    (p) => p.extensionSession.identity.configurationId === params.configurationId,
+                );
+                if (!found) {
+                    throw new AgentPathError(
+                        'INVALID_AGENT_PATH',
+                        `The provided configurationId "${params.configurationId}" conflicts with source set "${sourceSet}".`,
+                    );
+                }
+                project = found;
+            } else if (matchingProjects.length > 1) {
                 throw new AgentPathError(
                     'INVALID_AGENT_PATH',
-                    `The provided configurationId "${params.configurationId}" conflicts with source set "${sourceSet}".`,
+                    `Multiple CFE projects named "${sourceSet}" found in workspace. Specify configurationId explicitly.`,
                 );
+            } else {
+                project = matchingProjects[0];
             }
+            targetSession = project.extensionSession;
+            cfeContext = project;
         } else {
             // Check if sourceSet matches a configuration descriptor label or id in registry
             const desc = context.registry.list().find(

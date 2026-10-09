@@ -21,6 +21,7 @@ import { runInfobaseConfigExportStatus } from '../infobases/infobaseConfigComman
 import { createProcessOutputLineReporter } from '../services/process/processOutputLineReporter';
 import type { AgentResult, ConfigurationScopedParams } from './types';
 import { findBinding } from './agentBindingResolver';
+import { findWorkspaceFolderForPath } from './agentWorkspaceContext';
 
 export interface AgentDeployOperationsDeps {
     bindingManager: BindingManager;
@@ -119,13 +120,11 @@ export class AgentDeployOperations {
         }
 
         // 2. Find workspace folder
-        let workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(resolvedConfigPath));
+        const workspaceFolder = findWorkspaceFolderForPath(resolvedConfigPath);
         if (!workspaceFolder) {
-            workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            return { success: false, error: 'Не найдена папка workspace для конфигурации.' };
         }
-        if (!workspaceFolder) {
-            return { success: false, error: 'Не найдена папка workspace.' };
-        }
+
 
         // 3. Find matching binding
         const allBindings = await this.deps.bindingManager.listAll();
