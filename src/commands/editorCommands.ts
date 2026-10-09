@@ -30,6 +30,7 @@ import { runConfigurationPlan } from '../services/configurationSession/configura
 import type { MutationExpectation, MutationPlan } from '../services/configurationSession/mutationPlan';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { validateElementName } from '../utils/elementNameValidator';
+import { isSameOrDescendantPath } from '../utils/configurationPathIdentity';
 import { registerQueryBuilderCommands } from '../queryBuilder/queryBuilderCommands';
 
 type RegisterEditorCommandsDeps = {
@@ -309,7 +310,6 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
 
       const bindings = await state.bindingManager.listAll();
       const localBindings = bindings.filter((b) => b.workspaceFolder === workspaceFolder.name);
-      const activeNorm = path.resolve(activePath).toLowerCase();
       let bestMatch:
         | { binding: (typeof localBindings)[number]; sourceDir: string; score: number }
         | undefined;
@@ -319,9 +319,8 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
           continue;
         }
         const src = path.resolve(resolved.sourceDir);
-        const srcNorm = src.toLowerCase();
-        if (activeNorm === srcNorm || activeNorm.startsWith(srcNorm + path.sep.toLowerCase())) {
-          const score = srcNorm.length;
+        if (isSameOrDescendantPath(src, activePath)) {
+          const score = src.length;
           if (!bestMatch || score > bestMatch.score) {
             bestMatch = { binding: b, sourceDir: src, score };
           }
