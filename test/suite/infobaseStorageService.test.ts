@@ -850,3 +850,79 @@ suite('ExtensionState infobase wiring', () => {
     assert.strictEqual(state.infobaseStorage, null);
   });
 });
+
+suite('InfobaseStorageService concurrency (#187)', () => {
+  class DelayedSecretStorage extends MapSecretStorage {
+    delayMs = 20;
+
+    override delete(key: string): Thenable<void> {
+      return new Promise<void>((resolve) => setTimeout(resolve, this.delayMs)).then(() => super.delete(key));
+    }
+  }
+
+  test('concurrent upsert operations preserve all added entries (#187)', async () => {
+    const memento = new MapMemento();
+    const secrets = new DelayedSecretStorage();
+    const svc = new InfobaseStorageService(memento, secrets);
+
+    const entry1 = makeEntry({ name: 'Base 1' });
+    const entry2 = makeEntry({ name: 'Base 2' });
+
+    // Launch both upserts concurrently
+    await Promise.all([svc.upsert(entry1), svc.upsert(entry2)]);
+
+    const loaded = await svc.load();
+    assert.strictEqual(loaded.length, 2, 'Both entries must be preserved');
+    assert.ok(loaded.some((e) => e.id === entry1.id));
+    assert.ok(loaded.some((e) => e.id === entry2.id));
+
+    const persisted = memento.get(INFOBASE_GLOBAL_STATE_KEY) as { entries: InfobaseEntry[] };
+    assert.strictEqual(persisted.entries.length, 2, 'Persisted storage must contain both entries');
+  });
+
+  test('concurrent upsert and saveFolders preserve both entries and folders (#187)', async () => {
+    const memento = new MapMemento();
+    const secrets = new DelayedSecretStorage();
+    const svc = new InfobaseStorageService(memento, secrets);
+
+    const entry1 = makeEntry({ name: 'Base 1' });
+    const folder1: InfobaseFolder = { id: randomUUID(), name: 'Folder 1' };
+
+    // Launch upsert and saveFolders concurrently
+    await Promise.all([svc.upsert(entry1), svc.saveFolders([folder1])]);
+
+    const loadedEntries = await svc.load();
+    const loadedFolders = await svc.loadFolders();
+
+    assert.strictEqual(loadedEntries.length, 1, 'Entry must be preserved');
+    assert.strictEqual(loadedEntries[0].id, entry1.id);
+    assert.strictEqual(loadedFolders.length, 1, 'Folder must be preserved');
+    assert.strictEqual(loadedFolders[0].id, folder1.id);
+
+    const persisted = memento.get(INFOBASE_GLOBAL_STATE_KEY) as {
+      entries: InfobaseEntry[];
+      folders: InfobaseFolder[];
+    };
+    assert.strictEqual(persisted.entries.length, 1, 'Persisted entries must contain entry-1');
+    assert.strictEqual(persisted.folders.length, 1, 'Persisted folders must contain folder-1');
+    assert.strictEqual(persisted.entries[0].id, entry1.id);
+    assert.strictEqual(persisted.folders[0].id, folder1.id);
+  });
+
+  test('concurrent remove and upsert execute sequentially without lost updates (#187)', async () => {
+    const memento = new MapMemento();
+    const secrets = new DelayedSecretStorage();
+    const svc = new InfobaseStorageService(memento, secrets);
+
+    const entry1 = makeEntry({ name: 'Base 1' });
+    const entry2 = makeEntry({ name: 'Base 2' });
+    await svc.saveAll([entry1]);
+
+    // Concurrently remove entry1 and add entry2
+    await Promise.all([svc.remove(entry1.id), svc.upsert(entry2)]);
+
+    const loaded = await svc.load();
+    assert.strictEqual(loaded.length, 1);
+    assert.strictEqual(loaded[0].id, entry2.id);
+  });
+});

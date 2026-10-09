@@ -2,7 +2,10 @@
  * WOW Phase 4 #61 — экспорт каталога баз в текст `.v8i` (UTF-8, см. design §9).
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
+import { InfobaseValidationError } from './infobaseValidator';
+import { tryParseInfobaseFileScalarFromYaml } from './ibcmdConfigPathResolver';
 import type { InfobaseEntry, InfobaseFolder } from './models/infobaseEntry';
 import { formatServerConnectionString } from './models/connectionString';
 
@@ -32,7 +35,28 @@ function folderPathLabel(folderId: string | undefined, folderById: ReadonlyMap<s
 /** Строка Connect= для записи в .v8i (пароли из SecretStorage не подставляются). */
 export function infobaseEntryToV8iConnect(entry: InfobaseEntry): string {
   if (entry.type === 'file') {
-    const fp = entry.filePath?.trim() || entry.ibcmdConfigYamlPath?.trim() || '';
+    let fp = entry.filePath?.trim();
+    if (!fp && entry.ibcmdConfigYamlPath?.trim()) {
+      const yamlPath = entry.ibcmdConfigYamlPath.trim();
+      try {
+        if (fs.existsSync(yamlPath)) {
+          const yamlContent = fs.readFileSync(yamlPath, 'utf8');
+          const parsed = tryParseInfobaseFileScalarFromYaml(yamlContent);
+          if (parsed?.trim()) {
+            fp = path.isAbsolute(parsed.trim())
+              ? parsed.trim()
+              : path.resolve(path.dirname(yamlPath), parsed.trim());
+          }
+        }
+      } catch {
+        // failed to read or parse yaml
+      }
+    }
+    if (!fp) {
+      throw new InfobaseValidationError(
+        `Не удалось определить каталог информационной базы для «${entry.name}». Укажите путь к каталогу базы (filePath) или проверьте параметр file в YAML-конфигурации ibcmd.`
+      );
+    }
     const norm = path.normalize(fp);
     return `File="${norm.replace(/"/g, '""')}";`;
   }

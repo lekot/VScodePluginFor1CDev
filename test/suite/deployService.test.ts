@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 import {
+  applyReadonlyIncludeForDeploy,
   configurationTreeReadonlyGlob,
   createConfigurationSnapshot,
   DeploySnapshotCancelledError,
@@ -13,6 +14,7 @@ import {
   readDeployPrecheckXmlBeforeImportSetting,
   resolveConfigurationXmlDirectory,
   resolveDeployTargetsForBinding,
+  resetDeployReadonlyLocksForTests,
   vscodeSupportsDeployReadonlyLock,
 } from '../../src/bindings/deployService';
 import type { ConfigurationBinding } from '../../src/bindings/models/configurationBinding';
@@ -997,6 +999,72 @@ suite('DeployService.deployBinding', () => {
     } finally {
       rmDirQuiet(work);
     }
+  });
+
+  test('overlapping applyReadonlyIncludeForDeploy calls do not strip concurrent locks or leave stale locks (#186)', async () => {
+    vscodeTestState.vscodeVersion = '1.90.0';
+    resetDeployReadonlyLocksForTests();
+    vscodeTestState.workspaceConfig.readonlyInclude = { 'initial/**': true };
+    const root = 'C:\\workspace\\project';
+
+    // Lock A acquires patternA/**
+    const lockA = await applyReadonlyIncludeForDeploy(root, 'patternA/**');
+    assert.deepStrictEqual(vscodeTestState.workspaceConfig.readonlyInclude, {
+      'initial/**': true,
+      'patternA/**': true,
+    });
+
+    // Lock B acquires patternB/** while Lock A is active
+    const lockB = await applyReadonlyIncludeForDeploy(root, 'patternB/**');
+    assert.deepStrictEqual(vscodeTestState.workspaceConfig.readonlyInclude, {
+      'initial/**': true,
+      'patternA/**': true,
+      'patternB/**': true,
+    });
+
+    // Lock A finishes first and disposes
+    await lockA?.dispose();
+    // In buggy code: lockA restores before ({ 'initial/**': true }), stripping patternB!
+    assert.deepStrictEqual(
+      vscodeTestState.workspaceConfig.readonlyInclude,
+      { 'initial/**': true, 'patternB/**': true },
+      'Disposing lockA must not strip lockB pattern while deploy B is still running',
+    );
+
+    // Lock B finishes and disposes
+    await lockB?.dispose();
+    // In buggy code: lockB restores before ({ 'initial/**': true, 'patternA/**': true }), leaving patternA stuck!
+    assert.deepStrictEqual(
+      vscodeTestState.workspaceConfig.readonlyInclude,
+      { 'initial/**': true },
+      'Disposing lockB must restore initial state without leaving stale lockA pattern',
+    );
+  });
+
+  test('overlapping applyReadonlyIncludeForDeploy calls for same pattern retain lock until both dispose (#186)', async () => {
+    vscodeTestState.vscodeVersion = '1.90.0';
+    resetDeployReadonlyLocksForTests();
+    vscodeTestState.workspaceConfig.readonlyInclude = undefined;
+    const root = 'C:\\workspace\\project';
+
+    const lockA = await applyReadonlyIncludeForDeploy(root, 'shared/**');
+    const lockB = await applyReadonlyIncludeForDeploy(root, 'shared/**');
+
+    // First dispose
+    await lockA?.dispose();
+    assert.deepStrictEqual(
+      vscodeTestState.workspaceConfig.readonlyInclude,
+      { 'shared/**': true },
+      'Lock must be retained while second deploy is still active',
+    );
+
+    // Second dispose
+    await lockB?.dispose();
+    assert.deepStrictEqual(
+      vscodeTestState.workspaceConfig.readonlyInclude,
+      undefined,
+      'Lock must be released when all overlapping deploys have finished',
+    );
   });
 
   test('block mode does not log copy snapshot line', async () => {

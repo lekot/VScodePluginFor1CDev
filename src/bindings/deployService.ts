@@ -24,7 +24,7 @@ import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { collectFilesForSelection, resolveIbcmdObjectId } from '../services/ibcmd/objectFileCollector';
 import { detectDeployGuards } from './deployPreflightGuards';
 import { expandBslSiblings } from './bslExpansion';
-import { checkRecentDeploy, recordDeploy } from './deployDedupCache';
+import { checkRecentDeploy, computeFilesContentHash, recordDeploy } from './deployDedupCache';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
 import {
   DeployLockedObjectsPlanner,
@@ -127,7 +127,17 @@ export function configurationTreeReadonlyGlob(configRelativePath: string): strin
   return `${dir}/**`;
 }
 
-async function applyReadonlyIncludeForDeploy(
+const activeDeployReadonlyLocks = new Map<string, number>();
+
+function deployLockKey(workspaceFolderRoot: string, globPattern: string): string {
+  return `${path.resolve(workspaceFolderRoot).toLowerCase()}::${globPattern}`;
+}
+
+export function resetDeployReadonlyLocksForTests(): void {
+  activeDeployReadonlyLocks.clear();
+}
+
+export async function applyReadonlyIncludeForDeploy(
   workspaceFolderRoot: string,
   globPattern: string,
 ): Promise<{ dispose: () => Promise<void> } | undefined> {
@@ -136,19 +146,45 @@ async function applyReadonlyIncludeForDeploy(
   }
   const scope = vscode.Uri.file(workspaceFolderRoot);
   const cfg = vscode.workspace.getConfiguration('files', scope);
-  const before = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
-  const merged: Record<string, boolean> = { ...(before ?? {}), [globPattern]: true };
+  const key = deployLockKey(workspaceFolderRoot, globPattern);
+  const currentCount = activeDeployReadonlyLocks.get(key) ?? 0;
+  activeDeployReadonlyLocks.set(key, currentCount + 1);
+
+  if (currentCount === 0) {
+    const current = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
+    const merged: Record<string, boolean> = { ...(current ?? {}), [globPattern]: true };
   try {
     await cfg.update('readonlyInclude', merged, vscode.ConfigurationTarget.WorkspaceFolder);
   } catch {
-    return undefined;
+      activeDeployReadonlyLocks.delete(key);
+      return undefined;
+    }
   }
+
+  let disposed = false;
   return {
     async dispose() {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      const count = activeDeployReadonlyLocks.get(key) ?? 1;
+      if (count <= 1) {
+        activeDeployReadonlyLocks.delete(key);
       try {
-        await cfg.update('readonlyInclude', before, vscode.ConfigurationTarget.WorkspaceFolder);
+        const latest = cfg.get<Record<string, boolean> | undefined>('readonlyInclude') ?? {};
+        const next = { ...latest };
+        delete next[globPattern];
+        await cfg.update(
+          'readonlyInclude',
+          Object.keys(next).length > 0 ? next : undefined,
+          vscode.ConfigurationTarget.WorkspaceFolder,
+        );
       } catch {
         /* не мешаем завершению раскатки */
+      }
+      } else {
+        activeDeployReadonlyLocks.set(key, count - 1);
       }
     },
   };
@@ -809,9 +845,10 @@ export class DeployService {
         if (deployFiles.length === 0) {
           return { kind: 'skippedBySupport' as const };
         }
+        const deployContentHash = await computeFilesContentHash(configRoot, deployFiles);
         const dedupResult = checkRecentDeploy(
           { bindingId, infobaseId: entry.id },
-          { relativeFiles: deployFiles },
+          { relativeFiles: deployFiles, contentHash: deployContentHash },
           Date.now(),
         );
         if (dedupResult.isDuplicate) {
@@ -962,9 +999,10 @@ export class DeployService {
       }
 
       if (interpreted.status === 'success') {
+        const recordedContentHash = await computeFilesContentHash(configRoot, supportAndImport.importedFiles);
         recordDeploy(
           { bindingId, infobaseId: entry.id },
-          { relativeFiles: supportAndImport.importedFiles },
+          { relativeFiles: supportAndImport.importedFiles, contentHash: recordedContentHash },
           Date.now(),
         );
         appendIbcmdOutputLine(`[раскатка выбранных] ${entry.name}: успех — ${interpreted.userMessage}`);

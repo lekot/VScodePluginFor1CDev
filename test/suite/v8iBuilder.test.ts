@@ -1,4 +1,7 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import { InfobaseValidationError } from '../../src/infobases/infobaseValidator';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { buildV8iFileContent, infobaseEntryToV8iConnect } from '../../src/infobases/v8iBuilder';
@@ -27,16 +30,78 @@ suite('v8iBuilder infobaseEntryToV8iConnect', () => {
     assert.ok(c.endsWith(';'));
   });
 
-  test('file falls back to ibcmd yaml when no filePath', () => {
-    const raw = entry({
+  test('file resolves database directory from ibcmd yaml when filePath is missing (#189)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-v8i-yaml-'));
+    try {
+      const yamlPath = path.join(tmpDir, 'ibcmd.yaml');
+      const targetDb = path.join(tmpDir, 'db_data');
+      fs.writeFileSync(yamlPath, `infobase:\n  file: "${targetDb.replace(/\\/g, '\\\\')}"\n`, 'utf8');
+
+      const raw = entry({
+        id: randomUUID(),
+        name: 'YAML_IB',
+        type: 'file',
+        ibcmdConfigYamlPath: yamlPath,
+      });
+      const c = infobaseEntryToV8iConnect(raw);
+      assert.ok(c.startsWith('File='));
+      assert.ok(c.includes(path.normalize(targetDb)));
+      assert.ok(!c.includes(yamlPath));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('file resolves relative database directory relative to yaml path (#189)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-v8i-rel-'));
+    try {
+      const yamlPath = path.join(tmpDir, 'config.yaml');
+      fs.writeFileSync(yamlPath, 'infobase:\n  file: "./local_data"\n', 'utf8');
+
+      const raw = entry({
+        id: randomUUID(),
+        name: 'REL_YAML',
+        type: 'file',
+        ibcmdConfigYamlPath: yamlPath,
+      });
+      const c = infobaseEntryToV8iConnect(raw);
+      const expected = path.resolve(tmpDir, './local_data');
+      assert.ok(c.startsWith('File='));
+      assert.ok(c.includes(path.normalize(expected)));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('file throws InfobaseValidationError when ibcmd yaml is missing or lacks file property (#189)', () => {
+    const rawMissing = entry({
       id: randomUUID(),
-      name: 'Y',
+      name: 'MISSING_YAML',
       type: 'file',
-      ibcmdConfigYamlPath: 'D:\\cfg\\ib.yaml',
+      ibcmdConfigYamlPath: 'C:\\nonexistent\\missing.yaml',
     });
-    const c = infobaseEntryToV8iConnect(raw);
-    assert.ok(c.includes('File='));
-    assert.ok(c.includes(path.normalize('D:\\cfg\\ib.yaml')));
+    assert.throws(
+      () => infobaseEntryToV8iConnect(rawMissing),
+      (err: unknown) => err instanceof InfobaseValidationError && err.message.includes('MISSING_YAML'),
+    );
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-v8i-empty-'));
+    try {
+      const yamlPath = path.join(tmpDir, 'server.yaml');
+      fs.writeFileSync(yamlPath, 'server:\n  host: "srv"\n', 'utf8');
+      const rawNoFile = entry({
+        id: randomUUID(),
+        name: 'NO_FILE_YAML',
+        type: 'file',
+        ibcmdConfigYamlPath: yamlPath,
+      });
+      assert.throws(
+        () => infobaseEntryToV8iConnect(rawNoFile),
+        (err: unknown) => err instanceof InfobaseValidationError && err.message.includes('NO_FILE_YAML'),
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   test('server builds Srvr/Ref fragment', () => {

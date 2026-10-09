@@ -25,6 +25,13 @@ export class InfobaseStorageService {
   /** Entries in last persisted order (not necessarily sorted). */
   private storedEntries: InfobaseEntry[] | null = null;
   private storedFolders: InfobaseFolder[] | null = null;
+  private mutationTail: Promise<void> = Promise.resolve();
+
+  private runExclusive<T>(action: () => Promise<T>): Promise<T> {
+    const next = this.mutationTail.then(action, action);
+    this.mutationTail = next.then(() => undefined, () => undefined);
+    return next;
+  }
 
   private readonly _onDidChangeCatalog = new vscode.EventEmitter<void>();
   /** Fires after catalog mutations ({@link saveAll}, {@link upsert}, {@link remove}). */
@@ -96,6 +103,10 @@ export class InfobaseStorageService {
    * WOW Phase 4 #60 — заменить только дерево папок (записи баз не трогаются).
    */
   async saveFolders(folders: InfobaseFolder[]): Promise<void> {
+    return this.runExclusive(() => this.saveFoldersLocked(folders));
+  }
+
+  private async saveFoldersLocked(folders: InfobaseFolder[]): Promise<void> {
     const entries = [...this.getStoredOrRead()];
     validateInfobaseCatalog(entries, folders);
     await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
@@ -117,6 +128,10 @@ export class InfobaseStorageService {
    * Replaces the entire list. Removes secrets for dropped ids; clears password secret when `hasStoredPassword` is false.
    */
   async saveAll(entries: InfobaseEntry[]): Promise<void> {
+    return this.runExclusive(() => this.saveAllLocked(entries));
+  }
+
+  private async saveAllLocked(entries: InfobaseEntry[]): Promise<void> {
     const folders = this.getStoredOrReadFolders();
     validateInfobaseCatalog(entries, folders);
     const previous = this.readRootFromMemento().entries;
@@ -135,6 +150,10 @@ export class InfobaseStorageService {
    * Inserts or updates one entry by `id`.
    */
   async upsert(entry: InfobaseEntry): Promise<void> {
+    return this.runExclusive(() => this.upsertLocked(entry));
+  }
+
+  private async upsertLocked(entry: InfobaseEntry): Promise<void> {
     validateInfobaseEntry(entry);
     const current = [...this.getStoredOrRead()];
     const idx = current.findIndex((e) => e.id === entry.id);
@@ -143,7 +162,7 @@ export class InfobaseStorageService {
     } else {
       current.push(entry);
     }
-    await this.saveAll(current);
+    await this.saveAllLocked(current);
   }
 
   /**
@@ -162,6 +181,10 @@ export class InfobaseStorageService {
    * Removes an entry and deletes its password secret (idempotent).
    */
   async remove(id: string): Promise<void> {
+    return this.runExclusive(() => this.removeLocked(id));
+  }
+
+  private async removeLocked(id: string): Promise<void> {
     await this.secretStorage.delete(infobasePasswordSecretKey(id));
     const current = [...this.getStoredOrRead()];
     const filtered = current.filter((e) => e.id !== id);
