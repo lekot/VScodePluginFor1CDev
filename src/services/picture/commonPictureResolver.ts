@@ -122,6 +122,26 @@ function extractZipEntryData(buf: Buffer, entry: ZipEntry): Buffer | null {
   }
 }
 
+async function verifyContainedAsset(
+  candidatePath: string,
+  lexicalBoundary: string,
+  canonicalBoundary: string | undefined,
+): Promise<string | undefined> {
+  const resolved = path.resolve(candidatePath);
+  if (!isSameOrDescendantPath(lexicalBoundary, resolved)) {
+    return undefined;
+  }
+  try {
+    const realCandidate = await fs.promises.realpath(resolved);
+    if (canonicalBoundary && !isSameOrDescendantPath(canonicalBoundary, realCandidate)) {
+      return undefined;
+    }
+    return resolved;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Resolves underlying picture file and data URI for a CommonPicture metadata element.
  */
@@ -138,6 +158,7 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
     }
 
     const dirOfMeta = path.dirname(metadataPath);
+    const canonicalDirOfMeta = await fs.promises.realpath(dirOfMeta).catch(() => path.resolve(dirOfMeta));
     const targetNode = typeof target === 'string' ? undefined : target;
     const metaExt = path.extname(metadataPath).toLowerCase();
     const metaStem = path.basename(metadataPath, path.extname(metadataPath));
@@ -160,6 +181,8 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
       objectName = targetNode?.name || metaStem;
     }
 
+    const canonicalObjectDir = await fs.promises.realpath(objectDir).catch(() => undefined);
+
     // Candidate locations for Picture.xml strictly inside objectDir
     const candidatePictureXmlPaths = [
       path.join(objectDir, 'Ext', 'Picture.xml'),
@@ -170,8 +193,12 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
 
     // Check Picture.xml in object directory
     for (const pictureXmlPath of candidatePictureXmlPaths) {
+      const verifiedXml = await verifyContainedAsset(pictureXmlPath, objectDir, canonicalObjectDir);
+      if (!verifiedXml) {
+        continue;
+      }
       try {
-        const xmlContent = await fs.promises.readFile(pictureXmlPath, 'utf8');
+        const xmlContent = await fs.promises.readFile(verifiedXml, 'utf8');
         const match = /<(?:\w+:)?Abs>([^<]+)<\/(?:\w+:)?Abs>/i.exec(xmlContent);
         if (match && match[1]) {
           referencedFileName = match[1].trim();
@@ -200,13 +227,9 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
       ];
 
       for (const p of possibleAssetPaths) {
-        const resolved = path.resolve(p);
-        if (!isSameOrDescendantPath(objectDir, resolved)) {
-          // Escaping object boundary via relative traversal or absolute path
-          continue;
-        }
-        if (await fs.promises.access(resolved).then(() => true).catch(() => false)) {
-          resolvedAssetPath = resolved;
+        const verified = await verifyContainedAsset(p, objectDir, canonicalObjectDir);
+        if (verified) {
+          resolvedAssetPath = verified;
           break;
         }
       }
@@ -228,11 +251,23 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
       ];
 
       for (const sDir of scanDirs) {
-        if (!isSameOrDescendantPath(objectDir, path.resolve(sDir))) {
+        const resolvedDir = path.resolve(sDir);
+        if (!isSameOrDescendantPath(objectDir, resolvedDir)) {
           continue;
         }
+        let realDir: string;
         try {
-          const files = await fs.promises.readdir(sDir);
+          realDir = await fs.promises.realpath(resolvedDir);
+        } catch {
+          continue;
+        }
+        if (canonicalObjectDir && !isSameOrDescendantPath(canonicalObjectDir, realDir)) {
+          // Escaping junction or symlink directory
+          continue;
+        }
+
+        try {
+          const files = await fs.promises.readdir(resolvedDir);
           const imageOrZipFiles = files.filter((f) => {
             const ext = path.extname(f).toLowerCase();
             return SUPPORTED_IMAGE_EXTS.has(ext) || ext === '.zip';
@@ -248,13 +283,23 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
             const matchSvg = imageOrZipFiles.find((f) => path.extname(f).toLowerCase() === '.svg');
             const matchPng = imageOrZipFiles.find((f) => path.extname(f).toLowerCase() === '.png');
 
-            const chosen = matchByName ?? matchPicture ?? matchSvg ?? matchPng ?? imageOrZipFiles[0];
-            if (chosen) {
-              const candidate = path.resolve(sDir, chosen);
-              if (isSameOrDescendantPath(objectDir, candidate)) {
-                resolvedAssetPath = candidate;
+            const candidates = [matchByName, matchPicture, matchSvg, matchPng, imageOrZipFiles[0]].filter(
+              Boolean,
+            ) as string[];
+
+            for (const chosen of candidates) {
+              const verified = await verifyContainedAsset(
+                path.resolve(resolvedDir, chosen),
+                objectDir,
+                canonicalObjectDir,
+              );
+              if (verified) {
+                resolvedAssetPath = verified;
                 break;
               }
+            }
+            if (resolvedAssetPath) {
+              break;
             }
           }
         } catch {
@@ -267,8 +312,9 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
     if (!resolvedAssetPath) {
       for (const ext of ['.svg', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.bmp', '.zip']) {
         const candidateStandalone = path.resolve(dirOfMeta, `${objectName}${ext}`);
-        if (await fs.promises.access(candidateStandalone).then(() => true).catch(() => false)) {
-          resolvedAssetPath = candidateStandalone;
+        const verified = await verifyContainedAsset(candidateStandalone, dirOfMeta, canonicalDirOfMeta);
+        if (verified) {
+          resolvedAssetPath = verified;
           break;
         }
       }

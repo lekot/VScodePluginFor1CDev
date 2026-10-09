@@ -466,5 +466,76 @@ suite('CommonPictureResolver', () => {
     assert.strictEqual(result.success, false);
     assert.strictEqual(result.resolvedFilePath, undefined);
   });
+
+  test('rejects Picture.xml referencing asset escaping via junction/symlink directory (#230, PR #231 review)', async () => {
+    const outsideDir = path.join(tempDir, 'outside_target');
+    await fs.promises.mkdir(outsideDir, { recursive: true });
+    const outsideSecret = path.join(outsideDir, 'Picture.png');
+    await fs.promises.writeFile(outsideSecret, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x09]));
+
+    const picDir = path.join(tempDir, 'CommonPictures', 'FooJunction');
+    const extDir = path.join(picDir, 'Ext');
+    await fs.promises.mkdir(extDir, { recursive: true });
+
+    const metadataXml = path.join(tempDir, 'CommonPictures', 'FooJunction.xml');
+    await fs.promises.writeFile(
+      metadataXml,
+      '<CommonPicture><Name>FooJunction</Name></CommonPicture>',
+      'utf8',
+    );
+
+    const junctionPath = path.join(extDir, 'Picture');
+    await fs.promises.symlink(
+      outsideDir,
+      junctionPath,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    const pictureXml = path.join(extDir, 'Picture.xml');
+    await fs.promises.writeFile(
+      pictureXml,
+      '<ExtPicture><Picture><xr:Abs>Picture.png</xr:Abs></Picture></ExtPicture>',
+      'utf8',
+    );
+
+    const result = await resolveCommonPicture(metadataXml);
+    assert.strictEqual(result.success, false, 'Must reject asset accessed through escaping junction');
+    assert.strictEqual(result.resolvedFilePath, undefined);
+    assert.ok(
+      result.error?.includes('вне каталога') || result.error?.includes('не найден'),
+      `Expected containment error but got: ${result.error}`,
+    );
+  });
+
+  test('rejects directory scanning through junction/symlink directory (#230, PR #231 review)', async () => {
+    const outsideDir = path.join(tempDir, 'outside_scan_target');
+    await fs.promises.mkdir(outsideDir, { recursive: true });
+    const outsideSecret = path.join(outsideDir, 'Scanned.png');
+    await fs.promises.writeFile(outsideSecret, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x09]));
+
+    const picDir = path.join(tempDir, 'CommonPictures', 'FooScanJunction');
+    const extDir = path.join(picDir, 'Ext');
+    await fs.promises.mkdir(extDir, { recursive: true });
+
+    const metadataXml = path.join(tempDir, 'CommonPictures', 'FooScanJunction.xml');
+    await fs.promises.writeFile(
+      metadataXml,
+      '<CommonPicture><Name>FooScanJunction</Name></CommonPicture>',
+      'utf8',
+    );
+
+    const junctionPath = path.join(extDir, 'Picture');
+    await fs.promises.symlink(
+      outsideDir,
+      junctionPath,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    // No Picture.xml, force scanDirs
+    const result = await resolveCommonPicture(metadataXml);
+    assert.strictEqual(result.success, false, 'Must not scan outside through escaping junction');
+    assert.strictEqual(result.resolvedFilePath, undefined);
+    assert.ok(result.error?.includes('не найден'));
+  });
 });
 
