@@ -315,5 +315,156 @@ suite('CommonPictureResolver', () => {
     assert.strictEqual(result.success, false);
     assert.ok(result.error);
   });
+
+  test('rejects Picture.xml referencing asset outside object directory via path traversal (#230)', async () => {
+    const outsideSecret = path.join(tempDir, 'secret.png');
+    await fs.promises.writeFile(outsideSecret, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]));
+
+    const picDir = path.join(tempDir, 'CommonPictures', 'Foo');
+    const extDir = path.join(picDir, 'Ext');
+    await fs.promises.mkdir(extDir, { recursive: true });
+
+    const metadataXml = path.join(tempDir, 'CommonPictures', 'Foo.xml');
+    await fs.promises.writeFile(
+      metadataXml,
+      '<CommonPicture><Name>Foo</Name></CommonPicture>',
+      'utf8',
+    );
+
+    const pictureXml = path.join(extDir, 'Picture.xml');
+    await fs.promises.writeFile(
+      pictureXml,
+      '<ExtPicture><Picture><xr:Abs>../../../../secret.png</xr:Abs></Picture></ExtPicture>',
+      'utf8',
+    );
+
+    const result = await resolveCommonPicture(metadataXml);
+    assert.strictEqual(result.success, false, 'Must not resolve external traversed path');
+    assert.strictEqual(result.resolvedFilePath, undefined);
+    assert.ok(
+      result.error?.includes('вне каталога') || result.error?.includes('не найден'),
+      `Expected containment error but got: ${result.error}`,
+    );
+  });
+
+  test('rejects Picture.xml referencing external file via absolute path (#230)', async () => {
+    const outsideSecret = path.join(tempDir, 'absolute_secret.png');
+    await fs.promises.writeFile(outsideSecret, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]));
+
+    const picDir = path.join(tempDir, 'CommonPictures', 'FooAbs');
+    const extDir = path.join(picDir, 'Ext');
+    await fs.promises.mkdir(extDir, { recursive: true });
+
+    const metadataXml = path.join(tempDir, 'CommonPictures', 'FooAbs.xml');
+    await fs.promises.writeFile(
+      metadataXml,
+      '<CommonPicture><Name>FooAbs</Name></CommonPicture>',
+      'utf8',
+    );
+
+    const pictureXml = path.join(extDir, 'Picture.xml');
+    await fs.promises.writeFile(
+      pictureXml,
+      `<ExtPicture><Picture><xr:Abs>${outsideSecret}</xr:Abs></Picture></ExtPicture>`,
+      'utf8',
+    );
+
+    const result = await resolveCommonPicture(metadataXml);
+    assert.strictEqual(result.success, false, 'Must not resolve absolute external path');
+    assert.strictEqual(result.resolvedFilePath, undefined);
+    assert.ok(
+      result.error?.includes('вне каталога') || result.error?.includes('не найден'),
+      `Expected containment error but got: ${result.error}`,
+    );
+  });
+
+  test('allows safe relative path that remains within object directory (#230)', async () => {
+    const picDir = path.join(tempDir, 'CommonPictures', 'FooNested');
+    const extDir = path.join(picDir, 'Ext');
+    const subDir = path.join(extDir, 'Sub');
+    await fs.promises.mkdir(subDir, { recursive: true });
+
+    const metadataXml = path.join(tempDir, 'CommonPictures', 'FooNested.xml');
+    await fs.promises.writeFile(
+      metadataXml,
+      '<CommonPicture><Name>FooNested</Name></CommonPicture>',
+      'utf8',
+    );
+
+    const pngPath = path.join(extDir, 'Picture.png');
+    await fs.promises.writeFile(pngPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]));
+
+    const pictureXml = path.join(extDir, 'Picture.xml');
+    await fs.promises.writeFile(
+      pictureXml,
+      '<ExtPicture><Picture><xr:Abs>Sub/../Picture.png</xr:Abs></Picture></ExtPicture>',
+      'utf8',
+    );
+
+    const result = await resolveCommonPicture(metadataXml);
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(path.resolve(result.resolvedFilePath!), path.resolve(pngPath));
+  });
+
+  test('does not substitute neighbour asset when object picture is missing (#228)', async () => {
+    const commonPicturesDir = path.join(tempDir, 'CommonPictures');
+    await fs.promises.mkdir(commonPicturesDir, { recursive: true });
+
+    const fooXml = path.join(commonPicturesDir, 'Foo.xml');
+    await fs.promises.writeFile(fooXml, '<CommonPicture><Name>Foo</Name></CommonPicture>', 'utf8');
+
+    // Foo object folder exists but Ext has no picture files
+    const fooExtDir = path.join(commonPicturesDir, 'Foo', 'Ext');
+    await fs.promises.mkdir(fooExtDir, { recursive: true });
+
+    // Neighbour assets in CommonPictures
+    const otherPng = path.join(commonPicturesDir, 'Other.png');
+    await fs.promises.writeFile(otherPng, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x02]));
+
+    const neighbourPicDir = path.join(commonPicturesDir, 'Neighbor', 'Ext', 'Picture');
+    await fs.promises.mkdir(neighbourPicDir, { recursive: true });
+    const neighbourPng = path.join(neighbourPicDir, 'Neighbor.png');
+    await fs.promises.writeFile(neighbourPng, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x03]));
+
+    const result = await resolveCommonPicture(fooXml);
+    assert.strictEqual(result.success, false, 'Must fail when object has no own picture');
+    assert.strictEqual(result.resolvedFilePath, undefined, 'Must not substitute neighbour asset');
+    assert.ok(result.error?.includes('не найден'));
+  });
+
+  test('resolves standalone picture alongside metadata XML only when stem matches object name (#228)', async () => {
+    const commonPicturesDir = path.join(tempDir, 'CommonPictures');
+    await fs.promises.mkdir(commonPicturesDir, { recursive: true });
+
+    const standaloneXml = path.join(commonPicturesDir, 'Standalone.xml');
+    await fs.promises.writeFile(
+      standaloneXml,
+      '<CommonPicture><Name>Standalone</Name></CommonPicture>',
+      'utf8',
+    );
+
+    const standalonePng = path.join(commonPicturesDir, 'Standalone.png');
+    await fs.promises.writeFile(standalonePng, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x04]));
+
+    const result = await resolveCommonPicture(standaloneXml);
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(path.resolve(result.resolvedFilePath!), path.resolve(standalonePng));
+  });
+
+  test('returns graceful failure when Picture.xml has empty or whitespace Abs tag', async () => {
+    const picDir = path.join(tempDir, 'CommonPictures', 'EmptyAbs');
+    const extDir = path.join(picDir, 'Ext');
+    await fs.promises.mkdir(extDir, { recursive: true });
+
+    const metadataXml = path.join(tempDir, 'CommonPictures', 'EmptyAbs.xml');
+    await fs.promises.writeFile(metadataXml, '<CommonPicture><Name>EmptyAbs</Name></CommonPicture>', 'utf8');
+
+    const pictureXml = path.join(extDir, 'Picture.xml');
+    await fs.promises.writeFile(pictureXml, '<ExtPicture><Picture><xr:Abs>   </xr:Abs></Picture></ExtPicture>', 'utf8');
+
+    const result = await resolveCommonPicture(metadataXml);
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result.resolvedFilePath, undefined);
+  });
 });
 
