@@ -212,6 +212,143 @@ suite('ConfigurationSession Read/Write Consistency (Issue #214)', () => {
     assert.strictEqual(writeOutcome.status, 'cancelled');
     assert.strictEqual(queuedOutcome.status, 'cancelled');
   });
+
+  test('mutation with stale clientSnapshotVersion returns STALE_SNAPSHOT conflict', async () => {
+    const session = new ConfigurationSession(identity);
+    try {
+      const outcome = await session.enqueue({
+        kind: 'stale-op',
+        clientSnapshotVersion: 999,
+        execute: async () => 'should-not-run',
+      });
+      assert.strictEqual(outcome.status, 'conflict');
+      assert.strictEqual((outcome as any).code, 'STALE_SNAPSHOT');
+      assert.strictEqual(session.snapshotVersion, 0);
+    } finally {
+      await session.dispose();
+    }
+  });
+
+  test('PathBoundaryError in mutation maps to typed conflict outcome', async () => {
+    const { PathBoundaryError } = await import('../../src/services/configurationSession/pathBoundary');
+    const session = new ConfigurationSession(identity);
+    try {
+      // 1. TARGET_OUTSIDE_ROOT
+      const outcome1 = await session.enqueue({
+        kind: 'outside-root-op',
+        execute: async () => {
+          throw new PathBoundaryError('PATH_OUTSIDE_ROOT', 'Target escapes root');
+        },
+      });
+      assert.strictEqual(outcome1.status, 'conflict');
+      assert.strictEqual((outcome1 as any).code, 'TARGET_OUTSIDE_ROOT');
+
+      // 2. PATH_UNAVAILABLE
+      const outcome2 = await session.enqueue({
+        kind: 'unavailable-op',
+        execute: async () => {
+          throw new PathBoundaryError('PATH_UNAVAILABLE', 'Workspace root unavailable');
+        },
+      });
+      assert.strictEqual(outcome2.status, 'conflict');
+      assert.strictEqual((outcome2 as any).code, 'PATH_UNAVAILABLE');
+    } finally {
+      await session.dispose();
+    }
+  });
+
+  test('pre-cancelled or post-dispose operations return cancelled status immediately', async () => {
+    const session = new ConfigurationSession(identity);
+    // Pre-cancelled enqueue
+    const cancelledWrite = await session.enqueue({
+      kind: 'pre-cancelled-op',
+      cancellation: { isCancellationRequested: true },
+      execute: async () => 'noop',
+    });
+    assert.strictEqual(cancelledWrite.status, 'cancelled');
+
+    await session.dispose();
+
+    // Post-dispose enqueue
+    const postDisposeWrite = await session.enqueue({
+      kind: 'post-dispose-op',
+      execute: async () => 'noop',
+    });
+    assert.strictEqual(postDisposeWrite.status, 'cancelled');
+
+    // Post-dispose read
+    const postDisposeRead = await session.runRead(async () => 'noop');
+    assert.strictEqual(postDisposeRead.status, 'cancelled');
+  });
+
+  test('operations cancelled while waiting in queue resolve with cancelled status', async () => {
+    const session = new ConfigurationSession(identity);
+    try {
+      let finishBlocker!: () => void;
+      const blockerGate = new Promise<void>((r) => { finishBlocker = r; });
+
+      const blocker = session.enqueue({
+        kind: 'blocker',
+        execute: async () => {
+          await blockerGate;
+          return 'unblocked';
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 5));
+
+      const writeCancelToken = { isCancellationRequested: false };
+      const queuedWrite = session.enqueue({
+        kind: 'cancelled-in-queue-write',
+        cancellation: writeCancelToken,
+        execute: async () => 'should-not-run',
+      });
+
+      const readCancelToken = { isCancellationRequested: false };
+      const queuedRead = session.runRead(
+        async () => 'should-not-run',
+        readCancelToken,
+      );
+
+      // Cancel while still in queue
+      writeCancelToken.isCancellationRequested = true;
+      readCancelToken.isCancellationRequested = true;
+
+      finishBlocker();
+      const [blockerRes, writeRes, readRes] = await Promise.all([blocker, queuedWrite, queuedRead]);
+
+      assert.strictEqual(blockerRes.status, 'committed');
+      assert.strictEqual(writeRes.status, 'cancelled');
+      assert.strictEqual(readRes.status, 'cancelled');
+    } finally {
+      await session.dispose();
+    }
+  });
+
+  test('dispose drains active writer before completing', async () => {
+    const session = new ConfigurationSession(identity);
+    let finishWrite!: () => void;
+    const writeGate = new Promise<void>((r) => { finishWrite = r; });
+
+    const activeWrite = session.enqueue({
+      kind: 'active-write',
+      execute: async () => {
+        await writeGate;
+        return 'drained';
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 5));
+
+    const disposePromise = session.dispose();
+    finishWrite();
+
+    const outcome = await activeWrite;
+    await disposePromise;
+
+    assert.strictEqual(outcome.status, 'committed');
+    assert.strictEqual(outcome.value, 'drained');
+  });
 });
 
 

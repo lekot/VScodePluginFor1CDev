@@ -88,6 +88,27 @@ suite('Agent Multi-Root Fail-Closed Routing (Issue #197)', () => {
     assert.strictEqual(result.data?.configPath, path.join(tmpA, 'src'));
   });
 
+  test('resolveBindingCommand fails closed when multi-root and workspaceFolder is omitted', async () => {
+    vscodeTestState.mockWorkspaceFolders = [
+      { uri: { fsPath: tmpA, scheme: 'file' }, name: 'folderA', index: 0 },
+      { uri: { fsPath: tmpB, scheme: 'file' }, name: 'folderB', index: 1 },
+    ];
+    const binding: ConfigurationBinding = {
+      configRelativePath: 'src',
+      workspaceFolder: '',
+      infobaseIds: [],
+      massDeployment: false,
+    };
+    const deps = {
+      bindingManager: { listAll: async () => [binding] },
+      infobaseManager: { listAll: async () => [] },
+    };
+
+    const result = await resolveBindingCommand({ configPath: 'src' }, deps as any);
+    assert.strictEqual(result.success, false);
+    assert.ok(result.error?.includes('не указана целевая папка') || result.error?.includes('workspaceFolder'));
+  });
+
   test('findWorkspaceFolderForPath handles case variations on Windows', () => {
     if (process.platform !== 'win32') {
       return;

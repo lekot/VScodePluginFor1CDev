@@ -95,5 +95,91 @@ suite('CommandInterfaceOperations Subsystem Path Containment (Issue #209)', () =
     assert.strictEqual(result.success, true);
     assert.ok(result.data);
   });
+
+  test('resolves command interface via absolute xml file path and short subsystem name under Subsystems', async () => {
+    const opsA = new CommandInterfaceOperations(rootA);
+    // Absolute XML file path (e.g. Subsystem XML descriptor)
+    const directXmlPath = path.join(rootA, 'Subsystems', 'SubA', 'SubA.xml');
+    const xmlRes = await opsA.getCommandInterface(directXmlPath);
+    assert.strictEqual(xmlRes.success, true);
+
+    // Relative under Subsystems directly
+    const shortRes = await opsA.getCommandInterface('SubA');
+    assert.strictEqual(shortRes.success, true);
+  });
+
+  test('setCommandVisibility updates existing, adds new, and removes commands', async () => {
+    const opsA = new CommandInterfaceOperations(rootA);
+    // 1. Update existing command
+    const resUpdate = await opsA.setCommandVisibility('Subsystems/SubA', 'Catalog.Goods.StandardCommand.OpenList', 'hidden');
+    assert.strictEqual(resUpdate.success, true);
+
+    // 2. Add new command
+    const resAdd = await opsA.setCommandVisibility('Subsystems/SubA', 'Catalog.New.Command', 'visible');
+    assert.strictEqual(resAdd.success, true);
+
+    // 3. Remove command (common === null)
+    const resRemove = await opsA.setCommandVisibility('Subsystems/SubA', 'Catalog.Goods.StandardCommand.OpenList', null);
+    assert.strictEqual(resRemove.success, true);
+
+    const getRes = await opsA.getCommandInterface('Subsystems/SubA');
+    assert.strictEqual(getRes.success, true);
+    assert.strictEqual(getRes.data?.visibility.some((v) => v.commandName === 'Catalog.Goods.StandardCommand.OpenList'), false);
+    assert.strictEqual(getRes.data?.visibility.some((v) => v.commandName === 'Catalog.New.Command'), true);
+  });
+
+  test('setCommandOrder and setSubsystemsOrder succeed inside configuration root', async () => {
+    const opsA = new CommandInterfaceOperations(rootA);
+    const resOrder = await opsA.setCommandOrder('Subsystems/SubA', [
+      { commandName: 'Catalog.Goods.StandardCommand.OpenList', commandGroup: 'CommonCommand.Group' },
+    ]);
+    assert.strictEqual(resOrder.success, true);
+
+    const resSubOrder = await opsA.setSubsystemsOrder('Subsystems/SubA', ['SubA1', 'SubA2']);
+    assert.strictEqual(resSubOrder.success, true);
+
+    const getRes = await opsA.getCommandInterface('Subsystems/SubA');
+    assert.strictEqual(getRes.success, true);
+    assert.strictEqual(getRes.data?.commandsOrder?.length, 1);
+    assert.deepStrictEqual(getRes.data?.subsystemsOrder, ['SubA1', 'SubA2']);
+  });
+
+  test('returns error when command interface file does not exist', async () => {
+    const opsA = new CommandInterfaceOperations(rootA);
+    const getRes = await opsA.getCommandInterface('Subsystems/NonExistent');
+    assert.strictEqual(getRes.success, false);
+    assert.ok(getRes.error?.includes('не найден'));
+
+    const visRes = await opsA.setCommandVisibility('Subsystems/NonExistent', 'cmd', 'visible');
+    assert.strictEqual(visRes.success, false);
+    assert.ok(visRes.error?.includes('не найден'));
+
+    const ordRes = await opsA.setCommandOrder('Subsystems/NonExistent', []);
+    assert.strictEqual(ordRes.success, false);
+    assert.ok(ordRes.error?.includes('не найден'));
+
+    const subOrdRes = await opsA.setSubsystemsOrder('Subsystems/NonExistent', []);
+    assert.strictEqual(subOrdRes.success, false);
+    assert.ok(subOrdRes.error?.includes('не найден'));
+  });
+
+  test('handles PATH_UNAVAILABLE when configuration root is non-existent', async () => {
+    const brokenOps = new CommandInterfaceOperations(path.join(os.tmpdir(), 'completely-missing-root-for-ci'));
+    const getRes = await brokenOps.getCommandInterface('SubA');
+    assert.strictEqual(getRes.success, false);
+    assert.strictEqual(getRes.code, 'PATH_UNAVAILABLE');
+
+    const visRes = await brokenOps.setCommandVisibility('SubA', 'cmd', 'visible');
+    assert.strictEqual(visRes.success, false);
+    assert.strictEqual(visRes.code, 'PATH_UNAVAILABLE');
+
+    const ordRes = await brokenOps.setCommandOrder('SubA', []);
+    assert.strictEqual(ordRes.success, false);
+    assert.strictEqual(ordRes.code, 'PATH_UNAVAILABLE');
+
+    const subOrdRes = await brokenOps.setSubsystemsOrder('SubA', []);
+    assert.strictEqual(subOrdRes.success, false);
+    assert.strictEqual(subOrdRes.code, 'PATH_UNAVAILABLE');
+  });
 });
 
