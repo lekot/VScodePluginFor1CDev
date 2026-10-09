@@ -181,7 +181,16 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
       objectName = targetNode?.name || metaStem;
     }
 
+    const trustedParentDir = metaExt === '.mdo' ? path.dirname(dirOfMeta) : dirOfMeta;
+    const canonicalTrustedParent = await fs.promises.realpath(trustedParentDir).catch(() => undefined);
     const canonicalObjectDir = await fs.promises.realpath(objectDir).catch(() => undefined);
+
+    if (canonicalObjectDir && (!canonicalTrustedParent || !isSameOrDescendantPath(canonicalTrustedParent, canonicalObjectDir))) {
+      return {
+        success: false,
+        error: 'Каталог объекта картинки находится вне доверенного каталога или ссылается на внешний ресурс',
+      };
+    }
 
     // Candidate locations for Picture.xml strictly inside objectDir
     const candidatePictureXmlPaths = [

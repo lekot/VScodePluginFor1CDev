@@ -537,5 +537,49 @@ suite('CommonPictureResolver', () => {
     assert.strictEqual(result.resolvedFilePath, undefined);
     assert.ok(result.error?.includes('не найден'));
   });
+
+  test('rejects asset when objectDir itself is a junction/symlink escaping parent (#230, PR #231 review)', async () => {
+    const outsideDir = path.join(tempDir, 'outside_object_target');
+    const outsideExtDir = path.join(outsideDir, 'Ext', 'Picture');
+    await fs.promises.mkdir(outsideExtDir, { recursive: true });
+    const outsideSecret = path.join(outsideExtDir, 'Picture.png');
+    await fs.promises.writeFile(outsideSecret, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x09]));
+
+    const outsideXml = path.join(outsideDir, 'Ext', 'Picture.xml');
+    await fs.promises.writeFile(
+      outsideXml,
+      '<ExtPicture><Picture><xr:Abs>Picture.png</xr:Abs></Picture></ExtPicture>',
+      'utf8',
+    );
+
+    const commonPicturesDir = path.join(tempDir, 'CommonPictures');
+    await fs.promises.mkdir(commonPicturesDir, { recursive: true });
+
+    const metadataXml = path.join(commonPicturesDir, 'FooObjJunction.xml');
+    await fs.promises.writeFile(
+      metadataXml,
+      '<CommonPicture><Name>FooObjJunction</Name></CommonPicture>',
+      'utf8',
+    );
+
+    // objectDir itself (CommonPictures/FooObjJunction) is a junction to outsideDir
+    const picDir = path.join(commonPicturesDir, 'FooObjJunction');
+    await fs.promises.symlink(
+      outsideDir,
+      picDir,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    const result = await resolveCommonPicture(metadataXml);
+    assert.strictEqual(result.success, false, 'Must reject asset accessed when objectDir is an escaping junction');
+    assert.strictEqual(result.resolvedFilePath, undefined);
+    assert.ok(
+      result.error?.includes('вне доверенного каталога') ||
+      result.error?.includes('вне каталога') ||
+      result.error?.includes('не найден'),
+      `Expected containment error but got: ${result.error}`,
+    );
+  });
 });
+
 
