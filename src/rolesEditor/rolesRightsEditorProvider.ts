@@ -618,21 +618,61 @@ export class RolesRightsEditorProvider {
         } else {
           const dir = path.dirname(targetPath);
           await fs.promises.mkdir(dir, { recursive: true });
-          let fileHandle: fs.promises.FileHandle | undefined;
+          const tempPath = path.join(dir, `.cdt-${randomUUID()}.tmp`);
+          let tempHandle: fs.promises.FileHandle | undefined;
+          let published = false;
           try {
-            fileHandle = await fs.promises.open(targetPath, 'wx');
-            await fileHandle.writeFile(xmlContent, 'utf8');
-            await fileHandle.sync();
-          } catch (err: unknown) {
-            const code = err && typeof (err as NodeJS.ErrnoException).code === 'string'
-              ? (err as NodeJS.ErrnoException).code
-              : '';
-            if (code === 'EEXIST') {
-              throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" уже существует или был создан другим процессом.`);
+            tempHandle = await fs.promises.open(tempPath, 'wx');
+            await tempHandle.writeFile(xmlContent, 'utf8');
+            await tempHandle.sync();
+            await tempHandle.close();
+            tempHandle = undefined;
+
+            // Attempt atomic publish via link (guarantees targetPath is only published if fully written, and fails with EEXIST if target already exists)
+            try {
+              await fs.promises.link(tempPath, targetPath);
+              published = true;
+            } catch (linkErr: unknown) {
+              const code = linkErr && typeof (linkErr as NodeJS.ErrnoException).code === 'string'
+                ? (linkErr as NodeJS.ErrnoException).code
+                : '';
+              if (code === 'EEXIST') {
+                throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" уже существует или был создан другим процессом.`);
+              }
+              // If link is not supported (e.g. EXDEV, ENOSYS, EPERM), fallback to exclusive open with cleanup on failure
+              let directHandle: fs.promises.FileHandle | undefined;
+              let directWritten = false;
+              try {
+                directHandle = await fs.promises.open(targetPath, 'wx');
+                await directHandle.writeFile(xmlContent, 'utf8');
+                await directHandle.sync();
+                directWritten = true;
+                published = true;
+              } catch (directErr: unknown) {
+                const directCode = directErr && typeof (directErr as NodeJS.ErrnoException).code === 'string'
+                  ? (directErr as NodeJS.ErrnoException).code
+                  : '';
+                if (directCode === 'EEXIST') {
+                  throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" уже существует или был создан другим процессом.`);
+                }
+                throw directErr;
+              } finally {
+                if (directHandle) {
+                  await directHandle.close().catch(() => undefined);
+                  if (!directWritten) {
+                    await fs.promises.unlink(targetPath).catch(() => undefined);
+                  }
+                }
+              }
             }
-            throw err;
           } finally {
-            await fileHandle?.close().catch(() => undefined);
+            if (tempHandle) {
+              await tempHandle.close().catch(() => undefined);
+            }
+            await fs.promises.unlink(tempPath).catch(() => undefined);
+          }
+          if (!published) {
+            throw new Error(`Не удалось опубликовать файл прав роли: ${targetPath}`);
           }
           this.sessionExpectedState = 'file';
           this.sessionExpectedHash = hashContent(xmlContent);

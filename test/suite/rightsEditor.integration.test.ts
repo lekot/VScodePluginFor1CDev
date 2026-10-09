@@ -1173,6 +1173,162 @@ suite('rightsEditor integration', () => {
         await rmRfTestDir(tmpRoot);
       }
     });
+
+    test('handleSave does not leave partial Rights.xml on disk when write fails during creation (#206, PR #225 review comment 4230106700)', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-write-fail-'));
+      const gateway = configureConfigurationMutationGateway(
+        async (targetPath, kind, operation) => operation(),
+        async () => { throw new Error('Not implemented'); },
+      );
+
+      try {
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration name="TestConfig"/></MetaDataObject>',
+          'utf-8',
+        );
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDir = path.join(rolesDir, 'TestRole');
+        const rolePath = path.join(rolesDir, 'TestRole.xml');
+        await fs.promises.mkdir(rolesDir, { recursive: true });
+        await fs.promises.writeFile(
+          rolePath,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>TestRole</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        const rightsPath = path.join(roleDir, 'Ext', 'Rights.xml');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          await provider.show(rolePath, tmpRoot);
+
+          // Mock open to simulate write failure after file creation
+          const origOpen = fs.promises.open;
+          (fs.promises as any).open = async (...args: any[]) => {
+            const handle = await origOpen.apply(fs.promises, args as any);
+            handle.writeFile = async () => {
+              throw new Error('ENOSPC: no space left on device');
+            };
+            return handle;
+          };
+
+          let errorCaught = false;
+          try {
+            await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+          } catch (err: any) {
+            errorCaught = true;
+            assert.ok(String(err).includes('ENOSPC'));
+          } finally {
+            (fs.promises as any).open = origOpen;
+          }
+
+          assert.strictEqual(errorCaught, true, 'Save must fail when write throws ENOSPC');
+          assert.strictEqual(fs.existsSync(rightsPath), false, 'Partial Rights.xml must not be left on disk after write failure');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        gateway.dispose();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+
+    test('handleSave cleans up direct Rights.xml if fallback write fails (#206, PR #225 review comment 4230106700)', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-fallback-fail-'));
+      const gateway = configureConfigurationMutationGateway(
+        async (targetPath, kind, operation) => operation(),
+        async () => { throw new Error('Not implemented'); },
+      );
+
+      try {
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration name="TestConfig"/></MetaDataObject>',
+          'utf-8',
+        );
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDir = path.join(rolesDir, 'TestRole');
+        const rolePath = path.join(rolesDir, 'TestRole.xml');
+        await fs.promises.mkdir(rolesDir, { recursive: true });
+        await fs.promises.writeFile(
+          rolePath,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>TestRole</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        const rightsPath = path.join(roleDir, 'Ext', 'Rights.xml');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          await provider.show(rolePath, tmpRoot);
+
+          // Force link to fail so it falls back to direct open, then fail the direct write
+          const origLink = fs.promises.link;
+          const origOpen = fs.promises.open;
+          let openCalls = 0;
+
+          (fs.promises as any).link = async () => {
+            const err = new Error('ENOSYS: function not implemented');
+            (err as any).code = 'ENOSYS';
+            throw err;
+          };
+
+          (fs.promises as any).open = async (...args: any[]) => {
+            openCalls++;
+            const handle = await origOpen.apply(fs.promises, args as any);
+            if (openCalls === 2) {
+              // Direct target handle
+              handle.writeFile = async () => {
+                throw new Error('EIO: input/output error');
+              };
+            }
+            return handle;
+          };
+
+          let errorCaught = false;
+          try {
+            await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+          } catch (err: any) {
+            errorCaught = true;
+            assert.ok(String(err).includes('EIO'));
+          } finally {
+            (fs.promises as any).link = origLink;
+            (fs.promises as any).open = origOpen;
+          }
+
+          assert.strictEqual(errorCaught, true, 'Save must fail when fallback direct write throws EIO');
+          assert.strictEqual(fs.existsSync(rightsPath), false, 'Fallback target Rights.xml must be unlinked on failure');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        gateway.dispose();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
   });
 });
 
