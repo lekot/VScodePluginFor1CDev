@@ -561,13 +561,18 @@ const workspaceStub = {
   getWorkspaceFolders: () => vscodeTestState.mockWorkspaceFolders,
   getWorkspaceFolder: (uri: { fsPath: string }) => {
     const u = path.normalize(uri.fsPath);
+    let bestMatch: (typeof vscodeTestState.mockWorkspaceFolders)[number] | undefined;
+    let bestLen = -1;
     for (const f of vscodeTestState.mockWorkspaceFolders) {
       const w = path.normalize(f.uri.fsPath);
       if (u === w || u.startsWith(w + path.sep)) {
-        return f;
+        if (w.length > bestLen) {
+          bestMatch = f;
+          bestLen = w.length;
+        }
       }
     }
-    return undefined;
+    return bestMatch;
   },
   onDidSaveTextDocument: (listener: (e: { uri: { fsPath: string } }) => void) => {
     vscodeTestState.onDidSaveDocumentListeners.push(listener);
@@ -944,7 +949,7 @@ export const vscodeExtensionsTestState: {
   getExtensionImpl: null,
 };
 
-const vscodeStub = {
+export const vscodeStub = {
   TreeItemCollapsibleState,
   TreeItem,
   Uri,
