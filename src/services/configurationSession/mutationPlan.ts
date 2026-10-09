@@ -855,6 +855,26 @@ export class MutationPlanExecutor {
         continue;
       }
 
+      if (snapshot.state === 'missing') {
+        const stat = await fs.promises.lstat(canonicalTarget).catch(() => undefined);
+        if (stat?.isDirectory()) {
+          const isMoveTarget = plan?.steps.some(
+            (s) => s.type === 'movePath' && isSamePath(s.targetPath, snapshot.targetPath)
+          );
+          if (!isMoveTarget) {
+            const entries = await fs.promises.readdir(canonicalTarget).catch(() => []);
+            if (entries.length > 0) {
+              throw new MutationPlanError(
+                'RECOVERY_REQUIRED',
+                `Cannot remove newly-created directory ${canonicalTarget}: directory is not empty (${entries.length} unexpected item(s)). Recovery aborted to protect external changes.`
+              );
+            }
+            await fs.promises.rmdir(canonicalTarget);
+            continue;
+          }
+        }
+      }
+
       await fs.promises.rm(canonicalTarget, { recursive: true, force: true });
       if (snapshot.state !== 'missing') {
         if (!snapshot.backupName) {
@@ -979,6 +999,64 @@ async function assertExpectation(targetPath: string, expected: MutationExpectati
   }
 }
 
+export const EMPTY_DIRECTORY_FINGERPRINT = hashContent(Buffer.from('', 'utf8'));
+
+function computeExpectedDirectoryFingerprint(
+  dirPath: string,
+  snapshots: readonly PathSnapshot[],
+  plan: MutationPlan<unknown>,
+  appliedSteps: number,
+): string | undefined {
+  const snapshot = snapshots.find((s) => isSamePath(s.targetPath, dirPath));
+  const wasMissing = !snapshot || snapshot.state === 'missing';
+
+  const childNames = new Set<string>();
+  for (let i = 0; i < appliedSteps; i++) {
+    const step = plan.steps[i];
+    if (!step) {
+      continue;
+    }
+    const paths = stepPaths(step);
+    for (const p of paths) {
+      const rel = path.relative(dirPath, p);
+      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+        const firstSegment = rel.split(/[\\/]/)[0];
+        if (firstSegment) {
+          childNames.add(firstSegment);
+        }
+      }
+    }
+  }
+
+  if (childNames.size === 0) {
+    if (wasMissing) {
+      return EMPTY_DIRECTORY_FINGERPRINT;
+    }
+    return snapshot.fingerprint;
+  }
+
+  if (wasMissing) {
+    const sortedNames = [...childNames].sort((a, b) => a.localeCompare(b));
+    const hashes: string[] = [];
+    for (const name of sortedNames) {
+      const childPath = path.join(dirPath, name);
+      const childExpected = expectedPostState(childPath, snapshots, plan, appliedSteps);
+      if (childExpected.state === 'missing') {
+        continue;
+      }
+      if (childExpected.state === 'file' && childExpected.hash) {
+        hashes.push(`F:${name}:${childExpected.hash}`);
+      } else if (childExpected.state === 'directory') {
+        const fp = childExpected.fingerprint ?? computeExpectedDirectoryFingerprint(childPath, snapshots, plan, appliedSteps) ?? EMPTY_DIRECTORY_FINGERPRINT;
+        hashes.push(`D:${name}:${fp}`);
+      }
+    }
+    return hashContent(Buffer.from(hashes.join('\n'), 'utf8'));
+  }
+
+  return snapshot.fingerprint;
+}
+
 function expectedPostState(
   targetPath: string,
   snapshots: readonly PathSnapshot[],
@@ -1000,7 +1078,8 @@ function expectedPostState(
       return { state: 'missing' };
     }
     if (step.type === 'ensureDirectory' && isSamePath(step.targetPath, targetPath)) {
-      return { state: 'directory' };
+      const fingerprint = computeExpectedDirectoryFingerprint(targetPath, snapshots, plan, appliedSteps);
+      return { state: 'directory', ...(fingerprint !== undefined ? { fingerprint } : {}) };
     }
     if (step.type === 'movePath') {
       if (isSamePath(step.sourcePath, targetPath)) {

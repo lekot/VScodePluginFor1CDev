@@ -66,6 +66,7 @@ export class RolesRightsEditorProvider {
   private saveInProgress = false;
   private configurationRootPath: string | undefined;
   private sessionExpectedHash: string | undefined;
+  private sessionExpectedState: 'missing' | 'file' | undefined;
   /** Incremented on each `show` so stale async metadata loads do not postMessage over a newer session. */
   private objectsLoadGeneration = 0;
   private tableRenderStatusDisposable: vscode.Disposable | undefined;
@@ -145,8 +146,10 @@ export class RolesRightsEditorProvider {
       const initialTargetPath = isCaseB ? roleFilePath : getRightsPath(roleFilePath);
       try {
         const initialRaw = await fs.promises.readFile(initialTargetPath, 'utf8');
+        this.sessionExpectedState = 'file';
         this.sessionExpectedHash = hashContent(initialRaw);
       } catch {
+        this.sessionExpectedState = 'missing';
         this.sessionExpectedHash = undefined;
       }
       Logger.info(`Loaded role: ${this.currentRoleModel.name}`);
@@ -564,6 +567,9 @@ export class RolesRightsEditorProvider {
           try {
             raw = await fs.promises.readFile(targetPath, 'utf8');
             originalHash = hashContent(raw);
+            if (this.sessionExpectedState === 'missing') {
+              throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был создан другим процессом.`);
+            }
             if (this.sessionExpectedHash && originalHash !== this.sessionExpectedHash) {
               throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был изменен другим процессом.`);
             }
@@ -572,7 +578,7 @@ export class RolesRightsEditorProvider {
               ? (err as NodeJS.ErrnoException).code
               : '';
             if (code === 'ENOENT') {
-              if (this.sessionExpectedHash) {
+              if (this.sessionExpectedState === 'file' || this.sessionExpectedHash) {
                 throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был удален другим процессом.`);
               }
               originalHash = '';
@@ -612,14 +618,23 @@ export class RolesRightsEditorProvider {
         } else {
           const dir = path.dirname(targetPath);
           await fs.promises.mkdir(dir, { recursive: true });
-          const tempPath = path.join(dir, `.cdt-${randomUUID()}.tmp`);
-          await fs.promises.writeFile(tempPath, xmlContent, 'utf8');
+          let fileHandle: fs.promises.FileHandle | undefined;
           try {
-            await fs.promises.rename(tempPath, targetPath);
-          } catch (renameErr) {
-            await fs.promises.unlink(tempPath).catch(() => undefined);
-            throw renameErr;
+            fileHandle = await fs.promises.open(targetPath, 'wx');
+            await fileHandle.writeFile(xmlContent, 'utf8');
+            await fileHandle.sync();
+          } catch (err: unknown) {
+            const code = err && typeof (err as NodeJS.ErrnoException).code === 'string'
+              ? (err as NodeJS.ErrnoException).code
+              : '';
+            if (code === 'EEXIST') {
+              throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" уже существует или был создан другим процессом.`);
+            }
+            throw err;
+          } finally {
+            await fileHandle?.close().catch(() => undefined);
           }
+          this.sessionExpectedState = 'file';
           this.sessionExpectedHash = hashContent(xmlContent);
         }
         return;
@@ -860,6 +875,7 @@ export class RolesRightsEditorProvider {
     this.saveDisabledNoConfig = false;
     this.configurationRootPath = undefined;
     this.sessionExpectedHash = undefined;
+    this.sessionExpectedState = undefined;
     this.filterState = createDefaultFilterState();
   }
 }

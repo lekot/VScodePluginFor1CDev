@@ -10,7 +10,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import '../helpers/vscodeStubRegister';
+
 import { RoleXmlParser } from '../../src/rolesEditor/roleXmlParser';
 import { updateRight } from '../../src/rolesEditor/rightsUpdateUtils';
 import {
@@ -1093,6 +1093,77 @@ suite('rightsEditor integration', () => {
           const onDisk = await fs.promises.readFile(rightsPath, 'utf-8');
           assert.strictEqual(onDisk, concurrentContent, 'Concurrent modification on disk must be preserved');
           assert.strictEqual(errorCaught, true, 'handleSave must fail closed on stale hash conflict');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        gateway.dispose();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+
+    test('handleSave fails closed and prevents overwriting when Rights.xml was created concurrently post-open (#206, PR #225 review comment 2)', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-create-cas-'));
+      const intercepted: Array<{ path: string; kind: string }> = [];
+      const gateway = configureConfigurationMutationGateway(
+        async (targetPath, kind, operation) => {
+          intercepted.push({ path: targetPath, kind });
+          return operation();
+        },
+        async () => {
+          throw new Error('Not implemented');
+        },
+      );
+
+      try {
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><Configuration xmlns="http://v8.1c.ru/8.3/MDClasses"/>',
+          'utf-8',
+        );
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDir = path.join(rolesDir, 'TestRole');
+        const rolePath = path.join(rolesDir, 'TestRole.xml');
+        await fs.promises.mkdir(rolesDir, { recursive: true });
+        await fs.promises.writeFile(
+          rolePath,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>TestRole</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        const rightsPath = path.join(roleDir, 'Ext', 'Rights.xml');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          await provider.show(rolePath, tmpRoot);
+
+          // Simulate concurrent creation on disk before save
+          await fs.promises.mkdir(path.dirname(rightsPath), { recursive: true });
+          const concurrentContent = serializeRightsDomToXml(createMinimalRightsDom()) + '\n<!-- concurrent creation -->';
+          await fs.promises.writeFile(rightsPath, concurrentContent, 'utf-8');
+
+          let errorCaught = false;
+          try {
+            await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+          } catch {
+            errorCaught = true;
+          }
+
+          // Rights.xml MUST NOT be overwritten with new content!
+          const onDisk = await fs.promises.readFile(rightsPath, 'utf-8');
+          assert.strictEqual(onDisk, concurrentContent, 'Concurrently created file on disk must be preserved');
+          assert.strictEqual(errorCaught, true, 'handleSave must fail closed on missing->created conflict');
         } finally {
           restorePanel();
           provider.dispose();

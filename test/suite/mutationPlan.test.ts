@@ -2570,6 +2570,61 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(await fs.promises.readFile(filePath, 'utf8'), 'unexpected-third-state-content');
     assert.strictEqual(fs.existsSync(interruptedOp), true);
   });
+
+  test('newly created directory rejects recovery and preserves post-crash added file (#216, PR #225 review comment 4229555124)', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const interruptedOp = path.join(journalRoot, 'interrupted-newdir-op');
+    const newDirPath = path.join(tempDir, 'newFolder');
+
+    await fs.promises.mkdir(newDirPath, { recursive: true });
+    // Post-crash: user or external process adds a file to the newly created directory
+    const addedFilePath = path.join(newDirPath, 'user-added-post-crash.txt');
+    await fs.promises.writeFile(addedFilePath, 'important user data', 'utf8');
+
+    await fs.promises.mkdir(path.join(interruptedOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'interrupted-newdir-op',
+      plan: {
+        kind: 'test.ensureDirectory',
+        steps: [
+          {
+            type: 'ensureDirectory',
+            targetPath: newDirPath,
+          },
+          {
+            type: 'writeFile',
+            targetPath: path.join(newDirPath, 'step-1-file.txt'),
+            content: 'step 1 content',
+            encoding: 'utf8',
+            expected: { state: 'missing' },
+          },
+        ],
+        result: null,
+      },
+      state: 'applying',
+      appliedSteps: 1,
+      snapshots: [
+        {
+          targetPath: newDirPath,
+          state: 'missing',
+          contentsBackedUp: false,
+        },
+      ],
+    }), 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED',
+    );
+
+    // The user's file and directory must NOT be deleted!
+    assert.strictEqual(fs.existsSync(addedFilePath), true, 'Post-crash added file must be preserved');
+    assert.strictEqual(await fs.promises.readFile(addedFilePath, 'utf8'), 'important user data');
+    assert.strictEqual(fs.existsSync(newDirPath), true, 'Directory must be preserved');
+  });
 });
 
 
