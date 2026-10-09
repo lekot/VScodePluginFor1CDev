@@ -503,6 +503,54 @@ export class MutationPlanExecutor {
         );
       }
 
+      if (opEntries.includes('backups')) {
+        const backupsPath = path.join(operationPath, 'backups');
+        let backupStat: fs.Stats;
+        try {
+          backupStat = await fs.promises.lstat(backupsPath);
+        } catch (backupStatError) {
+          throw new MutationPlanError(
+            'RECOVERY_REQUIRED',
+            `Cannot stat backups directory in "${entry.name}": ${errorMessage(backupStatError)}`,
+          );
+        }
+        if (backupStat.isSymbolicLink() || !backupStat.isDirectory()) {
+          throw new MutationPlanError(
+            'RECOVERY_REQUIRED',
+            `Invalid backups entry in "${entry.name}"`,
+          );
+        }
+        let backupDirents: fs.Dirent[];
+        try {
+          backupDirents = await fs.promises.readdir(backupsPath, { withFileTypes: true });
+        } catch (backupReadError) {
+          throw new MutationPlanError(
+            'RECOVERY_REQUIRED',
+            `Cannot read backups directory in "${entry.name}": ${errorMessage(backupReadError)}`,
+          );
+        }
+        const hasAlienBackupFiles = backupDirents.some(
+          (d) => d.isSymbolicLink() || !d.isFile() || !/^\d+$/.test(d.name),
+        );
+        if (hasAlienBackupFiles) {
+          throw new MutationPlanError(
+            'RECOVERY_REQUIRED',
+            `Operation backups directory contains unrecognized files: "${entry.name}"`,
+          );
+        }
+      }
+
+      const hasOwnerFile = opEntries.includes('owner.json');
+      const hasJournalFile = opEntries.includes('journal.json');
+      const hasTempJournal = opEntries.some((name) => name.startsWith('.journal-') && name.endsWith('.tmp'));
+      const isCdtOwned = isStaging || hasOwnerFile || hasJournalFile || hasTempJournal;
+      if (!isCdtOwned) {
+        throw new MutationPlanError(
+          'RECOVERY_REQUIRED',
+          `Unrecognized non-CDT directory in journal: "${entry.name}"`,
+        );
+      }
+
       await lease.assertOwned();
 
       let owner: OperationOwner | undefined;

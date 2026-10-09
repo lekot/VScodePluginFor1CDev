@@ -344,9 +344,10 @@ suite('MutationPlanExecutor', () => {
     await fs.promises.writeFile(targetA, 'interrupted-effect', 'utf8');
     await fs.promises.writeFile(targetB, 'initial-B', 'utf8');
 
-    // 1. Orphan operation folder with no journal.json
+    // 1. Orphan operation folder with no journal.json but with CDT temp journal marker
     const orphanOp = path.join(tempDir, '.cdt-journal', 'orphan-op-empty');
     await fs.promises.mkdir(path.join(orphanOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(orphanOp, '.journal-abandoned.tmp'), '{"partial":true}', 'utf8');
 
     // 2. Real interrupted operation folder with valid journal.json
     const interruptedOp = path.join(tempDir, '.cdt-journal', 'real-interrupted');
@@ -2065,4 +2066,39 @@ suite('MutationPlanExecutor', () => {
       (fs.promises as any).readdir = origReaddir;
     }
   });
+
+  test('#215 (Codex P1): recover fails closed and preserves alien directory data/backups/user-file without deleting it', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const dataDir = path.join(journalRoot, 'data');
+    const backupsDir = path.join(dataDir, 'backups');
+    const userFilePath = path.join(backupsDir, 'user-file');
+    await fs.promises.mkdir(backupsDir, { recursive: true });
+    await fs.promises.writeFile(userFilePath, 'important user data', 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED',
+    );
+
+    // Critical: user file and data dir must remain intact, NOT deleted as orphan!
+    assert.strictEqual(fs.existsSync(userFilePath), true);
+    assert.strictEqual(await fs.promises.readFile(userFilePath, 'utf8'), 'important user data');
+  });
+
+  test('#215 (Codex P1): recover fails closed and preserves unowned directory data without CDT markers', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const dataDir = path.join(journalRoot, 'data');
+    await fs.promises.mkdir(dataDir, { recursive: true });
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED',
+    );
+
+    // Critical: unowned directory without any CDT markers must NOT be deleted as orphan!
+    assert.strictEqual(fs.existsSync(dataDir), true);
+  });
 });
+
