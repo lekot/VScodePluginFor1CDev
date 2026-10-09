@@ -25,7 +25,8 @@ export interface DedupCheckResult {
 const DEDUP_WINDOW_MS = 2000;
 
 interface CacheEntry {
-  hash: string;
+  fileListHash: string;
+  contentHash?: string;
   timestamp: number;
 }
 
@@ -35,13 +36,13 @@ function makeKey(key: DedupKey): string {
   return `${key.bindingId}::${key.infobaseId}`;
 }
 
-function hashFilesAndContent(relativeFiles: readonly string[], contentHash?: string): string {
+function hashFiles(relativeFiles: readonly string[]): string {
   const sorted = [...relativeFiles].map((f) => f.toLowerCase()).sort(compareCodeUnits);
-  const hasher = crypto.createHash('sha256').update(JSON.stringify(sorted));
-  if (contentHash) {
-    hasher.update(`::${contentHash}`);
-  }
-  return hasher.digest('hex');
+  return crypto.createHash('sha256').update(JSON.stringify(sorted)).digest('hex');
+
+
+
+
 }
 
 export async function computeFilesContentHash(
@@ -75,7 +76,14 @@ export function checkRecentDeploy(
   if (ageMs >= DEDUP_WINDOW_MS) {
     return { isDuplicate: false };
   }
-  if (entry.hash !== hashFilesAndContent(input.relativeFiles, input.contentHash)) {
+  if (entry.fileListHash !== hashFiles(input.relativeFiles)) {
+    return { isDuplicate: false };
+  }
+  if (
+    entry.contentHash !== undefined &&
+    input.contentHash !== undefined &&
+    entry.contentHash !== input.contentHash
+  ) {
     return { isDuplicate: false };
   }
   return { isDuplicate: true, ageMs };
@@ -87,7 +95,8 @@ export function recordDeploy(
   nowMs: number,
 ): void {
   cache.set(makeKey(key), {
-    hash: hashFilesAndContent(input.relativeFiles, input.contentHash),
+    fileListHash: hashFiles(input.relativeFiles),
+    contentHash: input.contentHash,
     timestamp: nowMs,
   });
 }
