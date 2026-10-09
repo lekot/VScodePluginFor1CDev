@@ -38,6 +38,7 @@ import {
   assertCfeGenericMutationAllowed,
 } from '../extensionSupport/cfeProject/mutationPolicy';
 import { CONFIGURATION_XML, FORM_XML } from '../constants/fileNames';
+import { isSamePath } from '../utils/configurationPathIdentity';
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import {
@@ -1358,12 +1359,12 @@ export async function deleteElement(
     if (!ownerTypeIsValid || !owner?.filePath) {
       throw new Error('Некорректный владелец nested-элемента.');
     }
-    if (path.resolve(filePath).toLocaleLowerCase() !== path.resolve(owner.filePath).toLocaleLowerCase()) {
+    if (!isSamePath(filePath, owner.filePath)) {
       throw new Error('Файл nested-элемента не совпадает с файлом владельца.');
     }
     const canonicalOwnerPath = await resolveTrustedR6Path(trustedRootPath as string, owner.filePath);
     const canonicalTargetPath = await resolveTrustedR6Path(trustedRootPath as string, filePath);
-    if (canonicalOwnerPath.toLocaleLowerCase() !== canonicalTargetPath.toLocaleLowerCase()) {
+    if (!isSamePath(canonicalOwnerPath, canonicalTargetPath)) {
       throw new Error('Файл nested-элемента не совпадает с файлом владельца.');
     }
     await XMLWriter.removeNestedElement(canonicalTargetPath, r6NestedType, node.name, true);
@@ -1383,9 +1384,7 @@ export async function deleteElement(
       'Predefined.xml'
     );
     const isExpectedPath = (candidate: string | undefined): boolean =>
-      !!candidate
-      && path.resolve(candidate).toLocaleLowerCase()
-        === path.resolve(expectedPredefinedPath).toLocaleLowerCase();
+      !!candidate && isSamePath(candidate, expectedPredefinedPath);
     if (
       !isExpectedPath(predefinedPath)
       || !isExpectedPath(parent.filePath)

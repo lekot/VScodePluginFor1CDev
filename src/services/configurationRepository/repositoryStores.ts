@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type * as vscode from 'vscode';
+import { filesystemPathKey } from '../../utils/configurationPathIdentity';
 import type {
   RepositoryBinding,
   RepositoryObservedState,
@@ -18,8 +19,12 @@ const DEFAULT_STATE: RepositoryObservedState = Object.freeze({
 
 const mutationTails = new Map<string, Promise<void>>();
 
+export function getRepositoryStateMutationLockKey(filePath: string, platform?: NodeJS.Platform): string {
+  return filesystemPathKey(filePath, platform);
+}
+
 async function withMutationLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
-  const key = path.resolve(filePath).toLocaleLowerCase();
+  const key = getRepositoryStateMutationLockKey(filePath);
   const previous = mutationTails.get(key) ?? Promise.resolve();
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
