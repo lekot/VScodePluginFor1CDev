@@ -188,8 +188,9 @@ export async function registerAllCommands({
   state.agentTaskManager = taskManager;
 
   // Agent Bridge — HTTP сервер для вызова Agent API команд снаружи VS Code
-  const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  state.agentBridge = await activateAgentBridge(context, wsFolder) ?? null;
+  const wsFolders = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+  state.agentBridge = await activateAgentBridge(context, wsFolders) ?? null;
+
 
   registerChartOfAccountsCommands(
     context,

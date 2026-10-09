@@ -14,10 +14,14 @@ import { Logger } from '../utils/logger';
  */
 export async function activateAgentBridge(
   context: vscode.ExtensionContext,
-  workspaceFolder?: string,
+  workspaceFolder?: string | readonly string[],
 ): Promise<AgentBridge | undefined> {
-  Logger.info('AgentBridge activation invoked', { workspaceFolder: workspaceFolder ?? '<undefined>' });
-  if (!workspaceFolder) {
+  const folders = typeof workspaceFolder === 'string'
+    ? (workspaceFolder.trim() ? [workspaceFolder] : [])
+    : (workspaceFolder ? [...workspaceFolder].filter((f) => f && f.trim()) : []);
+
+  Logger.info('AgentBridge activation invoked', { workspaceFolders: folders });
+  if (folders.length === 0) {
     Logger.warn('AgentBridge: workspaceFolder absent — bridge will NOT start');
     return undefined;
   }
@@ -26,15 +30,17 @@ export async function activateAgentBridge(
 
   const bridge = new AgentBridge({
     commandPattern: /^1c-metadata-tree\.agent(?:(?:\.debug|\.forms|\.skd|\.xdto)?\.[a-zA-Z]+|\.roles\.setRights)$/,
-    workspaceFolder,
+    workspaceFolder: folders[0],
+    workspaceFolders: folders,
     extensionVersion: version,
     extensionPath: context.extensionPath,
   });
 
   try {
     const { port } = await bridge.start();
-    Logger.info('AgentBridge started', { port, workspaceFolder });
+    Logger.info('AgentBridge started', { port, workspaceFolders: folders });
   } catch (err: unknown) {
+
     const msg = err instanceof Error ? err.message : String(err);
     Logger.error('AgentBridge failed to start', { error: msg });
     void vscode.window.showWarningMessage(`CDT Agent Bridge не запустился: ${msg}`);
