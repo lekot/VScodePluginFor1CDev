@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { TreeNode } from '../models/treeNode';
 import { parseCommandInterface, serializeCommandInterface } from '../parsers/commandInterfaceParser';
+import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
 import type { CommandInterfaceModel, CommandVisibilityEntry } from '../types/commandInterface';
 import { MESSAGES } from '../constants/messages';
 import { Logger } from '../utils/logger';
@@ -155,7 +156,21 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
         visibility: newVisibility,
       };
       const xml = serializeCommandInterface(updatedModel);
-      fs.writeFileSync(targetFilePath, xml, 'utf8');
+      await runConfigurationMutation(targetFilePath, 'subsystemCommandInterface.save', async () => {
+        const tempPath = targetFilePath + '.tmp';
+        await fs.promises.mkdir(path.dirname(tempPath), { recursive: true });
+        await fs.promises.writeFile(tempPath, xml, 'utf8');
+        try {
+          await fs.promises.rename(tempPath, targetFilePath);
+        } catch (renameErr) {
+          try {
+            await fs.promises.unlink(tempPath);
+          } catch {
+            // ignore
+          }
+          throw renameErr;
+        }
+      });
       if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
         this.currentModel = updatedModel;
       }

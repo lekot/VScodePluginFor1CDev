@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
 import { randomUUID } from 'crypto';
 import { RoleModel } from './models/roleModel';
 import type { MetadataObject } from './models/metadataObject';
@@ -535,7 +536,8 @@ export class RolesRightsEditorProvider {
         );
       }
 
-      Logger.debug('Writing to temp file...');
+      await runConfigurationMutation(targetPath, 'rolesRights.save', async () => {
+        Logger.debug('Writing to temp file...');
       await fs.promises.mkdir(path.dirname(tempPath), { recursive: true });
       await fs.promises.writeFile(tempPath, xmlContent, 'utf8');
       Logger.debug('Renaming temp to target...');
@@ -549,6 +551,7 @@ export class RolesRightsEditorProvider {
         }
         throw renameErr;
       }
+    });
 
       Logger.debug('Rights saved successfully');
       vscode.window.showInformationMessage('Rights saved successfully');

@@ -386,7 +386,7 @@ export class MutationPlanExecutor {
         ? snapshotsForAppliedSteps(plan, snapshots, journal.appliedSteps)
         : snapshots;
       try {
-        await this.restoreSnapshots(operationPath, snapshotsToRestore);
+        await this.restoreSnapshots(operationPath, snapshotsToRestore, plan, journal.appliedSteps);
         await this.removeOperationDir(operationPath);
         await this.removeJournalRootWhenEmpty();
       } catch (rollbackError) {
@@ -621,7 +621,7 @@ export class MutationPlanExecutor {
         // It must be restored and removed rather than blocking with PLAN_CONFLICT.
         if (journal.state === 'rollback-required') {
           await lease.assertOwned();
-          await this.restoreSnapshots(operationPath, journal.snapshots);
+          await this.restoreSnapshots(operationPath, journal.snapshots, journal.plan, journal.appliedSteps);
           await lease.assertOwned();
           await this.removeOperationDir(operationPath);
           continue;
@@ -639,7 +639,7 @@ export class MutationPlanExecutor {
 
         // Owner process is terminated/absent or stale: rollback interrupted plan.
         await lease.assertOwned();
-        await this.restoreSnapshots(operationPath, journal.snapshots);
+        await this.restoreSnapshots(operationPath, journal.snapshots, journal.plan, journal.appliedSteps);
         await lease.assertOwned();
         await this.removeOperationDir(operationPath);
         continue;
@@ -824,13 +824,24 @@ export class MutationPlanExecutor {
     return canonicalTarget;
   }
 
-  private async restoreSnapshots(operationPath: string, snapshots: readonly PathSnapshot[]): Promise<void> {
+  private async restoreSnapshots(
+    operationPath: string,
+    snapshots: readonly PathSnapshot[],
+    plan?: MutationPlan<unknown>,
+    appliedSteps?: number,
+  ): Promise<void> {
     for (const snapshot of [...snapshots].reverse()) {
       const { canonicalTarget } = await assertPathWithinRoot(this.rootPath, snapshot.targetPath);
       if (snapshot.state === 'directory' && !snapshot.contentsBackedUp) {
         // ensureDirectory found an existing directory; it has no content effect to undo.
         continue;
       }
+
+      if (plan && typeof appliedSteps === 'number') {
+        const expected = expectedPostState(snapshot.targetPath, snapshots, plan, appliedSteps);
+        await assertRollbackExpectation(canonicalTarget, expected);
+      }
+
       await fs.promises.rm(canonicalTarget, { recursive: true, force: true });
       if (snapshot.state !== 'missing') {
         if (!snapshot.backupName) {
@@ -929,6 +940,67 @@ async function assertExpectation(targetPath: string, expected: MutationExpectati
     || (expected.state === 'file' && actual.state === 'file' && actual.hash !== expected.hash)
   ) {
     throw new MutationPlanError('PLAN_CONFLICT', `Pre-state changed for ${targetPath}.`);
+  }
+}
+
+function expectedPostState(
+  targetPath: string,
+  snapshots: readonly PathSnapshot[],
+  plan: MutationPlan<unknown>,
+  appliedSteps: number,
+): MutationExpectation {
+  for (let i = appliedSteps - 1; i >= 0; i--) {
+    const step = plan.steps[i];
+    if (!step) {
+      continue;
+    }
+    if (step.type === 'writeFile' && isSamePath(step.targetPath, targetPath)) {
+      return {
+        state: 'file',
+        hash: hashContent(Buffer.from(step.content, step.encoding)),
+      };
+    }
+    if (step.type === 'deletePath' && isSamePath(step.targetPath, targetPath)) {
+      return { state: 'missing' };
+    }
+    if (step.type === 'ensureDirectory' && isSamePath(step.targetPath, targetPath)) {
+      return { state: 'directory' };
+    }
+    if (step.type === 'movePath') {
+      if (isSamePath(step.sourcePath, targetPath)) {
+        return { state: 'missing' };
+      }
+      if (isSamePath(step.targetPath, targetPath)) {
+        return expectedPostState(step.sourcePath, snapshots, plan, i);
+      }
+    }
+  }
+
+  const snapshot = snapshots.find((s) => isSamePath(s.targetPath, targetPath));
+  if (!snapshot) {
+    return { state: 'missing' };
+  }
+  if (snapshot.state === 'file') {
+    return { state: 'file', hash: snapshot.hash! };
+  }
+  return { state: snapshot.state };
+}
+
+async function assertRollbackExpectation(
+  targetPath: string,
+  expected: MutationExpectation,
+): Promise<void> {
+  const actual = await inspectPath(targetPath);
+  if (
+    actual.state !== expected.state
+    || (expected.state === 'file' && actual.state === 'file' && actual.hash !== expected.hash)
+  ) {
+    const expectedDesc = expected.state === 'file' ? `file(${expected.hash})` : expected.state;
+    const actualDesc = actual.state === 'file' ? `file(${actual.hash})` : actual.state;
+    throw new MutationPlanError(
+      'RECOVERY_REQUIRED',
+      `Post-state diverged for ${targetPath}: expected ${expectedDesc}, actual ${actualDesc}. Recovery aborted to protect external changes.`,
+    );
   }
 }
 

@@ -12,6 +12,7 @@ import { Logger } from '../utils/logger';
 import { getSelectedNode, requireDesignerFormat } from '../helpers/commandHelpers';
 
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
+import { runConfigurationPlan as defaultRunConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
 
 export interface RunFilterCriterionWizardOptions {
   state: ExtensionState;
@@ -122,9 +123,8 @@ export async function runFilterCriterionWizard(options: RunFilterCriterionWizard
 
   try {
     const plan = await planCreateFilterCriterion(configPath, params);
-    if (runConfigurationPlan) {
-      await runConfigurationPlan(configPath, plan);
-    }
+    const executePlan = runConfigurationPlan ?? defaultRunConfigurationPlan;
+    await executePlan(configPath, plan);
     vscode.window.showInformationMessage(`Создан критерий отбора: ${trimmedName}`);
 
     if (invalidateCacheAndReload) {

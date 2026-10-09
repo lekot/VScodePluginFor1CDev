@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { registerEditorCommands } from '../../src/commands/editorCommands';
+import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
 import { MetadataType } from '../../src/models/treeNode';
 
 suite('editorCommands', () => {
@@ -93,6 +94,53 @@ suite('editorCommands', () => {
       assert.strictEqual(showTextCalls.length, 1, 'showTextDocument called once');
       assert.strictEqual(showTextCalls[0].options?.preview, false, 'preview:false for BSL module');
     } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      (vscode.window as any).showTextDocument = undefined;
+    }
+  });
+
+  test('#206: openBslModule routes missing module file creation through runConfigurationMutation gateway', async () => {
+    const handlers: Record<string, (node: any) => Promise<void> | void> = {};
+    (vscode.commands as any).registerCommand = (id: string, handler: any) => {
+      handlers[id] = handler;
+      return { dispose: () => undefined };
+    };
+
+    (vscode.window as any).showTextDocument = async () => ({} as any);
+
+    const intercepted: { path: string; kind: string }[] = [];
+    const gateway = configureConfigurationMutationGateway(
+      async (resourcePath, kind, op) => {
+        intercepted.push({ path: resourcePath, kind });
+        return op();
+      },
+      async (_p, plan) => plan.result,
+    );
+
+    registerEditorCommands({ state: {} as any });
+
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), '1cv-bsl-gw-'));
+    try {
+      const bslPath = path.join(tmpRoot, 'NewModule.bsl');
+
+      const node = {
+        id: 'newmod',
+        name: 'newmod',
+        type: MetadataType.CommonModule,
+        properties: { isVirtual: true },
+        filePath: bslPath,
+      };
+
+      await handlers['1c-metadata-tree.openBslModule'](node);
+
+      assert.strictEqual(intercepted.length, 1, 'Missing module creation must be intercepted by gateway');
+      assert.strictEqual(intercepted[0].path, bslPath);
+      assert.strictEqual(intercepted[0].kind, 'bslModule.create');
+      assert.strictEqual(node.properties.isVirtual, false);
+      const exists = await fs.access(bslPath).then(() => true, () => false);
+      assert.strictEqual(exists, true);
+    } finally {
+      gateway.dispose();
       await fs.rm(tmpRoot, { recursive: true, force: true });
       (vscode.window as any).showTextDocument = undefined;
     }

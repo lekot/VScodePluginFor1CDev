@@ -4,6 +4,7 @@ import { MutationPlan, MutationPlanExecutor } from './mutationPlan';
 import { MutationPlanError } from './mutationPlan';
 import { PathBoundaryError } from './pathBoundary';
 import type { ConfigurationIdentity } from './types';
+import { WorkspaceRegistryError } from './WorkspaceRegistry';
 
 export interface CancellationLike {
   readonly isCancellationRequested: boolean;
@@ -35,7 +36,7 @@ export type MutationOutcome<T> =
   | MutationEnvelope<T> & { status: 'failed'; value?: T; error?: Error }
   | MutationEnvelope<T> & {
       status: 'conflict';
-      code: 'STALE_SNAPSHOT' | 'PLAN_CONFLICT' | 'TARGET_OUTSIDE_ROOT' | 'PATH_UNAVAILABLE';
+      code: 'STALE_SNAPSHOT' | 'PLAN_CONFLICT' | 'TARGET_OUTSIDE_ROOT' | 'PATH_UNAVAILABLE' | 'CONFIGURATION_CAPABILITY_UNSUPPORTED';
       error: Error;
     }
   | MutationEnvelope<T> & { status: 'cancelled' };
@@ -85,6 +86,17 @@ export class ConfigurationSession {
       });
       if (!this.accepting || request.cancellation?.isCancellationRequested) {
         return { ...envelope(), status: 'cancelled' };
+      }
+      if (!this.identity.capabilities.write) {
+        return {
+          ...envelope(),
+          status: 'conflict',
+          code: 'CONFIGURATION_CAPABILITY_UNSUPPORTED',
+          error: new WorkspaceRegistryError(
+            'CONFIGURATION_CAPABILITY_UNSUPPORTED',
+            `Конфигурация ${this.identity.configurationId} не поддерживает запись.`,
+          ),
+        };
       }
       if (
         request.clientSnapshotVersion !== undefined

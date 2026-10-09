@@ -19,6 +19,7 @@ import {
   serializeRightsDomToXml as serializeRightsDomToXmlImpl,
 } from '../../src/rolesEditor/rightsXmlEditWriter';
 import { RolesRightsEditorProvider } from '../../src/rolesEditor/rolesRightsEditorProvider';
+import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import {
   createFakeExtensionContext,
@@ -971,7 +972,65 @@ suite('rightsEditor integration', () => {
         await rmRfTestDir(standaloneDir);
       }
     });
-  });
 
+    test('#206: handleSave routes rights write through runConfigurationMutation gateway', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-gw-'));
+      const intercepted: { path: string; kind: string }[] = [];
+      const gateway = configureConfigurationMutationGateway(
+        async (resourcePath, kind, op) => {
+          intercepted.push({ path: resourcePath, kind });
+          return op();
+        },
+        async (_p, plan) => plan.result,
+      );
+
+      try {
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDir = path.join(rolesDir, 'TestRole');
+        await fs.promises.mkdir(path.join(roleDir, 'Ext'), { recursive: true });
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><Configuration xmlns="http://v8.1c.ru/8.3/MDClasses"/>',
+          'utf-8',
+        );
+        const rolePath = path.join(rolesDir, 'TestRole.xml');
+        await fs.promises.writeFile(
+          rolePath,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>TestRole</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        const rightsPath = path.join(roleDir, 'Ext', 'Rights.xml');
+        await fs.promises.writeFile(rightsPath, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          await provider.show(rolePath, tmpRoot);
+          await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+
+          assert.strictEqual(intercepted.length, 1, 'handleSave must be intercepted by gateway');
+          assert.strictEqual(intercepted[0].path, rightsPath);
+          assert.strictEqual(intercepted[0].kind, 'rolesRights.save');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        gateway.dispose();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+  });
 });
+
 

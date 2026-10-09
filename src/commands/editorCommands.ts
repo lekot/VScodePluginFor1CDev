@@ -26,7 +26,7 @@ import { convert1cPackageToXsd, convertXsdTo1cPackage } from '../xdtoPackageEdit
 import { resolveXdtoPackageSchemaPath } from '../xdtoPackageEditor/xdtoPackagePaths';
 import { showXdtoPackageCompare } from '../xdtoPackageCompare/xdtoPackageCompareProvider';
 import { hashContent } from '../services/configurationSession/atomicFileStorage';
-import { runConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
+import { runConfigurationMutation, runConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
 import type { MutationExpectation, MutationPlan } from '../services/configurationSession/mutationPlan';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { validateElementName } from '../utils/elementNameValidator';
@@ -154,9 +154,14 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         // Create module file on disk if it doesn't exist yet
         const fileExists = await fs.promises.access(fp).then(() => true, () => false);
         if (!fileExists) {
-          await fs.promises.mkdir(path.dirname(fp), { recursive: true });
-          await fs.promises.writeFile(fp, '', 'utf-8');
-          Logger.info(`Created module file: ${fp}`);
+          await runConfigurationMutation(fp, 'bslModule.create', async () => {
+            const stillMissing = await fs.promises.access(fp).then(() => false, () => true);
+            if (stillMissing) {
+              await fs.promises.mkdir(path.dirname(fp), { recursive: true });
+              await fs.promises.writeFile(fp, '', 'utf-8');
+              Logger.info(`Created module file: ${fp}`);
+            }
+          });
           if (target.properties.isVirtual) {
             target.properties.isVirtual = false;
           }

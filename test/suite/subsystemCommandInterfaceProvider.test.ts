@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { SubsystemCommandInterfaceProvider } from '../../src/subsystemCommandInterfaceEditor/subsystemCommandInterfaceProvider';
+import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import {
   createFakeExtensionContext,
@@ -33,6 +34,20 @@ const XML_B = `<?xml version="1.0" encoding="UTF-8"?>
 </CommandInterface>`;
 
 suite('SubsystemCommandInterfaceProvider (#210)', () => {
+  let defaultGateway: { dispose(): void } | undefined;
+
+  setup(() => {
+    defaultGateway = configureConfigurationMutationGateway(
+      async (_path, _kind, op) => op(),
+      async (_path, plan) => plan.result,
+    );
+  });
+
+  teardown(() => {
+    defaultGateway?.dispose();
+    defaultGateway = undefined;
+  });
+
   test('stale save message from subsystem A does not overwrite subsystem B', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-iso-'));
     try {
@@ -150,4 +165,56 @@ suite('SubsystemCommandInterfaceProvider (#210)', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('#206: save routes through runConfigurationMutation gateway', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-gateway-'));
+    const intercepted: { path: string; kind: string }[] = [];
+    const gateway = configureConfigurationMutationGateway(
+      async (resourcePath, kind, op) => {
+        intercepted.push({ path: resourcePath, kind });
+        return op();
+      },
+      async (_p, plan) => plan.result,
+    );
+
+    try {
+      const dir = path.join(root, 'Subsystems', 'SubA', 'Ext');
+      fs.mkdirSync(dir, { recursive: true });
+      const ciPath = path.join(dir, 'CommandInterface.xml');
+      fs.writeFileSync(ciPath, XML_A, 'utf8');
+
+      const node: TreeNode = {
+        id: 'Subsystems.SubA',
+        name: 'SubA',
+        type: MetadataType.Subsystem,
+        filePath: path.join(root, 'Subsystems', 'SubA.xml'),
+        properties: {},
+      };
+
+      const { panel } = createFakeWebviewPanel();
+      const restore = patchCreateWebviewPanel(panel);
+      const provider = new SubsystemCommandInterfaceProvider(createFakeExtensionContext());
+
+      try {
+        await provider.show(node, ciPath);
+        await (provider as any).handleMessage({
+          type: 'save',
+          visibility: [{ commandName: 'Catalog.Goods.StandardCommand.OpenList', common: 'visible' }],
+          filePath: ciPath,
+          generation: 1,
+        });
+
+        assert.strictEqual(intercepted.length, 1, 'Save must be intercepted by configurationMutationGateway');
+        assert.strictEqual(intercepted[0].path, ciPath);
+        assert.strictEqual(intercepted[0].kind, 'subsystemCommandInterface.save');
+      } finally {
+        restore();
+        provider.dispose();
+      }
+    } finally {
+      gateway.dispose();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
+
