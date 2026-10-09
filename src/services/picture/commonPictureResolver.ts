@@ -5,6 +5,7 @@ import * as crypto from 'crypto';
 import * as zlib from 'zlib';
 import { TreeNode } from '../../models/treeNode';
 import { Logger } from '../../utils/logger';
+import { isSameOrDescendantPath } from '../../utils/configurationPathIdentity';
 
 export interface ResolvedPicture {
   success: boolean;
@@ -121,6 +122,26 @@ function extractZipEntryData(buf: Buffer, entry: ZipEntry): Buffer | null {
   }
 }
 
+async function verifyContainedAsset(
+  candidatePath: string,
+  lexicalBoundary: string,
+  canonicalBoundary: string | undefined,
+): Promise<string | undefined> {
+  const resolved = path.resolve(candidatePath);
+  if (!isSameOrDescendantPath(lexicalBoundary, resolved)) {
+    return undefined;
+  }
+  try {
+    const realCandidate = await fs.promises.realpath(resolved);
+    if (canonicalBoundary && !isSameOrDescendantPath(canonicalBoundary, realCandidate)) {
+      return undefined;
+    }
+    return resolved;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Resolves underlying picture file and data URI for a CommonPicture metadata element.
  */
@@ -137,22 +158,56 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
     }
 
     const dirOfMeta = path.dirname(metadataPath);
-    const baseName = path.basename(metadataPath, path.extname(metadataPath));
+    const canonicalDirOfMeta = await fs.promises.realpath(dirOfMeta).catch(() => path.resolve(dirOfMeta));
+    const targetNode = typeof target === 'string' ? undefined : target;
+    const metaExt = path.extname(metadataPath).toLowerCase();
+    const metaStem = path.basename(metadataPath, path.extname(metadataPath));
 
-    // Candidate locations
-    const candidateDirs = [
-      path.join(dirOfMeta, baseName, 'Ext'),
-      path.join(dirOfMeta, baseName),
-      dirOfMeta,
+    // Determine object root directory and object name
+    let objectDir: string;
+    let objectName: string;
+
+    if (metaExt === '.mdo' && metaStem.toLowerCase() === 'commonpicture') {
+      // EDT layout: .../CommonPictures/<ObjectName>/CommonPicture.mdo
+      objectDir = dirOfMeta;
+      objectName = targetNode?.name || path.basename(dirOfMeta);
+    } else if (metaExt === '.mdo' && path.basename(dirOfMeta).toLowerCase() === metaStem.toLowerCase()) {
+      // EDT layout: .../CommonPictures/<ObjectName>/<ObjectName>.mdo
+      objectDir = dirOfMeta;
+      objectName = targetNode?.name || metaStem;
+    } else {
+      // Designer layout: .../CommonPictures/<ObjectName>.xml -> object folder is .../CommonPictures/<ObjectName>
+      objectDir = path.join(dirOfMeta, metaStem);
+      objectName = targetNode?.name || metaStem;
+    }
+
+    const trustedParentDir = metaExt === '.mdo' ? path.dirname(dirOfMeta) : dirOfMeta;
+    const canonicalTrustedParent = await fs.promises.realpath(trustedParentDir).catch(() => undefined);
+    const canonicalObjectDir = await fs.promises.realpath(objectDir).catch(() => undefined);
+
+    if (canonicalObjectDir && (!canonicalTrustedParent || !isSameOrDescendantPath(canonicalTrustedParent, canonicalObjectDir))) {
+      return {
+        success: false,
+        error: 'Каталог объекта картинки находится вне доверенного каталога или ссылается на внешний ресурс',
+      };
+    }
+
+    // Candidate locations for Picture.xml strictly inside objectDir
+    const candidatePictureXmlPaths = [
+      path.join(objectDir, 'Ext', 'Picture.xml'),
+      path.join(objectDir, 'Picture.xml'),
     ];
 
     let referencedFileName: string | undefined;
 
-    // Check Picture.xml in Ext directory (Designer format)
-    for (const cDir of candidateDirs) {
-      const pictureXmlPath = path.join(cDir, 'Picture.xml');
+    // Check Picture.xml in object directory
+    for (const pictureXmlPath of candidatePictureXmlPaths) {
+      const verifiedXml = await verifyContainedAsset(pictureXmlPath, objectDir, canonicalObjectDir);
+      if (!verifiedXml) {
+        continue;
+      }
       try {
-        const xmlContent = await fs.promises.readFile(pictureXmlPath, 'utf8');
+        const xmlContent = await fs.promises.readFile(verifiedXml, 'utf8');
         const match = /<(?:\w+:)?Abs>([^<]+)<\/(?:\w+:)?Abs>/i.exec(xmlContent);
         if (match && match[1]) {
           referencedFileName = match[1].trim();
@@ -166,45 +221,110 @@ export async function resolveCommonPicture(target: TreeNode | string): Promise<R
     let resolvedAssetPath: string | undefined;
 
     if (referencedFileName) {
-      // Look for the referenced file under Ext/Picture or candidateDirs
+      if (referencedFileName.length === 0) {
+        return {
+          success: false,
+          error: 'В Picture.xml указано пустое имя ресурса',
+        };
+      }
+
+      // Look for the referenced file strictly under objectDir
       const possibleAssetPaths = [
-        path.join(dirOfMeta, baseName, 'Ext', 'Picture', referencedFileName),
-        path.join(dirOfMeta, baseName, 'Ext', referencedFileName),
-        path.join(dirOfMeta, baseName, referencedFileName),
-        path.join(dirOfMeta, referencedFileName),
+        path.join(objectDir, 'Ext', 'Picture', referencedFileName),
+        path.join(objectDir, 'Ext', referencedFileName),
+        path.join(objectDir, referencedFileName),
       ];
 
       for (const p of possibleAssetPaths) {
-        if (await fs.promises.access(p).then(() => true).catch(() => false)) {
-          resolvedAssetPath = p;
+        const verified = await verifyContainedAsset(p, objectDir, canonicalObjectDir);
+        if (verified) {
+          resolvedAssetPath = verified;
           break;
+        }
+      }
+
+      if (!resolvedAssetPath) {
+        return {
+          success: false,
+          error: 'Ресурс картинки находится вне каталога объекта или не найден',
+        };
+      }
+    }
+
+    // If not found via Picture.xml, scan directories strictly within objectDir
+    if (!resolvedAssetPath) {
+      const scanDirs = [
+        path.join(objectDir, 'Ext', 'Picture'),
+        path.join(objectDir, 'Ext'),
+        objectDir,
+      ];
+
+      for (const sDir of scanDirs) {
+        const resolvedDir = path.resolve(sDir);
+        if (!isSameOrDescendantPath(objectDir, resolvedDir)) {
+          continue;
+        }
+        let realDir: string;
+        try {
+          realDir = await fs.promises.realpath(resolvedDir);
+        } catch {
+          continue;
+        }
+        if (canonicalObjectDir && !isSameOrDescendantPath(canonicalObjectDir, realDir)) {
+          // Escaping junction or symlink directory
+          continue;
+        }
+
+        try {
+          const files = await fs.promises.readdir(resolvedDir);
+          const imageOrZipFiles = files.filter((f) => {
+            const ext = path.extname(f).toLowerCase();
+            return SUPPORTED_IMAGE_EXTS.has(ext) || ext === '.zip';
+          });
+
+          if (imageOrZipFiles.length > 0) {
+            const matchByName = imageOrZipFiles.find(
+              (f) => path.basename(f, path.extname(f)).toLowerCase() === objectName.toLowerCase(),
+            );
+            const matchPicture = imageOrZipFiles.find(
+              (f) => path.basename(f, path.extname(f)).toLowerCase() === 'picture',
+            );
+            const matchSvg = imageOrZipFiles.find((f) => path.extname(f).toLowerCase() === '.svg');
+            const matchPng = imageOrZipFiles.find((f) => path.extname(f).toLowerCase() === '.png');
+
+            const candidates = [matchByName, matchPicture, matchSvg, matchPng, imageOrZipFiles[0]].filter(
+              Boolean,
+            ) as string[];
+
+            for (const chosen of candidates) {
+              const verified = await verifyContainedAsset(
+                path.resolve(resolvedDir, chosen),
+                objectDir,
+                canonicalObjectDir,
+              );
+              if (verified) {
+                resolvedAssetPath = verified;
+                break;
+              }
+            }
+            if (resolvedAssetPath) {
+              break;
+            }
+          }
+        } catch {
+          // directory does not exist
         }
       }
     }
 
-    // If not found via Picture.xml, scan directories for image files or .zip
+    // Check standalone picture file directly matching objectName in dirOfMeta (e.g. CommonPictures/Foo.png)
     if (!resolvedAssetPath) {
-      const scanDirs = [
-        path.join(dirOfMeta, baseName, 'Ext', 'Picture'),
-        path.join(dirOfMeta, baseName, 'Ext'),
-        path.join(dirOfMeta, baseName),
-        dirOfMeta,
-      ];
-
-      for (const sDir of scanDirs) {
-        try {
-          const files = await fs.promises.readdir(sDir);
-          // Prefer matching baseName, then svg, png, zip
-          const found = files.find((f) => {
-            const ext = path.extname(f).toLowerCase();
-            return SUPPORTED_IMAGE_EXTS.has(ext) || ext === '.zip';
-          });
-          if (found) {
-            resolvedAssetPath = path.join(sDir, found);
-            break;
-          }
-        } catch {
-          // directory does not exist
+      for (const ext of ['.svg', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.bmp', '.zip']) {
+        const candidateStandalone = path.resolve(dirOfMeta, `${objectName}${ext}`);
+        const verified = await verifyContainedAsset(candidateStandalone, dirOfMeta, canonicalDirOfMeta);
+        if (verified) {
+          resolvedAssetPath = verified;
+          break;
         }
       }
     }
