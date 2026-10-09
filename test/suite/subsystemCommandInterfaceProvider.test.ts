@@ -279,5 +279,104 @@ suite('SubsystemCommandInterfaceProvider (#210)', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('handleSave preserves subsystem A model and hash when editor switches to subsystem B while queued in gateway (PR #225 review comment 6085700956)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-queue-race-'));
+    let releaseGateA: (() => void) | undefined;
+    const gateAPromise = new Promise<void>((resolve) => {
+      releaseGateA = resolve;
+    });
+    let gateAEntered: (() => void) | undefined;
+    const gateAEnteredPromise = new Promise<void>((resolve) => {
+      gateAEntered = resolve;
+    });
+
+    const gateway = configureConfigurationMutationGateway(
+      async (resourcePath, kind, op) => {
+        if (resourcePath.includes('SubA')) {
+          gateAEntered?.();
+          await gateAPromise;
+        }
+        return op();
+      },
+      async (_p, plan) => plan.result,
+    );
+
+    try {
+      const dirA = path.join(root, 'Subsystems', 'SubA', 'Ext');
+      const dirB = path.join(root, 'Subsystems', 'SubB', 'Ext');
+      fs.mkdirSync(dirA, { recursive: true });
+      fs.mkdirSync(dirB, { recursive: true });
+      const ciPathA = path.join(dirA, 'CommandInterface.xml');
+      const ciPathB = path.join(dirB, 'CommandInterface.xml');
+      fs.writeFileSync(ciPathA, XML_A, 'utf8');
+      fs.writeFileSync(ciPathB, XML_B, 'utf8');
+
+      const nodeA: TreeNode = {
+        id: 'Subsystems.SubA',
+        name: 'SubA',
+        type: MetadataType.Subsystem,
+        filePath: path.join(root, 'Subsystems', 'SubA.xml'),
+        properties: {},
+      };
+      const nodeB: TreeNode = {
+        id: 'Subsystems.SubB',
+        name: 'SubB',
+        type: MetadataType.Subsystem,
+        filePath: path.join(root, 'Subsystems', 'SubB.xml'),
+        properties: {},
+      };
+
+      const { panel } = createFakeWebviewPanel();
+      const restore = patchCreateWebviewPanel(panel);
+      const provider = new SubsystemCommandInterfaceProvider(createFakeExtensionContext());
+
+      try {
+        await provider.show(nodeA, ciPathA);
+
+        // Start save of Subsystem A with a modified visibility
+        const savePromiseA = (provider as any).handleSave(
+          [{ commandName: 'Catalog.Goods.StandardCommand.OpenList', common: 'hidden' }],
+          ciPathA,
+          1
+        );
+
+        // Wait until Subsystem A's save has entered the gateway
+        await gateAEnteredPromise;
+
+        // While Subsystem A's save is waiting, open Subsystem B in the provider
+        await provider.show(nodeB, ciPathB);
+
+        // Release Subsystem A's gateway
+        releaseGateA!();
+        await savePromiseA;
+
+        // Subsystem A's file on disk must have Subsystem A's model updated (Catalog.Goods hidden)
+        // AND must NOT have Subsystem B's model (Document.Orders)
+        const contentA = fs.readFileSync(ciPathA, 'utf8');
+        assert.ok(contentA.includes('Catalog.Goods.StandardCommand.OpenList'), 'Subsystem A must keep its commands');
+        assert.ok(!contentA.includes('Document.Orders.StandardCommand.OpenList'), 'Subsystem A must not contain Subsystem B commands');
+
+        // Subsystem B's expected hash in provider must NOT be corrupted by Subsystem A's save
+        // Now save Subsystem B to verify it saves without conflict
+        await (provider as any).handleSave(
+          [{ commandName: 'Document.Orders.StandardCommand.OpenList', common: 'hidden' }],
+          ciPathB,
+          2
+        );
+
+        const contentB = fs.readFileSync(ciPathB, 'utf8');
+        assert.ok(contentB.includes('Document.Orders.StandardCommand.OpenList'), 'Subsystem B must keep its commands');
+        assert.ok(!contentB.includes('Catalog.Goods.StandardCommand.OpenList'), 'Subsystem B must not contain Subsystem A commands');
+      } finally {
+        restore();
+        provider.dispose();
+      }
+    } finally {
+      gateway.dispose();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
+
 

@@ -155,16 +155,25 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
     this.saveInProgress = true;
     const targetFilePath = this.currentFilePath;
     const targetGeneration = this.sessionGeneration;
+    const snapshotExpectedHash = this.sessionExpectedHash;
+    const snapshotModel: CommandInterfaceModel = {
+      ...this.currentModel,
+      visibility: [...this.currentModel.visibility],
+      placement: [...this.currentModel.placement],
+      commandsOrder: [...this.currentModel.commandsOrder],
+      subsystemsOrder: [...this.currentModel.subsystemsOrder],
+      groupsOrder: [...this.currentModel.groupsOrder],
+    };
     try {
       await runConfigurationMutation(targetFilePath, 'subsystemCommandInterface.save', async () => {
         const raw = await fs.promises.readFile(targetFilePath, 'utf8');
         const originalHash = hashContent(raw);
-        if (this.sessionExpectedHash && originalHash !== this.sessionExpectedHash) {
+        if (snapshotExpectedHash && originalHash !== snapshotExpectedHash) {
           throw new Error('Конфликт сохранения: файл интерфейса подсистемы был изменен другим процессом.');
         }
 
         const updatedModel: CommandInterfaceModel = {
-          ...this.currentModel!,
+          ...snapshotModel,
           visibility: newVisibility,
         };
         const xml = serializeCommandInterface(updatedModel);
@@ -179,25 +188,29 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
           throw new Error(`Ошибка записи CommandInterface.xml: ${outcome.message}`);
         }
 
-        this.sessionExpectedHash = outcome.newHash;
         if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
+          this.sessionExpectedHash = outcome.newHash;
           this.currentModel = updatedModel;
         }
       });
 
-      this.postMessage({
-        type: 'saveSuccess',
-        filePath: targetFilePath,
-        generation: targetGeneration,
-      });
+      if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
+        this.postMessage({
+          type: 'saveSuccess',
+          filePath: targetFilePath,
+          generation: targetGeneration,
+        });
+      }
     } catch (err) {
       Logger.error('Failed to save CommandInterface.xml', err);
-      this.postMessage({
-        type: 'saveError',
-        filePath: targetFilePath,
-        generation: targetGeneration,
-        message: MESSAGES.SUBSYSTEM_COMMAND_INTERFACE_WRITE_FAILED,
-      });
+      if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
+        this.postMessage({
+          type: 'saveError',
+          filePath: targetFilePath,
+          generation: targetGeneration,
+          message: MESSAGES.SUBSYSTEM_COMMAND_INTERFACE_WRITE_FAILED,
+        });
+      }
       throw err;
     } finally {
       this.saveInProgress = false;

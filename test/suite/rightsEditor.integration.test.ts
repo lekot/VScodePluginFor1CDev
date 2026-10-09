@@ -1329,6 +1329,114 @@ suite('rightsEditor integration', () => {
         await rmRfTestDir(tmpRoot);
       }
     });
+
+    test('handleSave preserves role A model and hash when editor switches to role B while queued in gateway (PR #225 review comment 6085700956)', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-queue-race-'));
+      let releaseGateA: (() => void) | undefined;
+      const gateAPromise = new Promise<void>((resolve) => {
+        releaseGateA = resolve;
+      });
+      let gateAEntered: (() => void) | undefined;
+      const gateAEnteredPromise = new Promise<void>((resolve) => {
+        gateAEntered = resolve;
+      });
+
+      const gateway = configureConfigurationMutationGateway(
+        async (resourcePath, kind, op) => {
+          if (resourcePath.includes('RoleA')) {
+            gateAEntered?.();
+            await gateAPromise;
+          }
+          return op();
+        },
+        async (_p, plan) => plan.result,
+      );
+
+      try {
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><Configuration xmlns="http://v8.1c.ru/8.3/MDClasses"/>',
+          'utf-8',
+        );
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDirA = path.join(rolesDir, 'RoleA');
+        const roleDirB = path.join(rolesDir, 'RoleB');
+        await fs.promises.mkdir(path.join(roleDirA, 'Ext'), { recursive: true });
+        await fs.promises.mkdir(path.join(roleDirB, 'Ext'), { recursive: true });
+
+        const rolePathA = path.join(rolesDir, 'RoleA.xml');
+        const rolePathB = path.join(rolesDir, 'RoleB.xml');
+        await fs.promises.writeFile(
+          rolePathA,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>RoleA</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        await fs.promises.writeFile(
+          rolePathB,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>RoleB</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+
+        const rightsPathA = path.join(roleDirA, 'Ext', 'Rights.xml');
+        const rightsPathB = path.join(roleDirB, 'Ext', 'Rights.xml');
+        await fs.promises.writeFile(rightsPathA, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+        await fs.promises.writeFile(rightsPathB, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          await provider.show(rolePathA, tmpRoot);
+          updateRight(priv.currentRoleModel, 'Catalog.Goods', 'read', true);
+
+          const savePromiseA = priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+          await gateAEnteredPromise;
+
+          // While Role A is waiting in gateway, switch editor to Role B
+          await provider.show(rolePathB, tmpRoot);
+          updateRight(priv.currentRoleModel, 'Document.Orders', 'read', true);
+
+          // Release Role A's save
+          releaseGateA!();
+          await savePromiseA;
+
+          // Role A's Rights.xml must contain Catalog.Goods and MUST NOT contain Document.Orders
+          const contentA = await fs.promises.readFile(rightsPathA, 'utf-8');
+          assert.ok(contentA.includes('Catalog.Goods'), 'Role A must keep Catalog.Goods');
+          assert.ok(!contentA.includes('Document.Orders'), 'Role A must not contain Document.Orders');
+
+          // Role B's panel must NOT be disposed by Role A's save completion
+          assert.strictEqual(provider.isOpen(), true, 'Role B panel must remain open');
+
+          // Now save Role B; it must succeed without spurious conflict
+          await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+          const contentB = await fs.promises.readFile(rightsPathB, 'utf-8');
+          assert.ok(contentB.includes('Document.Orders'), 'Role B must keep Document.Orders');
+          assert.ok(!contentB.includes('Catalog.Goods'), 'Role B must not contain Catalog.Goods');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        gateway.dispose();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
   });
 });
 

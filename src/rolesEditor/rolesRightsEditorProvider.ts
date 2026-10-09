@@ -54,6 +54,26 @@ export function findConfigurationRootForPath(targetPath: string): string | undef
 }
 
 /**
+ * Creates an immutable clone of a RoleModel including its rights map.
+ */
+export function cloneRoleModel(model: RoleModel): RoleModel {
+  const clonedRights: Record<string, import('./models/roleModel').ObjectRights> = {};
+  for (const [key, val] of Object.entries(model.rights)) {
+    clonedRights[key] = { ...val };
+  }
+  return {
+    name: model.name,
+    filePath: model.filePath,
+    rights: clonedRights,
+    metadata: {
+      ...model.metadata,
+      lastModified: new Date(model.metadata.lastModified.getTime()),
+    },
+    restrictionTemplatesText: model.restrictionTemplatesText,
+  };
+}
+
+/**
  * Provider for the roles and rights editor webview
  */
 export class RolesRightsEditorProvider {
@@ -68,6 +88,7 @@ export class RolesRightsEditorProvider {
   private sessionExpectedHash: string | undefined;
   private sessionExpectedState: 'missing' | 'file' | undefined;
   /** Incremented on each `show` so stale async metadata loads do not postMessage over a newer session. */
+  private sessionGeneration = 0;
   private objectsLoadGeneration = 0;
   private tableRenderStatusDisposable: vscode.Disposable | undefined;
   /** Server-side mirror of the webview filter state — survives webview reloads. */
@@ -141,6 +162,7 @@ export class RolesRightsEditorProvider {
       if (loadGeneration !== this.objectsLoadGeneration) {
         return;
       }
+      this.sessionGeneration++;
       this.currentRoleModel = roleModel;
       const isCaseB = path.basename(roleFilePath).toLowerCase() === 'role.xml';
       const initialTargetPath = isCaseB ? roleFilePath : getRightsPath(roleFilePath);
@@ -470,6 +492,7 @@ export class RolesRightsEditorProvider {
     }
 
     this.saveInProgress = true;
+    const targetGeneration = this.sessionGeneration;
     let statusDone: vscode.Disposable | undefined;
     try {
       let effectiveMessage: WebviewMessage | undefined = message;
@@ -527,6 +550,11 @@ export class RolesRightsEditorProvider {
 
 
 
+      const snapshotRoleModel = cloneRoleModel(this.currentRoleModel);
+      const snapshotExpectedHash = this.sessionExpectedHash;
+      const snapshotExpectedState = this.sessionExpectedState;
+      const snapshotRootPath = this.configurationRootPath ?? path.dirname(targetPath);
+
       Logger.debug(`Save target: ${targetPath}`);
 
 
@@ -552,14 +580,14 @@ export class RolesRightsEditorProvider {
       await runConfigurationMutation(targetPath, 'rolesRights.save', async () => {
         let xmlContent: string;
         let originalHash: string;
-        const targetVersion = await this.resolveRoleWriteVersion(targetPath);
+        const targetVersion = await this.resolveRoleWriteVersion(targetPath, snapshotRootPath);
         if (isCaseB) {
           const raw = await fs.promises.readFile(targetPath, 'utf8');
           originalHash = hashContent(raw);
-          if (this.sessionExpectedHash && originalHash !== this.sessionExpectedHash) {
+          if (snapshotExpectedHash && originalHash !== snapshotExpectedHash) {
             throw new Error(`Конфликт сохранения: файл роли "${targetPath}" был изменен другим процессом.`);
           }
-          xmlContent = RoleXmlSerializer.serializeToXml(this.currentRoleModel!, targetVersion);
+          xmlContent = RoleXmlSerializer.serializeToXml(snapshotRoleModel, targetVersion);
           Logger.debug('Serialized (Case B)');
         } else {
           Logger.debug('Loading Rights.xml...');
@@ -567,10 +595,10 @@ export class RolesRightsEditorProvider {
           try {
             raw = await fs.promises.readFile(targetPath, 'utf8');
             originalHash = hashContent(raw);
-            if (this.sessionExpectedState === 'missing') {
+            if (snapshotExpectedState === 'missing') {
               throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был создан другим процессом.`);
             }
-            if (this.sessionExpectedHash && originalHash !== this.sessionExpectedHash) {
+            if (snapshotExpectedHash && originalHash !== snapshotExpectedHash) {
               throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был изменен другим процессом.`);
             }
           } catch (err: unknown) {
@@ -578,7 +606,7 @@ export class RolesRightsEditorProvider {
               ? (err as NodeJS.ErrnoException).code
               : '';
             if (code === 'ENOENT') {
-              if (this.sessionExpectedState === 'file' || this.sessionExpectedHash) {
+              if (snapshotExpectedState === 'file' || snapshotExpectedHash) {
                 throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был удален другим процессом.`);
               }
               originalHash = '';
@@ -595,16 +623,16 @@ export class RolesRightsEditorProvider {
           const compactWrite = vscode.workspace
             .getConfiguration('1cMetadataTree')
             .get<boolean>('rightsEditor.compactRightsWrite', true);
-          mergeRightsIntoDom(dom, this.currentRoleModel!.rights, { compactWrite });
+          mergeRightsIntoDom(dom, snapshotRoleModel.rights, { compactWrite });
           Logger.debug('Serializing DOM to XML...');
           xmlContent = serializeRightsDomToXml(dom, targetVersion);
           xmlContent = insertRestrictionTemplatesBeforeClosingRights(
             xmlContent,
-            this.currentRoleModel!.restrictionTemplatesText ?? ''
+            snapshotRoleModel.restrictionTemplatesText ?? ''
           );
         }
 
-        const rootPath = this.configurationRootPath ?? path.dirname(targetPath);
+        const rootPath = snapshotRootPath;
         if (originalHash) {
           const storage = new AtomicFileStorage(rootPath);
         const outcome = await storage.replace(targetPath, xmlContent, originalHash);
@@ -614,7 +642,10 @@ export class RolesRightsEditorProvider {
         if (outcome.status !== 'committed') {
           throw new Error(`Ошибка записи файла прав роли: ${outcome.message}`);
         }
-          this.sessionExpectedHash = outcome.newHash;
+          if (this.sessionGeneration === targetGeneration) {
+            this.sessionExpectedHash = outcome.newHash;
+            this.sessionExpectedState = 'file';
+          }
         } else {
           const dir = path.dirname(targetPath);
           await fs.promises.mkdir(dir, { recursive: true });
@@ -674,8 +705,10 @@ export class RolesRightsEditorProvider {
           if (!published) {
             throw new Error(`Не удалось опубликовать файл прав роли: ${targetPath}`);
           }
-          this.sessionExpectedState = 'file';
-          this.sessionExpectedHash = hashContent(xmlContent);
+          if (this.sessionGeneration === targetGeneration) {
+            this.sessionExpectedState = 'file';
+            this.sessionExpectedHash = hashContent(xmlContent);
+          }
         }
         return;
       });
@@ -699,7 +732,7 @@ export class RolesRightsEditorProvider {
       Logger.debug('Rights saved successfully');
       vscode.window.showInformationMessage('Rights saved successfully');
 
-      if (this.panel) {
+      if (this.panel && this.sessionGeneration === targetGeneration) {
         this.panel.dispose();
       }
     } catch (error) {
@@ -707,10 +740,12 @@ export class RolesRightsEditorProvider {
       const stack = error instanceof Error ? error.stack : undefined;
       Logger.error(`Failed to save rights: ${message}`, stack ? { stack } : error);
       vscode.window.showErrorMessage(`Failed to save rights: ${message}`);
-      this.sendMessageToWebview({
+      if (this.sessionGeneration === targetGeneration) {
+        this.sendMessageToWebview({
         command: 'saveError',
         data: { message },
       });
+      }
       throw error;
     } finally {
       statusDone?.dispose();
@@ -729,7 +764,7 @@ export class RolesRightsEditorProvider {
   }
 
   /** Resolve before the temporary file or its parent directory is created. */
-  private async resolveRoleWriteVersion(targetPath: string): Promise<string> {
+  private async resolveRoleWriteVersion(targetPath: string, rootPath?: string): Promise<string> {
     try {
       const existing = await fs.promises.readFile(targetPath, 'utf8');
       return requireDocumentWriteFormatProfile(existing).version;
@@ -738,11 +773,12 @@ export class RolesRightsEditorProvider {
         throw error;
       }
     }
-    if (!this.configurationRootPath) {
+    const resolvedRoot = rootPath ?? this.configurationRootPath;
+    if (!resolvedRoot) {
       throw new Error('Не удалось определить Configuration.xml для создания файла прав.');
     }
     const configuration = await fs.promises.readFile(
-      path.join(this.configurationRootPath, CONFIGURATION_XML),
+      path.join(resolvedRoot, CONFIGURATION_XML),
       'utf8'
     );
     return requireProjectWriteFormatProfile(configuration).version;
@@ -916,6 +952,7 @@ export class RolesRightsEditorProvider {
     this.configurationRootPath = undefined;
     this.sessionExpectedHash = undefined;
     this.sessionExpectedState = undefined;
+    this.sessionGeneration++;
     this.filterState = createDefaultFilterState();
   }
 }
