@@ -29,6 +29,8 @@ export interface AgentBridgeOptions {
     commandPattern: RegExp;
     /** Папка workspace для записи bridge.json. Если не задана — bridge file НЕ создаётся. */
     workspaceFolder?: string;
+    /** Список папок workspace для записи bridge.json в multi-root сценариях. */
+    workspaceFolders?: readonly string[];
     /** Версия расширения — пишется в bridge.json для диагностики. */
     extensionVersion?: string;
     /** Путь установки расширения — используется для резолвинга helperScriptPath в bridge.json. */
@@ -46,13 +48,26 @@ export interface AgentBridgeStartResult {
 // AgentBridge
 // ---------------------------------------------------------------------------
 
+/**
+ * AgentBridge provides an HTTP bridge bound strictly to 127.0.0.1 for external AI agents
+ * and MCP tools to interact with the extension and active VS Code window.
+ *
+ * Security boundary:
+ * Possession of the 256-bit bearer token in `.vscode/cdt-agent-bridge.json` grants full
+ * Agent API access within the current window.
+ * To protect this boundary:
+ * 1. The bridge file is written with restricted permissions (0o600 on POSIX).
+ * 2. Stale bridge files from previous crashes are cleared on startup.
+ * 3. The token is never emitted into debug logs, errors, or telemetry.
+ */
 export class AgentBridge {
     private _server: http.Server | undefined;
     private _token: string | undefined;
     private _port: number | undefined;
     private _commandPattern: RegExp;
-    private _workspaceFolder?: string;
+    private _workspaceFolders: string[];
     private _bridgeFilePath?: string;
+    private _bridgeFilePaths: string[] = [];
     private _extensionVersion?: string;
     private _extensionPath?: string;
     private _instanceId: string | undefined;
@@ -64,11 +79,14 @@ export class AgentBridge {
 
     constructor(opts: AgentBridgeOptions) {
         this._commandPattern = opts.commandPattern;
-        this._workspaceFolder = opts.workspaceFolder;
+        this._workspaceFolders = opts.workspaceFolders
+            ? [...opts.workspaceFolders]
+            : (opts.workspaceFolder ? [opts.workspaceFolder] : []);
         this._extensionVersion = opts.extensionVersion;
         this._extensionPath = opts.extensionPath;
         this._mcpRouterFactory = opts.mcpRouterFactory ?? createMcpSessionRouter;
     }
+
 
     /**
      * Стартует HTTP сервер на 127.0.0.1:0 (random port), генерирует token.
@@ -120,38 +138,52 @@ export class AgentBridge {
         this._port = (server.address() as net.AddressInfo).port;
         this._server = server;
 
-        if (this._workspaceFolder) {
-            const vscodeDir = path.join(this._workspaceFolder, '.vscode');
-            await fs.promises.mkdir(vscodeDir, { recursive: true });
-            const bridgeFile = path.join(vscodeDir, 'cdt-agent-bridge.json');
-            this._bridgeFilePath = bridgeFile;
-            const helperScriptPath = this._extensionPath
-                ? path.join(this._extensionPath, 'resources', 'agent-bridge', 'call.sh')
-                : undefined;
-            const discoverScriptPath = this._extensionPath
-                ? path.join(this._extensionPath, 'resources', 'agent-bridge', 'discover.sh')
-                : undefined;
-            const content = {
-                schemaVersion: 2,
-                instanceId: this._instanceId,
-                port: this._port,
-                token: this._token,
-                pid: process.pid,
-                workspaceFolder: this._workspaceFolder,
-                createdAt: new Date().toISOString(),
-                extensionVersion: this._extensionVersion ?? 'unknown',
-                docs: 'https://github.com/lekot/VScodePluginFor1CDev/blob/main/docs/features/agent-api/agent-skill.md',
-                mcp: {
-                    url: `http://127.0.0.1:${this._port}/mcp`,
-                    transport: 'streamable-http',
-                    authorization: 'bearer',
-                },
-                quickstart: 'POST http://127.0.0.1:<port>/command с заголовком Authorization: Bearer <token>, телом {"name":"1c-metadata-tree.agent.<cmd>","args":{...}}. Whitelist: /^1c-metadata-tree\\.agent(?:(?:\\.debug|\\.forms|\\.skd|\\.xdto)?\\.[a-zA-Z]+|\\.roles\\.setRights)$/. Forms: forms.discover ищет локальные TestClient (возвращает только PID/port), forms.launch запускает его и подключает native-сессию для dbPath или infobaseId, а forms.start подключается к уже работающему клиенту по TCP port (driver=native можно опустить, host по умолчанию 127.0.0.1); forms.native управляет формой, forms.stop закрывает только сокет. forms.shot снимает окно локального TestClient на Windows. Для отладки BSL вызови agent.debug.start с debuggeeType=webServer и открой возвращённый webServerUrl в браузере. XDTO: agent.xdto.listPackages/getPackage/exportXsd/importXsd/createFromXsd/compare/merge.',
-                ...(helperScriptPath ? { helperScriptPath } : {}),
-                ...(discoverScriptPath ? { discoverScriptPath } : {}),
-            };
-            await this.writeDiscoveryFileAtomic(bridgeFile, content);
+        if (this._workspaceFolders.length > 0) {
+            for (const folder of this._workspaceFolders) {
+                const vscodeDir = path.join(folder, '.vscode');
+                await fs.promises.mkdir(vscodeDir, { recursive: true });
+                const bridgeFile = path.join(vscodeDir, 'cdt-agent-bridge.json');
+                this._bridgeFilePaths.push(bridgeFile);
+                this._bridgeFilePath = bridgeFile;
+
+                // Safely remove stale discovery file before writing if exists
+                try {
+                    await fs.promises.unlink(bridgeFile);
+                } catch (err: unknown) {
+                    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+                        // ignore non-critical unlink errors
+                    }
+                }
+
+                const helperScriptPath = this._extensionPath
+                    ? path.join(this._extensionPath, 'resources', 'agent-bridge', 'call.sh')
+                    : undefined;
+                const discoverScriptPath = this._extensionPath
+                    ? path.join(this._extensionPath, 'resources', 'agent-bridge', 'discover.sh')
+                    : undefined;
+                const content = {
+                    schemaVersion: 2,
+                    instanceId: this._instanceId,
+                    port: this._port,
+                    token: this._token,
+                    pid: process.pid,
+                    workspaceFolder: folder,
+                    createdAt: new Date().toISOString(),
+                    extensionVersion: this._extensionVersion ?? 'unknown',
+                    docs: 'https://github.com/lekot/VScodePluginFor1CDev/blob/main/docs/features/agent-api/agent-skill.md',
+                    mcp: {
+                        url: `http://127.0.0.1:${this._port}/mcp`,
+                        transport: 'streamable-http',
+                        authorization: 'bearer',
+                    },
+                    quickstart: 'POST http://127.0.0.1:<port>/command с заголовком Authorization: Bearer <token>, телом {"name":"1c-metadata-tree.agent.<cmd>","args":{...}}. Whitelist: /^1c-metadata-tree\\.agent(?:(?:\\.debug|\\.forms|\\.skd|\\.xdto)?\\.[a-zA-Z]+|\\.roles\\.setRights)$/. Forms: forms.discover ищет локальные TestClient (возвращает только PID/port), forms.launch запускает его и подключает native-сессию для dbPath или infobaseId, а forms.start подключается к уже работающему клиенту по TCP port (driver=native можно опустить, host по умолчанию 127.0.0.1); forms.native управляет формой, forms.stop закрывает только сокет. forms.shot снимает окно локального TestClient на Windows. Для отладки BSL вызови agent.debug.start с debuggeeType=webServer и открой возвращённый webServerUrl в браузере. XDTO: agent.xdto.listPackages/getPackage/exportXsd/importXsd/createFromXsd/compare/merge.',
+                    ...(helperScriptPath ? { helperScriptPath } : {}),
+                    ...(discoverScriptPath ? { discoverScriptPath } : {}),
+                };
+                await this.writeDiscoveryFileAtomic(bridgeFile, content);
+            }
         }
+
 
         return { port: this._port, token: this._token };
     }
@@ -199,22 +231,27 @@ export class AgentBridge {
     }
 
     private async removeBridgeFile(): Promise<void> {
-        const bridgeFilePath = this._bridgeFilePath;
+        const paths = this._bridgeFilePaths.length > 0
+            ? [...this._bridgeFilePaths]
+            : (this._bridgeFilePath ? [this._bridgeFilePath] : []);
+        this._bridgeFilePaths = [];
         this._bridgeFilePath = undefined;
-        if (!bridgeFilePath) { return; }
-        try {
-            const raw = await fs.promises.readFile(bridgeFilePath, 'utf8');
-            const current = JSON.parse(raw) as { instanceId?: unknown; token?: unknown };
-            if (current.instanceId !== this._instanceId || current.token !== this._token) {
-                return;
-            }
-            await fs.promises.unlink(bridgeFilePath);
-        } catch (err: unknown) {
-            if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-                console.error('[AgentBridge] failed to remove bridge file:', err);
+        for (const bridgeFilePath of paths) {
+            try {
+                const raw = await fs.promises.readFile(bridgeFilePath, 'utf8');
+                const current = JSON.parse(raw) as { instanceId?: unknown; token?: unknown };
+                if (current.instanceId !== this._instanceId || current.token !== this._token) {
+                    continue;
+                }
+                await fs.promises.unlink(bridgeFilePath);
+            } catch (err: unknown) {
+                if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+                    console.error('[AgentBridge] failed to remove bridge file:', err);
+                }
             }
         }
     }
+
 
     // -------------------------------------------------------------------------
     // Private — request routing
@@ -408,8 +445,11 @@ export class AgentBridge {
     private async writeDiscoveryFileAtomic(filePath: string, content: unknown): Promise<void> {
         const temporaryPath = `${filePath}.${this._instanceId ?? randomUUID()}.tmp`;
         try {
-            await fs.promises.writeFile(temporaryPath, JSON.stringify(content, null, 2), 'utf8');
+            await fs.promises.writeFile(temporaryPath, JSON.stringify(content, null, 2), { encoding: 'utf8', mode: 0o600 });
             await fs.promises.rename(temporaryPath, filePath);
+            if (process.platform !== 'win32') {
+                await fs.promises.chmod(filePath, 0o600);
+            }
         } finally {
             try {
                 await fs.promises.unlink(temporaryPath);
@@ -420,6 +460,7 @@ export class AgentBridge {
             }
         }
     }
+
 
     private clearRuntimeState(): void {
         this._token = undefined;

@@ -13,6 +13,7 @@ import { RightsMap } from './models/roleModel';
 import { Logger } from '../utils/logger';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { CONFIGURATION_XML } from '../constants/fileNames';
+import { filesystemPathKey } from '../utils/configurationPathIdentity';
 
 /**
  * Metadata types that can have rights assigned
@@ -276,7 +277,7 @@ async function findConfigurationPath(roleFilePath: string): Promise<string | nul
     Logger.debug(`Starting search from: ${currentPath}`);
     
     // Normalize the role file path for comparison
-    const normalizedRolePath = path.resolve(roleFilePath).toLowerCase();
+    const normalizedRolePath = filesystemPathKey(roleFilePath);
     
     // Walk up the directory tree
     for (let i = 0; i < 10; i++) {
@@ -285,7 +286,7 @@ async function findConfigurationPath(roleFilePath: string): Promise<string | nul
       // Check if this is a valid configuration root
       if (await FormatDetector.isValidConfigurationPath(currentPath)) {
         // Check if the role file is inside this configuration
-        const normalizedConfigPath = path.resolve(currentPath).toLowerCase();
+        const normalizedConfigPath = filesystemPathKey(currentPath);
         // Use path.sep for proper path comparison on Windows/Linux
         const configPathWithSep = normalizedConfigPath.endsWith(path.sep)
           ? normalizedConfigPath
@@ -317,7 +318,7 @@ async function findConfigurationPath(roleFilePath: string): Promise<string | nul
     
     // Find the first configuration that contains the role file
     for (const config of allConfigs) {
-      const normalizedConfigPath = path.resolve(config.configPath).toLowerCase();
+      const normalizedConfigPath = filesystemPathKey(config.configPath);
       const configPathWithSep = normalizedConfigPath.endsWith(path.sep)
         ? normalizedConfigPath
         : normalizedConfigPath + path.sep;

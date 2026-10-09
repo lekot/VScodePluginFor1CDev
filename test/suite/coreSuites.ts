@@ -256,6 +256,10 @@ export const coreSuiteFiles: string[] = [
   'suite/mcpBridgeTransport.test.js',
   'suite/mcpSessionRouterRace.test.js',
   'suite/agentBridgeActivation.test.js',
+  'suite/agentBridgeDiscoverySecurity.test.js',
+  'suite/agentMultiRootFailClosed.test.js',
+  'suite/agentReadWriteConsistency.test.js',
+  'suite/commandInterfaceContainment.test.js',
   'suite/objectTypeParser.test.js',
   'suite/xdtoPackageParser.test.js',
   'suite/xdtoPackageSerializer.test.js',
@@ -299,6 +303,8 @@ export const coreSuiteFiles: string[] = [
   'suite/chartOfAccountsWizardService.test.js',
   'suite/chartOfAccountsWizard.test.js',
   'suite/chartOfAccountsIbcmdImport.test.js',
+  'suite/metadataParserInFlight.test.js',
+  'suite/pathIdentityGuards.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),

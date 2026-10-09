@@ -31,6 +31,19 @@ export interface ExclusiveConfigurationOperation<T> {
   readonly execute: () => Promise<T>;
 }
 
+export interface ReadRequest<T> {
+  readonly cancellation?: CancellationLike;
+  readonly execute: (context: {
+    snapshotVersion: number;
+    rootPath: string;
+  }) => Promise<T>;
+}
+
+export type ReadOutcome<T> =
+  | { status: 'ok'; value: T; snapshotVersion: number; configurationId: ConfigurationIdentity['configurationId'] }
+  | { status: 'failed'; error?: Error; configurationId: ConfigurationIdentity['configurationId'] }
+  | { status: 'cancelled'; configurationId: ConfigurationIdentity['configurationId'] };
+
 export type MutationOutcome<T> =
   | MutationEnvelope<T> & { status: 'committed'; value: T }
   | MutationEnvelope<T> & { status: 'failed'; value?: T; error?: Error }
@@ -48,11 +61,24 @@ interface MutationEnvelope<T> {
   readonly _valueType?: T;
 }
 
+type QueueEntry =
+  | {
+      type: 'write';
+      run: () => Promise<void>;
+    }
+  | {
+      type: 'read';
+      run: () => Promise<void>;
+    };
+
 /** Thin per-configuration facade: FIFO mutation ownership plus Tier-1 storage. */
 export class ConfigurationSession {
-  private queueTail: Promise<void> = Promise.resolve();
   private accepting = true;
   private _snapshotVersion = 0;
+  private runningWriters = 0;
+  private runningReaders = 0;
+  private queue: QueueEntry[] = [];
+  private drainResolvers: Array<() => void> = [];
   readonly storage: AtomicFileStorage;
   readonly mutations: MutationPlanExecutor;
 
@@ -76,19 +102,63 @@ export class ConfigurationSession {
     this._identity = identity;
   }
 
+  private processQueue(): void {
+    if (this.runningWriters > 0) {
+      return;
+    }
+    if (this.queue.length === 0) {
+      if (this.runningReaders === 0 && !this.accepting) {
+        const resolvers = this.drainResolvers;
+        this.drainResolvers = [];
+        resolvers.forEach((resolve) => resolve());
+      }
+      return;
+    }
+    const next = this.queue[0];
+    if (next.type === 'write') {
+      if (this.runningReaders > 0) {
+        return;
+      }
+      this.queue.shift();
+      this.runningWriters = 1;
+      void next.run().finally(() => {
+        this.runningWriters = 0;
+        this.processQueue();
+      });
+      return;
+    }
+    if (next.type === 'read') {
+      const readers: QueueEntry[] = [];
+      while (this.queue.length > 0 && this.queue[0].type === 'read') {
+        readers.push(this.queue.shift()!);
+      }
+      for (const reader of readers) {
+        this.runningReaders++;
+        void reader.run().finally(() => {
+          this.runningReaders--;
+          if (this.runningReaders === 0) {
+            this.processQueue();
+          }
+        });
+      }
+    }
+  }
+
   enqueue<T>(request: MutationRequest<T>): Promise<MutationOutcome<T>> {
     const operationId = request.operationId ?? randomUUID();
-    const run = async (): Promise<MutationOutcome<T>> => {
+    return new Promise<MutationOutcome<T>>((resolve) => {
       const envelope = (): MutationEnvelope<T> => ({
         configurationId: this.identity.configurationId,
         operationId,
         snapshotVersion: this._snapshotVersion,
       });
+
       if (!this.accepting || request.cancellation?.isCancellationRequested) {
-        return { ...envelope(), status: 'cancelled' };
+        resolve({ ...envelope(), status: 'cancelled' });
+        return;
       }
       if (!this.identity.capabilities.write) {
-        return {
+        resolve({
           ...envelope(),
           status: 'conflict',
           code: 'CONFIGURATION_CAPABILITY_UNSUPPORTED',
@@ -96,51 +166,118 @@ export class ConfigurationSession {
             'CONFIGURATION_CAPABILITY_UNSUPPORTED',
             `Конфигурация ${this.identity.configurationId} не поддерживает запись.`,
           ),
-        };
-      }
-      if (
-        request.clientSnapshotVersion !== undefined
-        && request.clientSnapshotVersion !== this._snapshotVersion
-      ) {
-        return {
-          ...envelope(),
-          status: 'conflict',
-          code: 'STALE_SNAPSHOT',
-          error: new Error('Версия конфигурации изменилась до начала операции.'),
-        };
+        });
+        return;
       }
 
-      const baseSnapshotVersion = this._snapshotVersion;
-      try {
-        const value = await request.execute({ operationId, baseSnapshotVersion, storage: this.storage });
-        if (request.commitWhen && !request.commitWhen(value)) {
-          return { ...envelope(), status: 'failed', value };
-        }
-        this._snapshotVersion += 1;
-        return { ...envelope(), snapshotVersion: this._snapshotVersion, status: 'committed', value };
-      } catch (error) {
-        if (error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT') {
-          return { ...envelope(), status: 'conflict', code: 'PLAN_CONFLICT', error };
-        }
-        if (error instanceof PathBoundaryError) {
-          return {
-            ...envelope(),
-            status: 'conflict',
-            code: error.code === 'PATH_UNAVAILABLE' ? 'PATH_UNAVAILABLE' : 'TARGET_OUTSIDE_ROOT',
-            error,
-          };
-        }
-        return {
-          ...envelope(),
-          status: 'failed',
-          error: error instanceof Error ? error : new Error(String(error)),
-        };
-      }
-    };
+      this.queue.push({
+        type: 'write',
+        run: async () => {
+          if (!this.accepting || request.cancellation?.isCancellationRequested) {
+            resolve({ ...envelope(), status: 'cancelled' });
+            return;
+          }
+          if (
+            request.clientSnapshotVersion !== undefined
+            && request.clientSnapshotVersion !== this._snapshotVersion
+          ) {
+            resolve({
+              ...envelope(),
+              status: 'conflict',
+              code: 'STALE_SNAPSHOT',
+              error: new Error('Версия конфигурации изменилась до начала операции.'),
+            });
+            return;
+          }
 
-    const result = this.queueTail.then(run, run);
-    this.queueTail = result.then(() => undefined, () => undefined);
-    return result;
+          const baseSnapshotVersion = this._snapshotVersion;
+          try {
+            const value = await request.execute({ operationId, baseSnapshotVersion, storage: this.storage });
+            if (request.commitWhen && !request.commitWhen(value)) {
+              resolve({ ...envelope(), status: 'failed', value });
+              return;
+            }
+            this._snapshotVersion += 1;
+            resolve({ ...envelope(), snapshotVersion: this._snapshotVersion, status: 'committed', value });
+          } catch (error) {
+            if (error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT') {
+              resolve({ ...envelope(), status: 'conflict', code: 'PLAN_CONFLICT', error });
+              return;
+            }
+            if (error instanceof PathBoundaryError) {
+              resolve({
+                ...envelope(),
+                status: 'conflict',
+                code: error.code === 'PATH_UNAVAILABLE' ? 'PATH_UNAVAILABLE' : 'TARGET_OUTSIDE_ROOT',
+                error,
+              });
+              return;
+            }
+            resolve({
+              ...envelope(),
+              status: 'failed',
+              error: error instanceof Error ? error : new Error(String(error)),
+            });
+          }
+        },
+      });
+
+      this.processQueue();
+    });
+  }
+
+  runRead<T>(
+    operation: ((context: { snapshotVersion: number; rootPath: string }) => Promise<T>) | ReadRequest<T>,
+    cancellation?: CancellationLike,
+  ): Promise<ReadOutcome<T>> {
+    const request: ReadRequest<T> = typeof operation === 'function'
+      ? { execute: operation, cancellation }
+      : operation;
+
+    return new Promise<ReadOutcome<T>>((resolve) => {
+      if (!this.accepting || request.cancellation?.isCancellationRequested) {
+        resolve({
+          status: 'cancelled',
+          configurationId: this.identity.configurationId,
+        });
+        return;
+      }
+
+      this.queue.push({
+        type: 'read',
+        run: async () => {
+          if (!this.accepting || request.cancellation?.isCancellationRequested) {
+            resolve({
+              status: 'cancelled',
+              configurationId: this.identity.configurationId,
+            });
+            return;
+          }
+
+          const snapshotVersion = this._snapshotVersion;
+          try {
+            const value = await request.execute({
+              snapshotVersion,
+              rootPath: this.identity.rootPath,
+            });
+            resolve({
+              status: 'ok',
+              value,
+              snapshotVersion,
+              configurationId: this.identity.configurationId,
+            });
+          } catch (error) {
+            resolve({
+              status: 'failed',
+              error: error instanceof Error ? error : new Error(String(error)),
+              configurationId: this.identity.configurationId,
+            });
+          }
+        },
+      });
+
+      this.processQueue();
+    });
   }
 
   enqueuePlan<T>(
@@ -169,6 +306,13 @@ export class ConfigurationSession {
 
   async dispose(): Promise<void> {
     this.accepting = false;
-    await this.queueTail;
+    if (this.runningWriters === 0 && this.runningReaders === 0 && this.queue.length === 0) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      this.drainResolvers.push(resolve);
+      this.processQueue();
+    });
   }
 }
+

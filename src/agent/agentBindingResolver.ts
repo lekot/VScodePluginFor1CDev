@@ -101,11 +101,28 @@ export async function resolveBindingCommand(
     }
 
     // Resolve absolute configPath
-    const wsFolder = vscode.workspace.workspaceFolders?.find(f => f.name === matched.workspaceFolder)
-        ?? vscode.workspace.workspaceFolders?.[0];
+    let wsFolder: vscode.WorkspaceFolder | undefined;
+    const folders = vscode.workspace.workspaceFolders;
+    if (matched.workspaceFolder) {
+        wsFolder = folders?.find((f) => f.name === matched.workspaceFolder);
+        if (!wsFolder) {
+            return {
+                success: false,
+                error: `Папка рабочей области «${matched.workspaceFolder}», указанная в привязке, не найдена в текущем workspace.`,
+            };
+        }
+    } else if (folders && folders.length === 1) {
+        wsFolder = folders[0];
+    } else if (folders && folders.length > 1) {
+        return {
+            success: false,
+            error: 'В рабочей области открыто несколько папок, но в привязке не указана целевая папка (workspaceFolder).',
+        };
+    }
     const absoluteConfigPath = wsFolder
         ? path.join(wsFolder.uri.fsPath, matched.configRelativePath)
         : matched.configRelativePath;
+
 
     return {
         success: true,

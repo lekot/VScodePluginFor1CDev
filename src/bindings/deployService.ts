@@ -9,6 +9,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { normalizeConfigRelativePath } from './bindingPathUtils';
 import type { ConfigurationBinding } from './models/configurationBinding';
+import { configurationPathKey } from '../utils/configurationPathIdentity';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import type { InfobaseStorageService } from '../infobases/infobaseStorageService';
 import {
@@ -767,7 +768,7 @@ export class DeployService {
       appendIbcmdOutputLine(`  ${f}`);
     }
 
-    const bindingId = path.resolve(params.workspaceFolderRoot, params.binding.configRelativePath).toLowerCase();
+    const bindingId = configurationPathKey(path.resolve(params.workspaceFolderRoot, params.binding.configRelativePath));
 
     const { entries, skipped } = resolveDeployTargetsForBinding(params.binding, catalogById);
     const results: DeployItemResult[] = [...skipped];

@@ -111,6 +111,7 @@ import { AgentRoleRightsError, planSetRoleRights } from './agentRoleRights';
 import { resolveAgentConfiguration } from './agentConfigurationResolver';
 import { AgentPathError, parseSourceAddress } from './agentPathResolver';
 import { resolveSourceAddress } from './agentSourceAddressResolver';
+import { findWorkspaceFolderForPath } from './agentWorkspaceContext';
 import { AgentTaskManager } from './agentTaskManager';
 import { AgentRepositoryOperations } from './agentRepositoryOperations';
 import type {
@@ -191,14 +192,27 @@ export function registerAgentCommands(
         }
         const candidateAddress = extractCandidateAddress(params);
         if (candidateAddress) {
+            let targetSession;
+            if (params.configurationId) {
+                try {
+                    targetSession = registry.require(params.configurationId);
+                } catch {
+                    // Ignore
+                }
+            }
+            const targetFolder = targetSession
+                ? findWorkspaceFolderForPath(targetSession.identity.rootPath)
+                : (vscode.workspace.workspaceFolders?.length === 1 ? vscode.workspace.workspaceFolders[0] : undefined);
+
             const resolved = await resolveSourceAddress(
                 { address: candidateAddress, configurationId: params.configurationId },
                 {
                     registry,
-                    workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+                    workspaceRoot: targetFolder?.uri.fsPath,
                     treeDataProvider: getTreeDataProvider ? getTreeDataProvider() ?? undefined : undefined,
                 },
             );
+
             if (!resolved.session.identity.capabilities[capability]) {
                 throw new WorkspaceRegistryError(
                     'CONFIGURATION_CAPABILITY_UNSUPPORTED',
@@ -220,13 +234,31 @@ export function registerAgentCommands(
         try {
             const session = await resolveSession(params, capability);
             if (!mutationKind) {
-                const result = await operation(session.identity.rootPath);
+                const readOutcome = await session.runRead(
+                    () => operation(session.identity.rootPath),
+                    cancellation,
+                );
+                if (readOutcome.status === 'cancelled') {
+                    return {
+                        success: false,
+                        code: 'CANCELLED',
+                        error: 'Операция отменена.',
+                    };
+                }
+                if (readOutcome.status === 'failed') {
+                    return {
+                        success: false,
+                        error: readOutcome.error?.message ?? 'Ошибка чтения конфигурации.',
+                    };
+                }
+                const result = readOutcome.value;
                 return {
                     ...result,
                     configurationId: session.identity.configurationId,
-                    snapshotVersion: session.snapshotVersion,
+                    snapshotVersion: readOutcome.snapshotVersion,
                 };
             }
+
             const outcome = await session.enqueue({
                 kind: mutationKind,
                 cancellation,
@@ -564,11 +596,24 @@ export function registerAgentCommands(
                 if (!registry) {
                     return { success: false, error: 'Корень конфигурации не найден.' };
                 }
+                let targetSession;
+                if (params.configurationId) {
+                    try {
+                        targetSession = registry.require(params.configurationId);
+                    } catch {
+                        // Ignore
+                    }
+                }
+                const targetFolder = targetSession
+                    ? findWorkspaceFolderForPath(targetSession.identity.rootPath)
+                    : (vscode.workspace.workspaceFolders?.length === 1 ? vscode.workspace.workspaceFolders[0] : undefined);
+
                 const resolved = await resolveSourceAddress(params, {
                     registry,
-                    workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+                    workspaceRoot: targetFolder?.uri.fsPath,
                     treeDataProvider: getTreeDataProvider ? getTreeDataProvider() ?? undefined : undefined,
                 });
+
                 return {
                     success: true,
                     configurationId: resolved.configurationId,

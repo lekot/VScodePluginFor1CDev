@@ -11,6 +11,7 @@ import {
   checkRecentDeploy,
   resetDeployDedupCacheForTests,
 } from '../../src/bindings/deployDedupCache';
+import { configurationPathKey } from '../../src/utils/configurationPathIdentity';
 import type { ConfigurationBinding } from '../../src/bindings/models/configurationBinding';
 import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
 import type { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
@@ -310,7 +311,7 @@ suite('DeployService support invariants', () => {
     assert.deepStrictEqual(calls[1], ['Configuration.xml', 'CommonModules/Foo.xml']);
     assert.strictEqual(summary.successCount, 1);
     assert.strictEqual(summary.hasPartial, false);
-    const bindingId = path.resolve(configRoot, binding.configRelativePath).toLowerCase();
+    const bindingId = configurationPathKey(path.resolve(configRoot, binding.configRelativePath));
     assert.strictEqual(checkRecentDeploy(
       { bindingId, infobaseId: entry.id },
       { relativeFiles: calls[1]! },

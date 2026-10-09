@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { MetadataType, TreeNode } from '../models/treeNode';
+import { filesystemPathKey } from '../utils/configurationPathIdentity';
 import type { CompositionObjectEntry, CompositionTypeContainer } from './compositionContracts';
 
 /**
@@ -53,7 +54,7 @@ export const SUBSYSTEM_ELIGIBLE_TYPES: ReadonlySet<string> = new Set<string>([
  * Normalise a path for case-insensitive comparison (Windows-safe).
  */
 function normalisePath(p: string): string {
-  return path.resolve(p).toLowerCase();
+  return filesystemPathKey(p);
 }
 
 /**

@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import type { AgentResult } from './types';
 import { resolveBindingCommand } from './agentBindingResolver';
+import { findWorkspaceFolderForPath } from './agentWorkspaceContext';
 import type {
     DebugStartParams,
     DebugStartResult,
@@ -91,13 +92,12 @@ export class AgentDebugOperations {
         const rootProject = path.resolve(params.rootProject);
         const platformPath = path.resolve(params.platformPath);
 
-        // Найти workspace folder — getWorkspaceFolder может не сматчить путь в некоторых
-        // редакторах (Cursor, Kiro), поэтому fallback на первый workspace folder.
-        const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(rootProject))
-            ?? vscode.workspace.workspaceFolders?.[0];
+        // Найти workspace folder
+        const folder = findWorkspaceFolderForPath(rootProject);
         if (!folder) {
-            return { success: false, error: 'workspace folder для rootProject не найден (нет открытых workspace folders)' };
+            return { success: false, error: 'workspace folder для rootProject не найден' };
         }
+
 
         // Построить конфигурацию запуска (уникальное имя для корреляции с onDidStartDebugSession)
         const sessionName = `Agent Debug Session ${Date.now()}`;
@@ -703,12 +703,12 @@ export class AgentDebugOperations {
             configPath = path.resolve(rawConfigPath);
         }
 
-        // 3. Найти workspace folder — fallback на первый (Cursor/Kiro могут не матчить URI)
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(configPath))
-            ?? vscode.workspace.workspaceFolders?.[0];
+        // 3. Найти workspace folder
+        const workspaceFolder = findWorkspaceFolderForPath(configPath);
         if (!workspaceFolder) {
-            return { success: false, error: 'workspace folder не найден (нет открытых workspace folders)' };
+            return { success: false, error: 'workspace folder для конфигурации не найден' };
         }
+
 
         // 4. Подписаться на старт сессии ДО вызова startDebuggingFromConfigPath
         const sessionName = `Agent Debug FromBinding ${Date.now()}`;

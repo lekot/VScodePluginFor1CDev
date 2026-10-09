@@ -15,6 +15,7 @@ import {
   ensureTabularSectionColumnsPlaceholder,
   isTabularSectionColumnsContainer,
 } from '../utils/treeNormalization';
+import { configurationPathKey } from '../utils/configurationPathIdentity';
 
 const R6_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates', 'Dimensions', 'Resources', 'EnumValues', 'PredefinedData']);
 /** Types with R6 placeholder children (Forms, Attributes, etc.) — must match treeNormalization.ts R6_OBJECT_TYPES. */
@@ -79,9 +80,10 @@ export class MetadataParser {
   private static getTypeContentsInFlightKey(
     configPath: string,
     typeName: string,
-    format: ConfigFormat
+    format: ConfigFormat,
+    platform?: NodeJS.Platform,
   ): string {
-    return `${format}:${path.normalize(configPath).toLowerCase()}:${typeName}`;
+    return `${format}:${configurationPathKey(configPath, platform)}:${typeName}`;
   }
 
   private static async parseTypeContentsUncached(
