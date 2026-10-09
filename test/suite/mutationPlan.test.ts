@@ -2100,5 +2100,75 @@ suite('MutationPlanExecutor', () => {
     // Critical: unowned directory without any CDT markers must NOT be deleted as orphan!
     assert.strictEqual(fs.existsSync(dataDir), true);
   });
+
+  test('#215 (Codex P1): recover successfully restores interrupted deletePath of nested directory from backups/0 directory', async () => {
+    const targetDir = path.join(tempDir, 'nested-dir');
+    await fs.promises.mkdir(targetDir, { recursive: true });
+    const targetFile = path.join(targetDir, 'subfile.txt');
+    await fs.promises.writeFile(targetFile, 'original-content', 'utf8');
+
+    const interruptedOp = path.join(tempDir, '.cdt-journal', 'interrupted-delete-dir');
+    await fs.promises.mkdir(path.join(interruptedOp, 'backups', '0'), { recursive: true });
+    await fs.promises.writeFile(path.join(interruptedOp, 'backups', '0', 'subfile.txt'), 'original-content', 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'interrupted-delete-dir',
+      plan: { kind: 'test.deleteDir', steps: [], result: null },
+      state: 'applying',
+      appliedSteps: 1,
+      snapshots: [{
+        targetPath: targetDir,
+        state: 'directory',
+        backupName: '0',
+        contentsBackedUp: true,
+      }],
+    }), 'utf8');
+
+    // Simulate deletePath step effect
+    await fs.promises.rm(targetDir, { recursive: true, force: true });
+    assert.strictEqual(fs.existsSync(targetDir), false);
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await executor.recover();
+
+    assert.strictEqual(fs.existsSync(targetDir), true);
+    assert.strictEqual(await fs.promises.readFile(targetFile, 'utf8'), 'original-content');
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+  });
+
+  test('#215 (Codex P1): recover rejects with RECOVERY_REQUIRED if directory backup contains a symlink', async () => {
+    const targetDir = path.join(tempDir, 'symlink-backup-target');
+    const interruptedOp = path.join(tempDir, '.cdt-journal', 'symlink-backup-op');
+    const backupDir = path.join(interruptedOp, 'backups', '0');
+    await fs.promises.mkdir(backupDir, { recursive: true });
+
+    const symlinkTarget = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'symlink-backup-victim-'));
+    try {
+      await createDirectorySymlink(symlinkTarget, path.join(backupDir, 'nested-symlink'));
+      await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+      await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+        version: 1,
+        operationId: 'symlink-backup-op',
+        plan: { kind: 'test.symlinkBackup', steps: [], result: null },
+        state: 'applying',
+        appliedSteps: 1,
+        snapshots: [{
+          targetPath: targetDir,
+          state: 'directory',
+          backupName: '0',
+          contentsBackedUp: true,
+        }],
+      }), 'utf8');
+
+      const executor = new MutationPlanExecutor(tempDir);
+      await assert.rejects(
+        executor.recover(),
+        (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED',
+      );
+    } finally {
+      await fs.promises.rm(symlinkTarget, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
 });
 

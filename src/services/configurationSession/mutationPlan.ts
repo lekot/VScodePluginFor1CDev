@@ -520,23 +520,23 @@ export class MutationPlanExecutor {
             `Invalid backups entry in "${entry.name}"`,
           );
         }
-        let backupDirents: fs.Dirent[];
+        let backupEntries: string[];
         try {
-          backupDirents = await fs.promises.readdir(backupsPath, { withFileTypes: true });
+          backupEntries = await fs.promises.readdir(backupsPath);
         } catch (backupReadError) {
           throw new MutationPlanError(
             'RECOVERY_REQUIRED',
             `Cannot read backups directory in "${entry.name}": ${errorMessage(backupReadError)}`,
           );
         }
-        const hasAlienBackupFiles = backupDirents.some(
-          (d) => d.isSymbolicLink() || !d.isFile() || !/^\d+$/.test(d.name),
-        );
-        if (hasAlienBackupFiles) {
-          throw new MutationPlanError(
-            'RECOVERY_REQUIRED',
-            `Operation backups directory contains unrecognized files: "${entry.name}"`,
-          );
+        for (const backupName of backupEntries) {
+          if (!/^\d+$/.test(backupName)) {
+            throw new MutationPlanError(
+              'RECOVERY_REQUIRED',
+              `Operation backups directory contains unrecognized non-numeric entry: "${entry.name}/${backupName}"`,
+            );
+          }
+          await assertSafeBackupEntry(path.join(backupsPath, backupName), canonicalJournalRoot);
         }
       }
 
@@ -967,6 +967,55 @@ async function copyPath(sourcePath: string, targetPath: string): Promise<void> {
   }
   await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
   await fs.promises.copyFile(sourcePath, targetPath);
+}
+
+async function assertSafeBackupEntry(
+  itemPath: string,
+  canonicalJournalRoot: string,
+): Promise<void> {
+  let stat: fs.Stats;
+  try {
+    stat = await fs.promises.lstat(itemPath);
+  } catch (error) {
+    throw new MutationPlanError(
+      'RECOVERY_REQUIRED',
+      `Cannot stat backup item "${itemPath}": ${errorMessage(error)}`,
+    );
+  }
+  if (stat.isSymbolicLink()) {
+    throw new MutationPlanError(
+      'RECOVERY_REQUIRED',
+      `Forbidden symbolic link in backup item: "${itemPath}"`,
+    );
+  }
+  if (!stat.isFile() && !stat.isDirectory()) {
+    throw new MutationPlanError(
+      'RECOVERY_REQUIRED',
+      `Invalid backup item type (not file or directory): "${itemPath}"`,
+    );
+  }
+  const canonicalItem = await fs.promises.realpath(itemPath);
+  if (!isPathInside(canonicalJournalRoot, canonicalItem)) {
+    throw new PathBoundaryError(
+      'PATH_OUTSIDE_ROOT',
+      `Backup item escapes journal root: "${itemPath}"`,
+      itemPath,
+    );
+  }
+  if (stat.isDirectory()) {
+    let entries: string[];
+    try {
+      entries = await fs.promises.readdir(itemPath);
+    } catch (error) {
+      throw new MutationPlanError(
+        'RECOVERY_REQUIRED',
+        `Cannot read backup directory "${itemPath}": ${errorMessage(error)}`,
+      );
+    }
+    for (const entry of entries) {
+      await assertSafeBackupEntry(path.join(itemPath, entry), canonicalJournalRoot);
+    }
+  }
 }
 
 function isMissingError(error: unknown): boolean {
