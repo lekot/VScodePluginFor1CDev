@@ -83,7 +83,10 @@ export async function resolveSourceAddress(
             const cfeRegistry = new CfeProjectRegistry(wsRoot, context.registry);
             const found = await cfeRegistry.list();
             for (const proj of found) {
-                if (!cfeProjects.some((p) => p.extensionName === proj.extensionName)) {
+                if (!cfeProjects.some((p) =>
+                    p.extensionSession.identity.configurationId === proj.extensionSession.identity.configurationId
+                    && p.baseSession.identity.configurationId === proj.baseSession.identity.configurationId
+                )) {
                     cfeProjects.push(proj);
                 }
             }
@@ -153,19 +156,33 @@ export async function resolveSourceAddress(
         }
     } else {
         // Specific extension name or configuration label
-        const project = cfeProjects.find(
+        const matchingProjects = cfeProjects.filter(
             (p) => p.extensionName.toLowerCase() === sourceSet.toLowerCase()
                 || path.basename(p.extensionRoot).toLowerCase() === sourceSet.toLowerCase(),
         );
-        if (project) {
-            targetSession = project.extensionSession;
-            cfeContext = project;
-            if (params.configurationId && targetSession.identity.configurationId !== params.configurationId) {
+        if (matchingProjects.length > 0) {
+            let project: CfeProjectContext;
+            if (params.configurationId) {
+                const found = matchingProjects.find(
+                    (p) => p.extensionSession.identity.configurationId === params.configurationId,
+                );
+                if (!found) {
+                    throw new AgentPathError(
+                        'INVALID_AGENT_PATH',
+                        `The provided configurationId "${params.configurationId}" conflicts with source set "${sourceSet}".`,
+                    );
+                }
+                project = found;
+            } else if (matchingProjects.length > 1) {
                 throw new AgentPathError(
                     'INVALID_AGENT_PATH',
-                    `The provided configurationId "${params.configurationId}" conflicts with source set "${sourceSet}".`,
+                    `Multiple CFE projects named "${sourceSet}" found in workspace. Specify configurationId explicitly.`,
                 );
+            } else {
+                project = matchingProjects[0];
             }
+            targetSession = project.extensionSession;
+            cfeContext = project;
         } else {
             // Check if sourceSet matches a configuration descriptor label or id in registry
             const desc = context.registry.list().find(
