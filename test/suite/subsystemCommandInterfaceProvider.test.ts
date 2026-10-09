@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import '../helpers/vscodeStubRegister';
 import { SubsystemCommandInterfaceProvider } from '../../src/subsystemCommandInterfaceEditor/subsystemCommandInterfaceProvider';
 import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
@@ -207,6 +208,68 @@ suite('SubsystemCommandInterfaceProvider (#210)', () => {
         assert.strictEqual(intercepted.length, 1, 'Save must be intercepted by configurationMutationGateway');
         assert.strictEqual(intercepted[0].path, ciPath);
         assert.strictEqual(intercepted[0].kind, 'subsystemCommandInterface.save');
+      } finally {
+        restore();
+        provider.dispose();
+      }
+    } finally {
+      gateway.dispose();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('handleSave fails closed and prevents overwriting when CommandInterface.xml was modified concurrently post-open (#206, PR #225 review comment 2)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), '1c-test-ci-cas-'));
+    const ciPath = path.join(root, 'Subsystems', 'SubA', 'Ext', 'CommandInterface.xml');
+    fs.mkdirSync(path.dirname(ciPath), { recursive: true });
+    fs.writeFileSync(ciPath, XML_A, 'utf8');
+
+    const intercepted: Array<{ path: string; kind: string }> = [];
+    const gateway = configureConfigurationMutationGateway(
+      async (targetPath, kind, operation) => {
+        intercepted.push({ path: targetPath, kind });
+        return operation();
+      },
+      async () => {
+        throw new Error('Not implemented');
+      },
+    );
+
+    try {
+      const node: TreeNode = {
+        id: 'Subsystems.SubA',
+        name: 'SubA',
+        type: MetadataType.Subsystem,
+        filePath: path.join(root, 'Subsystems', 'SubA.xml'),
+        properties: {},
+      };
+
+      const { panel } = createFakeWebviewPanel();
+      const restore = patchCreateWebviewPanel(panel);
+      const provider = new SubsystemCommandInterfaceProvider(createFakeExtensionContext());
+
+      try {
+        await provider.show(node, ciPath);
+
+        // Simulate concurrent modification on disk before save
+        fs.writeFileSync(ciPath, XML_B, 'utf8');
+
+        let errorCaught = false;
+        try {
+          await (provider as any).handleMessage({
+            type: 'save',
+            visibility: [{ commandName: 'Catalog.Goods.StandardCommand.OpenList', common: 'visible' }],
+            filePath: ciPath,
+            generation: 1,
+          });
+        } catch {
+          errorCaught = true;
+        }
+
+        // Concurrent changes must NOT be overwritten!
+        const onDisk = fs.readFileSync(ciPath, 'utf8');
+        assert.strictEqual(onDisk, XML_B, 'Concurrent modification on disk must be preserved');
+        assert.strictEqual(errorCaught, true, 'handleSave must fail closed on stale hash conflict');
       } finally {
         restore();
         provider.dispose();

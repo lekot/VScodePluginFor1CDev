@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
+import { AtomicFileStorage, hashContent } from '../services/configurationSession/atomicFileStorage';
 import { randomUUID } from 'crypto';
 import { RoleModel } from './models/roleModel';
 import type { MetadataObject } from './models/metadataObject';
@@ -64,6 +65,7 @@ export class RolesRightsEditorProvider {
   private disposables: vscode.Disposable[] = [];
   private saveInProgress = false;
   private configurationRootPath: string | undefined;
+  private sessionExpectedHash: string | undefined;
   /** Incremented on each `show` so stale async metadata loads do not postMessage over a newer session. */
   private objectsLoadGeneration = 0;
   private tableRenderStatusDisposable: vscode.Disposable | undefined;
@@ -139,6 +141,14 @@ export class RolesRightsEditorProvider {
         return;
       }
       this.currentRoleModel = roleModel;
+      const isCaseB = path.basename(roleFilePath).toLowerCase() === 'role.xml';
+      const initialTargetPath = isCaseB ? roleFilePath : getRightsPath(roleFilePath);
+      try {
+        const initialRaw = await fs.promises.readFile(initialTargetPath, 'utf8');
+        this.sessionExpectedHash = hashContent(initialRaw);
+      } catch {
+        this.sessionExpectedHash = undefined;
+      }
       Logger.info(`Loaded role: ${this.currentRoleModel.name}`);
 
       // Create or reveal webview panel immediately; load metadata in the background
@@ -511,47 +521,125 @@ export class RolesRightsEditorProvider {
       const targetPath = isCaseB
         ? this.currentRoleModel.filePath
         : getRightsPath(this.currentRoleModel.filePath);
-      // Temp file for atomic write: <target>.tmp only (e.g. Rights.xml.tmp). "Rights copy.xml" is not used by the extension.
-      const tempPath = targetPath + '.tmp';
-      const targetVersion = await this.resolveRoleWriteVersion(targetPath);
-      Logger.debug(`Save target: ${targetPath}, temp: ${tempPath}`);
 
-      let xmlContent: string;
-      if (isCaseB) {
-        xmlContent = RoleXmlSerializer.serializeToXml(this.currentRoleModel, targetVersion);
-        Logger.debug('Serialized (Case B)');
-      } else {
-        Logger.debug('Loading Rights.xml...');
-        const dom = await loadRightsXml(targetPath, targetVersion);
-        Logger.debug('Merging rights into DOM...');
-        const compactWrite = vscode.workspace
-          .getConfiguration('1cMetadataTree')
-          .get<boolean>('rightsEditor.compactRightsWrite', true);
-        mergeRightsIntoDom(dom, this.currentRoleModel.rights, { compactWrite });
-        Logger.debug('Serializing DOM to XML...');
-        xmlContent = serializeRightsDomToXml(dom, targetVersion);
-        xmlContent = insertRestrictionTemplatesBeforeClosingRights(
-          xmlContent,
-          this.currentRoleModel.restrictionTemplatesText ?? ''
-        );
-      }
+
+
+      Logger.debug(`Save target: ${targetPath}`);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
       await runConfigurationMutation(targetPath, 'rolesRights.save', async () => {
-        Logger.debug('Writing to temp file...');
-      await fs.promises.mkdir(path.dirname(tempPath), { recursive: true });
-      await fs.promises.writeFile(tempPath, xmlContent, 'utf8');
-      Logger.debug('Renaming temp to target...');
-      try {
-        await fs.promises.rename(tempPath, targetPath);
-      } catch (renameErr) {
-        try {
-          await fs.promises.unlink(tempPath);
-        } catch {
-          // ignore
+        let xmlContent: string;
+        let originalHash: string;
+        const targetVersion = await this.resolveRoleWriteVersion(targetPath);
+        if (isCaseB) {
+          const raw = await fs.promises.readFile(targetPath, 'utf8');
+          originalHash = hashContent(raw);
+          if (this.sessionExpectedHash && originalHash !== this.sessionExpectedHash) {
+            throw new Error(`Конфликт сохранения: файл роли "${targetPath}" был изменен другим процессом.`);
+          }
+          xmlContent = RoleXmlSerializer.serializeToXml(this.currentRoleModel!, targetVersion);
+          Logger.debug('Serialized (Case B)');
+        } else {
+          Logger.debug('Loading Rights.xml...');
+          let raw: string | undefined;
+          try {
+            raw = await fs.promises.readFile(targetPath, 'utf8');
+            originalHash = hashContent(raw);
+            if (this.sessionExpectedHash && originalHash !== this.sessionExpectedHash) {
+              throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был изменен другим процессом.`);
+            }
+          } catch (err: unknown) {
+            const code = err && typeof (err as NodeJS.ErrnoException).code === 'string'
+              ? (err as NodeJS.ErrnoException).code
+              : '';
+            if (code === 'ENOENT') {
+              if (this.sessionExpectedHash) {
+                throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был удален другим процессом.`);
+              }
+              originalHash = '';
+            } else {
+              throw err;
+            }
+          }
+
+
+
+
+          const dom = await loadRightsXml(targetPath, targetVersion);
+          Logger.debug('Merging rights into DOM...');
+          const compactWrite = vscode.workspace
+            .getConfiguration('1cMetadataTree')
+            .get<boolean>('rightsEditor.compactRightsWrite', true);
+          mergeRightsIntoDom(dom, this.currentRoleModel!.rights, { compactWrite });
+          Logger.debug('Serializing DOM to XML...');
+          xmlContent = serializeRightsDomToXml(dom, targetVersion);
+          xmlContent = insertRestrictionTemplatesBeforeClosingRights(
+            xmlContent,
+            this.currentRoleModel!.restrictionTemplatesText ?? ''
+          );
         }
-        throw renameErr;
-      }
-    });
+
+        const rootPath = this.configurationRootPath ?? path.dirname(targetPath);
+        if (originalHash) {
+          const storage = new AtomicFileStorage(rootPath);
+        const outcome = await storage.replace(targetPath, xmlContent, originalHash);
+        if (outcome.status === 'conflict') {
+          throw new Error(`Конфликт сохранения прав роли: ${outcome.message}`);
+        }
+        if (outcome.status !== 'committed') {
+          throw new Error(`Ошибка записи файла прав роли: ${outcome.message}`);
+        }
+          this.sessionExpectedHash = outcome.newHash;
+        } else {
+          const dir = path.dirname(targetPath);
+          await fs.promises.mkdir(dir, { recursive: true });
+          const tempPath = path.join(dir, `.cdt-${randomUUID()}.tmp`);
+          await fs.promises.writeFile(tempPath, xmlContent, 'utf8');
+          try {
+            await fs.promises.rename(tempPath, targetPath);
+          } catch (renameErr) {
+            await fs.promises.unlink(tempPath).catch(() => undefined);
+            throw renameErr;
+          }
+          this.sessionExpectedHash = hashContent(xmlContent);
+        }
+        return;
+      });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
       Logger.debug('Rights saved successfully');
       vscode.window.showInformationMessage('Rights saved successfully');
@@ -568,6 +656,7 @@ export class RolesRightsEditorProvider {
         command: 'saveError',
         data: { message },
       });
+      throw error;
     } finally {
       statusDone?.dispose();
       this.saveInProgress = false;
@@ -770,6 +859,7 @@ export class RolesRightsEditorProvider {
     this.allObjects = [];
     this.saveDisabledNoConfig = false;
     this.configurationRootPath = undefined;
+    this.sessionExpectedHash = undefined;
     this.filterState = createDefaultFilterState();
   }
 }
