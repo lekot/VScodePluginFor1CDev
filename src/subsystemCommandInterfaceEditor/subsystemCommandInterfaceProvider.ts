@@ -3,6 +3,9 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { TreeNode } from '../models/treeNode';
 import { parseCommandInterface, serializeCommandInterface } from '../parsers/commandInterfaceParser';
+import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
+import { AtomicFileStorage, hashContent } from '../services/configurationSession/atomicFileStorage';
+import { findConfigurationRootForPath } from '../rolesEditor/rolesRightsEditorProvider';
 import type { CommandInterfaceModel, CommandVisibilityEntry } from '../types/commandInterface';
 import { MESSAGES } from '../constants/messages';
 import { Logger } from '../utils/logger';
@@ -18,6 +21,7 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
   private currentFilePath: string | undefined;
   private currentModel: CommandInterfaceModel | undefined;
   private sessionGeneration = 0;
+  private sessionExpectedHash: string | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -62,6 +66,7 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
     const generation = ++this.sessionGeneration;
     this.currentFilePath = ciFilePath;
     this.currentModel = model;
+    this.sessionExpectedHash = hashContent(xmlText);
 
     const title = `${MESSAGES.SUBSYSTEM_COMMAND_INTERFACE_TITLE}: ${node.name}`;
 
@@ -85,6 +90,7 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
           this.panel = undefined;
           this.currentFilePath = undefined;
           this.currentModel = undefined;
+          this.sessionExpectedHash = undefined;
           this.saveInProgress = false;
         },
         null,
@@ -149,29 +155,63 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
     this.saveInProgress = true;
     const targetFilePath = this.currentFilePath;
     const targetGeneration = this.sessionGeneration;
+    const snapshotExpectedHash = this.sessionExpectedHash;
+    const snapshotModel: CommandInterfaceModel = {
+      ...this.currentModel,
+      visibility: [...this.currentModel.visibility],
+      placement: [...this.currentModel.placement],
+      commandsOrder: [...this.currentModel.commandsOrder],
+      subsystemsOrder: [...this.currentModel.subsystemsOrder],
+      groupsOrder: [...this.currentModel.groupsOrder],
+    };
     try {
-      const updatedModel: CommandInterfaceModel = {
-        ...this.currentModel,
-        visibility: newVisibility,
-      };
-      const xml = serializeCommandInterface(updatedModel);
-      fs.writeFileSync(targetFilePath, xml, 'utf8');
-      if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
-        this.currentModel = updatedModel;
-      }
-      this.postMessage({
-        type: 'saveSuccess',
-        filePath: targetFilePath,
-        generation: targetGeneration,
+      await runConfigurationMutation(targetFilePath, 'subsystemCommandInterface.save', async () => {
+        const raw = await fs.promises.readFile(targetFilePath, 'utf8');
+        const originalHash = hashContent(raw);
+        if (snapshotExpectedHash && originalHash !== snapshotExpectedHash) {
+          throw new Error('Конфликт сохранения: файл интерфейса подсистемы был изменен другим процессом.');
+        }
+
+        const updatedModel: CommandInterfaceModel = {
+          ...snapshotModel,
+          visibility: newVisibility,
+        };
+        const xml = serializeCommandInterface(updatedModel);
+
+        const rootPath = findConfigurationRootForPath(targetFilePath) ?? path.dirname(targetFilePath);
+        const storage = new AtomicFileStorage(rootPath);
+        const outcome = await storage.replace(targetFilePath, xml, originalHash);
+        if (outcome.status === 'conflict') {
+          throw new Error(`Конфликт сохранения интерфейса подсистемы: ${outcome.message}`);
+        }
+        if (outcome.status !== 'committed') {
+          throw new Error(`Ошибка записи CommandInterface.xml: ${outcome.message}`);
+        }
+
+        if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
+          this.sessionExpectedHash = outcome.newHash;
+          this.currentModel = updatedModel;
+        }
       });
+
+      if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
+        this.postMessage({
+          type: 'saveSuccess',
+          filePath: targetFilePath,
+          generation: targetGeneration,
+        });
+      }
     } catch (err) {
       Logger.error('Failed to save CommandInterface.xml', err);
-      this.postMessage({
-        type: 'saveError',
-        filePath: targetFilePath,
-        generation: targetGeneration,
-        message: MESSAGES.SUBSYSTEM_COMMAND_INTERFACE_WRITE_FAILED,
-      });
+      if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
+        this.postMessage({
+          type: 'saveError',
+          filePath: targetFilePath,
+          generation: targetGeneration,
+          message: MESSAGES.SUBSYSTEM_COMMAND_INTERFACE_WRITE_FAILED,
+        });
+      }
+      throw err;
     } finally {
       this.saveInProgress = false;
     }

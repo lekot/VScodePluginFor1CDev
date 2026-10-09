@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
+import { AtomicFileStorage, hashContent } from '../services/configurationSession/atomicFileStorage';
 import { randomUUID } from 'crypto';
 import { RoleModel } from './models/roleModel';
 import type { MetadataObject } from './models/metadataObject';
@@ -52,6 +54,26 @@ export function findConfigurationRootForPath(targetPath: string): string | undef
 }
 
 /**
+ * Creates an immutable clone of a RoleModel including its rights map.
+ */
+export function cloneRoleModel(model: RoleModel): RoleModel {
+  const clonedRights: Record<string, import('./models/roleModel').ObjectRights> = {};
+  for (const [key, val] of Object.entries(model.rights)) {
+    clonedRights[key] = { ...val };
+  }
+  return {
+    name: model.name,
+    filePath: model.filePath,
+    rights: clonedRights,
+    metadata: {
+      ...model.metadata,
+      lastModified: new Date(model.metadata.lastModified.getTime()),
+    },
+    restrictionTemplatesText: model.restrictionTemplatesText,
+  };
+}
+
+/**
  * Provider for the roles and rights editor webview
  */
 export class RolesRightsEditorProvider {
@@ -63,7 +85,10 @@ export class RolesRightsEditorProvider {
   private disposables: vscode.Disposable[] = [];
   private saveInProgress = false;
   private configurationRootPath: string | undefined;
+  private sessionExpectedHash: string | undefined;
+  private sessionExpectedState: 'missing' | 'file' | undefined;
   /** Incremented on each `show` so stale async metadata loads do not postMessage over a newer session. */
+  private sessionGeneration = 0;
   private objectsLoadGeneration = 0;
   private tableRenderStatusDisposable: vscode.Disposable | undefined;
   /** Server-side mirror of the webview filter state — survives webview reloads. */
@@ -137,7 +162,18 @@ export class RolesRightsEditorProvider {
       if (loadGeneration !== this.objectsLoadGeneration) {
         return;
       }
+      this.sessionGeneration++;
       this.currentRoleModel = roleModel;
+      const isCaseB = path.basename(roleFilePath).toLowerCase() === 'role.xml';
+      const initialTargetPath = isCaseB ? roleFilePath : getRightsPath(roleFilePath);
+      try {
+        const initialRaw = await fs.promises.readFile(initialTargetPath, 'utf8');
+        this.sessionExpectedState = 'file';
+        this.sessionExpectedHash = hashContent(initialRaw);
+      } catch {
+        this.sessionExpectedState = 'missing';
+        this.sessionExpectedHash = undefined;
+      }
       Logger.info(`Loaded role: ${this.currentRoleModel.name}`);
 
       // Create or reveal webview panel immediately; load metadata in the background
@@ -456,6 +492,8 @@ export class RolesRightsEditorProvider {
     }
 
     this.saveInProgress = true;
+    const targetGeneration = this.sessionGeneration;
+    const targetRoleModel = this.currentRoleModel;
     let statusDone: vscode.Disposable | undefined;
     try {
       let effectiveMessage: WebviewMessage | undefined = message;
@@ -472,16 +510,22 @@ export class RolesRightsEditorProvider {
           return;
         }
       }
+      if (this.sessionGeneration !== targetGeneration || this.currentRoleModel !== targetRoleModel) {
+        Logger.warn(
+          `Discarding stale rights save request: active generation ${this.sessionGeneration} does not match target generation ${targetGeneration}`
+        );
+        return;
+      }
 
       const rls = effectiveMessage?.data?.restrictionTemplatesText;
       if (typeof rls === 'string') {
-        this.currentRoleModel.restrictionTemplatesText = rls;
+        targetRoleModel.restrictionTemplatesText = rls;
       }
 
       statusDone = vscode.window.setStatusBarMessage('Saving rights...');
       Logger.debug('handleSave: validation starting');
       const validator = new RightsValidator();
-      const validationResult = validator.validateRights(this.currentRoleModel);
+      const validationResult = validator.validateRights(targetRoleModel);
 
       if (!validationResult.isValid) {
         Logger.warn(`handleSave: validation failed: ${validationResult.errors.join('; ')}`);
@@ -495,6 +539,12 @@ export class RolesRightsEditorProvider {
           'Save anyway',
           'Cancel'
         );
+        if (this.sessionGeneration !== targetGeneration || this.currentRoleModel !== targetRoleModel) {
+          Logger.warn(
+            `Discarding stale rights save request: active generation ${this.sessionGeneration} does not match target generation ${targetGeneration}`
+          );
+          return;
+        }
         if (saveAnyway !== 'Save anyway') {
           this.sendMessageToWebview({
             command: 'validationCancelled',
@@ -506,54 +556,202 @@ export class RolesRightsEditorProvider {
       } else {
         Logger.debug('handleSave: validation passed, resolving target path');
       }
-      const isCaseB = path.basename(this.currentRoleModel.filePath).toLowerCase() === 'role.xml';
-      const targetPath = isCaseB
-        ? this.currentRoleModel.filePath
-        : getRightsPath(this.currentRoleModel.filePath);
-      // Temp file for atomic write: <target>.tmp only (e.g. Rights.xml.tmp). "Rights copy.xml" is not used by the extension.
-      const tempPath = targetPath + '.tmp';
-      const targetVersion = await this.resolveRoleWriteVersion(targetPath);
-      Logger.debug(`Save target: ${targetPath}, temp: ${tempPath}`);
-
-      let xmlContent: string;
-      if (isCaseB) {
-        xmlContent = RoleXmlSerializer.serializeToXml(this.currentRoleModel, targetVersion);
-        Logger.debug('Serialized (Case B)');
-      } else {
-        Logger.debug('Loading Rights.xml...');
-        const dom = await loadRightsXml(targetPath, targetVersion);
-        Logger.debug('Merging rights into DOM...');
-        const compactWrite = vscode.workspace
-          .getConfiguration('1cMetadataTree')
-          .get<boolean>('rightsEditor.compactRightsWrite', true);
-        mergeRightsIntoDom(dom, this.currentRoleModel.rights, { compactWrite });
-        Logger.debug('Serializing DOM to XML...');
-        xmlContent = serializeRightsDomToXml(dom, targetVersion);
-        xmlContent = insertRestrictionTemplatesBeforeClosingRights(
-          xmlContent,
-          this.currentRoleModel.restrictionTemplatesText ?? ''
+      if (this.sessionGeneration !== targetGeneration || this.currentRoleModel !== targetRoleModel) {
+        Logger.warn(
+          `Discarding stale rights save request: active generation ${this.sessionGeneration} does not match target generation ${targetGeneration}`
         );
+        return;
       }
+      const isCaseB = path.basename(targetRoleModel.filePath).toLowerCase() === 'role.xml';
+      const targetPath = isCaseB
+        ? targetRoleModel.filePath
+        : getRightsPath(targetRoleModel.filePath);
 
-      Logger.debug('Writing to temp file...');
-      await fs.promises.mkdir(path.dirname(tempPath), { recursive: true });
-      await fs.promises.writeFile(tempPath, xmlContent, 'utf8');
-      Logger.debug('Renaming temp to target...');
-      try {
-        await fs.promises.rename(tempPath, targetPath);
-      } catch (renameErr) {
-        try {
-          await fs.promises.unlink(tempPath);
-        } catch {
-          // ignore
+
+
+      const snapshotRoleModel = cloneRoleModel(targetRoleModel);
+      const snapshotExpectedHash = this.sessionExpectedHash;
+      const snapshotExpectedState = this.sessionExpectedState;
+      const snapshotRootPath = this.configurationRootPath ?? path.dirname(targetPath);
+
+      Logger.debug(`Save target: ${targetPath}`);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      await runConfigurationMutation(targetPath, 'rolesRights.save', async () => {
+        let xmlContent: string;
+        let originalHash: string;
+        const targetVersion = await this.resolveRoleWriteVersion(targetPath, snapshotRootPath);
+        if (isCaseB) {
+          const raw = await fs.promises.readFile(targetPath, 'utf8');
+          originalHash = hashContent(raw);
+          if (snapshotExpectedHash && originalHash !== snapshotExpectedHash) {
+            throw new Error(`Конфликт сохранения: файл роли "${targetPath}" был изменен другим процессом.`);
+          }
+          xmlContent = RoleXmlSerializer.serializeToXml(snapshotRoleModel, targetVersion);
+          Logger.debug('Serialized (Case B)');
+        } else {
+          Logger.debug('Loading Rights.xml...');
+          let raw: string | undefined;
+          try {
+            raw = await fs.promises.readFile(targetPath, 'utf8');
+            originalHash = hashContent(raw);
+            if (snapshotExpectedState === 'missing') {
+              throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был создан другим процессом.`);
+            }
+            if (snapshotExpectedHash && originalHash !== snapshotExpectedHash) {
+              throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был изменен другим процессом.`);
+            }
+          } catch (err: unknown) {
+            const code = err && typeof (err as NodeJS.ErrnoException).code === 'string'
+              ? (err as NodeJS.ErrnoException).code
+              : '';
+            if (code === 'ENOENT') {
+              if (snapshotExpectedState === 'file' || snapshotExpectedHash) {
+                throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был удален другим процессом.`);
+              }
+              originalHash = '';
+            } else {
+              throw err;
+            }
+          }
+
+
+
+
+          const dom = await loadRightsXml(targetPath, targetVersion);
+          Logger.debug('Merging rights into DOM...');
+          const compactWrite = vscode.workspace
+            .getConfiguration('1cMetadataTree')
+            .get<boolean>('rightsEditor.compactRightsWrite', true);
+          mergeRightsIntoDom(dom, snapshotRoleModel.rights, { compactWrite });
+          Logger.debug('Serializing DOM to XML...');
+          xmlContent = serializeRightsDomToXml(dom, targetVersion);
+          xmlContent = insertRestrictionTemplatesBeforeClosingRights(
+            xmlContent,
+            snapshotRoleModel.restrictionTemplatesText ?? ''
+          );
         }
-        throw renameErr;
-      }
+
+        const rootPath = snapshotRootPath;
+        if (originalHash) {
+          const storage = new AtomicFileStorage(rootPath);
+        const outcome = await storage.replace(targetPath, xmlContent, originalHash);
+        if (outcome.status === 'conflict') {
+          throw new Error(`Конфликт сохранения прав роли: ${outcome.message}`);
+        }
+        if (outcome.status !== 'committed') {
+          throw new Error(`Ошибка записи файла прав роли: ${outcome.message}`);
+        }
+          if (this.sessionGeneration === targetGeneration) {
+            this.sessionExpectedHash = outcome.newHash;
+            this.sessionExpectedState = 'file';
+          }
+        } else {
+          const dir = path.dirname(targetPath);
+          await fs.promises.mkdir(dir, { recursive: true });
+          const tempPath = path.join(dir, `.cdt-${randomUUID()}.tmp`);
+          let tempHandle: fs.promises.FileHandle | undefined;
+          let published = false;
+          try {
+            tempHandle = await fs.promises.open(tempPath, 'wx');
+            await tempHandle.writeFile(xmlContent, 'utf8');
+            await tempHandle.sync();
+            await tempHandle.close();
+            tempHandle = undefined;
+
+            // Attempt atomic publish via link (guarantees targetPath is only published if fully written, and fails with EEXIST if target already exists)
+            try {
+              await fs.promises.link(tempPath, targetPath);
+              published = true;
+            } catch (linkErr: unknown) {
+              const code = linkErr && typeof (linkErr as NodeJS.ErrnoException).code === 'string'
+                ? (linkErr as NodeJS.ErrnoException).code
+                : '';
+              if (code === 'EEXIST') {
+                throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" уже существует или был создан другим процессом.`);
+              }
+              // If link is not supported (e.g. EXDEV, ENOSYS, EPERM), fallback to exclusive open with cleanup on failure
+              let directHandle: fs.promises.FileHandle | undefined;
+              let directWritten = false;
+              try {
+                directHandle = await fs.promises.open(targetPath, 'wx');
+                await directHandle.writeFile(xmlContent, 'utf8');
+                await directHandle.sync();
+                directWritten = true;
+                published = true;
+              } catch (directErr: unknown) {
+                const directCode = directErr && typeof (directErr as NodeJS.ErrnoException).code === 'string'
+                  ? (directErr as NodeJS.ErrnoException).code
+                  : '';
+                if (directCode === 'EEXIST') {
+                  throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" уже существует или был создан другим процессом.`);
+                }
+                throw directErr;
+              } finally {
+                if (directHandle) {
+                  await directHandle.close().catch(() => undefined);
+                  if (!directWritten) {
+                    await fs.promises.unlink(targetPath).catch(() => undefined);
+                  }
+                }
+              }
+            }
+          } finally {
+            if (tempHandle) {
+              await tempHandle.close().catch(() => undefined);
+            }
+            await fs.promises.unlink(tempPath).catch(() => undefined);
+          }
+          if (!published) {
+            throw new Error(`Не удалось опубликовать файл прав роли: ${targetPath}`);
+          }
+          if (this.sessionGeneration === targetGeneration) {
+            this.sessionExpectedState = 'file';
+            this.sessionExpectedHash = hashContent(xmlContent);
+          }
+        }
+        return;
+      });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
       Logger.debug('Rights saved successfully');
       vscode.window.showInformationMessage('Rights saved successfully');
 
-      if (this.panel) {
+      if (this.panel && this.sessionGeneration === targetGeneration) {
         this.panel.dispose();
       }
     } catch (error) {
@@ -561,10 +759,13 @@ export class RolesRightsEditorProvider {
       const stack = error instanceof Error ? error.stack : undefined;
       Logger.error(`Failed to save rights: ${message}`, stack ? { stack } : error);
       vscode.window.showErrorMessage(`Failed to save rights: ${message}`);
-      this.sendMessageToWebview({
+      if (this.sessionGeneration === targetGeneration) {
+        this.sendMessageToWebview({
         command: 'saveError',
         data: { message },
       });
+      }
+      throw error;
     } finally {
       statusDone?.dispose();
       this.saveInProgress = false;
@@ -582,7 +783,7 @@ export class RolesRightsEditorProvider {
   }
 
   /** Resolve before the temporary file or its parent directory is created. */
-  private async resolveRoleWriteVersion(targetPath: string): Promise<string> {
+  private async resolveRoleWriteVersion(targetPath: string, rootPath?: string): Promise<string> {
     try {
       const existing = await fs.promises.readFile(targetPath, 'utf8');
       return requireDocumentWriteFormatProfile(existing).version;
@@ -591,11 +792,12 @@ export class RolesRightsEditorProvider {
         throw error;
       }
     }
-    if (!this.configurationRootPath) {
+    const resolvedRoot = rootPath ?? this.configurationRootPath;
+    if (!resolvedRoot) {
       throw new Error('Не удалось определить Configuration.xml для создания файла прав.');
     }
     const configuration = await fs.promises.readFile(
-      path.join(this.configurationRootPath, CONFIGURATION_XML),
+      path.join(resolvedRoot, CONFIGURATION_XML),
       'utf8'
     );
     return requireProjectWriteFormatProfile(configuration).version;
@@ -767,6 +969,9 @@ export class RolesRightsEditorProvider {
     this.allObjects = [];
     this.saveDisabledNoConfig = false;
     this.configurationRootPath = undefined;
+    this.sessionExpectedHash = undefined;
+    this.sessionExpectedState = undefined;
+    this.sessionGeneration++;
     this.filterState = createDefaultFilterState();
   }
 }

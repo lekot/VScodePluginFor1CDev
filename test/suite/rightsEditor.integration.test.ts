@@ -10,6 +10,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+
 import { RoleXmlParser } from '../../src/rolesEditor/roleXmlParser';
 import { updateRight } from '../../src/rolesEditor/rightsUpdateUtils';
 import {
@@ -19,6 +20,7 @@ import {
   serializeRightsDomToXml as serializeRightsDomToXmlImpl,
 } from '../../src/rolesEditor/rightsXmlEditWriter';
 import { RolesRightsEditorProvider } from '../../src/rolesEditor/rolesRightsEditorProvider';
+import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import {
   createFakeExtensionContext,
@@ -971,7 +973,598 @@ suite('rightsEditor integration', () => {
         await rmRfTestDir(standaloneDir);
       }
     });
-  });
 
+    test('#206: handleSave routes rights write through runConfigurationMutation gateway', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-gw-'));
+      const intercepted: { path: string; kind: string }[] = [];
+      const gateway = configureConfigurationMutationGateway(
+        async (resourcePath, kind, op) => {
+          intercepted.push({ path: resourcePath, kind });
+          return op();
+        },
+        async (_p, plan) => plan.result,
+      );
+
+      try {
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDir = path.join(rolesDir, 'TestRole');
+        await fs.promises.mkdir(path.join(roleDir, 'Ext'), { recursive: true });
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><Configuration xmlns="http://v8.1c.ru/8.3/MDClasses"/>',
+          'utf-8',
+        );
+        const rolePath = path.join(rolesDir, 'TestRole.xml');
+        await fs.promises.writeFile(
+          rolePath,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>TestRole</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        const rightsPath = path.join(roleDir, 'Ext', 'Rights.xml');
+        await fs.promises.writeFile(rightsPath, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          await provider.show(rolePath, tmpRoot);
+          await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+
+          assert.strictEqual(intercepted.length, 1, 'handleSave must be intercepted by gateway');
+          assert.strictEqual(intercepted[0].path, rightsPath);
+          assert.strictEqual(intercepted[0].kind, 'rolesRights.save');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        gateway.dispose();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+
+    test('handleSave fails closed and prevents overwriting when Rights.xml was modified concurrently post-open (#206, PR #225 review comment 2)', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-cas-'));
+      const intercepted: Array<{ path: string; kind: string }> = [];
+      const gateway = configureConfigurationMutationGateway(
+        async (targetPath, kind, operation) => {
+          intercepted.push({ path: targetPath, kind });
+          return operation();
+        },
+        async () => {
+          throw new Error('Not implemented');
+        },
+      );
+
+      try {
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><Configuration xmlns="http://v8.1c.ru/8.3/MDClasses"/>',
+          'utf-8',
+        );
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDir = path.join(rolesDir, 'TestRole');
+        await fs.promises.mkdir(path.join(roleDir, 'Ext'), { recursive: true });
+        const rolePath = path.join(rolesDir, 'TestRole.xml');
+        await fs.promises.writeFile(
+          rolePath,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>TestRole</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        const rightsPath = path.join(roleDir, 'Ext', 'Rights.xml');
+        await fs.promises.writeFile(rightsPath, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          await provider.show(rolePath, tmpRoot);
+
+          // Simulate concurrent modification on disk before save
+          const concurrentContent = serializeRightsDomToXml(createMinimalRightsDom()) + '\n<!-- concurrent change -->';
+          await fs.promises.writeFile(rightsPath, concurrentContent, 'utf-8');
+
+          let errorCaught = false;
+          try {
+            await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+          } catch {
+            errorCaught = true;
+          }
+
+          // Rights.xml MUST NOT be overwritten with stale pre-concurrent content!
+          const onDisk = await fs.promises.readFile(rightsPath, 'utf-8');
+          assert.strictEqual(onDisk, concurrentContent, 'Concurrent modification on disk must be preserved');
+          assert.strictEqual(errorCaught, true, 'handleSave must fail closed on stale hash conflict');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        gateway.dispose();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+
+    test('handleSave fails closed and prevents overwriting when Rights.xml was created concurrently post-open (#206, PR #225 review comment 2)', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-create-cas-'));
+      const intercepted: Array<{ path: string; kind: string }> = [];
+      const gateway = configureConfigurationMutationGateway(
+        async (targetPath, kind, operation) => {
+          intercepted.push({ path: targetPath, kind });
+          return operation();
+        },
+        async () => {
+          throw new Error('Not implemented');
+        },
+      );
+
+      try {
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><Configuration xmlns="http://v8.1c.ru/8.3/MDClasses"/>',
+          'utf-8',
+        );
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDir = path.join(rolesDir, 'TestRole');
+        const rolePath = path.join(rolesDir, 'TestRole.xml');
+        await fs.promises.mkdir(rolesDir, { recursive: true });
+        await fs.promises.writeFile(
+          rolePath,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>TestRole</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        const rightsPath = path.join(roleDir, 'Ext', 'Rights.xml');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          await provider.show(rolePath, tmpRoot);
+
+          // Simulate concurrent creation on disk before save
+          await fs.promises.mkdir(path.dirname(rightsPath), { recursive: true });
+          const concurrentContent = serializeRightsDomToXml(createMinimalRightsDom()) + '\n<!-- concurrent creation -->';
+          await fs.promises.writeFile(rightsPath, concurrentContent, 'utf-8');
+
+          let errorCaught = false;
+          try {
+            await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+          } catch {
+            errorCaught = true;
+          }
+
+          // Rights.xml MUST NOT be overwritten with new content!
+          const onDisk = await fs.promises.readFile(rightsPath, 'utf-8');
+          assert.strictEqual(onDisk, concurrentContent, 'Concurrently created file on disk must be preserved');
+          assert.strictEqual(errorCaught, true, 'handleSave must fail closed on missing->created conflict');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        gateway.dispose();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+
+    test('handleSave does not leave partial Rights.xml on disk when write fails during creation (#206, PR #225 review comment 4230106700)', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-write-fail-'));
+      const gateway = configureConfigurationMutationGateway(
+        async (targetPath, kind, operation) => operation(),
+        async () => { throw new Error('Not implemented'); },
+      );
+
+      try {
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration name="TestConfig"/></MetaDataObject>',
+          'utf-8',
+        );
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDir = path.join(rolesDir, 'TestRole');
+        const rolePath = path.join(rolesDir, 'TestRole.xml');
+        await fs.promises.mkdir(rolesDir, { recursive: true });
+        await fs.promises.writeFile(
+          rolePath,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>TestRole</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        const rightsPath = path.join(roleDir, 'Ext', 'Rights.xml');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          await provider.show(rolePath, tmpRoot);
+
+          // Mock open to simulate write failure after file creation
+          const origOpen = fs.promises.open;
+          (fs.promises as any).open = async (...args: any[]) => {
+            const handle = await origOpen.apply(fs.promises, args as any);
+            handle.writeFile = async () => {
+              throw new Error('ENOSPC: no space left on device');
+            };
+            return handle;
+          };
+
+          let errorCaught = false;
+          try {
+            await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+          } catch (err: any) {
+            errorCaught = true;
+            assert.ok(String(err).includes('ENOSPC'));
+          } finally {
+            (fs.promises as any).open = origOpen;
+          }
+
+          assert.strictEqual(errorCaught, true, 'Save must fail when write throws ENOSPC');
+          assert.strictEqual(fs.existsSync(rightsPath), false, 'Partial Rights.xml must not be left on disk after write failure');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        gateway.dispose();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+
+    test('handleSave cleans up direct Rights.xml if fallback write fails (#206, PR #225 review comment 4230106700)', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-fallback-fail-'));
+      const gateway = configureConfigurationMutationGateway(
+        async (targetPath, kind, operation) => operation(),
+        async () => { throw new Error('Not implemented'); },
+      );
+
+      try {
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration name="TestConfig"/></MetaDataObject>',
+          'utf-8',
+        );
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDir = path.join(rolesDir, 'TestRole');
+        const rolePath = path.join(rolesDir, 'TestRole.xml');
+        await fs.promises.mkdir(rolesDir, { recursive: true });
+        await fs.promises.writeFile(
+          rolePath,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>TestRole</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        const rightsPath = path.join(roleDir, 'Ext', 'Rights.xml');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          await provider.show(rolePath, tmpRoot);
+
+          // Force link to fail so it falls back to direct open, then fail the direct write
+          const origLink = fs.promises.link;
+          const origOpen = fs.promises.open;
+          let openCalls = 0;
+
+          (fs.promises as any).link = async () => {
+            const err = new Error('ENOSYS: function not implemented');
+            (err as any).code = 'ENOSYS';
+            throw err;
+          };
+
+          (fs.promises as any).open = async (...args: any[]) => {
+            openCalls++;
+            const handle = await origOpen.apply(fs.promises, args as any);
+            if (openCalls === 2) {
+              // Direct target handle
+              handle.writeFile = async () => {
+                throw new Error('EIO: input/output error');
+              };
+            }
+            return handle;
+          };
+
+          let errorCaught = false;
+          try {
+            await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+          } catch (err: any) {
+            errorCaught = true;
+            assert.ok(String(err).includes('EIO'));
+          } finally {
+            (fs.promises as any).link = origLink;
+            (fs.promises as any).open = origOpen;
+          }
+
+          assert.strictEqual(errorCaught, true, 'Save must fail when fallback direct write throws EIO');
+          assert.strictEqual(fs.existsSync(rightsPath), false, 'Fallback target Rights.xml must be unlinked on failure');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        gateway.dispose();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+
+    test('handleSave preserves role A model and hash when editor switches to role B while queued in gateway (PR #225 review comment 6085700956)', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-queue-race-'));
+      let releaseGateA: (() => void) | undefined;
+      const gateAPromise = new Promise<void>((resolve) => {
+        releaseGateA = resolve;
+      });
+      let gateAEntered: (() => void) | undefined;
+      const gateAEnteredPromise = new Promise<void>((resolve) => {
+        gateAEntered = resolve;
+      });
+
+      const gateway = configureConfigurationMutationGateway(
+        async (resourcePath, kind, op) => {
+          if (resourcePath.includes('RoleA')) {
+            gateAEntered?.();
+            await gateAPromise;
+          }
+          return op();
+        },
+        async (_p, plan) => plan.result,
+      );
+
+      try {
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><Configuration xmlns="http://v8.1c.ru/8.3/MDClasses"/>',
+          'utf-8',
+        );
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDirA = path.join(rolesDir, 'RoleA');
+        const roleDirB = path.join(rolesDir, 'RoleB');
+        await fs.promises.mkdir(path.join(roleDirA, 'Ext'), { recursive: true });
+        await fs.promises.mkdir(path.join(roleDirB, 'Ext'), { recursive: true });
+
+        const rolePathA = path.join(rolesDir, 'RoleA.xml');
+        const rolePathB = path.join(rolesDir, 'RoleB.xml');
+        await fs.promises.writeFile(
+          rolePathA,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>RoleA</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        await fs.promises.writeFile(
+          rolePathB,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>RoleB</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+
+        const rightsPathA = path.join(roleDirA, 'Ext', 'Rights.xml');
+        const rightsPathB = path.join(roleDirB, 'Ext', 'Rights.xml');
+        await fs.promises.writeFile(rightsPathA, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+        await fs.promises.writeFile(rightsPathB, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          await provider.show(rolePathA, tmpRoot);
+          updateRight(priv.currentRoleModel, 'Catalog.Goods', 'read', true);
+
+          const savePromiseA = priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+          await gateAEnteredPromise;
+
+          // While Role A is waiting in gateway, switch editor to Role B
+          await provider.show(rolePathB, tmpRoot);
+          updateRight(priv.currentRoleModel, 'Document.Orders', 'read', true);
+
+          // Release Role A's save
+          releaseGateA!();
+          await savePromiseA;
+
+          // Role A's Rights.xml must contain Catalog.Goods and MUST NOT contain Document.Orders
+          const contentA = await fs.promises.readFile(rightsPathA, 'utf-8');
+          assert.ok(contentA.includes('Catalog.Goods'), 'Role A must keep Catalog.Goods');
+          assert.ok(!contentA.includes('Document.Orders'), 'Role A must not contain Document.Orders');
+
+          // Role B's panel must NOT be disposed by Role A's save completion
+          assert.strictEqual(provider.isOpen(), true, 'Role B panel must remain open');
+
+          // Now save Role B; it must succeed without spurious conflict
+          await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
+          const contentB = await fs.promises.readFile(rightsPathB, 'utf-8');
+          assert.ok(contentB.includes('Document.Orders'), 'Role B must keep Document.Orders');
+          assert.ok(!contentB.includes('Catalog.Goods'), 'Role B must not contain Catalog.Goods');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        gateway.dispose();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+
+    test('handleSave discards stale save when editor switches to role B during webview flush (#225 review comment 6085700956)', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-flush-race-'));
+      let unblockWebviewA: (() => void) | undefined;
+      const webviewAPromise = new Promise<void>((resolve) => {
+        unblockWebviewA = resolve;
+      });
+      let webviewARequested: (() => void) | undefined;
+      const webviewARequestedPromise = new Promise<void>((resolve) => {
+        webviewARequested = resolve;
+      });
+
+      try {
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><Configuration xmlns="http://v8.1c.ru/8.3/MDClasses"/>',
+          'utf-8',
+        );
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDirA = path.join(rolesDir, 'RoleA');
+        const roleDirB = path.join(rolesDir, 'RoleB');
+        await fs.promises.mkdir(path.join(roleDirA, 'Ext'), { recursive: true });
+        await fs.promises.mkdir(path.join(roleDirB, 'Ext'), { recursive: true });
+
+        const rolePathA = path.join(rolesDir, 'RoleA.xml');
+        const rolePathB = path.join(rolesDir, 'RoleB.xml');
+        await fs.promises.writeFile(
+          rolePathA,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>RoleA</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        await fs.promises.writeFile(
+          rolePathB,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>RoleB</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+
+        const rightsPathA = path.join(roleDirA, 'Ext', 'Rights.xml');
+        const rightsPathB = path.join(roleDirB, 'Ext', 'Rights.xml');
+        await fs.promises.writeFile(rightsPathA, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+        await fs.promises.writeFile(rightsPathB, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+
+        const mockContext = createFakeExtensionContext();
+        let currentRequestId: string | undefined;
+        const { panel, getOnMessageHandler } = createFakeWebviewPanel({
+          onPostMessage: async (msg) => {
+            if (msg.command === 'requestSavePayload' && msg.data?.requestId) {
+              currentRequestId = msg.data.requestId;
+              webviewARequested?.();
+              await webviewAPromise;
+              const h = getOnMessageHandler();
+              if (h) {
+                await h({
+                  command: 'savePayload',
+                  data: {
+                    requestId: currentRequestId,
+                    restrictionTemplatesText: '<restrictionTemplate>HACKED_FROM_A</restrictionTemplate>',
+                  },
+                });
+              }
+            }
+          },
+        });
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          await provider.show(rolePathA, tmpRoot);
+          updateRight(priv.currentRoleModel, 'Catalog.Goods', 'read', true);
+
+          // Trigger save of Role A without restrictionTemplatesText to force flush from webview
+          const savePromiseA = priv.handleSave();
+          await webviewARequestedPromise;
+
+          // While Role A is waiting on webview flush, switch active editor to Role B
+          await provider.show(rolePathB, tmpRoot);
+          updateRight(priv.currentRoleModel, 'Document.Orders', 'read', true);
+
+          // Now let the webview reply with Role A's savePayload
+          unblockWebviewA!();
+          await savePromiseA;
+
+          // Role B's file on disk MUST NOT have been saved or modified by Role A's save!
+          const diskBBefore = await fs.promises.readFile(rightsPathB, 'utf-8');
+          assert.ok(
+            !diskBBefore.includes('HACKED_FROM_A'),
+            'Role B must not receive Role A RLS template on disk'
+          );
+          assert.ok(
+            !diskBBefore.includes('Document.Orders'),
+            'Role B on disk must not have been saved prematurely by Role A save'
+          );
+
+          // Role B's in-memory model MUST NOT have been contaminated by Role A's RLS
+          assert.ok(
+            !priv.currentRoleModel?.restrictionTemplatesText?.includes('HACKED_FROM_A'),
+            'Role B in-memory model must not contain Role A RLS template'
+          );
+          assert.strictEqual(priv.currentRoleModel?.name, 'RoleB', 'Current role model must still be Role B');
+
+          // Now actively save Role B — it must save its own data cleanly
+          await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '<restrictionTemplate>ROLE_B_RLS</restrictionTemplate>' } });
+          const diskBAfter = await fs.promises.readFile(rightsPathB, 'utf-8');
+          assert.ok(diskBAfter.includes('Document.Orders'), 'Role B must have its rights saved');
+          assert.ok(diskBAfter.includes('ROLE_B_RLS'), 'Role B must have its own RLS saved');
+          assert.ok(!diskBAfter.includes('HACKED_FROM_A'), 'Role B must not have Role A RLS');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+  });
 });
+
 

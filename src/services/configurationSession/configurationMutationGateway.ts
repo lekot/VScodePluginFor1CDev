@@ -62,25 +62,42 @@ function resolveCandidateRootKeys(resourcePath: string): string[] {
 /** Installs the extension-scoped adapter while keeping unit-test consumers independent of VS Code. */
 export function configureConfigurationMutationGateway(
   runMutation: MutationRunner,
-  runPlan: PlanRunner,
+  runPlan?: PlanRunner,
 ): { dispose(): void } {
+  const previousMutation = mutationRunner;
+  const previousPlan = planRunner;
   mutationRunner = runMutation;
   planRunner = runPlan;
   return {
     dispose: () => {
-      if (mutationRunner === runMutation) { mutationRunner = undefined; }
-      if (planRunner === runPlan) { planRunner = undefined; }
+      mutationRunner = previousMutation;
+      planRunner = previousPlan;
     },
   };
 }
 
-export function runConfigurationMutation<T>(
+export function resetConfigurationMutationGateway(): void {
+  mutationRunner = undefined;
+  planRunner = undefined;
+}
+
+export class ConfigurationMutationGatewayError extends Error {
+  constructor(readonly code: 'RUNNER_NOT_CONFIGURED', message: string) {
+    super(message);
+    this.name = 'ConfigurationMutationGatewayError';
+  }
+}
+
+export async function runConfigurationMutation<T>(
   resourcePath: string,
   kind: string,
   operation: () => Promise<T>,
 ): Promise<T> {
   if (!mutationRunner) {
-    return operation();
+    throw new ConfigurationMutationGatewayError(
+      'RUNNER_NOT_CONFIGURED',
+      `Cannot run mutation '${kind}' on ${resourcePath}: Configuration mutation runner is not configured.`,
+    );
   }
   const active = activeMutationStorage.getStore();
   const candidateKeys = resolveCandidateRootKeys(resourcePath);

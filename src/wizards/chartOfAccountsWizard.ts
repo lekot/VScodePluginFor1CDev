@@ -12,7 +12,7 @@ import {
 import { Logger } from '../utils/logger';
 import { getSelectedNode, requireDesignerFormat } from '../helpers/commandHelpers';
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
-import { MutationPlanExecutor } from '../services/configurationSession/mutationPlan';
+import { runConfigurationPlan as defaultRunConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
 
 export interface RunChartOfAccountsWizardOptions {
   state: ExtensionState;
@@ -230,15 +230,8 @@ export async function runChartOfAccountsWizard(options: RunChartOfAccountsWizard
       params,
     });
 
-    if (runConfigurationPlan) {
-      await runConfigurationPlan(configPath, plan);
-    } else {
-      const executor = new MutationPlanExecutor(configPath);
-      const outcome = await executor.execute(plan);
-      if (!outcome.success) {
-        throw new Error(outcome.error || 'Не удалось выполнить план создания плана счетов.');
-      }
-    }
+    const executePlan = runConfigurationPlan ?? defaultRunConfigurationPlan;
+    await executePlan(configPath, plan);
 
     if (invalidateCacheAndReload) {
       await invalidateCacheAndReload(configPath);

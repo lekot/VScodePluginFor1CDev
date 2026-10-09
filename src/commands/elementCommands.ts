@@ -22,6 +22,10 @@ import { AgentOperations } from '../agent/agentOperations';
 import { runFilterCriterionWizard } from '../wizards/filterCriterionWizard';
 import { runChartOfAccountsWizard } from '../wizards/chartOfAccountsWizard';
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
+import {
+  runConfigurationMutation as defaultRunConfigurationMutation,
+  runConfigurationPlan as defaultRunConfigurationPlan,
+} from '../services/configurationSession/configurationMutationGateway';
 
 type RegisterElementCommandsDeps = {
   state: ExtensionState;
@@ -47,8 +51,8 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
     loadMetadataTree,
     invalidateCacheAndReload,
     scheduleDeleteReconcile,
-    runConfigurationMutation = async (_configPath, _kind, operation) => operation(),
-    runConfigurationPlan = async (_configPath, plan) => plan.result,
+    runConfigurationMutation = defaultRunConfigurationMutation,
+    runConfigurationPlan = defaultRunConfigurationPlan,
   } = deps;
 
   const createElementCommand = vscode.commands.registerCommand(

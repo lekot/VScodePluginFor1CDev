@@ -2,7 +2,9 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+
 import { SubsystemCommandInterfaceProvider } from '../../src/subsystemCommandInterfaceEditor/subsystemCommandInterfaceProvider';
+import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import {
   createFakeExtensionContext,
@@ -33,6 +35,20 @@ const XML_B = `<?xml version="1.0" encoding="UTF-8"?>
 </CommandInterface>`;
 
 suite('SubsystemCommandInterfaceProvider (#210)', () => {
+  let defaultGateway: { dispose(): void } | undefined;
+
+  setup(() => {
+    defaultGateway = configureConfigurationMutationGateway(
+      async (_path, _kind, op) => op(),
+      async (_path, plan) => plan.result,
+    );
+  });
+
+  teardown(() => {
+    defaultGateway?.dispose();
+    defaultGateway = undefined;
+  });
+
   test('stale save message from subsystem A does not overwrite subsystem B', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-iso-'));
     try {
@@ -150,4 +166,217 @@ suite('SubsystemCommandInterfaceProvider (#210)', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test('#206: save routes through runConfigurationMutation gateway', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-gateway-'));
+    const intercepted: { path: string; kind: string }[] = [];
+    const gateway = configureConfigurationMutationGateway(
+      async (resourcePath, kind, op) => {
+        intercepted.push({ path: resourcePath, kind });
+        return op();
+      },
+      async (_p, plan) => plan.result,
+    );
+
+    try {
+      const dir = path.join(root, 'Subsystems', 'SubA', 'Ext');
+      fs.mkdirSync(dir, { recursive: true });
+      const ciPath = path.join(dir, 'CommandInterface.xml');
+      fs.writeFileSync(ciPath, XML_A, 'utf8');
+
+      const node: TreeNode = {
+        id: 'Subsystems.SubA',
+        name: 'SubA',
+        type: MetadataType.Subsystem,
+        filePath: path.join(root, 'Subsystems', 'SubA.xml'),
+        properties: {},
+      };
+
+      const { panel } = createFakeWebviewPanel();
+      const restore = patchCreateWebviewPanel(panel);
+      const provider = new SubsystemCommandInterfaceProvider(createFakeExtensionContext());
+
+      try {
+        await provider.show(node, ciPath);
+        await (provider as any).handleMessage({
+          type: 'save',
+          visibility: [{ commandName: 'Catalog.Goods.StandardCommand.OpenList', common: 'visible' }],
+          filePath: ciPath,
+          generation: 1,
+        });
+
+        assert.strictEqual(intercepted.length, 1, 'Save must be intercepted by configurationMutationGateway');
+        assert.strictEqual(intercepted[0].path, ciPath);
+        assert.strictEqual(intercepted[0].kind, 'subsystemCommandInterface.save');
+      } finally {
+        restore();
+        provider.dispose();
+      }
+    } finally {
+      gateway.dispose();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('handleSave fails closed and prevents overwriting when CommandInterface.xml was modified concurrently post-open (#206, PR #225 review comment 2)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), '1c-test-ci-cas-'));
+    const ciPath = path.join(root, 'Subsystems', 'SubA', 'Ext', 'CommandInterface.xml');
+    fs.mkdirSync(path.dirname(ciPath), { recursive: true });
+    fs.writeFileSync(ciPath, XML_A, 'utf8');
+
+    const intercepted: Array<{ path: string; kind: string }> = [];
+    const gateway = configureConfigurationMutationGateway(
+      async (targetPath, kind, operation) => {
+        intercepted.push({ path: targetPath, kind });
+        return operation();
+      },
+      async () => {
+        throw new Error('Not implemented');
+      },
+    );
+
+    try {
+      const node: TreeNode = {
+        id: 'Subsystems.SubA',
+        name: 'SubA',
+        type: MetadataType.Subsystem,
+        filePath: path.join(root, 'Subsystems', 'SubA.xml'),
+        properties: {},
+      };
+
+      const { panel } = createFakeWebviewPanel();
+      const restore = patchCreateWebviewPanel(panel);
+      const provider = new SubsystemCommandInterfaceProvider(createFakeExtensionContext());
+
+      try {
+        await provider.show(node, ciPath);
+
+        // Simulate concurrent modification on disk before save
+        fs.writeFileSync(ciPath, XML_B, 'utf8');
+
+        let errorCaught = false;
+        try {
+          await (provider as any).handleMessage({
+            type: 'save',
+            visibility: [{ commandName: 'Catalog.Goods.StandardCommand.OpenList', common: 'visible' }],
+            filePath: ciPath,
+            generation: 1,
+          });
+        } catch {
+          errorCaught = true;
+        }
+
+        // Concurrent changes must NOT be overwritten!
+        const onDisk = fs.readFileSync(ciPath, 'utf8');
+        assert.strictEqual(onDisk, XML_B, 'Concurrent modification on disk must be preserved');
+        assert.strictEqual(errorCaught, true, 'handleSave must fail closed on stale hash conflict');
+      } finally {
+        restore();
+        provider.dispose();
+      }
+    } finally {
+      gateway.dispose();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('handleSave preserves subsystem A model and hash when editor switches to subsystem B while queued in gateway (PR #225 review comment 6085700956)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-queue-race-'));
+    let releaseGateA: (() => void) | undefined;
+    const gateAPromise = new Promise<void>((resolve) => {
+      releaseGateA = resolve;
+    });
+    let gateAEntered: (() => void) | undefined;
+    const gateAEnteredPromise = new Promise<void>((resolve) => {
+      gateAEntered = resolve;
+    });
+
+    const gateway = configureConfigurationMutationGateway(
+      async (resourcePath, kind, op) => {
+        if (resourcePath.includes('SubA')) {
+          gateAEntered?.();
+          await gateAPromise;
+        }
+        return op();
+      },
+      async (_p, plan) => plan.result,
+    );
+
+    try {
+      const dirA = path.join(root, 'Subsystems', 'SubA', 'Ext');
+      const dirB = path.join(root, 'Subsystems', 'SubB', 'Ext');
+      fs.mkdirSync(dirA, { recursive: true });
+      fs.mkdirSync(dirB, { recursive: true });
+      const ciPathA = path.join(dirA, 'CommandInterface.xml');
+      const ciPathB = path.join(dirB, 'CommandInterface.xml');
+      fs.writeFileSync(ciPathA, XML_A, 'utf8');
+      fs.writeFileSync(ciPathB, XML_B, 'utf8');
+
+      const nodeA: TreeNode = {
+        id: 'Subsystems.SubA',
+        name: 'SubA',
+        type: MetadataType.Subsystem,
+        filePath: path.join(root, 'Subsystems', 'SubA.xml'),
+        properties: {},
+      };
+      const nodeB: TreeNode = {
+        id: 'Subsystems.SubB',
+        name: 'SubB',
+        type: MetadataType.Subsystem,
+        filePath: path.join(root, 'Subsystems', 'SubB.xml'),
+        properties: {},
+      };
+
+      const { panel } = createFakeWebviewPanel();
+      const restore = patchCreateWebviewPanel(panel);
+      const provider = new SubsystemCommandInterfaceProvider(createFakeExtensionContext());
+
+      try {
+        await provider.show(nodeA, ciPathA);
+
+        // Start save of Subsystem A with a modified visibility
+        const savePromiseA = (provider as any).handleSave(
+          [{ commandName: 'Catalog.Goods.StandardCommand.OpenList', common: 'hidden' }],
+          ciPathA,
+          1
+        );
+
+        // Wait until Subsystem A's save has entered the gateway
+        await gateAEnteredPromise;
+
+        // While Subsystem A's save is waiting, open Subsystem B in the provider
+        await provider.show(nodeB, ciPathB);
+
+        // Release Subsystem A's gateway
+        releaseGateA!();
+        await savePromiseA;
+
+        // Subsystem A's file on disk must have Subsystem A's model updated (Catalog.Goods hidden)
+        // AND must NOT have Subsystem B's model (Document.Orders)
+        const contentA = fs.readFileSync(ciPathA, 'utf8');
+        assert.ok(contentA.includes('Catalog.Goods.StandardCommand.OpenList'), 'Subsystem A must keep its commands');
+        assert.ok(!contentA.includes('Document.Orders.StandardCommand.OpenList'), 'Subsystem A must not contain Subsystem B commands');
+
+        // Subsystem B's expected hash in provider must NOT be corrupted by Subsystem A's save
+        // Now save Subsystem B to verify it saves without conflict
+        await (provider as any).handleSave(
+          [{ commandName: 'Document.Orders.StandardCommand.OpenList', common: 'hidden' }],
+          ciPathB,
+          2
+        );
+
+        const contentB = fs.readFileSync(ciPathB, 'utf8');
+        assert.ok(contentB.includes('Document.Orders.StandardCommand.OpenList'), 'Subsystem B must keep its commands');
+        assert.ok(!contentB.includes('Catalog.Goods.StandardCommand.OpenList'), 'Subsystem B must not contain Subsystem A commands');
+      } finally {
+        restore();
+        provider.dispose();
+      }
+    } finally {
+      gateway.dispose();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
+
+

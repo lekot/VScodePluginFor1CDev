@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { hashContent } from '../../src/services/configurationSession/atomicFileStorage';
-import { MutationPlanExecutor, MutationPlanError } from '../../src/services/configurationSession/mutationPlan';
+import { MutationPlanExecutor, MutationPlanError, calculateDirectoryFingerprint } from '../../src/services/configurationSession/mutationPlan';
 import {
   assertJournalNamespace,
   assertLexicallyInside,
@@ -153,7 +153,17 @@ suite('MutationPlanExecutor', () => {
     await fs.promises.writeFile(path.join(operationPath, 'journal.json'), JSON.stringify({
       version: 1,
       operationId: 'interrupted',
-      plan: { kind: 'test.interrupted', steps: [], result: null },
+      plan: {
+        kind: 'test.interrupted',
+        steps: [{
+          type: 'writeFile',
+          targetPath: target,
+          content: 'partial-effect',
+          encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('original') },
+        }],
+        result: null,
+      },
       state: 'applying',
       appliedSteps: 1,
       snapshots: [{
@@ -356,7 +366,17 @@ suite('MutationPlanExecutor', () => {
     await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
       version: 1,
       operationId: 'real-interrupted',
-      plan: { kind: 'test.interrupted', steps: [], result: null },
+      plan: {
+        kind: 'test.interrupted',
+        steps: [{
+          type: 'writeFile',
+          targetPath: targetA,
+          content: 'interrupted-effect',
+          encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('original-A') },
+        }],
+        result: null,
+      },
       state: 'applying',
       appliedSteps: 1,
       snapshots: [{
@@ -783,7 +803,7 @@ suite('MutationPlanExecutor', () => {
     const backupFile = path.join(backupsDir, '0');
     await fs.promises.writeFile(backupFile, 'initial-content', 'utf8');
 
-    await fs.promises.writeFile(fileA, 'corrupted-partial-mutation', 'utf8');
+    await fs.promises.writeFile(fileA, 'mutated', 'utf8');
 
     await fs.promises.writeFile(
       path.join(opDir, 'owner.json'),
@@ -840,7 +860,7 @@ suite('MutationPlanExecutor', () => {
     const backupFile = path.join(backupsDir, '0');
     await fs.promises.writeFile(backupFile, 'initial-content', 'utf8');
 
-    await fs.promises.writeFile(fileA, 'abandoned-mutation', 'utf8');
+    await fs.promises.writeFile(fileA, 'mutated', 'utf8');
 
     await fs.promises.writeFile(
       path.join(opDir, 'owner.json'),
@@ -2114,7 +2134,15 @@ suite('MutationPlanExecutor', () => {
     await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
       version: 1,
       operationId: 'interrupted-delete-dir',
-      plan: { kind: 'test.deleteDir', steps: [], result: null },
+      plan: {
+        kind: 'test.deleteDir',
+        steps: [{
+          type: 'deletePath',
+          targetPath: targetDir,
+          expected: { state: 'directory' },
+        }],
+        result: null,
+      },
       state: 'applying',
       appliedSteps: 1,
       snapshots: [{
@@ -2170,5 +2198,433 @@ suite('MutationPlanExecutor', () => {
       await fs.promises.rm(symlinkTarget, { recursive: true, force: true }).catch(() => undefined);
     }
   });
+
+  test('#216: recover() fails closed and preserves external post-crash edit (A1 -> A2) instead of rolling back to A0', async () => {
+    const targetA = path.join(tempDir, 'fileA.xml');
+    await fs.promises.writeFile(targetA, 'A2-external-edit', 'utf8');
+
+    const interruptedOp = path.join(tempDir, '.cdt-journal', 'interrupted-diverged-op');
+    await fs.promises.mkdir(path.join(interruptedOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(interruptedOp, 'backups', '0'), 'A0-original', 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'interrupted-diverged-op',
+      plan: {
+        kind: 'test.diverged',
+        steps: [{
+          type: 'writeFile',
+          targetPath: targetA,
+          content: 'A1-step-result',
+          encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('A0-original') },
+        }],
+        result: null,
+      },
+      state: 'applying',
+      appliedSteps: 1,
+      snapshots: [{
+        targetPath: targetA,
+        state: 'file',
+        hash: hashContent('A0-original'),
+        backupName: '0',
+        contentsBackedUp: true,
+      }],
+    }), 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('Post-state diverged'),
+    );
+
+    // Critical invariant: external edit A2 MUST NOT be overwritten with A0!
+    assert.strictEqual(await fs.promises.readFile(targetA, 'utf8'), 'A2-external-edit');
+    // Journal and backups must be preserved for manual inspection
+    assert.strictEqual(fs.existsSync(interruptedOp), true);
+  });
+
+  test('#216: recover() rolls back normally when targetA is untouched post-crash (still A1)', async () => {
+    const targetA = path.join(tempDir, 'fileA-clean.xml');
+    await fs.promises.writeFile(targetA, 'A1-step-result', 'utf8');
+
+    const interruptedOp = path.join(tempDir, '.cdt-journal', 'interrupted-clean-op');
+    await fs.promises.mkdir(path.join(interruptedOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(interruptedOp, 'backups', '0'), 'A0-original', 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'interrupted-clean-op',
+      plan: {
+        kind: 'test.clean',
+        steps: [{
+          type: 'writeFile',
+          targetPath: targetA,
+          content: 'A1-step-result',
+          encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('A0-original') },
+        }],
+        result: null,
+      },
+      state: 'applying',
+      appliedSteps: 1,
+      snapshots: [{
+        targetPath: targetA,
+        state: 'file',
+        hash: hashContent('A0-original'),
+        backupName: '0',
+        contentsBackedUp: true,
+      }],
+    }), 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await executor.recover();
+
+    // Successfully rolled back to A0
+    assert.strictEqual(await fs.promises.readFile(targetA, 'utf8'), 'A0-original');
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+  });
+
+  test('#216: recover() fails closed when external process creates file on a missing snapshot path', async () => {
+    const foreignFile = path.join(tempDir, 'foreign-new-file.xml');
+    await fs.promises.writeFile(foreignFile, 'user-created-this', 'utf8');
+
+    const interruptedOp = path.join(tempDir, '.cdt-journal', 'interrupted-missing-op');
+    await fs.promises.mkdir(path.join(interruptedOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'interrupted-missing-op',
+      plan: {
+        kind: 'test.missing',
+        steps: [{
+          type: 'writeFile',
+          targetPath: foreignFile,
+          content: 'planned-content',
+          encoding: 'utf8',
+          expected: { state: 'missing' },
+        }],
+        result: null,
+      },
+      state: 'prepared',
+      appliedSteps: 0,
+      snapshots: [{
+        targetPath: foreignFile,
+        state: 'missing',
+        contentsBackedUp: false,
+      }],
+    }), 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('Post-state diverged'),
+    );
+
+    // Critical invariant: foreign file must NOT be deleted as missing!
+    assert.strictEqual(fs.existsSync(foreignFile), true);
+    assert.strictEqual(await fs.promises.readFile(foreignFile, 'utf8'), 'user-created-this');
+  });
+
+  test('#216: recover() fails closed when external process re-creates deleted path post-crash', async () => {
+    const deletedPath = path.join(tempDir, 'recreated-file.xml');
+    await fs.promises.writeFile(deletedPath, 'recreated-by-external-actor', 'utf8');
+
+    const interruptedOp = path.join(tempDir, '.cdt-journal', 'interrupted-delete-op');
+    await fs.promises.mkdir(path.join(interruptedOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(interruptedOp, 'backups', '0'), 'initial-deleted-content', 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'interrupted-delete-op',
+      plan: {
+        kind: 'test.delete',
+        steps: [{
+          type: 'deletePath',
+          targetPath: deletedPath,
+          expected: { state: 'file', hash: hashContent('initial-deleted-content') },
+        }],
+        result: null,
+      },
+      state: 'applying',
+      appliedSteps: 1,
+      snapshots: [{
+        targetPath: deletedPath,
+        state: 'file',
+        hash: hashContent('initial-deleted-content'),
+        backupName: '0',
+        contentsBackedUp: true,
+      }],
+    }), 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('Post-state diverged'),
+    );
+
+    // File must NOT be overwritten!
+    assert.strictEqual(await fs.promises.readFile(deletedPath, 'utf8'), 'recreated-by-external-actor');
+  });
+
+  test('#216: recover() fails closed when move destination was edited post-crash', async () => {
+    const sourcePath = path.join(tempDir, 'move-src.xml');
+    const destPath = path.join(tempDir, 'move-dst.xml');
+    await fs.promises.writeFile(destPath, 'dest-modified-by-user', 'utf8');
+
+    const interruptedOp = path.join(tempDir, '.cdt-journal', 'interrupted-move-op');
+    await fs.promises.mkdir(path.join(interruptedOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(interruptedOp, 'backups', '0'), 'original-source-content', 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'interrupted-move-op',
+      plan: {
+        kind: 'test.move',
+        steps: [{
+          type: 'movePath',
+          sourcePath,
+          targetPath: destPath,
+          expectedSource: { state: 'file', hash: hashContent('original-source-content') },
+          expectedTarget: { state: 'missing' },
+        }],
+        result: null,
+      },
+      state: 'applying',
+      appliedSteps: 1,
+      snapshots: [
+        {
+          targetPath: sourcePath,
+          state: 'file',
+          hash: hashContent('original-source-content'),
+          backupName: '0',
+          contentsBackedUp: true,
+        },
+        {
+          targetPath: destPath,
+          state: 'missing',
+          contentsBackedUp: false,
+        },
+      ],
+    }), 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('Post-state diverged'),
+    );
+
+    // Modified destination must NOT be overwritten or deleted!
+    assert.strictEqual(await fs.promises.readFile(destPath, 'utf8'), 'dest-modified-by-user');
+    assert.strictEqual(fs.existsSync(interruptedOp), true);
+  });
+
+  test('#216 (PR #225 review comment 1): recover() fails closed and preserves external changes inside moved directory post-crash', async () => {
+    const sourceDir = path.join(tempDir, 'dir-src');
+    const destDir = path.join(tempDir, 'dir-dst');
+
+    // State on disk: destDir exists with moved file, plus an external user-added file!
+    await fs.promises.mkdir(destDir, { recursive: true });
+    await fs.promises.writeFile(path.join(destDir, 'item.txt'), 'item-content', 'utf8');
+    await fs.promises.writeFile(path.join(destDir, 'user-added.txt'), 'user-added-file', 'utf8');
+
+    const interruptedOp = path.join(tempDir, '.cdt-journal', 'interrupted-dir-move-op');
+    const backupDir = path.join(interruptedOp, 'backups', '0');
+    await fs.promises.mkdir(backupDir, { recursive: true });
+    await fs.promises.writeFile(path.join(backupDir, 'item.txt'), 'item-content', 'utf8');
+    const sourceFingerprint = await calculateDirectoryFingerprint(backupDir);
+
+    await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'interrupted-dir-move-op',
+      plan: {
+        kind: 'test.moveDir',
+        steps: [{
+          type: 'movePath',
+          sourcePath: sourceDir,
+          targetPath: destDir,
+          expectedSource: { state: 'directory', fingerprint: sourceFingerprint },
+          expectedTarget: { state: 'missing' },
+        }],
+        result: null,
+      },
+      state: 'applying',
+      appliedSteps: 1,
+      snapshots: [
+        {
+          targetPath: sourceDir,
+          state: 'directory',
+          fingerprint: sourceFingerprint,
+          backupName: '0',
+          contentsBackedUp: true,
+        },
+        {
+          targetPath: destDir,
+          state: 'missing',
+          contentsBackedUp: false,
+        },
+      ],
+    }), 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('Post-state diverged'),
+    );
+
+    // External file inside moved directory must NOT be deleted!
+    assert.strictEqual(fs.existsSync(path.join(destDir, 'user-added.txt')), true);
+    assert.strictEqual(await fs.promises.readFile(path.join(destDir, 'user-added.txt'), 'utf8'), 'user-added-file');
+    assert.strictEqual(fs.existsSync(interruptedOp), true);
+
+    // Now test untouched moved directory: remove external file so destDir matches pre-crash fingerprint exactly
+    await fs.promises.rm(path.join(destDir, 'user-added.txt'));
+    await executor.recover();
+    assert.strictEqual(fs.existsSync(destDir), false, 'destDir must be cleaned up on successful rollback');
+    assert.strictEqual(fs.existsSync(path.join(sourceDir, 'item.txt')), true, 'sourceDir must be restored from backup');
+    assert.strictEqual(fs.existsSync(interruptedOp), false, 'interrupted operation directory must be removed');
+  });
+
+  test('#216 (PR #225 review comment 3): recover() rolls back when crash occurred after step applied but before journal write (appliedSteps=0)', async () => {
+    const filePath = path.join(tempDir, 'file-unrecorded-step.xml');
+    // Step 0 was writeFile, and it completed on disk before crash!
+    await fs.promises.writeFile(filePath, 'step-0-applied-content', 'utf8');
+
+    const interruptedOp = path.join(tempDir, '.cdt-journal', 'interrupted-unrecorded-step-op');
+    await fs.promises.mkdir(path.join(interruptedOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'interrupted-unrecorded-step-op',
+      plan: {
+        kind: 'test.writeFile',
+        steps: [{
+          type: 'writeFile',
+          targetPath: filePath,
+          content: 'step-0-applied-content',
+          encoding: 'utf8',
+          expected: { state: 'missing' },
+        }],
+        result: null,
+      },
+      state: 'applying',
+      appliedSteps: 0, // crash window: step applied on disk, but journal still has 0!
+      snapshots: [
+        {
+          targetPath: filePath,
+          state: 'missing',
+          contentsBackedUp: false,
+        },
+      ],
+    }), 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    // Must recognize valid post-state of step 0 and rollback cleanly instead of throwing RECOVERY_REQUIRED!
+    await executor.recover();
+
+    assert.strictEqual(fs.existsSync(filePath), false, 'filePath must be rolled back to pre-state (missing)');
+    assert.strictEqual(fs.existsSync(interruptedOp), false, 'operation directory must be removed after successful recovery');
+  });
+
+  test('#216 (PR #225 review comment 3): recover() fails closed when crash occurred with appliedSteps=0 and file is in third state', async () => {
+    const filePath = path.join(tempDir, 'file-third-state.xml');
+    // On disk: file has unexpected third-state content (neither pre-state missing nor step-0 content)
+    await fs.promises.writeFile(filePath, 'unexpected-third-state-content', 'utf8');
+
+    const interruptedOp = path.join(tempDir, '.cdt-journal', 'interrupted-third-state-op');
+    await fs.promises.mkdir(path.join(interruptedOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'interrupted-third-state-op',
+      plan: {
+        kind: 'test.writeFile',
+        steps: [{
+          type: 'writeFile',
+          targetPath: filePath,
+          content: 'step-0-applied-content',
+          encoding: 'utf8',
+          expected: { state: 'missing' },
+        }],
+        result: null,
+      },
+      state: 'applying',
+      appliedSteps: 0,
+      snapshots: [
+        {
+          targetPath: filePath,
+          state: 'missing',
+          contentsBackedUp: false,
+        },
+      ],
+    }), 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    // Must fail closed on third state!
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('Post-state diverged'),
+    );
+
+    assert.strictEqual(await fs.promises.readFile(filePath, 'utf8'), 'unexpected-third-state-content');
+    assert.strictEqual(fs.existsSync(interruptedOp), true);
+  });
+
+  test('newly created directory rejects recovery and preserves post-crash added file (#216, PR #225 review comment 4229555124)', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const interruptedOp = path.join(journalRoot, 'interrupted-newdir-op');
+    const newDirPath = path.join(tempDir, 'newFolder');
+
+    await fs.promises.mkdir(newDirPath, { recursive: true });
+    // Post-crash: user or external process adds a file to the newly created directory
+    const addedFilePath = path.join(newDirPath, 'user-added-post-crash.txt');
+    await fs.promises.writeFile(addedFilePath, 'important user data', 'utf8');
+
+    await fs.promises.mkdir(path.join(interruptedOp, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+    await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId: 'interrupted-newdir-op',
+      plan: {
+        kind: 'test.ensureDirectory',
+        steps: [
+          {
+            type: 'ensureDirectory',
+            targetPath: newDirPath,
+          },
+          {
+            type: 'writeFile',
+            targetPath: path.join(newDirPath, 'step-1-file.txt'),
+            content: 'step 1 content',
+            encoding: 'utf8',
+            expected: { state: 'missing' },
+          },
+        ],
+        result: null,
+      },
+      state: 'applying',
+      appliedSteps: 1,
+      snapshots: [
+        {
+          targetPath: newDirPath,
+          state: 'missing',
+          contentsBackedUp: false,
+        },
+      ],
+    }), 'utf8');
+
+    const executor = new MutationPlanExecutor(tempDir);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED',
+    );
+
+    // The user's file and directory must NOT be deleted!
+    assert.strictEqual(fs.existsSync(addedFilePath), true, 'Post-crash added file must be preserved');
+    assert.strictEqual(await fs.promises.readFile(addedFilePath, 'utf8'), 'important user data');
+    assert.strictEqual(fs.existsSync(newDirPath), true, 'Directory must be preserved');
+  });
 });
+
 

@@ -1,9 +1,12 @@
 import * as assert from 'assert';
 import {
   configureConfigurationMutationGateway,
+  resetConfigurationMutationGateway,
   runConfigurationMutation,
   runExclusiveConfigurationOperation,
 } from '../../src/services/configurationSession/configurationMutationGateway';
+import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
+import { ConfigFormat } from '../../src/parsers/formatDetector';
 
 suite('configurationMutationGateway', () => {
   test('nested mutation within the same configuration root re-uses lease and bypasses mutationRunner', async () => {
@@ -140,4 +143,43 @@ suite('configurationMutationGateway', () => {
       gateway.dispose();
     }
   });
+
+  test('#206: runConfigurationMutation fails closed when runner is not configured', async () => {
+    resetConfigurationMutationGateway();
+    try {
+      await assert.rejects(
+        runConfigurationMutation('/workspace/project/file.xml', 'test.unconfigured', async () => 'mutated'),
+        (err: any) => {
+          assert.strictEqual(err.name, 'ConfigurationMutationGatewayError');
+          assert.strictEqual(err.code, 'RUNNER_NOT_CONFIGURED');
+          return true;
+        },
+      );
+    } finally {
+      configureConfigurationMutationGateway(
+        async (_path, _kind, op) => op(),
+      );
+    }
+  });
+
+  test('#206: ConfigurationSession.enqueue enforces capabilities.write and fails closed on read-only session', async () => {
+    const session = new ConfigurationSession({
+      configurationId: 'read-only-cfg' as any,
+      rootPath: '/workspace/project',
+      rootUri: 'file:///workspace/project',
+      descriptorUri: 'file:///workspace/project/Configuration.xml',
+      workspaceFolderUris: ['file:///workspace'],
+      format: ConfigFormat.Designer,
+      capabilities: { read: true, write: false, process: true },
+    });
+
+    const outcome = await session.enqueue({
+      kind: 'test.write',
+      execute: async () => 'done',
+    });
+
+    assert.strictEqual(outcome.status, 'conflict');
+    assert.strictEqual((outcome as any).code, 'CONFIGURATION_CAPABILITY_UNSUPPORTED');
+  });
 });
+
