@@ -1437,6 +1437,133 @@ suite('rightsEditor integration', () => {
         await rmRfTestDir(tmpRoot);
       }
     });
+
+    test('handleSave discards stale save when editor switches to role B during webview flush (#225 review comment 6085700956)', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-flush-race-'));
+      let unblockWebviewA: (() => void) | undefined;
+      const webviewAPromise = new Promise<void>((resolve) => {
+        unblockWebviewA = resolve;
+      });
+      let webviewARequested: (() => void) | undefined;
+      const webviewARequestedPromise = new Promise<void>((resolve) => {
+        webviewARequested = resolve;
+      });
+
+      try {
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<?xml version="1.0" encoding="UTF-8"?><Configuration xmlns="http://v8.1c.ru/8.3/MDClasses"/>',
+          'utf-8',
+        );
+        const rolesDir = path.join(tmpRoot, 'Roles');
+        const roleDirA = path.join(rolesDir, 'RoleA');
+        const roleDirB = path.join(rolesDir, 'RoleB');
+        await fs.promises.mkdir(path.join(roleDirA, 'Ext'), { recursive: true });
+        await fs.promises.mkdir(path.join(roleDirB, 'Ext'), { recursive: true });
+
+        const rolePathA = path.join(rolesDir, 'RoleA.xml');
+        const rolePathB = path.join(rolesDir, 'RoleB.xml');
+        await fs.promises.writeFile(
+          rolePathA,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>RoleA</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+        await fs.promises.writeFile(
+          rolePathB,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
+            '  <Properties><Name>RoleB</Name></Properties>',
+            '  <Rights/>',
+            '</Role>',
+          ].join('\n'),
+          'utf-8',
+        );
+
+        const rightsPathA = path.join(roleDirA, 'Ext', 'Rights.xml');
+        const rightsPathB = path.join(roleDirB, 'Ext', 'Rights.xml');
+        await fs.promises.writeFile(rightsPathA, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+        await fs.promises.writeFile(rightsPathB, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+
+        const mockContext = createFakeExtensionContext();
+        let currentRequestId: string | undefined;
+        const { panel, getOnMessageHandler } = createFakeWebviewPanel({
+          onPostMessage: async (msg) => {
+            if (msg.command === 'requestSavePayload' && msg.data?.requestId) {
+              currentRequestId = msg.data.requestId;
+              webviewARequested?.();
+              await webviewAPromise;
+              const h = getOnMessageHandler();
+              if (h) {
+                await h({
+                  command: 'savePayload',
+                  data: {
+                    requestId: currentRequestId,
+                    restrictionTemplatesText: '<restrictionTemplate>HACKED_FROM_A</restrictionTemplate>',
+                  },
+                });
+              }
+            }
+          },
+        });
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        const priv = provider as unknown as Record<string, any>;
+
+        try {
+          await provider.show(rolePathA, tmpRoot);
+          updateRight(priv.currentRoleModel, 'Catalog.Goods', 'read', true);
+
+          // Trigger save of Role A without restrictionTemplatesText to force flush from webview
+          const savePromiseA = priv.handleSave();
+          await webviewARequestedPromise;
+
+          // While Role A is waiting on webview flush, switch active editor to Role B
+          await provider.show(rolePathB, tmpRoot);
+          updateRight(priv.currentRoleModel, 'Document.Orders', 'read', true);
+
+          // Now let the webview reply with Role A's savePayload
+          unblockWebviewA!();
+          await savePromiseA;
+
+          // Role B's file on disk MUST NOT have been saved or modified by Role A's save!
+          const diskBBefore = await fs.promises.readFile(rightsPathB, 'utf-8');
+          assert.ok(
+            !diskBBefore.includes('HACKED_FROM_A'),
+            'Role B must not receive Role A RLS template on disk'
+          );
+          assert.ok(
+            !diskBBefore.includes('Document.Orders'),
+            'Role B on disk must not have been saved prematurely by Role A save'
+          );
+
+          // Role B's in-memory model MUST NOT have been contaminated by Role A's RLS
+          assert.ok(
+            !priv.currentRoleModel?.restrictionTemplatesText?.includes('HACKED_FROM_A'),
+            'Role B in-memory model must not contain Role A RLS template'
+          );
+          assert.strictEqual(priv.currentRoleModel?.name, 'RoleB', 'Current role model must still be Role B');
+
+          // Now actively save Role B — it must save its own data cleanly
+          await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '<restrictionTemplate>ROLE_B_RLS</restrictionTemplate>' } });
+          const diskBAfter = await fs.promises.readFile(rightsPathB, 'utf-8');
+          assert.ok(diskBAfter.includes('Document.Orders'), 'Role B must have its rights saved');
+          assert.ok(diskBAfter.includes('ROLE_B_RLS'), 'Role B must have its own RLS saved');
+          assert.ok(!diskBAfter.includes('HACKED_FROM_A'), 'Role B must not have Role A RLS');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        await rmRfTestDir(tmpRoot);
+      }
+    });
   });
 });
 

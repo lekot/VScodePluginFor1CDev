@@ -493,6 +493,7 @@ export class RolesRightsEditorProvider {
 
     this.saveInProgress = true;
     const targetGeneration = this.sessionGeneration;
+    const targetRoleModel = this.currentRoleModel;
     let statusDone: vscode.Disposable | undefined;
     try {
       let effectiveMessage: WebviewMessage | undefined = message;
@@ -509,16 +510,22 @@ export class RolesRightsEditorProvider {
           return;
         }
       }
+      if (this.sessionGeneration !== targetGeneration || this.currentRoleModel !== targetRoleModel) {
+        Logger.warn(
+          `Discarding stale rights save request: active generation ${this.sessionGeneration} does not match target generation ${targetGeneration}`
+        );
+        return;
+      }
 
       const rls = effectiveMessage?.data?.restrictionTemplatesText;
       if (typeof rls === 'string') {
-        this.currentRoleModel.restrictionTemplatesText = rls;
+        targetRoleModel.restrictionTemplatesText = rls;
       }
 
       statusDone = vscode.window.setStatusBarMessage('Saving rights...');
       Logger.debug('handleSave: validation starting');
       const validator = new RightsValidator();
-      const validationResult = validator.validateRights(this.currentRoleModel);
+      const validationResult = validator.validateRights(targetRoleModel);
 
       if (!validationResult.isValid) {
         Logger.warn(`handleSave: validation failed: ${validationResult.errors.join('; ')}`);
@@ -532,6 +539,12 @@ export class RolesRightsEditorProvider {
           'Save anyway',
           'Cancel'
         );
+        if (this.sessionGeneration !== targetGeneration || this.currentRoleModel !== targetRoleModel) {
+          Logger.warn(
+            `Discarding stale rights save request: active generation ${this.sessionGeneration} does not match target generation ${targetGeneration}`
+          );
+          return;
+        }
         if (saveAnyway !== 'Save anyway') {
           this.sendMessageToWebview({
             command: 'validationCancelled',
@@ -543,14 +556,20 @@ export class RolesRightsEditorProvider {
       } else {
         Logger.debug('handleSave: validation passed, resolving target path');
       }
-      const isCaseB = path.basename(this.currentRoleModel.filePath).toLowerCase() === 'role.xml';
+      if (this.sessionGeneration !== targetGeneration || this.currentRoleModel !== targetRoleModel) {
+        Logger.warn(
+          `Discarding stale rights save request: active generation ${this.sessionGeneration} does not match target generation ${targetGeneration}`
+        );
+        return;
+      }
+      const isCaseB = path.basename(targetRoleModel.filePath).toLowerCase() === 'role.xml';
       const targetPath = isCaseB
-        ? this.currentRoleModel.filePath
-        : getRightsPath(this.currentRoleModel.filePath);
+        ? targetRoleModel.filePath
+        : getRightsPath(targetRoleModel.filePath);
 
 
 
-      const snapshotRoleModel = cloneRoleModel(this.currentRoleModel);
+      const snapshotRoleModel = cloneRoleModel(targetRoleModel);
       const snapshotExpectedHash = this.sessionExpectedHash;
       const snapshotExpectedState = this.sessionExpectedState;
       const snapshotRootPath = this.configurationRootPath ?? path.dirname(targetPath);
