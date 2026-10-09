@@ -77,6 +77,7 @@ suite-reports/
 scripts/
 CLAUDE.md
 AGENTS.md
+.kanban.json
 shcntx_help_db_path.txt
 coverage/
 *.py
