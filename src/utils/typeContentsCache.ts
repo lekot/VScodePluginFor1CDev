@@ -5,6 +5,7 @@ import { ConfigFormat } from '../parsers/formatDetector';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { deserializeTree, serializeTree } from './treeSerializer';
 import { Logger } from './logger';
+import { filesystemPathKey } from './configurationPathIdentity';
 
 interface TypeContentsCacheEntry {
   configPath: string;
@@ -24,24 +25,25 @@ function getCacheDir(globalStoragePath: string): string {
   return path.join(globalStoragePath, '1cviewer-type-contents-cache');
 }
 
-function getConfigCachePrefix(configPath: string): string {
-  return `${hash(normalizePathForSignature(configPath))}-`;
+export function normalizePathForSignature(value: string, platform?: NodeJS.Platform): string {
+  return filesystemPathKey(value, platform).replace(/\\/g, '/');
+}
+
+export function getConfigCachePrefix(configPath: string, platform?: NodeJS.Platform): string {
+  return `${hash(normalizePathForSignature(configPath, platform))}-`;
 }
 
 export type TypeCacheKind = 'contents' | 'index';
 
-function getCacheFilePath(
+export function getCacheFilePath(
   globalStoragePath: string,
   configPath: string,
   typeName: string,
-  kind: TypeCacheKind = 'contents'
+  kind: TypeCacheKind = 'contents',
+  platform?: NodeJS.Platform
 ): string {
   const ext = kind === 'index' ? '.index.json' : '.json';
-  return path.join(getCacheDir(globalStoragePath), `${getConfigCachePrefix(configPath)}${hash(typeName)}${ext}`);
-}
-
-function normalizePathForSignature(value: string): string {
-  return path.normalize(value).replace(/\\/g, '/').toLowerCase();
+  return path.join(getCacheDir(globalStoragePath), `${getConfigCachePrefix(configPath, platform)}${hash(typeName)}${ext}`);
 }
 
 async function statPart(filePath: string, label: string): Promise<string | null> {
@@ -59,36 +61,36 @@ async function collectEdtElementMetadataParts(elementPath: string, elementName: 
       return false;
     }
     const lower = entry.name.toLowerCase();
-    return lower.endsWith('.mdo') || lower.endsWith('.xml');
+    return lower === `${elementName.toLowerCase()}.mdo` || lower.endsWith('.xml') || lower.endsWith('.bsl');
   });
-  const parts = await Promise.all(
-    candidateEntries.map((entry) =>
-      statPart(path.join(elementPath, entry.name), `${elementName}/${entry.name}`)
-    )
-  );
-  return parts.filter((part): part is string => part !== null);
+
+  const parts: string[] = [];
+  const sorted = [...candidateEntries].sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of sorted) {
+    const p = await statPart(path.join(elementPath, entry.name), `${elementName}/${entry.name}`);
+    if (p) {
+      parts.push(p);
+    }
+  }
+  return parts;
 }
 
-/**
- * Lightweight freshness signature for a type folder.
- *
- * Full recursive stat over large configurations is close to reparsing cost, so this tracks:
- * - direct type folder entries;
- * - Designer sibling XML files (direct entries);
- * - EDT immediate .mdo/.xml files inside each object directory.
- *
- * Open-session edits are additionally handled by watcher-driven invalidation.
- */
 export async function computeTypeContentsSignature(
   typePath: string,
-  format: ConfigFormat
+  format: ConfigFormat,
+  platform?: NodeJS.Platform
 ): Promise<string | null> {
+  const stat = await fs.promises.stat(typePath).catch(() => null);
+  if (!stat || !stat.isDirectory()) {
+    return null;
+  }
+
   const entries = await fs.promises.readdir(typePath, { withFileTypes: true }).catch(() => null);
   if (!entries) {
     return null;
   }
 
-  const parts: string[] = [`path:${normalizePathForSignature(typePath)}`, `format:${format}`];
+  const parts: string[] = [`path:${normalizePathForSignature(typePath, platform)}`, `format:${format}`];
   const sortedEntries = [...entries].sort((a, b) => a.name.localeCompare(b.name));
   const entryParts = await Promise.all(
     sortedEntries.map(async (entry) => {
@@ -117,15 +119,16 @@ export async function loadTypeContentsFromCache(
   configPath: string,
   typeName: string,
   signature: string,
-  kind: TypeCacheKind = 'contents'
+  kind: TypeCacheKind = 'contents',
+  platform?: NodeJS.Platform
 ): Promise<TreeNode[] | null> {
   try {
-    const cacheFilePath = getCacheFilePath(globalStoragePath, configPath, typeName, kind);
+    const cacheFilePath = getCacheFilePath(globalStoragePath, configPath, typeName, kind, platform);
     const raw = await fs.promises.readFile(cacheFilePath, 'utf-8');
     const entry = JSON.parse(raw) as TypeContentsCacheEntry;
     if (
       entry.version !== CACHE_VERSION ||
-      normalizePathForSignature(entry.configPath) !== normalizePathForSignature(configPath) ||
+      normalizePathForSignature(entry.configPath, platform) !== normalizePathForSignature(configPath, platform) ||
       entry.typeName !== typeName ||
       entry.signature !== signature ||
       !entry.tree
@@ -152,7 +155,8 @@ export async function saveTypeContentsToCache(
   typeName: string,
   signature: string,
   children: TreeNode[],
-  kind: TypeCacheKind = 'contents'
+  kind: TypeCacheKind = 'contents',
+  platform?: NodeJS.Platform
 ): Promise<void> {
   try {
     const dir = getCacheDir(globalStoragePath);
@@ -172,7 +176,7 @@ export async function saveTypeContentsToCache(
       version: CACHE_VERSION,
     };
     await fs.promises.writeFile(
-      getCacheFilePath(globalStoragePath, configPath, typeName, kind),
+      getCacheFilePath(globalStoragePath, configPath, typeName, kind, platform),
       JSON.stringify(entry),
       'utf-8'
     );
@@ -184,10 +188,11 @@ export async function saveTypeContentsToCache(
 
 export async function invalidateTypeContentsCache(
   globalStoragePath: string,
-  configPath: string
+  configPath: string,
+  platform?: NodeJS.Platform
 ): Promise<void> {
   const dir = getCacheDir(globalStoragePath);
-  const prefix = getConfigCachePrefix(configPath);
+  const prefix = getConfigCachePrefix(configPath, platform);
   const files = await fs.promises.readdir(dir).catch(() => [] as string[]);
   await Promise.all(
     files
