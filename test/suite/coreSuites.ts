@@ -306,6 +306,8 @@ export const coreSuiteFiles: string[] = [
   'suite/metadataParserInFlight.test.js',
   'suite/pathIdentityGuards.test.js',
   'suite/deployReadonlyLock.test.js',
+  'suite/diskCache.test.js',
+  'suite/treeCacheCollision.test.js',
   'suite/webviewCspSecurity.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []

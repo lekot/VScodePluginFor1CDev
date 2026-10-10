@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { XMLValidator } from 'fast-xml-parser';
 import type { RightsDom } from '../../src/rolesEditor/rightsXmlEditWriter';
 import {
   createMinimalRightsDom as createMinimalRightsDomImpl,
@@ -136,7 +137,7 @@ suite('RLS restrictionTemplate round-trip (regression #18)', () => {
 
       const onDisk = await fs.promises.readFile(p, 'utf-8');
       const rls = RoleXmlParser.extractRestrictionTemplatesBlocks(onDisk);
-      assert.ok(rls.includes('"Item"'), 'entities should decode for editor/save payload');
+      assert.ok(rls.includes('&quot;Item&quot;'), 'entities should be preserved in raw template XML');
 
       const dom = await loadRightsXml(p);
       const rebuilt = insertRestrictionTemplatesBeforeClosingRights(
@@ -238,3 +239,102 @@ suite('mergeRightsIntoDom with non-simple right', () => {
     }
   });
 });
+
+suite('RLS restrictionTemplate XML entity preservation (#182)', () => {
+  test('extractRestrictionTemplatesBlocks preserves XML entities in template condition text (#182)', () => {
+    const xml = [
+      '<?xml version="1.0"?>',
+      '<Rights>',
+      '  <restrictionTemplate>',
+      '    <name>T1</name>',
+      '    <condition>Amount &lt; 100 AND Code = &quot;A&quot; AND Ref &amp; Mask</condition>',
+      '  </restrictionTemplate>',
+      '</Rights>',
+    ].join('\n');
+
+    const blocks = RoleXmlParser.extractRestrictionTemplatesBlocks(xml);
+    assert.ok(blocks.includes('&lt; 100'), 'Must preserve &lt; entity so XML remains well-formed');
+    assert.ok(blocks.includes('&quot;A&quot;'), 'Must preserve &quot; entity');
+    assert.ok(blocks.includes('&amp; Mask'), 'Must preserve &amp; entity');
+    assert.ok(!blocks.includes('Amount < 100'), 'Must not decode XML entities into raw unescaped characters');
+  });
+
+  test('load → serialize → strip → reinsert preserves valid XML with XML entities (#182)', async () => {
+    const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1c-rights-entity-rt-'));
+    const p = path.join(tmp, 'Rights.xml');
+    try {
+      const base = serializeRightsDomToXml(createMinimalRightsDom());
+      const injection = [
+        '<object>',
+        '<name>Catalog.RlsEntityRoundTrip</name>',
+        '<right><name>Read</name><value>true</value></right>',
+        '</object>',
+        '<restrictionTemplate>',
+        '<name>EntityTemplate</name>',
+        '<condition>#Parameter &lt; 100 AND #Field = &amp;Value AND Code = &quot;A&quot;</condition>',
+        '</restrictionTemplate>',
+      ].join('');
+      const fullXml = base.replace(/<\/(?:[a-zA-Z0-9_.]+:)?Rights\s*>/i, `${injection}\n</Rights>`);
+      await fs.promises.writeFile(p, fullXml, 'utf-8');
+
+      const onDisk = await fs.promises.readFile(p, 'utf-8');
+      const rls = RoleXmlParser.extractRestrictionTemplatesBlocks(onDisk);
+
+      const dom = await loadRightsXml(p);
+      const serialized = serializeRightsDomToXml(dom);
+      const stripped = stripRestrictionTemplateBlocksFromRightsXml(serialized);
+      const rebuilt = insertRestrictionTemplatesBeforeClosingRights(stripped, rls);
+
+      const validation = XMLValidator.validate(rebuilt);
+      assert.strictEqual(
+        validation,
+        true,
+        `Rebuilt Rights.xml must be valid XML, but validation failed: ${JSON.stringify(validation)}`
+      );
+      assert.ok(rebuilt.includes('&lt; 100'), 'Must keep &lt; in condition');
+      assert.ok(!rebuilt.includes('#Parameter < 100'), 'Must not have raw < in condition');
+    } finally {
+      await fs.promises.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('preserves CDATA, attribute entities, and double escaped entities (#182 broad tests)', async () => {
+    const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1c-rights-cdata-rt-'));
+    const p = path.join(tmp, 'Rights.xml');
+    try {
+      const base = serializeRightsDomToXml(createMinimalRightsDom());
+      const injection = [
+        '<restrictionTemplate name="&quot;Special&quot;" note="A &amp; B">',
+        '  <name>ComplexTemplate</name>',
+        '  <condition><![CDATA[Amount < 100 && Type != "Special"]]></condition>',
+        '  <nested attr="&amp;amp;">Double: &amp;amp; and &amp;lt;</nested>',
+        '</restrictionTemplate>',
+      ].join('\n');
+      const fullXml = base.replace(/<\/(?:[a-zA-Z0-9_.]+:)?Rights\s*>/i, `${injection}\n</Rights>`);
+      await fs.promises.writeFile(p, fullXml, 'utf-8');
+
+      const onDisk = await fs.promises.readFile(p, 'utf-8');
+      const rls = RoleXmlParser.extractRestrictionTemplatesBlocks(onDisk);
+
+      // Verify raw extraction does not mutate CDATA, attribute entities, or double escaping
+      assert.ok(rls.includes('<![CDATA[Amount < 100 && Type != "Special"]]>'), 'CDATA must remain untouched');
+      assert.ok(rls.includes('name="&quot;Special&quot;"'), 'Attribute entities must remain untouched');
+      assert.ok(rls.includes('note="A &amp; B"'), 'Attribute entity &amp; must remain untouched');
+      assert.ok(rls.includes('&amp;amp;'), 'Double escaped entity &amp;amp; must not be collapsed');
+      assert.ok(rls.includes('&amp;lt;'), 'Double escaped entity &amp;lt; must not be collapsed');
+
+      const dom = await loadRightsXml(p);
+      const rebuilt = insertRestrictionTemplatesBeforeClosingRights(
+        stripRestrictionTemplateBlocksFromRightsXml(serializeRightsDomToXml(dom)),
+        rls
+      );
+
+      const validation = XMLValidator.validate(rebuilt);
+      assert.strictEqual(validation, true, `Rebuilt XML must be valid: ${JSON.stringify(validation)}`);
+      assert.strictEqual(RoleXmlParser.extractRestrictionTemplatesBlocks(rebuilt), rls);
+    } finally {
+      await fs.promises.rm(tmp, { recursive: true, force: true });
+    }
+  });
+});
+

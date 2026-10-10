@@ -90,7 +90,7 @@ export class RoleXmlParser {
     const parts: string[] = [];
     let m: RegExpExecArray | null;
     while ((m = re.exec(xml)) !== null) {
-      parts.push(this.decodeBasicXmlEntities(m[0].trim()));
+      parts.push(m[0].trim());
     }
     return parts.join('\n\n');
   }

@@ -1013,7 +1013,7 @@ export async function handleGotoHandlerMessage(
   }
 
   // Find the metadata object node in the tree by name (case-insensitive search)
-  const nodes = ctx.treeDataProvider.findNodesByName(parts.objectName);
+  const nodes = ctx.treeDataProvider.findNodesByName(parts.objectName, ctx.currentNode);
   // Filter by type: for CommonModule look for CommonModule nodes; for others match objectType prefix
   const matchingNode = nodes.find((n) => {
     if (parts.objectType === 'CommonModule') {

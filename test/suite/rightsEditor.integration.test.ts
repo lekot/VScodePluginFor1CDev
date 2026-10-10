@@ -732,6 +732,51 @@ suite('rightsEditor integration', () => {
         await rmRfTestDir(tmpRoot);
       }
     });
+
+    test('save with malformed restrictionTemplate XML fails validation (#182)', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-malformed-xml-'));
+      const roleDir = path.join(tmpRoot, 'Roles');
+      const rolePath = path.join(roleDir, 'MalformedRole.xml');
+      const rightsPath = path.join(roleDir, 'MalformedRole', 'Ext', 'Rights.xml');
+      try {
+        await fs.promises.mkdir(path.dirname(rightsPath), { recursive: true });
+        await fs.promises.writeFile(
+          rolePath,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses">',
+            '  <Rights/>',
+            '</Role>',
+            '',
+          ].join('\n'),
+          'utf-8'
+        );
+        await fs.promises.writeFile(rightsPath, serializeRightsDomToXml(createMinimalRightsDom()), 'utf-8');
+
+        const mockContext = createFakeExtensionContext();
+        const { panel, getOnMessageHandler } = createFakeWebviewPanel({
+          autoReplyFlushWith: '<restrictionTemplate><condition>Amount < 100</condition>',
+        });
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        try {
+          await provider.show(rolePath, tmpRoot);
+          const h = getOnMessageHandler();
+          assert.ok(h);
+          await assert.rejects(
+            async () => {
+              await provider.triggerSave();
+            },
+            /невалидный XML/
+          );
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        await rmRfTestDir(tmpRoot);
+      }
+    });
   });
 
   suite('axis 5 — session isolation and updateIfOpen concurrency (#177, #178)', () => {
