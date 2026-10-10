@@ -158,4 +158,76 @@ suite('deployService applyReadonlyIncludeForDeploy (#186)', () => {
     assert.strictEqual(current?.['user/**'], true, 'original baseline user pattern must be preserved');
     assert.strictEqual(current?.['new/**'], true, 'concurrently added pattern must NOT be wiped by baseline restoration (#186)');
   });
+
+  test('concurrent lock acquisitions serialize configuration updates preventing out-of-order overwrite (#186 review P1)', async () => {
+    const scope = vscode.Uri.file(wsRoot);
+    const cfg = vscode.workspace.getConfiguration('files', scope);
+    await cfg.update('readonlyInclude', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+
+    const originalGetConfig = vscode.workspace.getConfiguration;
+    let callIndex = 0;
+    let releaseFirstUpdate: (() => void) | undefined;
+    const firstUpdateStarted = new Promise<void>((resolve) => {
+      releaseFirstUpdate = resolve;
+    });
+    let proceedFirstUpdate: () => void;
+    const holdFirstUpdate = new Promise<void>((resolve) => {
+      proceedFirstUpdate = resolve;
+    });
+
+    (vscode.workspace as any).getConfiguration = (section?: string, scopeArg?: any) => {
+      const real = originalGetConfig(section, scopeArg);
+      return {
+        ...real,
+        get: real.get.bind(real),
+        update: async (key: string, value: unknown, target?: any) => {
+          const idx = ++callIndex;
+          if (idx === 1) {
+            releaseFirstUpdate?.();
+            await holdFirstUpdate;
+          }
+          return real.update(key, value, target);
+        },
+      };
+    };
+
+    try {
+      const lockAPromise = applyReadonlyIncludeForDeploy(wsRoot, 'patA/**');
+      await firstUpdateStarted;
+
+      const lockBPromise = applyReadonlyIncludeForDeploy(wsRoot, 'patB/**');
+
+      // Allow B to attempt running, then resume A
+      await new Promise((r) => setTimeout(r, 10));
+      proceedFirstUpdate!();
+
+      const [lockA, lockB] = await Promise.all([lockAPromise, lockBPromise]);
+      assert.ok(lockA && lockB);
+
+      const current = cfg.get<Record<string, boolean>>('readonlyInclude');
+      assert.strictEqual(current?.['patA/**'], true, 'patA must be present');
+      assert.strictEqual(current?.['patB/**'], true, 'patB must NOT be overwritten by out-of-order update (#186 P1)');
+
+      await lockA.dispose();
+      await lockB.dispose();
+    } finally {
+      (vscode.workspace as any).getConfiguration = originalGetConfig;
+    }
+  });
+
+  test('concurrent lock disposals serialize configuration updates preventing lost disposals (#186 review P1)', async () => {
+    const scope = vscode.Uri.file(wsRoot);
+    const cfg = vscode.workspace.getConfiguration('files', scope);
+    await cfg.update('readonlyInclude', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+
+    const lockA = await applyReadonlyIncludeForDeploy(wsRoot, 'patA/**');
+    const lockB = await applyReadonlyIncludeForDeploy(wsRoot, 'patB/**');
+    assert.ok(lockA && lockB);
+
+    await Promise.all([lockA.dispose(), lockB.dispose()]);
+
+    const current = cfg.get<Record<string, boolean>>('readonlyInclude');
+    assert.strictEqual(current?.['patA/**'], undefined);
+    assert.strictEqual(current?.['patB/**'], undefined);
+  });
 });

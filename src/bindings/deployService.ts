@@ -131,6 +131,7 @@ interface FolderLockState {
   readonly baselinePatterns: Set<string>;
   readonly hadWorkspaceFolderValue: boolean;
   readonly activePatterns: Map<string, number>;
+  mutationQueue: Promise<void>;
 }
 
 const activeFolderLocks = new Map<string, FolderLockState>();
@@ -165,31 +166,43 @@ export async function applyReadonlyIncludeForDeploy(
       baselinePatterns,
       hadWorkspaceFolderValue: baseline !== undefined && Object.keys(baseline).length > 0,
       activePatterns: new Map<string, number>(),
+      mutationQueue: Promise.resolve(),
     };
     activeFolderLocks.set(normRoot, lockState);
   }
 
-  const currentCount = lockState.activePatterns.get(globPattern) ?? 0;
-  lockState.activePatterns.set(globPattern, currentCount + 1);
 
+  const updateOp = async () => {
+    const currentCount = lockState!.activePatterns.get(globPattern) ?? 0;
+    lockState!.activePatterns.set(globPattern, currentCount + 1);
 
-  const liveConfig = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
-  const merged: Record<string, boolean> = { ...(liveConfig ?? {}) };
-  for (const pat of lockState.activePatterns.keys()) {
-    merged[pat] = true;
-  }
-  try {
+    const liveConfig = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
+    const merged: Record<string, boolean> = { ...(liveConfig ?? {}) };
+    for (const pat of lockState!.activePatterns.keys()) {
+      merged[pat] = true;
+    }
     await cfg.update('readonlyInclude', merged, vscode.ConfigurationTarget.WorkspaceFolder);
+  };
+  const currentOp = lockState.mutationQueue.then(updateOp, updateOp);
+  lockState.mutationQueue = currentOp.then(() => undefined, () => undefined);
+
+  try {
+    await currentOp;
   } catch {
-    const count = lockState.activePatterns.get(globPattern) ?? 1;
-    if (count <= 1) {
-      lockState.activePatterns.delete(globPattern);
-    } else {
-      lockState.activePatterns.set(globPattern, count - 1);
-    }
-    if (lockState.activePatterns.size === 0) {
-      activeFolderLocks.delete(normRoot);
-    }
+    const rollbackOp = async () => {
+      const count = lockState!.activePatterns.get(globPattern) ?? 1;
+      if (count <= 1) {
+        lockState!.activePatterns.delete(globPattern);
+      } else {
+        lockState!.activePatterns.set(globPattern, count - 1);
+      }
+      if (lockState!.activePatterns.size === 0) {
+        activeFolderLocks.delete(normRoot);
+      }
+    };
+    const nextRollback = lockState.mutationQueue.then(rollbackOp, rollbackOp);
+    lockState.mutationQueue = nextRollback.then(() => undefined, () => undefined);
+    await nextRollback;
     return undefined;
   }
   let disposed = false;
@@ -202,7 +215,8 @@ export async function applyReadonlyIncludeForDeploy(
       try {
         const state = activeFolderLocks.get(normRoot);
         if (state) {
-          const count = state.activePatterns.get(globPattern) ?? 1;
+          const disposeOp = async () => {
+            const count = state.activePatterns.get(globPattern) ?? 1;
           if (count <= 1) {
             state.activePatterns.delete(globPattern);
           } else {
@@ -229,7 +243,12 @@ export async function applyReadonlyIncludeForDeploy(
           } else {
             await cfg.update('readonlyInclude', nextConfig, vscode.ConfigurationTarget.WorkspaceFolder);
           }
-        }
+        };
+
+        const op = state.mutationQueue.then(disposeOp, disposeOp);
+        state.mutationQueue = op.then(() => undefined, () => undefined);
+        await op;
+      }
       } catch {
         /* не мешаем завершению раскатки */
       }
