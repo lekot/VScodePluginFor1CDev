@@ -42,7 +42,7 @@ function hashFiles(relativeFiles: readonly string[]): string {
 }
 
 /**
- * Computes a lightweight content signature based on file modification times and sizes.
+ * Computes a robust content signature based on SHA-256 content hashes of the deployed files.
  */
 export async function computeFilesContentSignature(
   configRoot: string,
@@ -52,8 +52,9 @@ export async function computeFilesContentSignature(
   for (const rel of relativeFiles) {
     try {
       const abs = path.join(configRoot, rel);
-      const stat = await fs.promises.stat(abs);
-      parts.push(`${rel.toLowerCase()}:${stat.mtimeMs}:${stat.size}`);
+      const content = await fs.promises.readFile(abs);
+      const fileContentHash = crypto.createHash('sha256').update(content).digest('hex');
+      parts.push(`${rel.toLowerCase()}:${fileContentHash}`);
     } catch {
       parts.push(`${rel.toLowerCase()}:missing`);
     }

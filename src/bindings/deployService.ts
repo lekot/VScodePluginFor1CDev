@@ -128,8 +128,9 @@ export function configurationTreeReadonlyGlob(configRelativePath: string): strin
 }
 
 interface FolderLockState {
-  baseline: Record<string, boolean> | undefined;
-  activePatterns: Map<string, number>;
+  readonly baselinePatterns: Set<string>;
+  readonly hadWorkspaceFolderValue: boolean;
+  readonly activePatterns: Map<string, number>;
 }
 
 const activeFolderLocks = new Map<string, FolderLockState>();
@@ -152,8 +153,17 @@ export async function applyReadonlyIncludeForDeploy(
   let lockState = activeFolderLocks.get(normRoot);
   if (!lockState) {
     const baseline = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
+    const baselinePatterns = new Set<string>();
+    if (baseline) {
+      for (const [k, v] of Object.entries(baseline)) {
+        if (v) {
+          baselinePatterns.add(k);
+        }
+      }
+    }
     lockState = {
-      baseline: baseline ? { ...baseline } : undefined,
+      baselinePatterns,
+      hadWorkspaceFolderValue: baseline !== undefined && Object.keys(baseline).length > 0,
       activePatterns: new Map<string, number>(),
     };
     activeFolderLocks.set(normRoot, lockState);
@@ -163,7 +173,8 @@ export async function applyReadonlyIncludeForDeploy(
   lockState.activePatterns.set(globPattern, currentCount + 1);
 
 
-  const merged: Record<string, boolean> = { ...(lockState.baseline ?? {}) };
+  const liveConfig = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
+  const merged: Record<string, boolean> = { ...(liveConfig ?? {}) };
   for (const pat of lockState.activePatterns.keys()) {
     merged[pat] = true;
   }
@@ -197,15 +208,26 @@ export async function applyReadonlyIncludeForDeploy(
           } else {
             state.activePatterns.set(globPattern, count - 1);
           }
+          const currentLive = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
+          const nextConfig: Record<string, boolean> = { ...(currentLive ?? {}) };
+
+          if (!state.activePatterns.has(globPattern) && !state.baselinePatterns.has(globPattern)) {
+            delete nextConfig[globPattern];
+          }
+
+          for (const pat of state.activePatterns.keys()) {
+            nextConfig[pat] = true;
+          }
+
           if (state.activePatterns.size === 0) {
             activeFolderLocks.delete(normRoot);
-            await cfg.update('readonlyInclude', state.baseline, vscode.ConfigurationTarget.WorkspaceFolder);
-          } else {
-            const nextMerged: Record<string, boolean> = { ...(state.baseline ?? {}) };
-            for (const pat of state.activePatterns.keys()) {
-              nextMerged[pat] = true;
+            if (Object.keys(nextConfig).length === 0 && !state.hadWorkspaceFolderValue) {
+              await cfg.update('readonlyInclude', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+            } else {
+              await cfg.update('readonlyInclude', nextConfig, vscode.ConfigurationTarget.WorkspaceFolder);
             }
-            await cfg.update('readonlyInclude', nextMerged, vscode.ConfigurationTarget.WorkspaceFolder);
+          } else {
+            await cfg.update('readonlyInclude', nextConfig, vscode.ConfigurationTarget.WorkspaceFolder);
           }
         }
       } catch {

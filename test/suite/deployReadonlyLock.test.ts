@@ -132,4 +132,30 @@ suite('deployService applyReadonlyIncludeForDeploy (#186)', () => {
     const lock = await applyReadonlyIncludeForDeploy(wsRoot, 'pat/**');
     assert.strictEqual(lock, undefined, 'Must return undefined on unsupported VS Code versions');
   });
+
+  test('concurrent configuration edits made during deploy are preserved on dispose (#186 review)', async () => {
+    const scope = vscode.Uri.file(wsRoot);
+    const cfg = vscode.workspace.getConfiguration('files', scope);
+    await cfg.update('readonlyInclude', { 'user/**': true }, vscode.ConfigurationTarget.WorkspaceFolder);
+
+    // Deploy starts and acquires lock on 'deploy/**'
+    const lock = await applyReadonlyIncludeForDeploy(wsRoot, 'deploy/**');
+    assert.ok(lock);
+
+    let current = cfg.get<Record<string, boolean>>('readonlyInclude');
+    assert.strictEqual(current?.['user/**'], true);
+    assert.strictEqual(current?.['deploy/**'], true);
+
+    // Concurrently, while deploy is active, user adds 'new/**' to readonlyInclude
+    const externalUpdate = { ...current, 'new/**': true };
+    await cfg.update('readonlyInclude', externalUpdate, vscode.ConfigurationTarget.WorkspaceFolder);
+
+    // Deploy finishes and disposes
+    await lock.dispose();
+
+    current = cfg.get<Record<string, boolean>>('readonlyInclude');
+    assert.strictEqual(current?.['deploy/**'], undefined, 'deploy pattern must be removed');
+    assert.strictEqual(current?.['user/**'], true, 'original baseline user pattern must be preserved');
+    assert.strictEqual(current?.['new/**'], true, 'concurrently added pattern must NOT be wiped by baseline restoration (#186)');
+  });
 });

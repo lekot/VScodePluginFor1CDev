@@ -123,6 +123,35 @@ suite('deployDedupCache', () => {
       await fs.promises.rm(tmp, { recursive: true, force: true });
     }
   });
+
+  test('content signature changes when bytes change with identical file size and mtime (#185 review)', async () => {
+    const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-dedup-bytes-'));
+    try {
+      const relPath = 'module.bsl';
+      const absPath = path.join(tmp, relPath);
+      const fixedTime = new Date('2026-01-01T12:00:00Z');
+
+      // Version 1: 4 bytes
+      await fs.promises.writeFile(absPath, 'AAAA', 'utf-8');
+      await fs.promises.utimes(absPath, fixedTime, fixedTime);
+      const stat1 = await fs.promises.stat(absPath);
+
+      const sig1 = await computeFilesContentSignature(tmp, [relPath]);
+
+      // Version 2: 4 bytes, DIFFERENT content ('BBBB'), exactly the same mtime and size!
+      await fs.promises.writeFile(absPath, 'BBBB', 'utf-8');
+      await fs.promises.utimes(absPath, fixedTime, fixedTime);
+      const stat2 = await fs.promises.stat(absPath);
+
+      assert.strictEqual(stat1.size, stat2.size, 'File sizes must be identical');
+      assert.strictEqual(stat1.mtimeMs, stat2.mtimeMs, 'File mtimes must be identical');
+
+      const sig2 = await computeFilesContentSignature(tmp, [relPath]);
+      assert.notStrictEqual(sig2, sig1, 'Content signature must differ because bytes changed (#185)');
+    } finally {
+      await fs.promises.rm(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 
