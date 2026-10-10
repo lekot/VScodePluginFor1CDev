@@ -3,8 +3,8 @@
 ## Upstream
 
 - **Repo:** `C:\reps\cc-1c-skills` (https://github.com/Nikolay-Shirokov/cc-1c-skills)
-- **Commit:** 12aecbf50be0f3ee16a4ba764292ca1a9aabde0e
-- **Date:** 2026-08-22
+- **Commit:** 1fa205b961f4ed3659f58f4b55d2d9b1d5e4810e
+- **Date:** 2026-10-10
 
 ## Files
 
