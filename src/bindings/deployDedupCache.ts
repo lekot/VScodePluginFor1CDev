@@ -1,4 +1,6 @@
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { compareCodeUnits } from '../utils/compareCodeUnits';
 
 export interface DedupKey {
@@ -8,6 +10,7 @@ export interface DedupKey {
 
 export interface DedupRecordInput {
   readonly relativeFiles: readonly string[];
+  readonly contentSignature?: string;
 }
 
 export interface DedupCheckResult {
@@ -32,9 +35,34 @@ function makeKey(key: DedupKey): string {
   return `${key.bindingId}::${key.infobaseId}`;
 }
 
-function hashFiles(relativeFiles: readonly string[]): string {
-  const sorted = [...relativeFiles].map((f) => f.toLowerCase()).sort(compareCodeUnits);
-  return crypto.createHash('sha256').update(JSON.stringify(sorted)).digest('hex');
+function hashInput(input: DedupRecordInput): string {
+  const sorted = [...input.relativeFiles].map((f) => f.toLowerCase()).sort(compareCodeUnits);
+  const payload = {
+    files: sorted,
+    sig: input.contentSignature ?? null,
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
+/**
+ * Computes a lightweight content signature based on file modification times and sizes.
+ */
+export async function computeFilesContentSignature(
+  configRoot: string,
+  relativeFiles: readonly string[],
+): Promise<string> {
+  const parts: string[] = [];
+  for (const rel of relativeFiles) {
+    try {
+      const abs = path.join(configRoot, rel);
+      const stat = await fs.promises.stat(abs);
+      parts.push(`${rel.toLowerCase()}:${stat.mtimeMs}:${stat.size}`);
+    } catch {
+      parts.push(`${rel.toLowerCase()}:missing`);
+    }
+  }
+  parts.sort(compareCodeUnits);
+  return crypto.createHash('sha256').update(parts.join('\n')).digest('hex');
 }
 
 export function checkRecentDeploy(
@@ -50,7 +78,7 @@ export function checkRecentDeploy(
   if (ageMs >= DEDUP_WINDOW_MS) {
     return { isDuplicate: false };
   }
-  if (entry.hash !== hashFiles(input.relativeFiles)) {
+  if (entry.hash !== hashInput(input)) {
     return { isDuplicate: false };
   }
   return { isDuplicate: true, ageMs };
@@ -61,7 +89,7 @@ export function recordDeploy(
   input: DedupRecordInput,
   nowMs: number,
 ): void {
-  cache.set(makeKey(key), { hash: hashFiles(input.relativeFiles), timestamp: nowMs });
+  cache.set(makeKey(key), { hash: hashInput(input), timestamp: nowMs });
 }
 
 export function resetDeployDedupCacheForTests(): void {

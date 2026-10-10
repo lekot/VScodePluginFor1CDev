@@ -24,7 +24,7 @@ import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { collectFilesForSelection, resolveIbcmdObjectId } from '../services/ibcmd/objectFileCollector';
 import { detectDeployGuards } from './deployPreflightGuards';
 import { expandBslSiblings } from './bslExpansion';
-import { checkRecentDeploy, recordDeploy } from './deployDedupCache';
+import { checkRecentDeploy, computeFilesContentSignature, recordDeploy } from './deployDedupCache';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
 import {
   DeployLockedObjectsPlanner,
@@ -127,7 +127,18 @@ export function configurationTreeReadonlyGlob(configRelativePath: string): strin
   return `${dir}/**`;
 }
 
-async function applyReadonlyIncludeForDeploy(
+interface FolderLockState {
+  baseline: Record<string, boolean> | undefined;
+  activePatterns: Map<string, number>;
+}
+
+const activeFolderLocks = new Map<string, FolderLockState>();
+
+export function resetReadonlyIncludeDeployLocksForTests(): void {
+  activeFolderLocks.clear();
+}
+
+export async function applyReadonlyIncludeForDeploy(
   workspaceFolderRoot: string,
   globPattern: string,
 ): Promise<{ dispose: () => Promise<void> } | undefined> {
@@ -136,17 +147,67 @@ async function applyReadonlyIncludeForDeploy(
   }
   const scope = vscode.Uri.file(workspaceFolderRoot);
   const cfg = vscode.workspace.getConfiguration('files', scope);
-  const before = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
-  const merged: Record<string, boolean> = { ...(before ?? {}), [globPattern]: true };
+  const normRoot = path.normalize(workspaceFolderRoot);
+
+  let lockState = activeFolderLocks.get(normRoot);
+  if (!lockState) {
+    const baseline = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
+    lockState = {
+      baseline: baseline ? { ...baseline } : undefined,
+      activePatterns: new Map<string, number>(),
+    };
+    activeFolderLocks.set(normRoot, lockState);
+  }
+
+  const currentCount = lockState.activePatterns.get(globPattern) ?? 0;
+  lockState.activePatterns.set(globPattern, currentCount + 1);
+
+
+  const merged: Record<string, boolean> = { ...(lockState.baseline ?? {}) };
+  for (const pat of lockState.activePatterns.keys()) {
+    merged[pat] = true;
+  }
   try {
     await cfg.update('readonlyInclude', merged, vscode.ConfigurationTarget.WorkspaceFolder);
   } catch {
+    const count = lockState.activePatterns.get(globPattern) ?? 1;
+    if (count <= 1) {
+      lockState.activePatterns.delete(globPattern);
+    } else {
+      lockState.activePatterns.set(globPattern, count - 1);
+    }
+    if (lockState.activePatterns.size === 0) {
+      activeFolderLocks.delete(normRoot);
+    }
     return undefined;
   }
+  let disposed = false;
   return {
     async dispose() {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
       try {
-        await cfg.update('readonlyInclude', before, vscode.ConfigurationTarget.WorkspaceFolder);
+        const state = activeFolderLocks.get(normRoot);
+        if (state) {
+          const count = state.activePatterns.get(globPattern) ?? 1;
+          if (count <= 1) {
+            state.activePatterns.delete(globPattern);
+          } else {
+            state.activePatterns.set(globPattern, count - 1);
+          }
+          if (state.activePatterns.size === 0) {
+            activeFolderLocks.delete(normRoot);
+            await cfg.update('readonlyInclude', state.baseline, vscode.ConfigurationTarget.WorkspaceFolder);
+          } else {
+            const nextMerged: Record<string, boolean> = { ...(state.baseline ?? {}) };
+            for (const pat of state.activePatterns.keys()) {
+              nextMerged[pat] = true;
+            }
+            await cfg.update('readonlyInclude', nextMerged, vscode.ConfigurationTarget.WorkspaceFolder);
+          }
+        }
       } catch {
         /* не мешаем завершению раскатки */
       }
@@ -809,9 +870,10 @@ export class DeployService {
         if (deployFiles.length === 0) {
           return { kind: 'skippedBySupport' as const };
         }
+        const contentSignature = await computeFilesContentSignature(configRoot, deployFiles);
         const dedupResult = checkRecentDeploy(
           { bindingId, infobaseId: entry.id },
-          { relativeFiles: deployFiles },
+          { relativeFiles: deployFiles, contentSignature },
           Date.now(),
         );
         if (dedupResult.isDuplicate) {
@@ -962,9 +1024,10 @@ export class DeployService {
       }
 
       if (interpreted.status === 'success') {
+        const contentSignature = await computeFilesContentSignature(configRoot, supportAndImport.importedFiles);
         recordDeploy(
           { bindingId, infobaseId: entry.id },
-          { relativeFiles: supportAndImport.importedFiles },
+          { relativeFiles: supportAndImport.importedFiles, contentSignature },
           Date.now(),
         );
         appendIbcmdOutputLine(`[раскатка выбранных] ${entry.name}: успех — ${interpreted.userMessage}`);

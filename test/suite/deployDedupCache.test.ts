@@ -1,6 +1,10 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   checkRecentDeploy,
+  computeFilesContentSignature,
   recordDeploy,
   resetDeployDedupCacheForTests,
 } from '../../src/bindings/deployDedupCache';
@@ -64,4 +68,61 @@ suite('deployDedupCache', () => {
     const result = checkRecentDeploy(KEY_A, FILES_A, 3000); // exactly 2000 ms
     assert.strictEqual(result.isDuplicate, false);
   });
+
+  test('same file paths with different contentSignature within window returns isDuplicate false (#185)', () => {
+    const inputV1 = { relativeFiles: FILES_A.relativeFiles, contentSignature: 'sig-v1' };
+    const inputV2 = { relativeFiles: FILES_A.relativeFiles, contentSignature: 'sig-v2' };
+
+    recordDeploy(KEY_A, inputV1, 1000);
+    // 500ms later, user deployed modified content of the same files
+    const result = checkRecentDeploy(KEY_A, inputV2, 1500);
+    assert.strictEqual(result.isDuplicate, false, 'Modified content must not be dropped as duplicate');
+  });
+
+  test('same file paths with matching contentSignature within window returns isDuplicate true (#185)', () => {
+    const inputV1 = { relativeFiles: FILES_A.relativeFiles, contentSignature: 'sig-v1' };
+
+    recordDeploy(KEY_A, inputV1, 1000);
+    const result = checkRecentDeploy(KEY_A, inputV1, 1500);
+    assert.strictEqual(result.isDuplicate, true);
+    assert.strictEqual(result.ageMs, 500);
+  });
+
+  test('computeFilesContentSignature changes when file content/mtime changes (#185 broad test)', async () => {
+    const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-dedup-sig-'));
+    try {
+      const relPath = 'module.bsl';
+      const absPath = path.join(tmp, relPath);
+      await fs.promises.writeFile(absPath, 'Procedure A() EndProcedure', 'utf-8');
+
+      const sig1 = await computeFilesContentSignature(tmp, [relPath]);
+      assert.ok(typeof sig1 === 'string' && sig1.length > 0);
+
+      // Same unchanged file produces identical signature
+      const sig1Again = await computeFilesContentSignature(tmp, [relPath]);
+      assert.strictEqual(sig1Again, sig1);
+
+      // Modify file content and mtime
+      await new Promise((r) => setTimeout(r, 15));
+      await fs.promises.writeFile(absPath, 'Procedure A() // modified\nEndProcedure', 'utf-8');
+
+      const sig2 = await computeFilesContentSignature(tmp, [relPath]);
+      assert.notStrictEqual(sig2, sig1, 'Signature must change after file content is updated');
+
+      // Order of files does not affect signature
+      const rel2 = 'other.bsl';
+      await fs.promises.writeFile(path.join(tmp, rel2), '// other', 'utf-8');
+      const sigOrder1 = await computeFilesContentSignature(tmp, [relPath, rel2]);
+      const sigOrder2 = await computeFilesContentSignature(tmp, [rel2, relPath]);
+      assert.strictEqual(sigOrder1, sigOrder2, 'Signature must be deterministic regardless of array order');
+
+      // Missing file handled gracefully
+      const sigMissing = await computeFilesContentSignature(tmp, ['nonexistent.bsl']);
+      assert.ok(typeof sigMissing === 'string');
+    } finally {
+      await fs.promises.rm(tmp, { recursive: true, force: true });
+    }
+  });
 });
+
+

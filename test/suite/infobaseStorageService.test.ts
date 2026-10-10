@@ -850,3 +850,84 @@ suite('ExtensionState infobase wiring', () => {
     assert.strictEqual(state.infobaseStorage, null);
   });
 });
+
+suite('InfobaseStorageService concurrent mutations (#187)', () => {
+  class AsyncMemento implements Memento {
+    private readonly map = new Map<string, unknown>();
+
+    keys(): readonly string[] {
+      return [...this.map.keys()];
+    }
+
+    get<T>(key: string): T | undefined;
+    get<T>(key: string, defaultValue: T): T;
+    get<T>(key: string, defaultValue?: T): T | undefined {
+      if (this.map.has(key)) {
+        return this.map.get(key) as T;
+      }
+      return defaultValue as T;
+    }
+
+    async update(key: string, value: unknown): Promise<void> {
+      // Simulate real async I/O delay
+      await new Promise((r) => setTimeout(r, 15));
+      if (value === undefined) {
+        this.map.delete(key);
+      } else {
+        this.map.set(key, value);
+      }
+    }
+  }
+
+  test('concurrent upsert calls do not overwrite each other (#187)', async () => {
+    const memento = new AsyncMemento();
+    const secrets = new MapSecretStorage();
+    const service = new InfobaseStorageService(memento, secrets);
+
+    const entry1 = makeEntry({ name: 'Base 1', filePath: 'C:/db1' });
+    const entry2 = makeEntry({ name: 'Base 2', filePath: 'C:/db2' });
+
+    // Run both upserts concurrently
+    await Promise.all([service.upsert(entry1), service.upsert(entry2)]);
+
+    const loaded = await service.load();
+    assert.strictEqual(loaded.length, 2, 'Both concurrent entries must be saved');
+    assert.ok(loaded.some((e) => e.id === entry1.id));
+    assert.ok(loaded.some((e) => e.id === entry2.id));
+  });
+
+  test('concurrent upsert and saveFolders preserves both entries and folders (#187)', async () => {
+    const memento = new AsyncMemento();
+    const secrets = new MapSecretStorage();
+    const service = new InfobaseStorageService(memento, secrets);
+
+    const entry = makeEntry({ name: 'Base 1', filePath: 'C:/db1' });
+    const folder: InfobaseFolder = {
+      id: randomUUID(),
+      name: 'My Folder',
+    };
+
+    await Promise.all([service.upsert(entry), service.saveFolders([folder])]);
+
+    const loadedEntries = await service.load();
+    const loadedFolders = await service.loadFolders();
+    assert.strictEqual(loadedEntries.length, 1, 'Entry must be saved');
+    assert.strictEqual(loadedFolders.length, 1, 'Folder must be saved');
+  });
+
+  test('concurrent remove and upsert executes safely in order (#187)', async () => {
+    const memento = new AsyncMemento();
+    const secrets = new MapSecretStorage();
+    const service = new InfobaseStorageService(memento, secrets);
+
+    const entry1 = makeEntry({ name: 'Base 1', filePath: 'C:/db1' });
+    const entry2 = makeEntry({ name: 'Base 2', filePath: 'C:/db2' });
+    await service.upsert(entry1);
+
+    await Promise.all([service.remove(entry1.id), service.upsert(entry2)]);
+
+    const loaded = await service.load();
+    assert.strictEqual(loaded.length, 1);
+    assert.strictEqual(loaded[0].id, entry2.id);
+  });
+});

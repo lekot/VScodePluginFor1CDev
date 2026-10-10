@@ -124,7 +124,7 @@ function migrateFolder(raw: unknown): InfobaseFolder | null {
   }
   const parentId =
     typeof raw.parentId === 'string' && raw.parentId.trim().length > 0 ? raw.parentId.trim() : undefined;
-  return { id, name, parentId };
+  return parentId !== undefined ? { id, name, parentId } : { id, name };
 }
 
 /**

@@ -309,6 +309,7 @@ class CancellationTokenSourceStub {
 /** Mutable hooks for core tests (workspace keys, dialog results, command log). */
 export const vscodeTestState = {
   workspaceConfig: {} as Record<string, unknown>,
+  scopedWorkspaceConfig: new Map<string, Record<string, unknown>>(),
   applyEditImpl: undefined as ((edit: any) => Promise<boolean>) | undefined,
   /** Список id команд, зарегистрированных через vscode.commands.registerCommand (P7a-7). */
   registeredCommandIds: [] as string[],
@@ -537,8 +538,19 @@ const workspaceStub = {
     onDidDelete: (_listener: unknown) => ({ dispose: () => undefined }),
     dispose: () => undefined,
   }),
-  getConfiguration: (_section?: string, _scope?: unknown) => ({
+  getConfiguration: (_section?: string, scope?: unknown) => {
+    const scopeKey =
+      scope && typeof scope === 'object' && 'fsPath' in scope && typeof (scope as { fsPath: unknown }).fsPath === 'string'
+        ? (scope as { fsPath: string }).fsPath.toLowerCase()
+        : undefined;
+    return {
     get: <T>(section: string, defaultValue?: T) => {
+      if (scopeKey) {
+        const scoped = vscodeTestState.scopedWorkspaceConfig.get(scopeKey);
+        if (scoped && Object.prototype.hasOwnProperty.call(scoped, section)) {
+          return scoped[section] as T;
+        }
+      }
       if (Object.prototype.hasOwnProperty.call(vscodeTestState.workspaceConfig, section)) {
         return vscodeTestState.workspaceConfig[section] as T;
       }
@@ -548,13 +560,27 @@ const workspaceStub = {
       if (key === 'readonlyInclude' && vscodeTestState.filesReadonlyIncludeUpdateThrows) {
         throw new Error('readonlyInclude update denied (test stub)');
       }
+      if (scopeKey) {
+        let scoped = vscodeTestState.scopedWorkspaceConfig.get(scopeKey);
+        if (!scoped) {
+          scoped = {};
+          vscodeTestState.scopedWorkspaceConfig.set(scopeKey, scoped);
+        }
+        if (value === undefined) {
+          Reflect.deleteProperty(scoped, key);
+        } else {
+          scoped[key] = value;
+        }
+        return;
+      }
       if (value === undefined) {
         Reflect.deleteProperty(vscodeTestState.workspaceConfig, key);
       } else {
         vscodeTestState.workspaceConfig[key] = value;
       }
     },
-  }),
+  };
+},
   get workspaceFolders(): typeof vscodeTestState.mockWorkspaceFolders {
     return vscodeTestState.mockWorkspaceFolders;
   },
@@ -617,6 +643,7 @@ export function restoreVscodeWorkspaceFoldersGetter(): void {
 export function resetVscodeTestState(): void {
   vscodeExtensionsTestState.getExtensionImpl = null;
   vscodeTestState.workspaceConfig = {};
+  vscodeTestState.scopedWorkspaceConfig = new Map();
   vscodeTestState.registeredCommandIds = [];
   vscodeTestState.registeredCommandHandlers = new Map();
   vscodeTestState.registeredCompletionProviders = [];

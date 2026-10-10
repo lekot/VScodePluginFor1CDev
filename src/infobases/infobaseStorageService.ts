@@ -25,6 +25,7 @@ export class InfobaseStorageService {
   /** Entries in last persisted order (not necessarily sorted). */
   private storedEntries: InfobaseEntry[] | null = null;
   private storedFolders: InfobaseFolder[] | null = null;
+  private mutationQueue: Promise<unknown> = Promise.resolve();
 
   private readonly _onDidChangeCatalog = new vscode.EventEmitter<void>();
   /** Fires after catalog mutations ({@link saveAll}, {@link upsert}, {@link remove}). */
@@ -76,10 +77,27 @@ export class InfobaseStorageService {
     return this.storedFolders;
   }
 
+  private runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.mutationQueue.then(operation, operation);
+    this.mutationQueue = next.then(
+      () => {},
+      () => {},
+    );
+    return next;
+  }
+
+  private refreshFromMemento(): InfobaseStorageRoot {
+    const root = this.readRootFromMemento();
+    this.storedEntries = [...root.entries];
+    this.storedFolders = [...(root.folders ?? [])];
+    return root;
+  }
+
   /**
    * Loads entries, applies migration, returns a list sorted by type then name.
    */
   async load(): Promise<InfobaseEntry[]> {
+    await this.mutationQueue;
     const entries = this.getStoredOrRead();
     return sortEntries(entries);
   }
@@ -88,6 +106,7 @@ export class InfobaseStorageService {
    * WOW Phase 4 #60 — пользовательские папки в дереве баз.
    */
   async loadFolders(): Promise<InfobaseFolder[]> {
+    await this.mutationQueue;
     const folders = this.getStoredOrReadFolders();
     return [...folders].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
   }
@@ -96,16 +115,19 @@ export class InfobaseStorageService {
    * WOW Phase 4 #60 — заменить только дерево папок (записи баз не трогаются).
    */
   async saveFolders(folders: InfobaseFolder[]): Promise<void> {
-    const entries = [...this.getStoredOrRead()];
-    validateInfobaseCatalog(entries, folders);
-    await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
-      rootSchemaVersion: 3,
-      entries,
-      folders,
-    } satisfies InfobaseStorageRoot);
-    this.storedEntries = entries;
-    this.storedFolders = [...folders];
-    this.fireCatalogChanged();
+    return this.runExclusive(async () => {
+      const root = this.refreshFromMemento();
+      const entries = [...root.entries];
+      validateInfobaseCatalog(entries, folders);
+      await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
+        rootSchemaVersion: 3,
+        entries,
+        folders,
+      } satisfies InfobaseStorageRoot);
+      this.storedEntries = entries;
+      this.storedFolders = [...folders];
+      this.fireCatalogChanged();
+    });
   }
 
   async getById(id: string): Promise<InfobaseEntry | undefined> {
@@ -117,10 +139,34 @@ export class InfobaseStorageService {
    * Replaces the entire list. Removes secrets for dropped ids; clears password secret when `hasStoredPassword` is false.
    */
   async saveAll(entries: InfobaseEntry[]): Promise<void> {
-    const folders = this.getStoredOrReadFolders();
+    return this.runExclusive(async () => {
+      await this.internalPersistEntries(entries);
+    });
+  }
+
+  /**
+   * Inserts or updates one entry by `id`.
+   */
+  async upsert(entry: InfobaseEntry): Promise<void> {
+    validateInfobaseEntry(entry);
+    return this.runExclusive(async () => {
+      const root = this.refreshFromMemento();
+      const current = [...root.entries];
+      const idx = current.findIndex((e) => e.id === entry.id);
+      if (idx >= 0) {
+        current[idx] = entry;
+      } else {
+        current.push(entry);
+      }
+      await this.internalPersistEntries(current, root);
+    });
+  }
+
+  private async internalPersistEntries(entries: InfobaseEntry[], baseRoot?: InfobaseStorageRoot): Promise<void> {
+    const root = baseRoot ?? this.refreshFromMemento();
+    const folders = [...(root.folders ?? [])];
     validateInfobaseCatalog(entries, folders);
-    const previous = this.readRootFromMemento().entries;
-    await this.syncSecrets(previous, entries);
+    await this.syncSecrets(root.entries, entries);
     await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
       rootSchemaVersion: 3,
       entries,
@@ -129,21 +175,6 @@ export class InfobaseStorageService {
     this.storedEntries = [...entries];
     this.storedFolders = [...folders];
     this.fireCatalogChanged();
-  }
-
-  /**
-   * Inserts or updates one entry by `id`.
-   */
-  async upsert(entry: InfobaseEntry): Promise<void> {
-    validateInfobaseEntry(entry);
-    const current = [...this.getStoredOrRead()];
-    const idx = current.findIndex((e) => e.id === entry.id);
-    if (idx >= 0) {
-      current[idx] = entry;
-    } else {
-      current.push(entry);
-    }
-    await this.saveAll(current);
   }
 
   /**
@@ -162,21 +193,24 @@ export class InfobaseStorageService {
    * Removes an entry and deletes its password secret (idempotent).
    */
   async remove(id: string): Promise<void> {
-    await this.secretStorage.delete(infobasePasswordSecretKey(id));
-    const current = [...this.getStoredOrRead()];
-    const filtered = current.filter((e) => e.id !== id);
-    if (filtered.length === current.length) {
-      return;
-    }
-    const folders = this.getStoredOrReadFolders();
-    await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
-      rootSchemaVersion: 3,
-      entries: filtered,
-      folders,
-    } satisfies InfobaseStorageRoot);
-    this.storedEntries = filtered;
-    this.storedFolders = [...folders];
-    this.fireCatalogChanged();
+    return this.runExclusive(async () => {
+      await this.secretStorage.delete(infobasePasswordSecretKey(id));
+      const root = this.refreshFromMemento();
+      const current = root.entries;
+      const filtered = current.filter((e) => e.id !== id);
+      if (filtered.length === current.length) {
+        return;
+      }
+      const folders = [...(root.folders ?? [])];
+      await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
+        rootSchemaVersion: 3,
+        entries: filtered,
+        folders,
+      } satisfies InfobaseStorageRoot);
+      this.storedEntries = filtered;
+      this.storedFolders = [...folders];
+      this.fireCatalogChanged();
+    });
   }
 
   private async syncSecrets(previous: InfobaseEntry[], next: InfobaseEntry[]): Promise<void> {
