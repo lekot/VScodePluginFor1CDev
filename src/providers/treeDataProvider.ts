@@ -1048,8 +1048,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * Search nodes by name (substring, case-insensitive). Uses name index for speed.
    * Returns only nodes currently in cache (loaded so far).
    */
-  searchByName(query: string): TreeNode[] {
-    return this.cache.searchByName(query);
+  searchByName(query: string, contextNodeOrRootPath?: TreeNode | string): TreeNode[] {
+    return this.cache.searchByName(query, contextNodeOrRootPath);
   }
 
   /**
@@ -1069,7 +1069,24 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (!el.properties) {
       el.properties = {};
     }
+    const childrenToRemove = new Set<TreeNode>();
+    if (el.children) {
+      for (const child of el.children) {
+        childrenToRemove.add(child);
+      }
+    }
+    if (element !== el && element.children) {
+      for (const child of element.children) {
+        childrenToRemove.add(child);
+      }
+    }
+    for (const child of childrenToRemove) {
+      this.cache.removeNode(child);
+    }
     el.children = [];
+    if (element !== el) {
+      element.children = [];
+    }
     delete (el.properties as Record<string, unknown>)._indexLoaded;
     if (R6_LAZY_SECTION_IDS.has(el.id) || el.type === MetadataType.Subsystem) {
       (el.properties as Record<string, unknown>)._lazy = true;
@@ -1262,6 +1279,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
             const existingSubsystems = (activeElement.children ?? []).filter(
               (c) => c.type === MetadataType.Subsystem
             );
+            const toRemove = (activeElement.children ?? []).filter(
+              (c) => c.type !== MetadataType.Subsystem
+            );
+            for (const child of toRemove) {
+              this.cache.removeNode(child);
+            }
             const children = existingSubsystems.length > 0 ? [...existingSubsystems, ...loaded] : loaded;
             for (const c of loaded) {
               c.parent = activeElement;
@@ -1440,9 +1463,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }
 
     const [removedNode] = parent.children.splice(removedIndex, 1);
+
     if (!removedNode) {
       return null;
     }
+    this.cache.removeNode(removedNode);
 
     const configPath = this.getConfigPathForNode(parent) ?? '';
     const token: OptimisticDeleteToken = {
@@ -1490,8 +1515,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * @param query Normalized (e.g. lowercase) or exact name to match
    * @returns Nodes whose name matches (includes partial match if index is extended)
    */
-  findNodesByName(query: string): TreeNode[] {
-    return this.cache.findByName(query);
+  findNodesByName(query: string, contextNodeOrRootPath?: TreeNode | string): TreeNode[] {
+    return this.cache.findByName(query, contextNodeOrRootPath);
   }
 
   /**

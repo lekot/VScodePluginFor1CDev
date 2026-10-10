@@ -10,6 +10,7 @@ interface CacheEntry {
   configPath: string;
   tree: string;
   timestamp?: number; // mtime of Configuration.xml when cache was created
+  fileSize?: number; // size in bytes of Configuration.xml when cache was created
   version?: string; // Cache format version for future migrations
 }
 
@@ -58,7 +59,11 @@ export async function loadTreeFromCache(
       const stats = await fs.promises.stat(configXmlPath);
       const currentMtime = stats.mtimeMs;
       
-      if (entry.timestamp && currentMtime > entry.timestamp) {
+      if (entry.timestamp === undefined || Math.abs(currentMtime - entry.timestamp) > 0.001) {
+        Logger.info('Cache invalidated: Configuration.xml modified or timestamp mismatch since cache creation');
+        return null;
+      }
+      if (entry.fileSize !== undefined && entry.fileSize !== stats.size) {
         Logger.info('Cache invalidated: Configuration.xml modified since cache creation');
         return null;
       }
@@ -114,10 +119,12 @@ export async function saveTreeToCache(
     
     // Get Configuration.xml mtime for cache validation
     let timestamp: number | undefined;
+    let fileSize: number | undefined;
     try {
       const configXmlPath = path.join(configPath, CONFIGURATION_XML);
       const stats = await fs.promises.stat(configXmlPath);
       timestamp = stats.mtimeMs;
+      fileSize = stats.size;
     } catch {
       // If we can't get timestamp, cache will still work but won't validate freshness
       Logger.debug('Could not get Configuration.xml timestamp for cache');
@@ -127,6 +134,7 @@ export async function saveTreeToCache(
       configPath, 
       tree: serializeTree(root),
       timestamp,
+      fileSize,
       version: CACHE_VERSION
     };
     await fs.promises.writeFile(filePath, JSON.stringify(entry), 'utf-8');
