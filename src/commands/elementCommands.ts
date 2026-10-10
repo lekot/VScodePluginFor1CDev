@@ -5,7 +5,7 @@ import {
   createForm,
   deleteElement,
   duplicateElement,
-  findReferencesToElement,
+  findReferencesWithDiagnostics,
   isRootObjectCreateInTypeFolder,
   planDuplicateRootElement,
   planRenameRootElement,
@@ -223,14 +223,27 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
           : target.parent?.type === MetadataType.Extension
             ? target.parent.parent
             : target;
-      const refs =
+      const scanResult =
         effectiveNode && effectiveNode.type !== MetadataType.Configuration
-          ? await findReferencesToElement(configPath, effectiveNode.name, effectiveNode.type)
-          : [];
-      const refMsg =
-        refs.length > 0
-          ? ` Найдено ссылок: ${refs.length} (файлов: ${new Set(refs.map((r) => r.filePath)).size}). Удаление может нарушить конфигурацию.`
-          : '';
+          ? await findReferencesWithDiagnostics(configPath, effectiveNode.name, effectiveNode.type)
+          : { matches: [], authoritative: true, diagnostics: [] };
+      const refs = scanResult.matches;
+      let refMsg = '';
+      if (!scanResult.authoritative) {
+        refMsg += ' (Внимание: сканирование ссылок неполное, часть файлов недоступна).';
+      }
+      if (refs.length > 0) {
+        refMsg += ` Найдено ссылок: ${refs.length} (файлов: ${new Set(refs.map((r) => r.filePath)).size}). Удаление может нарушить конфигурацию.`;
+      }
+
+
+
+
+
+
+
+
+
       const choice = await vscode.window.showWarningMessage(
         `Удалить элемент «${target.name}»?${refMsg}`,
         { modal: true },

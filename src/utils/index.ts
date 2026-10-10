@@ -2,3 +2,4 @@
 
 export * from './XMLWriter';
 export * from './logger';
+export * from './webviewSecurity';

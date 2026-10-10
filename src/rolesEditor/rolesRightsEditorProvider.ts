@@ -21,6 +21,7 @@ import { loadMetadataObjects } from './metadataLoader';
 import { updateRight } from './rightsUpdateUtils';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
+import { createNonce } from '../utils/webviewSecurity';
 import { FilterState, createDefaultFilterState } from './models/filterState';
 import { MetadataType } from '../models/treeNode';
 import {
@@ -299,6 +300,8 @@ export class RolesRightsEditorProvider {
 
     const htmlPath = this.resolveRolesEditorWebviewHtmlPath();
     let html = await fs.promises.readFile(htmlPath, 'utf8');
+    const nonce = createNonce();
+    html = html.replace(/\$\{nonce\}/g, nonce);
 
     // Prepare data to inject
     const roleDataJson = escapeJsonForScript(
@@ -913,6 +916,7 @@ export class RolesRightsEditorProvider {
       <html>
       <head>
         <meta charset="UTF-8">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
         <title>Error</title>
         <style>
           body {
