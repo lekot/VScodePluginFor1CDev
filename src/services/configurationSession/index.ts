@@ -5,3 +5,4 @@ export * from './mutationPlan';
 export * from './pathBoundary';
 export * from './types';
 export * from './WorkspaceRegistry';
+export * from './WorkspaceRegistryCoordinator';

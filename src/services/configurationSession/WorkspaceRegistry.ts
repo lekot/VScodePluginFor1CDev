@@ -61,6 +61,7 @@ interface DiscoveredIdentityFacts {
 export class WorkspaceRegistry {
   private sessions = new Map<ConfigurationId, ConfigurationSession>();
   private descriptors = new Map<ConfigurationId, ConfigurationDescriptor>();
+  private rootIndex = new Map<string, ConfigurationSession>();
   private disposed = false;
   private identityStoreLoaded = false;
   private identityStore: PersistedIdentityStore = { version: 1, entries: [], tombstones: [] };
@@ -106,6 +107,7 @@ export class WorkspaceRegistry {
     }
     this.sessions = nextSessions;
     this.descriptors = nextDescriptors;
+    this.rebuildRootIndex();
     await Promise.all(removed.map(([, session]) => session.dispose()));
   }
 
@@ -143,27 +145,134 @@ export class WorkspaceRegistry {
     return compatible[0]!;
   }
 
-  async resolveResource(resource: string): Promise<ConfigurationSession> {
+  async registerTargetedRoot(candidate: DiscoveredConfiguration): Promise<ConfigurationSession> {
     this.ensureActive();
-    const resourcePath = resource.startsWith('file:') ? fileURLToPath(resource) : resource;
-    let best: ConfigurationSession | undefined;
-    for (const session of this.sessions.values()) {
-      try {
-        const { canonicalTarget } = await assertPathWithinRoot(session.identity.rootPath, resourcePath);
-        if (
-          isPathInside(session.identity.rootPath, canonicalTarget)
-          && (!best || session.identity.rootPath.length > best.identity.rootPath.length)
-        ) {
-          best = session;
-        }
-      } catch {
-        // Not contained by this root.
+    await this.loadIdentityStore();
+    const facts = await discoverIdentityFacts(candidate);
+    const identity = this.resolveIdentity(facts);
+    const existing = this.sessions.get(identity.configurationId);
+    const session = existing ?? new ConfigurationSession(identity);
+    session.updateIdentity(identity);
+
+    // Clean up any stale session that previously owned this rootPath under a different configurationId
+    const rootKey = normalizePathKey(identity.rootPath);
+    for (const [id, s] of this.sessions.entries()) {
+      if (id !== identity.configurationId && normalizePathKey(s.identity.rootPath) === rootKey) {
+        this.sessions.delete(id);
+        this.descriptors.delete(id);
+        void s.dispose();
       }
     }
-    if (!best) {
-      throw new WorkspaceRegistryError('CONFIGURATION_NOT_FOUND', `Ресурс не принадлежит конфигурации: ${resource}`);
+
+    this.sessions.set(identity.configurationId, session);
+    this.descriptors.set(identity.configurationId, {
+      ...identity,
+      label: path.basename(identity.rootPath),
+      health: facts.health,
+    });
+    this.rootIndex.set(rootKey, session);
+    await this.persistIdentityStore();
+    return session;
+  }
+
+  async unregisterTargetedRoot(configPath: string): Promise<void> {
+    this.ensureActive();
+    const canonical = await fs.promises.realpath(path.resolve(configPath)).catch(() => path.resolve(configPath));
+    const toRemove: Array<[ConfigurationId, ConfigurationSession]> = [];
+    for (const [id, session] of this.sessions.entries()) {
+      if (session.identity.rootPath === canonical) {
+        toRemove.push([id, session]);
+      }
     }
-    return best;
+    for (const [id, session] of toRemove) {
+      this.sessions.delete(id);
+      this.descriptors.delete(id);
+      this.rootIndex.delete(normalizePathKey(session.identity.rootPath));
+      await session.dispose();
+    }
+    if (toRemove.length > 0) {
+      await this.persistIdentityStore();
+    }
+  }
+
+  has(configurationId: ConfigurationId | string): boolean {
+    this.ensureActive();
+    return this.sessions.has(configurationId as ConfigurationId);
+  }
+
+  getByPath(configPath: string): ConfigurationSession | undefined {
+    this.ensureActive();
+    return this.rootIndex.get(normalizePathKey(configPath));
+  }
+
+  async resolveResource(resource: string): Promise<ConfigurationSession> {
+    this.ensureActive();
+    const rawPath = resource.startsWith('file:') ? fileURLToPath(resource) : resource;
+    const canonicalTarget = await fs.promises.realpath(rawPath).catch(() => path.resolve(rawPath));
+
+    // 1. O(depth) ancestor directory lookup from rootIndex
+    let candidate: ConfigurationSession | undefined;
+    let cursor: string | undefined = canonicalTarget;
+    while (cursor) {
+      candidate = this.rootIndex.get(normalizePathKey(cursor));
+      if (candidate) {
+        break;
+      }
+      const parent = path.dirname(cursor);
+      if (!parent || parent === cursor) {
+        break;
+      }
+      cursor = parent;
+    }
+
+    // 2. In-memory fallback prefix search if symlink or aliasing bypassed ancestor loop
+    if (!candidate) {
+      for (const session of this.sessions.values()) {
+        if (isPathInside(session.identity.rootPath, canonicalTarget)) {
+          if (!candidate || session.identity.rootPath.length > candidate.identity.rootPath.length) {
+            candidate = session;
+          }
+        }
+      }
+    }
+
+    // 3. Verify ONLY the matched candidate root without touching unrelated roots
+    if (candidate) {
+      try {
+        await fs.promises.access(candidate.identity.rootPath);
+        const { canonicalTarget: verifiedTarget } = await assertPathWithinRoot(candidate.identity.rootPath, canonicalTarget);
+        if (!isPathInside(candidate.identity.rootPath, verifiedTarget)) {
+          throw new Error('Target is not within candidate root');
+        }
+
+        const markerPath = fileURLToPath(candidate.identity.descriptorUri);
+        await fs.promises.access(markerPath);
+
+        const facts = await discoverIdentityFacts({
+          configPath: candidate.identity.rootPath,
+          format: candidate.identity.format,
+        });
+
+        if (facts.health === 'degraded' && candidate.identity.capabilities.write) {
+          throw new Error('Configuration descriptor became degraded on disk');
+        }
+
+        if (facts.descriptorUuid !== candidate.identity.descriptorUuid) {
+          throw new Error('Configuration descriptor identity changed on disk');
+        }
+
+        return candidate;
+      } catch {
+        const id = candidate.identity.configurationId;
+        this.sessions.delete(id);
+        this.descriptors.delete(id);
+        this.rootIndex.delete(normalizePathKey(candidate.identity.rootPath));
+        void candidate.dispose();
+        await this.persistIdentityStore().catch(() => undefined);
+      }
+    }
+
+    throw new WorkspaceRegistryError('CONFIGURATION_NOT_FOUND', `Ресурс не принадлежит конфигурации: ${resource}`);
   }
 
   /** Resolves ownership and enters the same per-configuration FIFO used by all metadata mutations. */
@@ -183,7 +292,15 @@ export class WorkspaceRegistry {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     this.descriptors.clear();
+    this.rootIndex.clear();
     await Promise.all(sessions.map((session) => session.dispose()));
+  }
+
+  private rebuildRootIndex(): void {
+    this.rootIndex.clear();
+    for (const session of this.sessions.values()) {
+      this.rootIndex.set(normalizePathKey(session.identity.rootPath), session);
+    }
   }
 
   private ensureActive(): void {
@@ -260,6 +377,7 @@ export class WorkspaceRegistry {
       rootPath: facts.rootPath,
       rootUri: facts.rootUri,
       descriptorUri: facts.descriptorUri,
+      descriptorUuid: facts.descriptorUuid,
       workspaceFolderUris: [facts.workspaceFolderUri],
       format: facts.format,
       capabilities: {
@@ -288,7 +406,10 @@ export class WorkspaceRegistry {
 
 async function discoverIdentityFacts(candidate: DiscoveredConfiguration): Promise<DiscoveredIdentityFacts> {
   const rootPath = await fs.promises.realpath(path.resolve(candidate.configPath));
-  const descriptorPath = path.join(rootPath, CONFIGURATION_XML);
+  const format = candidate.format ?? ConfigFormat.Designer;
+  const descriptorPath = format === ConfigFormat.EDT
+    ? path.join(rootPath, 'src', 'Configuration', 'Configuration.mdo')
+    : path.join(rootPath, CONFIGURATION_XML);
   let descriptorUuid: string | undefined;
   let descriptorUri = pathToFileURL(descriptorPath).toString();
   let health: ConfigurationDescriptor['health'] = 'degraded';
@@ -304,7 +425,6 @@ async function discoverIdentityFacts(candidate: DiscoveredConfiguration): Promis
   const workspaceFolderPath = candidate.workspaceFolderPath
     ? await fs.promises.realpath(path.resolve(candidate.workspaceFolderPath))
     : rootPath;
-  const format = candidate.format ?? ConfigFormat.Designer;
   return {
     rootPath,
     rootUri: pathToFileURL(rootPath).toString(),
@@ -336,4 +456,9 @@ function isPersistedTombstone(value: unknown): value is PersistedIdentityTombsto
 
 function isMissingError(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT');
+}
+
+function normalizePathKey(p: string): string {
+  const resolved = path.resolve(p);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
