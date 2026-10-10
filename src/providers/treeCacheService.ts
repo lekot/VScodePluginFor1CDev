@@ -11,7 +11,7 @@ export class TreeCacheService {
   /** ID → all nodes with that ID (for collision-safe lookup). */
   private nodeCandidatesById = new Map<string, TreeNode[]>();
   /** Normalized name (lowercase) → node ids, for fast search. */
-  private nameIndex = new Map<string, string[]>();
+  private nameIndex = new Map<string, TreeNode[]>();
   /** Per-root load context for lazy loading (key = root node id). */
   loadContextByRootId = new Map<string, { configPath: string; format: ConfigFormat }>();
 
@@ -62,7 +62,9 @@ export class TreeCacheService {
     const key = (node.name || '').toLowerCase();
     if (key) {
       const list = this.nameIndex.get(key) ?? [];
-      list.push(node.id);
+      if (!list.includes(node)) {
+        list.push(node);
+      }
       this.nameIndex.set(key, list);
     }
     if (node.children) {
@@ -86,33 +88,62 @@ export class TreeCacheService {
   /**
    * Find nodes by exact lowercase name (used for search).
    */
-  findByName(key: string): TreeNode[] {
+  findByName(key: string, contextNodeOrRootPath?: TreeNode | string): TreeNode[] {
     const normalizedKey = (key || '').toLowerCase().trim();
     if (!normalizedKey) {return [];}
-    const ids = this.nameIndex.get(normalizedKey);
-    if (!ids) {return [];}
-    const out: TreeNode[] = [];
-    for (const id of ids) {
-      const node = this.nodeCache.get(id);
-      if (node) {out.push(node);}
+    const nodes = this.nameIndex.get(normalizedKey);
+    if (!nodes || nodes.length === 0) {return [];}
+    const candidates = [...nodes];
+    if (contextNodeOrRootPath) {
+      const targetRoot = typeof contextNodeOrRootPath === 'string'
+        ? this.normalizeIdentityPath(contextNodeOrRootPath)
+        : this.getNodeRootIdentity(contextNodeOrRootPath);
+      if (targetRoot) {
+        candidates.sort((a, b) => {
+          const aMatch = this.getNodeRootIdentity(a) === targetRoot ? 1 : 0;
+          const bMatch = this.getNodeRootIdentity(b) === targetRoot ? 1 : 0;
+          return bMatch - aMatch;
+        });
+      }
     }
-    return out;
+    return candidates;
+
+
+
+
+
   }
 
   /**
    * Search nodes by name (substring, case-insensitive). Uses name index for speed.
    * Returns only nodes currently in cache (loaded so far).
    */
-  searchByName(query: string): TreeNode[] {
+  searchByName(query: string, contextNodeOrRootPath?: TreeNode | string): TreeNode[] {
     const q = (query || '').trim().toLowerCase();
     if (!q) {return [];}
     const result: TreeNode[] = [];
-    for (const [key, ids] of this.nameIndex) {
+    const seen = new Set<TreeNode>();
+    for (const [key, nodes] of this.nameIndex) {
       if (key.includes(q)) {
-        for (const id of ids) {
-          const node = this.nodeCache.get(id);
-          if (node) {result.push(node);}
+        for (const node of nodes) {
+
+          if (!seen.has(node)) {
+            seen.add(node);
+            result.push(node);
+          }
         }
+      }
+    }
+    if (contextNodeOrRootPath) {
+      const targetRoot = typeof contextNodeOrRootPath === 'string'
+        ? this.normalizeIdentityPath(contextNodeOrRootPath)
+        : this.getNodeRootIdentity(contextNodeOrRootPath);
+      if (targetRoot) {
+        result.sort((a, b) => {
+          const aMatch = this.getNodeRootIdentity(a) === targetRoot ? 1 : 0;
+          const bMatch = this.getNodeRootIdentity(b) === targetRoot ? 1 : 0;
+          return bMatch - aMatch;
+        });
       }
     }
     return result;

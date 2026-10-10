@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
 import { AtomicFileStorage, hashContent } from '../services/configurationSession/atomicFileStorage';
 import { randomUUID } from 'crypto';
+import { XMLValidator } from 'fast-xml-parser';
 import { RoleModel } from './models/roleModel';
 import type { MetadataObject } from './models/metadataObject';
 import { WebviewMessage, type ExtensionToWebviewMessage } from './models/webviewMessage';
@@ -649,6 +650,14 @@ export class RolesRightsEditorProvider {
             xmlContent,
             snapshotRoleModel.restrictionTemplatesText ?? ''
           );
+        }
+
+        const validation = XMLValidator.validate(xmlContent);
+        if (validation !== true) {
+          const detail = typeof validation === 'object' && validation?.err?.msg
+            ? `: ${validation.err.msg}`
+            : '';
+          throw new Error(`Не удалось сохранить права роли: невалидный XML${detail}`);
         }
 
         const rootPath = snapshotRootPath;

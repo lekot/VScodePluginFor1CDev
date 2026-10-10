@@ -1048,8 +1048,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * Search nodes by name (substring, case-insensitive). Uses name index for speed.
    * Returns only nodes currently in cache (loaded so far).
    */
-  searchByName(query: string): TreeNode[] {
-    return this.cache.searchByName(query);
+  searchByName(query: string, contextNodeOrRootPath?: TreeNode | string): TreeNode[] {
+    return this.cache.searchByName(query, contextNodeOrRootPath);
   }
 
   /**
@@ -1490,8 +1490,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * @param query Normalized (e.g. lowercase) or exact name to match
    * @returns Nodes whose name matches (includes partial match if index is extended)
    */
-  findNodesByName(query: string): TreeNode[] {
-    return this.cache.findByName(query);
+  findNodesByName(query: string, contextNodeOrRootPath?: TreeNode | string): TreeNode[] {
+    return this.cache.findByName(query, contextNodeOrRootPath);
   }
 
   /**
