@@ -23,8 +23,7 @@ import { registerConfigurationProjectCommands } from '../configurationProject/co
 import { registerAgentCommands } from '../agent/agentCommands';
 import { DebugSessionRegistry } from '../agent/debugSessionRegistry';
 import { activateAgentBridge } from '../agent/agentBridgeActivation';
-import { FormatDetector } from '../parsers/formatDetector';
-import { WorkspaceRegistry } from '../services/configurationSession/WorkspaceRegistry';
+import { WorkspaceRegistry, WorkspaceRegistryCoordinator } from '../services/configurationSession';
 import { configureConfigurationMutationGateway } from '../services/configurationSession/configurationMutationGateway';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import { sharedInfobaseConfigurationOperationQueue } from '../infobases/infobaseConfigurationOperationQueue';
@@ -80,28 +79,25 @@ export async function registerAllCommands({
     path.join(context.globalStorageUri.fsPath, 'configuration-identities.v1.json'),
   );
   state.workspaceRegistry = configurationRegistry;
-  let registryRefreshTail: Promise<void> = Promise.resolve();
+  const registryCoordinator = new WorkspaceRegistryCoordinator(configurationRegistry, {
+    getWorkspaceFolders: () => (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
+    getWorkspaceFolderForPath: (filePath) =>
+      vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
+  });
   const getConfigurationRegistry = async (): Promise<WorkspaceRegistry> => {
-    const refresh = async () => {
-      const folders = vscode.workspace.workspaceFolders ?? [];
-      const configs = await FormatDetector.findAllConfigurationRoots(folders.map((folder) => folder.uri.fsPath));
-      await configurationRegistry.refresh(await Promise.all(configs.map(async (config) => ({
-        ...config,
-        format: await FormatDetector.detect(config.configPath),
-      }))));
-    };
-    const current = registryRefreshTail.then(refresh, refresh);
-    registryRefreshTail = current.then(() => undefined, () => undefined);
-    await current;
-    return configurationRegistry;
+    return registryCoordinator.getRegistry();
   };
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      void registryCoordinator.refreshWorkspace();
+    }),
+  );
   const runConfigurationMutation = async <T>(
     configPath: string,
     kind: string,
     operation: () => Promise<T>,
   ): Promise<T> => {
-    const registry = await getConfigurationRegistry();
-    const session = await registry.resolveResource(configPath);
+    const session = await registryCoordinator.resolveResource(configPath);
     const outcome = await session.enqueue({ kind, execute: operation });
     if (outcome.status === 'committed') {
       return outcome.value;
@@ -111,8 +107,7 @@ export async function registerAllCommands({
       : new Error('Операция конфигурации отменена.');
   };
   const runConfigurationPlan = async <T>(configPath: string, plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>): Promise<T> => {
-    const registry = await getConfigurationRegistry();
-    const session = await registry.resolveResource(configPath);
+    const session = await registryCoordinator.resolveResource(configPath);
     const outcome = await session.enqueuePlan(plan);
     if (outcome.status === 'committed') { return outcome.value; }
     throw outcome.status === 'failed' || outcome.status === 'conflict'
@@ -145,7 +140,7 @@ export async function registerAllCommands({
     getConfigurationRegistry,
     runConfigurationMutation,
   });
-  context.subscriptions.push({ dispose: () => { void configurationRegistry.dispose(); } });
+  context.subscriptions.push({ dispose: () => { void registryCoordinator.dispose(); } });
 
   // Agent API — регистрируем отдельно (не возвращают Disposable[] — управляют подписками сами)
   const debugRegistry = new DebugSessionRegistry();

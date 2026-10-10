@@ -143,11 +143,74 @@ export class WorkspaceRegistry {
     return compatible[0]!;
   }
 
+  async registerTargetedRoot(candidate: DiscoveredConfiguration): Promise<ConfigurationSession> {
+    this.ensureActive();
+    await this.loadIdentityStore();
+    const facts = await discoverIdentityFacts(candidate);
+    const identity = this.resolveIdentity(facts);
+    const existing = this.sessions.get(identity.configurationId);
+    const session = existing ?? new ConfigurationSession(identity);
+    session.updateIdentity(identity);
+    this.sessions.set(identity.configurationId, session);
+    this.descriptors.set(identity.configurationId, {
+      ...identity,
+      label: path.basename(identity.rootPath),
+      health: facts.health,
+    });
+    await this.persistIdentityStore();
+    return session;
+  }
+
+  async unregisterTargetedRoot(configPath: string): Promise<void> {
+    this.ensureActive();
+    const canonical = await fs.promises.realpath(path.resolve(configPath)).catch(() => path.resolve(configPath));
+    const toRemove: Array<[ConfigurationId, ConfigurationSession]> = [];
+    for (const [id, session] of this.sessions.entries()) {
+      if (session.identity.rootPath === canonical) {
+        toRemove.push([id, session]);
+      }
+    }
+    for (const [id, session] of toRemove) {
+      this.sessions.delete(id);
+      this.descriptors.delete(id);
+      await session.dispose();
+    }
+    if (toRemove.length > 0) {
+      await this.persistIdentityStore();
+    }
+  }
+
+  has(configurationId: ConfigurationId | string): boolean {
+    this.ensureActive();
+    return this.sessions.has(configurationId as ConfigurationId);
+  }
+
+  getByPath(configPath: string): ConfigurationSession | undefined {
+    this.ensureActive();
+    for (const session of this.sessions.values()) {
+      if (session.identity.rootPath === configPath) {
+        return session;
+      }
+    }
+    return undefined;
+  }
+
   async resolveResource(resource: string): Promise<ConfigurationSession> {
     this.ensureActive();
-    const resourcePath = resource.startsWith('file:') ? fileURLToPath(resource) : resource;
+    const rawPath = resource.startsWith('file:') ? fileURLToPath(resource) : resource;
+    const resourcePath = await fs.promises.realpath(rawPath).catch(() => rawPath);
     let best: ConfigurationSession | undefined;
-    for (const session of this.sessions.values()) {
+    for (const session of [...this.sessions.values()]) {
+      try {
+        await fs.promises.access(session.identity.rootPath);
+      } catch {
+        const id = session.identity.configurationId;
+        this.sessions.delete(id);
+        this.descriptors.delete(id);
+        void session.dispose();
+        continue;
+      }
+
       try {
         const { canonicalTarget } = await assertPathWithinRoot(session.identity.rootPath, resourcePath);
         if (
@@ -160,10 +223,10 @@ export class WorkspaceRegistry {
         // Not contained by this root.
       }
     }
-    if (!best) {
-      throw new WorkspaceRegistryError('CONFIGURATION_NOT_FOUND', `Ресурс не принадлежит конфигурации: ${resource}`);
+    if (best) {
+      return best;
     }
-    return best;
+    throw new WorkspaceRegistryError('CONFIGURATION_NOT_FOUND', `Ресурс не принадлежит конфигурации: ${resource}`);
   }
 
   /** Resolves ownership and enters the same per-configuration FIFO used by all metadata mutations. */
