@@ -6,6 +6,8 @@ import { ROOT_TAGS_WITHOUT_CHILDOBJECTS, XMLWriter } from '../utils/XMLWriter';
 import { validateElementName } from '../utils/elementNameValidator';
 import {
   findReferencesToElement,
+  findReferencesWithDiagnostics,
+  ReferenceScanError,
   planIdentityTokenReplacements,
   replaceIdentityTokensInProject,
 } from '../utils/referenceFinder';
@@ -1638,6 +1640,9 @@ export async function renameElement(
     let content = rewriteRootProperties(originalContent, rootTag, oldName, name);
     content = rewriteOwnIdentityDeclarations(content, rootTag, oldName, name);
 
+    // Fail-closed preflight: verify complete reference traversal before modifying disk (#203)
+    await planIdentityTokenReplacements(configPath, identityReplacements);
+
     let directoryMoved = false;
     let configurationChanged = false;
     let updated: { filePath: string; replaceCount: number }[] = [];
@@ -1691,4 +1696,4 @@ export async function renameElement(
 }
 
 
-export { findReferencesToElement };
+export { findReferencesToElement, findReferencesWithDiagnostics, ReferenceScanError };
