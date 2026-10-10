@@ -61,6 +61,7 @@ interface DiscoveredIdentityFacts {
 export class WorkspaceRegistry {
   private sessions = new Map<ConfigurationId, ConfigurationSession>();
   private descriptors = new Map<ConfigurationId, ConfigurationDescriptor>();
+  private rootIndex = new Map<string, ConfigurationSession>();
   private disposed = false;
   private identityStoreLoaded = false;
   private identityStore: PersistedIdentityStore = { version: 1, entries: [], tombstones: [] };
@@ -106,6 +107,7 @@ export class WorkspaceRegistry {
     }
     this.sessions = nextSessions;
     this.descriptors = nextDescriptors;
+    this.rebuildRootIndex();
     await Promise.all(removed.map(([, session]) => session.dispose()));
   }
 
@@ -157,6 +159,7 @@ export class WorkspaceRegistry {
       label: path.basename(identity.rootPath),
       health: facts.health,
     });
+    this.rootIndex.set(normalizePathKey(identity.rootPath), session);
     await this.persistIdentityStore();
     return session;
   }
@@ -173,6 +176,7 @@ export class WorkspaceRegistry {
     for (const [id, session] of toRemove) {
       this.sessions.delete(id);
       this.descriptors.delete(id);
+      this.rootIndex.delete(normalizePathKey(session.identity.rootPath));
       await session.dispose();
     }
     if (toRemove.length > 0) {
@@ -187,45 +191,58 @@ export class WorkspaceRegistry {
 
   getByPath(configPath: string): ConfigurationSession | undefined {
     this.ensureActive();
-    for (const session of this.sessions.values()) {
-      if (session.identity.rootPath === configPath) {
-        return session;
-      }
-    }
-    return undefined;
+    return this.rootIndex.get(normalizePathKey(configPath));
   }
 
   async resolveResource(resource: string): Promise<ConfigurationSession> {
     this.ensureActive();
     const rawPath = resource.startsWith('file:') ? fileURLToPath(resource) : resource;
-    const resourcePath = await fs.promises.realpath(rawPath).catch(() => rawPath);
-    let best: ConfigurationSession | undefined;
-    for (const session of [...this.sessions.values()]) {
-      try {
-        await fs.promises.access(session.identity.rootPath);
-      } catch {
-        const id = session.identity.configurationId;
-        this.sessions.delete(id);
-        this.descriptors.delete(id);
-        void session.dispose();
-        continue;
-      }
+    const canonicalTarget = await fs.promises.realpath(rawPath).catch(() => path.resolve(rawPath));
 
+    // 1. O(depth) ancestor directory lookup from rootIndex
+    let candidate: ConfigurationSession | undefined;
+    let cursor: string | undefined = canonicalTarget;
+    while (cursor) {
+      candidate = this.rootIndex.get(normalizePathKey(cursor));
+      if (candidate) {
+        break;
+      }
+      const parent = path.dirname(cursor);
+      if (!parent || parent === cursor) {
+        break;
+      }
+      cursor = parent;
+    }
+
+    // 2. In-memory fallback prefix search if symlink or aliasing bypassed ancestor loop
+    if (!candidate) {
+      for (const session of this.sessions.values()) {
+        if (isPathInside(session.identity.rootPath, canonicalTarget)) {
+          if (!candidate || session.identity.rootPath.length > candidate.identity.rootPath.length) {
+            candidate = session;
+          }
+        }
+      }
+    }
+
+    // 3. Verify ONLY the matched candidate root without touching unrelated roots
+    if (candidate) {
       try {
-        const { canonicalTarget } = await assertPathWithinRoot(session.identity.rootPath, resourcePath);
-        if (
-          isPathInside(session.identity.rootPath, canonicalTarget)
-          && (!best || session.identity.rootPath.length > best.identity.rootPath.length)
-        ) {
-          best = session;
+        await fs.promises.access(candidate.identity.rootPath);
+        const { canonicalTarget: verifiedTarget } = await assertPathWithinRoot(candidate.identity.rootPath, canonicalTarget);
+        if (isPathInside(candidate.identity.rootPath, verifiedTarget)) {
+          return candidate;
         }
       } catch {
-        // Not contained by this root.
+        const id = candidate.identity.configurationId;
+        this.sessions.delete(id);
+        this.descriptors.delete(id);
+        this.rootIndex.delete(normalizePathKey(candidate.identity.rootPath));
+        void candidate.dispose();
+        await this.persistIdentityStore().catch(() => undefined);
       }
     }
-    if (best) {
-      return best;
-    }
+
     throw new WorkspaceRegistryError('CONFIGURATION_NOT_FOUND', `Ресурс не принадлежит конфигурации: ${resource}`);
   }
 
@@ -246,7 +263,15 @@ export class WorkspaceRegistry {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     this.descriptors.clear();
+    this.rootIndex.clear();
     await Promise.all(sessions.map((session) => session.dispose()));
+  }
+
+  private rebuildRootIndex(): void {
+    this.rootIndex.clear();
+    for (const session of this.sessions.values()) {
+      this.rootIndex.set(normalizePathKey(session.identity.rootPath), session);
+    }
   }
 
   private ensureActive(): void {
@@ -399,4 +424,9 @@ function isPersistedTombstone(value: unknown): value is PersistedIdentityTombsto
 
 function isMissingError(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT');
+}
+
+function normalizePathKey(p: string): string {
+  const resolved = path.resolve(p);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }

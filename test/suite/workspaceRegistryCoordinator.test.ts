@@ -195,6 +195,79 @@ suite('WorkspaceRegistryCoordinator and WorkspaceRegistry Lifecycle (#199)', () 
       await registry.dispose();
     }
   });
+
+  test('targeted fallback rejects configurations from outside or sibling workspace roots (#199 review)', async () => {
+    const workWs = path.join(tempDir, 'work');
+    const siblingWs = path.join(tempDir, 'work-extra');
+    const outsideWs = path.join(tempDir, 'outside');
+    const configSibling = await createTestConfiguration(path.join(siblingWs, 'configSib'), '44444444-4444-4444-4444-444444444444');
+    const configOutside = await createTestConfiguration(path.join(outsideWs, 'configOut'), '55555555-5555-5555-5555-555555555555');
+    await fs.promises.mkdir(workWs, { recursive: true });
+
+    const registry = new WorkspaceRegistry();
+    const coordinator = new WorkspaceRegistryCoordinator(registry, {
+      getWorkspaceFolders: () => [workWs],
+      getWorkspaceFolderForPath: (filePath: string) => {
+        const rel = path.relative(workWs, filePath);
+        if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+          return workWs;
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await assert.rejects(
+        async () => coordinator.resolveResource(configSibling),
+        (err: unknown) => err instanceof WorkspaceRegistryError && err.code === 'CONFIGURATION_NOT_FOUND',
+        'Sibling directory must NOT be treated as contained inside workspace folder',
+      );
+
+      await assert.rejects(
+        async () => coordinator.resolveResource(configOutside),
+        (err: unknown) => err instanceof WorkspaceRegistryError && err.code === 'CONFIGURATION_NOT_FOUND',
+        'Outside directory must NOT be registered into workspace registry',
+      );
+
+      await assert.rejects(
+        async () => coordinator.registerTargetedRoot({ configPath: configOutside, format: ConfigFormat.Designer }),
+        (err: unknown) => err instanceof WorkspaceRegistryError && err.code === 'CONFIGURATION_NOT_FOUND',
+      );
+    } finally {
+      await coordinator.dispose();
+    }
+  });
+
+  test('resolving resource in one root does not access or stat unrelated roots (#199 review)', async () => {
+    const registry = new WorkspaceRegistry();
+    try {
+      await registry.registerTargetedRoot({ configPath: configRootA, format: ConfigFormat.Designer });
+      await registry.registerTargetedRoot({ configPath: configRootB, format: ConfigFormat.Designer });
+
+      const originalAccess = fs.promises.access;
+      const accessedRoots = new Map<string, number>();
+      fs.promises.access = async (p: fs.PathLike, mode?: number) => {
+        const str = p.toString();
+        accessedRoots.set(str, (accessedRoots.get(str) ?? 0) + 1);
+        return originalAccess(p, mode);
+      };
+
+      try {
+        const targetFile = path.join(configRootA, 'Configuration.xml');
+        for (let i = 0; i < 50; i++) {
+          const session = await registry.resolveResource(targetFile);
+          assert.strictEqual(session.identity.rootPath, configRootA);
+        }
+
+        const bAccesses = accessedRoots.get(configRootB) ?? 0;
+        assert.strictEqual(bAccesses, 0, 'Unrelated roots must NOT be accessed when resolving a target in a different root (#199)');
+      } finally {
+        fs.promises.access = originalAccess;
+      }
+    } finally {
+      await registry.dispose();
+    }
+  });
 });
 
 async function createTestConfiguration(root: string, uuid: string): Promise<string> {

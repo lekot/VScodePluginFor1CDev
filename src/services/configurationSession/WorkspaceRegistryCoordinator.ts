@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { FormatDetector } from '../../parsers/formatDetector';
 import type { ConfigurationSession } from './ConfigurationSession';
 import { WorkspaceRegistry, WorkspaceRegistryError } from './WorkspaceRegistry';
@@ -102,8 +103,14 @@ export class WorkspaceRegistryCoordinator {
 
     const detector = this.deps.detectFormat ?? ((p: string) => FormatDetector.detect(p));
     const format = await detector(candidateRoot);
-    const workspaceFolder = this.deps.getWorkspaceFolderForPath?.(candidateRoot)
-      ?? this.deps.getWorkspaceFolders().find((wf) => candidateRoot.startsWith(wf));
+    const workspaceFolders = this.deps.getWorkspaceFolders();
+    const workspaceFolder = this.findContainingWorkspaceFolder(candidateRoot, workspaceFolders);
+    if (!workspaceFolder) {
+      throw new WorkspaceRegistryError(
+        'CONFIGURATION_NOT_FOUND',
+        `Конфигурация находится вне открытого workspace: ${candidateRoot}`,
+      );
+    }
 
     await this.registry.registerTargetedRoot({
       configPath: candidateRoot,
@@ -119,7 +126,20 @@ export class WorkspaceRegistryCoordinator {
    */
   async registerTargetedRoot(candidate: DiscoveredConfiguration): Promise<ConfigurationSession> {
     this.ensureActive();
-    return this.registry.registerTargetedRoot(candidate);
+    const workspaceFolders = this.deps.getWorkspaceFolders();
+    const workspaceFolder = candidate.workspaceFolderPath
+      ? this.findContainingWorkspaceFolder(candidate.workspaceFolderPath, workspaceFolders)
+      : this.findContainingWorkspaceFolder(candidate.configPath, workspaceFolders);
+    if (!workspaceFolder) {
+      throw new WorkspaceRegistryError(
+        'CONFIGURATION_NOT_FOUND',
+        `Конфигурация находится вне открытого workspace: ${candidate.configPath}`,
+      );
+    }
+    return this.registry.registerTargetedRoot({
+      ...candidate,
+      workspaceFolderPath: workspaceFolder,
+    });
   }
 
   /**
@@ -144,6 +164,30 @@ export class WorkspaceRegistryCoordinator {
     }
   }
 
+  private findContainingWorkspaceFolder(
+    candidateRoot: string,
+    workspaceFolders: readonly string[],
+  ): string | undefined {
+    const fromDep = this.deps.getWorkspaceFolderForPath?.(candidateRoot);
+    if (fromDep) {
+      const canonicalFromDep = path.resolve(fromDep);
+      const isKnownWf = workspaceFolders.some((wf) => isSamePath(path.resolve(wf), canonicalFromDep));
+      if (isKnownWf && isCanonicalPathInside(canonicalFromDep, path.resolve(candidateRoot))) {
+        return canonicalFromDep;
+      }
+    }
+
+    const resolvedCandidate = path.resolve(candidateRoot);
+    for (const wf of workspaceFolders) {
+      const resolvedWf = path.resolve(wf);
+      if (isCanonicalPathInside(resolvedWf, resolvedCandidate)) {
+        return resolvedWf;
+      }
+    }
+
+    return undefined;
+  }
+
   private async performWorkspaceScan(): Promise<void> {
     const folders = this.deps.getWorkspaceFolders();
     const scanner = this.deps.findAllConfigurationRoots
@@ -159,4 +203,17 @@ export class WorkspaceRegistryCoordinator {
     );
     await this.registry.refresh(discovered);
   }
+}
+
+function isCanonicalPathInside(parent: string, child: string): boolean {
+  const normParent = process.platform === 'win32' ? parent.toLowerCase() : parent;
+  const normChild = process.platform === 'win32' ? child.toLowerCase() : child;
+  const rel = path.relative(normParent, normChild);
+  return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
+}
+
+function isSamePath(a: string, b: string): boolean {
+  const normA = process.platform === 'win32' ? a.toLowerCase() : a;
+  const normB = process.platform === 'win32' ? b.toLowerCase() : b;
+  return normA === normB;
 }
