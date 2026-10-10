@@ -335,6 +335,40 @@ suite('WorkspaceRegistryCoordinator and WorkspaceRegistry Lifecycle (#199)', () 
         async () => coordinator.registerTargetedRoot({ configPath: configOutside, format: ConfigFormat.Designer }),
         (err: unknown) => err instanceof WorkspaceRegistryError && err.code === 'CONFIGURATION_NOT_FOUND',
       );
+
+      // Scenario 1: workspaceFolderPath is inside workspace, but candidate.configPath is outside
+      await assert.rejects(
+        async () => coordinator.registerTargetedRoot({
+          configPath: configOutside,
+          workspaceFolderPath: workWs,
+          format: ConfigFormat.Designer,
+        }),
+        (err: unknown) => err instanceof WorkspaceRegistryError && err.code === 'CONFIGURATION_NOT_FOUND',
+        'Direct registerTargetedRoot must reject outside configPath even when candidate.workspaceFolderPath is inside workspace (#199 review P1)',
+      );
+
+      // Scenario 2: symlink/junction inside workspace folder pointing to outside directory
+      const linkInside = path.join(workWs, 'link-to-outside');
+      try {
+        const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+        await fs.promises.symlink(configOutside, linkInside, linkType);
+      } catch {
+        // If symlinks not permitted in test environment, skip symlink creation
+      }
+
+      if (fs.existsSync(linkInside)) {
+        await assert.rejects(
+          async () => coordinator.registerTargetedRoot({ configPath: linkInside, format: ConfigFormat.Designer }),
+          (err: unknown) => err instanceof WorkspaceRegistryError && err.code === 'CONFIGURATION_NOT_FOUND',
+          'registerTargetedRoot must resolve realpath and reject symlink inside workspace pointing to outside directory (#199 review P1)',
+        );
+
+        await assert.rejects(
+          async () => coordinator.resolveResource(linkInside),
+          (err: unknown) => err instanceof WorkspaceRegistryError && err.code === 'CONFIGURATION_NOT_FOUND',
+          'resolveResource must resolve realpath and reject symlink inside workspace pointing to outside directory (#199 review P1)',
+        );
+      }
     } finally {
       await coordinator.dispose();
     }

@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import { FormatDetector } from '../../parsers/formatDetector';
 import type { ConfigurationSession } from './ConfigurationSession';
@@ -104,7 +105,7 @@ export class WorkspaceRegistryCoordinator {
     const detector = this.deps.detectFormat ?? ((p: string) => FormatDetector.detect(p));
     const format = await detector(candidateRoot);
     const workspaceFolders = this.deps.getWorkspaceFolders();
-    const workspaceFolder = this.findContainingWorkspaceFolder(candidateRoot, workspaceFolders);
+    const workspaceFolder = await this.findContainingWorkspaceFolder(candidateRoot, workspaceFolders);
     if (!workspaceFolder) {
       throw new WorkspaceRegistryError(
         'CONFIGURATION_NOT_FOUND',
@@ -127,14 +128,22 @@ export class WorkspaceRegistryCoordinator {
   async registerTargetedRoot(candidate: DiscoveredConfiguration): Promise<ConfigurationSession> {
     this.ensureActive();
     const workspaceFolders = this.deps.getWorkspaceFolders();
-    const workspaceFolder = candidate.workspaceFolderPath
-      ? this.findContainingWorkspaceFolder(candidate.workspaceFolderPath, workspaceFolders)
-      : this.findContainingWorkspaceFolder(candidate.configPath, workspaceFolders);
+    const workspaceFolder = await this.findContainingWorkspaceFolder(candidate.configPath, workspaceFolders);
     if (!workspaceFolder) {
       throw new WorkspaceRegistryError(
         'CONFIGURATION_NOT_FOUND',
         `Конфигурация находится вне открытого workspace: ${candidate.configPath}`,
       );
+    }
+    const passedWf = candidate.workspaceFolderPath;
+    if (passedWf) {
+      const canonicalPassed = await fs.promises.realpath(path.resolve(passedWf)).catch(() => path.resolve(passedWf));
+      if (!isSamePath(canonicalPassed, workspaceFolder)) {
+        throw new WorkspaceRegistryError(
+          'CONFIGURATION_NOT_FOUND',
+          `Указанная папка workspace не соответствует расположению конфигурации: ${passedWf}`,
+        );
+      }
     }
     return this.registry.registerTargetedRoot({
       ...candidate,
@@ -164,24 +173,33 @@ export class WorkspaceRegistryCoordinator {
     }
   }
 
-  private findContainingWorkspaceFolder(
+  private async findContainingWorkspaceFolder(
     candidateRoot: string,
     workspaceFolders: readonly string[],
-  ): string | undefined {
-    const fromDep = this.deps.getWorkspaceFolderForPath?.(candidateRoot);
+  ): Promise<string | undefined> {
+    const canonicalCandidate = await fs.promises.realpath(path.resolve(candidateRoot)).catch(() => path.resolve(candidateRoot));
+
+    const fromDep = this.deps.getWorkspaceFolderForPath?.(canonicalCandidate)
+      ?? this.deps.getWorkspaceFolderForPath?.(candidateRoot);
     if (fromDep) {
-      const canonicalFromDep = path.resolve(fromDep);
-      const isKnownWf = workspaceFolders.some((wf) => isSamePath(path.resolve(wf), canonicalFromDep));
-      if (isKnownWf && isCanonicalPathInside(canonicalFromDep, path.resolve(candidateRoot))) {
+      const canonicalFromDep = await fs.promises.realpath(path.resolve(fromDep)).catch(() => path.resolve(fromDep));
+      let isKnownWf = false;
+      for (const wf of workspaceFolders) {
+        const canonicalWf = await fs.promises.realpath(path.resolve(wf)).catch(() => path.resolve(wf));
+        if (isSamePath(canonicalWf, canonicalFromDep)) {
+          isKnownWf = true;
+          break;
+        }
+      }
+      if (isKnownWf && isCanonicalPathInside(canonicalFromDep, canonicalCandidate)) {
         return canonicalFromDep;
       }
     }
 
-    const resolvedCandidate = path.resolve(candidateRoot);
     for (const wf of workspaceFolders) {
-      const resolvedWf = path.resolve(wf);
-      if (isCanonicalPathInside(resolvedWf, resolvedCandidate)) {
-        return resolvedWf;
+      const canonicalWf = await fs.promises.realpath(path.resolve(wf)).catch(() => path.resolve(wf));
+      if (isCanonicalPathInside(canonicalWf, canonicalCandidate)) {
+        return canonicalWf;
       }
     }
 
