@@ -199,11 +199,11 @@ export async function runExportInfobasesV8i(
     return;
   }
   const selected = picked.map((p) => p.entry);
-  const body = buildV8iFileContent(selected, folders);
   try {
+    const body = buildV8iFileContent(selected, folders);
     await fs.promises.writeFile(uri.fsPath, `\ufeff${body}`, 'utf8');
     void vscode.window.showInformationMessage(`Экспортировано баз: ${selected.length}.`);
   } catch (e) {
-    void vscode.window.showErrorMessage(`Не удалось записать файл: ${(e as Error).message}`);
+    void vscode.window.showErrorMessage(`Не удалось экспортировать базы в .v8i: ${(e as Error).message}`);
   }
 }

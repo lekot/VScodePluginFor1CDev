@@ -305,6 +305,7 @@ export const coreSuiteFiles: string[] = [
   'suite/chartOfAccountsIbcmdImport.test.js',
   'suite/metadataParserInFlight.test.js',
   'suite/pathIdentityGuards.test.js',
+  'suite/deployReadonlyLock.test.js',
   'suite/diskCache.test.js',
   'suite/treeCacheCollision.test.js',
   'suite/webviewCspSecurity.test.js',

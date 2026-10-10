@@ -1,4 +1,6 @@
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { compareCodeUnits } from '../utils/compareCodeUnits';
 
 export interface DedupKey {
@@ -8,6 +10,7 @@ export interface DedupKey {
 
 export interface DedupRecordInput {
   readonly relativeFiles: readonly string[];
+  readonly contentSignature?: string;
 }
 
 export interface DedupCheckResult {
@@ -22,7 +25,8 @@ export interface DedupCheckResult {
 const DEDUP_WINDOW_MS = 2000;
 
 interface CacheEntry {
-  hash: string;
+  fileHash: string;
+  contentSignature?: string;
   timestamp: number;
 }
 
@@ -35,6 +39,28 @@ function makeKey(key: DedupKey): string {
 function hashFiles(relativeFiles: readonly string[]): string {
   const sorted = [...relativeFiles].map((f) => f.toLowerCase()).sort(compareCodeUnits);
   return crypto.createHash('sha256').update(JSON.stringify(sorted)).digest('hex');
+}
+
+/**
+ * Computes a robust content signature based on SHA-256 content hashes of the deployed files.
+ */
+export async function computeFilesContentSignature(
+  configRoot: string,
+  relativeFiles: readonly string[],
+): Promise<string> {
+  const parts: string[] = [];
+  for (const rel of relativeFiles) {
+    try {
+      const abs = path.join(configRoot, rel);
+      const content = await fs.promises.readFile(abs);
+      const fileContentHash = crypto.createHash('sha256').update(content).digest('hex');
+      parts.push(`${rel.toLowerCase()}:${fileContentHash}`);
+    } catch {
+      parts.push(`${rel.toLowerCase()}:missing`);
+    }
+  }
+  parts.sort(compareCodeUnits);
+  return crypto.createHash('sha256').update(parts.join('\n')).digest('hex');
 }
 
 export function checkRecentDeploy(
@@ -50,7 +76,17 @@ export function checkRecentDeploy(
   if (ageMs >= DEDUP_WINDOW_MS) {
     return { isDuplicate: false };
   }
-  if (entry.hash !== hashFiles(input.relativeFiles)) {
+  const currentFileHash = hashFiles(input.relativeFiles);
+  if (entry.fileHash !== currentFileHash) {
+    return { isDuplicate: false };
+  }
+  // If both recorded and candidate inputs have content signatures, compare them.
+  // A changed content signature means new content was saved -> not a duplicate (#185).
+  if (
+    entry.contentSignature !== undefined &&
+    input.contentSignature !== undefined &&
+    entry.contentSignature !== input.contentSignature
+  ) {
     return { isDuplicate: false };
   }
   return { isDuplicate: true, ageMs };
@@ -61,7 +97,11 @@ export function recordDeploy(
   input: DedupRecordInput,
   nowMs: number,
 ): void {
-  cache.set(makeKey(key), { hash: hashFiles(input.relativeFiles), timestamp: nowMs });
+  cache.set(makeKey(key), {
+    fileHash: hashFiles(input.relativeFiles),
+    contentSignature: input.contentSignature,
+    timestamp: nowMs,
+  });
 }
 
 export function resetDeployDedupCacheForTests(): void {

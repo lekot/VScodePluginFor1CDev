@@ -3,6 +3,7 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { buildV8iFileContent, infobaseEntryToV8iConnect } from '../../src/infobases/v8iBuilder';
 import type { InfobaseEntry, InfobaseFolder } from '../../src/infobases/models/infobaseEntry';
+import { InfobaseValidationError } from '../../src/infobases/infobaseValidator';
 
 function entry(overrides: Partial<InfobaseEntry> & Pick<InfobaseEntry, 'id' | 'name' | 'type'>): InfobaseEntry {
   return {
@@ -27,16 +28,77 @@ suite('v8iBuilder infobaseEntryToV8iConnect', () => {
     assert.ok(c.endsWith(';'));
   });
 
-  test('file falls back to ibcmd yaml when no filePath', () => {
+  test('file resolves infobase directory from yaml when no filePath (#189)', () => {
     const raw = entry({
       id: randomUUID(),
       name: 'Y',
       type: 'file',
       ibcmdConfigYamlPath: 'D:\\cfg\\ib.yaml',
     });
-    const c = infobaseEntryToV8iConnect(raw);
-    assert.ok(c.includes('File='));
-    assert.ok(c.includes(path.normalize('D:\\cfg\\ib.yaml')));
+    const fakeReader = (p: string) => {
+      if (p === 'D:\\cfg\\ib.yaml') {
+        return 'infobase:\n  file: "D:\\bases\\real_db"\n';
+      }
+      throw new Error('not found');
+    };
+    const c = infobaseEntryToV8iConnect(raw, fakeReader);
+    const expected = path.normalize('D:\\bases\\real_db').replace(/"/g, '""');
+    assert.ok(c.includes(`File="${expected}";`));
+    assert.ok(!c.includes('ib.yaml'), 'Must not contain yaml path in Connect string');
+  });
+
+  test('file resolves relative path from yaml relative to yaml directory (#189)', () => {
+    const raw = entry({
+      id: randomUUID(),
+      name: 'Rel',
+      type: 'file',
+      ibcmdConfigYamlPath: path.join('C:', 'bases', 'config', 'ib.yaml'),
+    });
+    const fakeReader = () => 'infobase:\n  file: ../actual_db\n';
+    const c = infobaseEntryToV8iConnect(raw, fakeReader);
+    const expected = path.normalize(path.resolve(path.join('C:', 'bases', 'config'), '../actual_db'));
+    assert.ok(c.includes(`File="${expected}";`));
+  });
+
+  test('file throws InfobaseValidationError when yaml is missing or unreadable (#189)', () => {
+    const raw = entry({
+      id: randomUUID(),
+      name: 'BrokenYaml',
+      type: 'file',
+      ibcmdConfigYamlPath: 'D:\\missing\\config.yml',
+    });
+    assert.throws(
+      () =>
+        infobaseEntryToV8iConnect(raw, () => {
+          throw new Error('ENOENT');
+        }),
+      InfobaseValidationError,
+    );
+  });
+
+  test('file throws InfobaseValidationError when yaml contains no file scalar (#189)', () => {
+    const raw = entry({
+      id: randomUUID(),
+      name: 'ServerInYaml',
+      type: 'file',
+      ibcmdConfigYamlPath: 'D:\\cfg\\server.yml',
+    });
+    assert.throws(
+      () => infobaseEntryToV8iConnect(raw, () => 'infobase:\n  server: srv\n  ref: db\n'),
+      InfobaseValidationError,
+    );
+  });
+
+  test('file prefers entry.filePath over yaml when both are present', () => {
+    const raw = entry({
+      id: randomUUID(),
+      name: 'Both',
+      type: 'file',
+      filePath: 'C:\\direct\\path',
+      ibcmdConfigYamlPath: 'D:\\cfg\\ib.yaml',
+    });
+    const c = infobaseEntryToV8iConnect(raw, () => 'infobase:\n  file: "D:\\ignored"\n');
+    assert.ok(c.includes('File="C:\\direct\\path";'));
   });
 
   test('server builds Srvr/Ref fragment', () => {
@@ -146,5 +208,20 @@ suite('v8iBuilder buildV8iFileContent', () => {
     const e = entry({ id: randomUUID(), name: 'X', type: 'file', filePath: '/x', folderId: a });
     const text = buildV8iFileContent([e], folders);
     assert.ok(text.includes('Folder='));
+  });
+
+  test('buildV8iFileContent resolves yaml-only file base correctly (#189)', () => {
+    const e = entry({
+      id: randomUUID(),
+      name: 'YamlOnly',
+      type: 'file',
+      ibcmdConfigYamlPath: 'C:\\cfg\\app.yaml',
+    });
+    const text = buildV8iFileContent([e], [], {
+      readYaml: () => 'infobase:\n  file: "C:\\databases\\app_db"\n',
+    });
+    const expected = path.normalize('C:\\databases\\app_db').replace(/"/g, '""');
+    assert.ok(text.includes(`Connect=File="${expected}";`));
+    assert.ok(!text.includes('app.yaml'));
   });
 });
