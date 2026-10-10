@@ -131,10 +131,17 @@ interface FolderLockState {
   readonly baselinePatterns: Set<string>;
   readonly hadWorkspaceFolderValue: boolean;
   readonly activePatterns: Map<string, number>;
+  pendingOps: number;
   mutationQueue: Promise<void>;
 }
 
 const activeFolderLocks = new Map<string, FolderLockState>();
+
+function cleanupFolderLockIfIdle(normRoot: string, state: FolderLockState): void {
+  if (state.pendingOps === 0 && state.activePatterns.size === 0 && activeFolderLocks.get(normRoot) === state) {
+    activeFolderLocks.delete(normRoot);
+  }
+}
 
 export function resetReadonlyIncludeDeployLocksForTests(): void {
   activeFolderLocks.clear();
@@ -166,42 +173,54 @@ export async function applyReadonlyIncludeForDeploy(
       baselinePatterns,
       hadWorkspaceFolderValue: baseline !== undefined && Object.keys(baseline).length > 0,
       activePatterns: new Map<string, number>(),
+      pendingOps: 0,
       mutationQueue: Promise.resolve(),
     };
     activeFolderLocks.set(normRoot, lockState);
   }
 
 
+  const targetState = lockState!;
+  targetState.pendingOps++;
+
   const updateOp = async () => {
-    const currentCount = lockState!.activePatterns.get(globPattern) ?? 0;
-    lockState!.activePatterns.set(globPattern, currentCount + 1);
+    try {
+      const currentCount = targetState.activePatterns.get(globPattern) ?? 0;
+      targetState.activePatterns.set(globPattern, currentCount + 1);
 
     const liveConfig = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
     const merged: Record<string, boolean> = { ...(liveConfig ?? {}) };
-    for (const pat of lockState!.activePatterns.keys()) {
+    for (const pat of targetState.activePatterns.keys()) {
       merged[pat] = true;
     }
     await cfg.update('readonlyInclude', merged, vscode.ConfigurationTarget.WorkspaceFolder);
+    } finally {
+      targetState.pendingOps--;
+      cleanupFolderLockIfIdle(normRoot, targetState);
+    }
   };
-  const currentOp = lockState.mutationQueue.then(updateOp, updateOp);
-  lockState.mutationQueue = currentOp.then(() => undefined, () => undefined);
+  const currentOp = targetState.mutationQueue.then(updateOp, updateOp);
+  targetState.mutationQueue = currentOp.then(() => undefined, () => undefined);
 
   try {
     await currentOp;
   } catch {
+    targetState.pendingOps++;
     const rollbackOp = async () => {
-      const count = lockState!.activePatterns.get(globPattern) ?? 1;
-      if (count <= 1) {
-        lockState!.activePatterns.delete(globPattern);
-      } else {
-        lockState!.activePatterns.set(globPattern, count - 1);
-      }
-      if (lockState!.activePatterns.size === 0) {
-        activeFolderLocks.delete(normRoot);
+      try {
+        const count = targetState.activePatterns.get(globPattern) ?? 1;
+        if (count <= 1) {
+          targetState.activePatterns.delete(globPattern);
+        } else {
+          targetState.activePatterns.set(globPattern, count - 1);
+        }
+      } finally {
+        targetState.pendingOps--;
+        cleanupFolderLockIfIdle(normRoot, targetState);
       }
     };
-    const nextRollback = lockState.mutationQueue.then(rollbackOp, rollbackOp);
-    lockState.mutationQueue = nextRollback.then(() => undefined, () => undefined);
+    const nextRollback = targetState.mutationQueue.then(rollbackOp, rollbackOp);
+    targetState.mutationQueue = nextRollback.then(() => undefined, () => undefined);
     await nextRollback;
     return undefined;
   }
@@ -213,29 +232,28 @@ export async function applyReadonlyIncludeForDeploy(
       }
       disposed = true;
       try {
-        const state = activeFolderLocks.get(normRoot);
-        if (state) {
-          const disposeOp = async () => {
-            const count = state.activePatterns.get(globPattern) ?? 1;
+        targetState.pendingOps++;
+        const disposeOp = async () => {
+          try {
+            const count = targetState.activePatterns.get(globPattern) ?? 1;
           if (count <= 1) {
-            state.activePatterns.delete(globPattern);
+            targetState.activePatterns.delete(globPattern);
           } else {
-            state.activePatterns.set(globPattern, count - 1);
+            targetState.activePatterns.set(globPattern, count - 1);
           }
           const currentLive = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
           const nextConfig: Record<string, boolean> = { ...(currentLive ?? {}) };
 
-          if (!state.activePatterns.has(globPattern) && !state.baselinePatterns.has(globPattern)) {
+          if (!targetState.activePatterns.has(globPattern) && !targetState.baselinePatterns.has(globPattern)) {
             delete nextConfig[globPattern];
           }
 
-          for (const pat of state.activePatterns.keys()) {
+          for (const pat of targetState.activePatterns.keys()) {
             nextConfig[pat] = true;
           }
 
-          if (state.activePatterns.size === 0) {
-            activeFolderLocks.delete(normRoot);
-            if (Object.keys(nextConfig).length === 0 && !state.hadWorkspaceFolderValue) {
+          if (targetState.activePatterns.size === 0) {
+            if (Object.keys(nextConfig).length === 0 && !targetState.hadWorkspaceFolderValue) {
               await cfg.update('readonlyInclude', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
             } else {
               await cfg.update('readonlyInclude', nextConfig, vscode.ConfigurationTarget.WorkspaceFolder);
@@ -243,12 +261,15 @@ export async function applyReadonlyIncludeForDeploy(
           } else {
             await cfg.update('readonlyInclude', nextConfig, vscode.ConfigurationTarget.WorkspaceFolder);
           }
+        } finally {
+          targetState.pendingOps--;
+          cleanupFolderLockIfIdle(normRoot, targetState);
+        }
         };
 
-        const op = state.mutationQueue.then(disposeOp, disposeOp);
-        state.mutationQueue = op.then(() => undefined, () => undefined);
+        const op = targetState.mutationQueue.then(disposeOp, disposeOp);
+        targetState.mutationQueue = op.then(() => undefined, () => undefined);
         await op;
-      }
       } catch {
         /* не мешаем завершению раскатки */
       }

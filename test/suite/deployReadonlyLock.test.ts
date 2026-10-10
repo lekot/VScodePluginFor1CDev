@@ -230,4 +230,75 @@ suite('deployService applyReadonlyIncludeForDeploy (#186)', () => {
     assert.strictEqual(current?.['patA/**'], undefined);
     assert.strictEqual(current?.['patB/**'], undefined);
   });
+
+  test('interleaving of final dispose and new acquire preserves queue serialization and new lock (#186 review P1)', async () => {
+    const scope = vscode.Uri.file(wsRoot);
+    const cfg = vscode.workspace.getConfiguration('files', scope);
+    await cfg.update('readonlyInclude', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+
+    const originalGetConfig = vscode.workspace.getConfiguration;
+    let pauseDispose = false;
+    let releaseDisposeUpdate: (() => void) | undefined;
+    const disposeUpdateStartedPromise = new Promise<void>((resolve) => {
+      releaseDisposeUpdate = resolve;
+    });
+    let proceedDisposeUpdate: () => void;
+    const holdDisposeUpdatePromise = new Promise<void>((resolve) => {
+      proceedDisposeUpdate = resolve;
+    });
+
+    // Intercept cfg.update: pause the final dispose update while it is in-flight
+    (vscode.workspace as any).getConfiguration = (section?: string, scopeArg?: any) => {
+      const real = originalGetConfig(section, scopeArg);
+      return {
+        ...real,
+        get: real.get.bind(real),
+        update: async (key: string, value: unknown, target?: any) => {
+          if (pauseDispose) {
+            pauseDispose = false;
+            releaseDisposeUpdate?.();
+            await holdDisposeUpdatePromise;
+          }
+          return real.update(key, value, target);
+        },
+      };
+    };
+
+    try {
+      const lock1 = await applyReadonlyIncludeForDeploy(wsRoot, 'pat1/**');
+      assert.ok(lock1);
+
+      // Start disposing the only active lock and hold its cfg.update in-flight
+      pauseDispose = true;
+      const dispose1Promise = lock1.dispose();
+      await disposeUpdateStartedPromise;
+
+      // While the final dispose update is still in-flight, acquire a new lock on the same workspace folder
+      const lock2Promise = applyReadonlyIncludeForDeploy(wsRoot, 'pat2/**');
+
+      // Allow lock2 acquire to attempt to run concurrently
+      await new Promise((r) => setTimeout(r, 20));
+
+      // Now unblock the final dispose update
+      proceedDisposeUpdate!();
+
+      const [, lock2] = await Promise.all([dispose1Promise, lock2Promise]);
+      assert.ok(lock2, 'lock2 must be successfully acquired');
+
+      // Verify that lock2's pattern was NOT wiped out by lock1's final dispose
+      const current = cfg.get<Record<string, boolean>>('readonlyInclude');
+      assert.strictEqual(current?.['pat1/**'], undefined, 'pat1 must be unlocked after dispose');
+      assert.strictEqual(
+        current?.['pat2/**'],
+        true,
+        'pat2 MUST REMAIN LOCKED and not overwritten by interleaved final dispose (#186 P1)',
+      );
+
+      await lock2.dispose();
+      const afterAll = cfg.get<Record<string, boolean>>('readonlyInclude');
+      assert.strictEqual(afterAll?.['pat2/**'], undefined, 'pat2 must be unlocked after lock2 dispose');
+    } finally {
+      (vscode.workspace as any).getConfiguration = originalGetConfig;
+    }
+  });
 });
