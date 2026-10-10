@@ -2,6 +2,7 @@ import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import type { ResolvedPicture } from '../services/picture/commonPictureResolver';
 import { Logger } from '../utils/logger';
+import { createNonce } from '../utils/webviewSecurity';
 import { TypeParser } from '../parsers/typeParser';
 import { TypeFormatter } from '../utils/typeFormatter';
 import { getPropertyLabel } from '../constants/propertyLabels';
@@ -1023,13 +1024,15 @@ export function getWebviewContent(
 
   Logger.debug(`getWebviewContent: node.name="${node.name}", node.type="${node.type}", readOnly=${readOnly}`);
 
+  const nonce = createNonce();
+
   return `
     <!DOCTYPE html>
     <html>
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data: https:;">
+      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src data:; base-uri 'none'; form-action 'none';">
       <title>Properties</title>
       <style>
         body {
@@ -1360,7 +1363,7 @@ export function getWebviewContent(
           <p>${escapeHtml(MESSAGES.EMPTY_STATE_NO_PROPERTIES_HINT)}</p>
         </div>
       `}
-      <script>
+      <script nonce="${nonce}">
         ${getWebviewScript(readOnly, node, sessionToken)}
       </script>
     </body>
@@ -1641,13 +1644,15 @@ export function getFormSelectionWebviewContent(
     `
     : '';
 
+  const nonce = createNonce();
+
   return `
     <!DOCTYPE html>
     <html>
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; base-uri 'none'; form-action 'none';">
       <title>Properties</title>
       <style>
         body {
@@ -1729,7 +1734,7 @@ export function getFormSelectionWebviewContent(
         ${lines}
       </div>
       ${eventLines}
-      <script>
+      <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
         document.querySelectorAll('.property-input[data-form-key]').forEach((input) => {
           input.addEventListener('change', () => {
