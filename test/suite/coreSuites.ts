@@ -305,6 +305,8 @@ export const coreSuiteFiles: string[] = [
   'suite/chartOfAccountsIbcmdImport.test.js',
   'suite/metadataParserInFlight.test.js',
   'suite/pathIdentityGuards.test.js',
+  'suite/diskCache.test.js',
+  'suite/treeCacheCollision.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),

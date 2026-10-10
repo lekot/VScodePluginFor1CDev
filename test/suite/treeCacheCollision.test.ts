@@ -97,6 +97,12 @@ suite('TreeCacheService and name search multi-root collision (#193)', () => {
     assert.ok(results.includes(nodeA), 'Must include node from Root A');
     assert.ok(results.includes(nodeB), 'Must include node from Root B');
     assert.notStrictEqual(results[0], results[1], 'Results must not contain duplicate references');
+
+    const searchContextA = cache.searchByName('share', nodeA);
+    assert.strictEqual(searchContextA[0], nodeA, 'searchByName with contextNode prioritizes node from root A');
+
+    const searchContextB = cache.searchByName('share', pathB);
+    assert.strictEqual(searchContextB[0], nodeB, 'searchByName with rootPath string prioritizes node from root B');
   });
 
   test('findByName prioritizes node from matching configuration context (#193)', () => {
