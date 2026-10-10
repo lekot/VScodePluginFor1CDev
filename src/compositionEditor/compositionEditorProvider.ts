@@ -23,6 +23,7 @@ import {
 } from './compositionObjectCollector';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
+import { createNonce } from '../utils/webviewSecurity';
 import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
 
 export class CompositionEditorProvider implements vscode.Disposable {
@@ -202,6 +203,8 @@ export class CompositionEditorProvider implements vscode.Disposable {
       const htmlPath = this.resolveWebviewHtmlPath();
       let html = fs.readFileSync(htmlPath, 'utf8');
 
+      const nonce = createNonce();
+      html = html.replace(/\$\{nonce\}/g, nonce);
       html = html.replace(
         '// __COMPOSITION_DATA_PLACEHOLDER__',
         `window.__compositionData = ${escapeJsonForScript(JSON.stringify(payload))};`

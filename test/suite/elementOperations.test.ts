@@ -13,6 +13,7 @@ import {
   planRenameRootElement,
 } from '../../src/services/elementOperations';
 import { MutationPlanExecutor } from '../../src/services/configurationSession/mutationPlan';
+import { ReferenceScanError } from '../../src/utils/referenceFinder';
 import { XMLWriter } from '../../src/utils/XMLWriter';
 import {
   createTempDir,
@@ -592,6 +593,48 @@ suite('elementOperations', () => {
     );
     assert.ok(fs.existsSync(catalogPath));
     assert.ok(!fs.existsSync(path.join(tmpDir, 'Catalogs', 'RenamedCatalog.xml')));
+  });
+
+  test('renameElement fails closed before modifying descriptors, Configuration.xml, or directory if reference scan fails (#203)', async () => {
+    const brokenXml = path.join(tmpDir, 'Unreadable.xml');
+    await fs.promises.writeFile(brokenXml, '<root/>', 'utf-8');
+    const origReadFile = fs.promises.readFile;
+    const patchedPromises = fs.promises as unknown as { readFile: typeof fs.promises.readFile };
+    patchedPromises.readFile = (async (
+      filePath: Parameters<typeof fs.promises.readFile>[0],
+      ...args: [Parameters<typeof fs.promises.readFile>[1]]
+    ) => {
+      if (String(filePath).includes('Unreadable.xml')) {
+        throw new Error('EACCES: test permission denied');
+      }
+      return origReadFile.apply(fs.promises, [filePath, ...args]);
+    }) as typeof fs.promises.readFile;
+
+    const existingDir = path.join(tmpDir, 'Catalogs', 'ExistingCatalog');
+    await fs.promises.mkdir(existingDir, { recursive: true });
+
+    const initialConfigXml = await readFileContent(path.join(tmpDir, 'Configuration.xml'));
+
+    try {
+      await assert.rejects(
+        () => renameElement(catalogNode, 'RenamedCatalog', tmpDir),
+        (err: unknown) => {
+          assert.ok(err instanceof ReferenceScanError);
+          assert.strictEqual(err.details?.reason, 'read_file_failed');
+          return true;
+        }
+      );
+
+      assert.ok(fs.existsSync(catalogPath), 'Original catalog descriptor must still exist');
+      assert.ok(!fs.existsSync(path.join(tmpDir, 'Catalogs', 'RenamedCatalog.xml')), 'New catalog descriptor must not be created');
+      assert.ok(fs.existsSync(path.join(tmpDir, 'Catalogs', 'ExistingCatalog')), 'Original directory must still exist');
+      assert.ok(!fs.existsSync(path.join(tmpDir, 'Catalogs', 'RenamedCatalog')), 'New directory must not exist');
+      const currentConfigXml = await readFileContent(path.join(tmpDir, 'Configuration.xml'));
+      assert.strictEqual(currentConfigXml, initialConfigXml, 'Configuration.xml must remain completely unchanged');
+    } finally {
+      fs.promises.readFile = origReadFile;
+      await fs.promises.rm(brokenXml, { force: true }).catch(() => undefined);
+    }
   });
 
   test('renameElement to same name does nothing', async () => {
