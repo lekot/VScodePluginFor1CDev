@@ -29,7 +29,7 @@ export function resolveFileInfobaseDirectory(
       const fileScalar = tryParseInfobaseFileScalarFromYaml(content);
       if (fileScalar && fileScalar.trim()) {
         const trimmed = fileScalar.trim();
-        return path.isAbsolute(trimmed)
+        return path.isAbsolute(trimmed) || /^[a-zA-Z]:[\\/]/.test(trimmed)
           ? trimmed
           : path.resolve(path.dirname(yamlPath), trimmed);
       }

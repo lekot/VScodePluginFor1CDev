@@ -25,7 +25,8 @@ export interface DedupCheckResult {
 const DEDUP_WINDOW_MS = 2000;
 
 interface CacheEntry {
-  hash: string;
+  fileHash: string;
+  contentSignature?: string;
   timestamp: number;
 }
 
@@ -35,13 +36,9 @@ function makeKey(key: DedupKey): string {
   return `${key.bindingId}::${key.infobaseId}`;
 }
 
-function hashInput(input: DedupRecordInput): string {
-  const sorted = [...input.relativeFiles].map((f) => f.toLowerCase()).sort(compareCodeUnits);
-  const payload = {
-    files: sorted,
-    sig: input.contentSignature ?? null,
-  };
-  return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+function hashFiles(relativeFiles: readonly string[]): string {
+  const sorted = [...relativeFiles].map((f) => f.toLowerCase()).sort(compareCodeUnits);
+  return crypto.createHash('sha256').update(JSON.stringify(sorted)).digest('hex');
 }
 
 /**
@@ -78,7 +75,17 @@ export function checkRecentDeploy(
   if (ageMs >= DEDUP_WINDOW_MS) {
     return { isDuplicate: false };
   }
-  if (entry.hash !== hashInput(input)) {
+  const currentFileHash = hashFiles(input.relativeFiles);
+  if (entry.fileHash !== currentFileHash) {
+    return { isDuplicate: false };
+  }
+  // If both recorded and candidate inputs have content signatures, compare them.
+  // A changed content signature means new content was saved -> not a duplicate (#185).
+  if (
+    entry.contentSignature !== undefined &&
+    input.contentSignature !== undefined &&
+    entry.contentSignature !== input.contentSignature
+  ) {
     return { isDuplicate: false };
   }
   return { isDuplicate: true, ageMs };
@@ -89,7 +96,11 @@ export function recordDeploy(
   input: DedupRecordInput,
   nowMs: number,
 ): void {
-  cache.set(makeKey(key), { hash: hashInput(input), timestamp: nowMs });
+  cache.set(makeKey(key), {
+    fileHash: hashFiles(input.relativeFiles),
+    contentSignature: input.contentSignature,
+    timestamp: nowMs,
+  });
 }
 
 export function resetDeployDedupCacheForTests(): void {

@@ -42,7 +42,8 @@ suite('v8iBuilder infobaseEntryToV8iConnect', () => {
       throw new Error('not found');
     };
     const c = infobaseEntryToV8iConnect(raw, fakeReader);
-    assert.ok(c.includes('File="D:\\bases\\real_db";'));
+    const expected = path.normalize('D:\\bases\\real_db').replace(/"/g, '""');
+    assert.ok(c.includes(`File="${expected}";`));
     assert.ok(!c.includes('ib.yaml'), 'Must not contain yaml path in Connect string');
   });
 
@@ -219,7 +220,8 @@ suite('v8iBuilder buildV8iFileContent', () => {
     const text = buildV8iFileContent([e], [], {
       readYaml: () => 'infobase:\n  file: "C:\\databases\\app_db"\n',
     });
-    assert.ok(text.includes('Connect=File="C:\\databases\\app_db";'));
+    const expected = path.normalize('C:\\databases\\app_db').replace(/"/g, '""');
+    assert.ok(text.includes(`Connect=File="${expected}";`));
     assert.ok(!text.includes('app.yaml'));
   });
 });
