@@ -482,6 +482,77 @@ suite('Agent source address resolution (Issue #135)', () => {
       assert.strictEqual(parsed.data.treeNode.name, 'Goods');
       assert.strictEqual(parsed.data.treeNode.parent, undefined);
     });
+
+    test('predefined characteristics commands enforce COT boundary and reject Catalog.Shared (#266)', async () => {
+      // Set up coexisting Catalog.Shared and ChartOfCharacteristicTypes.Shared in baseRoot
+      await fs.promises.mkdir(path.join(baseRoot, 'Catalogs', 'Shared'), { recursive: true });
+      await fs.promises.writeFile(
+        path.join(baseRoot, 'Catalogs', 'Shared.xml'),
+        `<MetaDataObject version="2.20"><Catalog uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Shared</Name></Properties><ChildObjects/></Catalog></MetaDataObject>`,
+        'utf8',
+      );
+
+      const cotExtDir = path.join(baseRoot, 'ChartsOfCharacteristicTypes', 'Shared', 'Ext');
+      await fs.promises.mkdir(cotExtDir, { recursive: true });
+      await fs.promises.writeFile(
+        path.join(baseRoot, 'ChartsOfCharacteristicTypes', 'Shared.xml'),
+        `<MetaDataObject version="2.20"><ChartOfCharacteristicTypes uuid="dddddddd-dddd-4ddd-8ddd-dddddddddddd"><Properties><Name>Shared</Name></Properties><ChildObjects/></ChartOfCharacteristicTypes></MetaDataObject>`,
+        'utf8',
+      );
+      const initialCotXml = `<?xml version="1.0" encoding="UTF-8"?>
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="PlanOfCharacteristicKindPredefinedItems" version="2.20">
+\t<Item id="74f7f99c-ca92-431a-86d6-39f749ae3adb">
+\t\t<Name>SharedItem</Name>
+\t\t<Code>001</Code>
+\t\t<Description>Desc</Description>
+\t\t<Type><v8:Type>xs:string</v8:Type></Type>
+\t</Item>
+</PredefinedData>`;
+      await fs.promises.writeFile(path.join(cotExtDir, 'Predefined.xml'), initialCotXml, 'utf8');
+
+      const context = { subscriptions: [] as Array<{ dispose(): void }> };
+      registerAgentCommands(
+        context as never,
+        () => null,
+        async () => registry,
+        new DebugSessionRegistry(),
+      );
+
+      const setTypeHandler = vscodeTestState.registeredCommandHandlers.get(
+        '1c-metadata-tree.agent.setPredefinedCharacteristicType',
+      )!;
+      const listHandler = vscodeTestState.registeredCommandHandlers.get(
+        '1c-metadata-tree.agent.listPredefinedCharacteristics',
+      )!;
+
+      // 1. setPredefinedCharacteristicType with Catalog.Shared MUST fail and not touch COT Predefined.xml
+      const wrongTypeResult = await setTypeHandler({
+        path: 'Catalog.Shared',
+        predefinedName: 'SharedItem',
+        types: ['xs:boolean'],
+      }) as AgentResult;
+      assert.strictEqual(wrongTypeResult.success, false, 'Must reject Catalog.Shared');
+      assert.strictEqual(wrongTypeResult.code, 'INVALID_AGENT_PATH');
+
+      const cotXmlAfterWrong = await fs.promises.readFile(path.join(cotExtDir, 'Predefined.xml'), 'utf8');
+      assert.strictEqual(cotXmlAfterWrong, initialCotXml, 'COT Predefined.xml must NOT be modified by Catalog.Shared command');
+
+      // 2. listPredefinedCharacteristics with Catalog.Shared MUST fail
+      const listWrongResult = await listHandler({ path: 'Catalog.Shared' }) as AgentResult;
+      assert.strictEqual(listWrongResult.success, false);
+      assert.strictEqual(listWrongResult.code, 'INVALID_AGENT_PATH');
+
+      // 3. Plain name 'Shared' shorthand MUST succeed and work as advertised
+      const listPlainResult = await listHandler({ path: 'Shared' }) as AgentResult<unknown[]>;
+      assert.strictEqual(listPlainResult.success, true, listPlainResult.error);
+      assert.ok(Array.isArray(listPlainResult.data));
+      assert.strictEqual(listPlainResult.data!.length, 1);
+
+      // 4. Canonical ChartOfCharacteristicTypes.Shared MUST succeed
+      const listCanonicalResult = await listHandler({ path: 'ChartOfCharacteristicTypes.Shared' }) as AgentResult<unknown[]>;
+      assert.strictEqual(listCanonicalResult.success, true);
+      assert.strictEqual(listCanonicalResult.data!.length, 1);
+    });
   });
 });
 

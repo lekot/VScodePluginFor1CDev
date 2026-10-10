@@ -11,6 +11,7 @@ import {
   setPredefinedCharacteristicType,
   getCharacteristicValueRegisters,
 } from '../../src/agent/predefinedCharacteristicOperations';
+import { AgentPathError } from '../../src/agent/agentPathResolver';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -234,5 +235,69 @@ suite('predefinedCharacteristicOperations: getCharacteristicValueRegisters', () 
     assert.strictEqual(regs.length, 2);
     // Sorted: АаРегистр before РегистрСвязанный
     assert.ok(regs[0] <= regs[1], `Expected sorted, got: ${JSON.stringify(regs)}`);
+  });
+});
+
+suite('predefinedCharacteristicOperations: semantic address boundary and cross-type safety (#266)', () => {
+  let tmpDir: string;
+  const COT_NAME = 'Shared';
+
+  setup(async () => {
+    tmpDir = await createTempDir('1cviewer-cot-boundary-');
+    // Coexisting Catalog.Shared and ChartOfCharacteristicTypes.Shared
+    const catalogDir = path.join(tmpDir, 'Catalogs');
+    await fs.promises.mkdir(catalogDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(catalogDir, 'Shared.xml'),
+      '<Catalog><Properties><Name>Shared</Name></Properties></Catalog>',
+      'utf-8',
+    );
+
+    setupCotWorkspace(tmpDir, COT_NAME, SAMPLE_PREDEFINED_XML);
+  });
+
+  teardown(async () => {
+    await cleanupTempDir(tmpDir);
+  });
+
+  test('setPredefinedCharacteristicType rejects Catalog.Shared and does NOT mutate ChartOfCharacteristicTypes.Shared', async () => {
+    const predefinedPath = path.join(tmpDir, 'ChartsOfCharacteristicTypes', COT_NAME, 'Ext', 'Predefined.xml');
+    const contentBefore = await fs.promises.readFile(predefinedPath, 'utf-8');
+
+    await assert.rejects(
+      async () => setPredefinedCharacteristicType(tmpDir, 'Catalog.Shared', 'Номенклатура', ['xs:string']),
+      (err: unknown) => err instanceof AgentPathError && err.code === 'INVALID_AGENT_PATH',
+      'Must reject Catalog.Shared with INVALID_AGENT_PATH',
+    );
+
+    const contentAfter = await fs.promises.readFile(predefinedPath, 'utf-8');
+    assert.strictEqual(contentAfter, contentBefore, 'Predefined.xml must not be modified when target is Catalog.Shared');
+  });
+
+  test('read operations reject Catalog.Shared with INVALID_AGENT_PATH', async () => {
+    await assert.rejects(
+      async () => listPredefinedCharacteristics(tmpDir, 'Catalog.Shared'),
+      (err: unknown) => err instanceof AgentPathError && err.code === 'INVALID_AGENT_PATH',
+    );
+
+    await assert.rejects(
+      async () => getPredefinedCharacteristicType(tmpDir, 'Catalog.Shared', 'Номенклатура'),
+      (err: unknown) => err instanceof AgentPathError && err.code === 'INVALID_AGENT_PATH',
+    );
+
+    await assert.rejects(
+      async () => getCharacteristicValueRegisters(tmpDir, 'Catalog.Shared'),
+      (err: unknown) => err instanceof AgentPathError && err.code === 'INVALID_AGENT_PATH',
+    );
+  });
+
+  test('accepts plain name shorthand and canonical ChartOfCharacteristicTypes.Shared', async () => {
+    // Plain name
+    const listPlain = await listPredefinedCharacteristics(tmpDir, 'Shared');
+    assert.strictEqual(listPlain.length, 2);
+
+    // Canonical 2-segment
+    const listCanonical = await listPredefinedCharacteristics(tmpDir, 'ChartOfCharacteristicTypes.Shared');
+    assert.strictEqual(listCanonical.length, 2);
   });
 });

@@ -10,6 +10,10 @@ import { parsePredefinedCharacteristics } from '../parsers/predefinedCharacteris
 import { buildXmlString, writeUtf8FileWithBackup } from '../utils/xml/xmlFileIo';
 import { requireDocumentWriteFormatProfile } from '../utils/format/formatRank';
 import type { PredefinedCharacteristicEntry } from '../types/predefinedCharacteristic';
+import { AgentPathError } from './agentPathResolver';
+import type { ResolvedAgentPath } from './types';
+import type { ResolvedSourceAddress } from './agentSourceAddressResolver';
+import { MetadataType } from '../models/treeNode';
 
 // Designer folder name for COT
 const COT_FOLDER = 'ChartsOfCharacteristicTypes';
@@ -24,14 +28,98 @@ const xmlParser = new XMLParser({
 
 // ─── Path helpers ────────────────────────────────────────────────────────────
 
-/** Resolve a COT name or agent path (ChartOfCharacteristicTypes.Name) to the COT directory. */
-function resolveCotDir(configRoot: string, cotPath: string): { cotName: string; cotDir: string } {
-  const segments = cotPath.split('.');
-  // Accept 'ChartOfCharacteristicTypes.Name' or plain 'Name'
-  const cotName = segments.length >= 2 ? segments[segments.length - 1] : cotPath;
-  const cotDir = path.join(configRoot, COT_FOLDER, cotName);
-  return { cotName, cotDir };
+/**
+ * Normalizes a COT address or plain name into a canonical 2-segment metadata address.
+ * e.g. "Shared" -> "ChartOfCharacteristicTypes.Shared"
+ *      "ext:Shared" -> "ext:ChartOfCharacteristicTypes.Shared"
+ *      "ChartOfCharacteristicTypes.Shared" -> "ChartOfCharacteristicTypes.Shared"
+ *      "Catalog.Shared" -> "Catalog.Shared" (preserves other metadata types for authoritative validation)
+ */
+export function normalizeCotAddress(address: string): string {
+  if (typeof address !== 'string') {
+    return '';
+  }
+  const trimmed = address.trim();
+  if (!trimmed) {
+    return '';
+  }
+  const colonIndex = trimmed.indexOf(':');
+  const prefix = colonIndex >= 0 ? trimmed.slice(0, colonIndex + 1) : '';
+  const body = colonIndex >= 0 ? trimmed.slice(colonIndex + 1).trim() : trimmed;
+  if (!body.includes('.')) {
+    return `${prefix}ChartOfCharacteristicTypes.${body}`;
+  }
+  return trimmed;
 }
+
+export interface ResolvedCotTarget {
+  readonly configRoot: string;
+  readonly cotName: string;
+  readonly cotDir: string;
+}
+
+export type CotTargetLike =
+  | string
+  | ResolvedCotTarget
+  | ResolvedAgentPath
+  | ResolvedSourceAddress;
+
+/**
+ * Resolves a COT target (either typed ResolvedAgentPath / ResolvedSourceAddress or string)
+ * into a verified ResolvedCotTarget. Rejects mismatched metadata types with AgentPathError.
+ */
+export function resolveCotTarget(
+  configRoot: string,
+  target: CotTargetLike,
+): ResolvedCotTarget {
+  if (typeof target === 'object' && target !== null) {
+    if ('cotDir' in target && typeof target.cotDir === 'string') {
+      return target;
+    }
+    const resolvedPath = 'resolvedPath' in target ? target.resolvedPath : (target as ResolvedAgentPath);
+    if (
+      resolvedPath.rootTag !== 'ChartOfCharacteristicTypes' &&
+      resolvedPath.rootTag !== MetadataType.ChartOfCharacteristicTypes
+    ) {
+      throw new AgentPathError(
+        'INVALID_AGENT_PATH',
+        `Expected ChartOfCharacteristicTypes path, got ${resolvedPath.rootTag}.${resolvedPath.objectName}`,
+      );
+    }
+    const cotName = resolvedPath.objectName;
+    const cotDir = path.join(configRoot, COT_FOLDER, cotName);
+    return { configRoot, cotName, cotDir };
+  }
+
+  if (typeof target !== 'string' || !target.trim()) {
+    throw new AgentPathError('INVALID_AGENT_PATH', 'Invalid ChartOfCharacteristicTypes path.');
+  }
+
+  const normalized = normalizeCotAddress(target);
+  const colonIndex = normalized.indexOf(':');
+  const dotPath = colonIndex >= 0 ? normalized.slice(colonIndex + 1).trim() : normalized.trim();
+  const segments = dotPath.split('.');
+  if (segments.length === 2) {
+    const [rootTag, cotName] = segments;
+    if (
+      rootTag !== 'ChartOfCharacteristicTypes' &&
+      rootTag !== MetadataType.ChartOfCharacteristicTypes
+    ) {
+      throw new AgentPathError(
+        'INVALID_AGENT_PATH',
+        `Expected ChartOfCharacteristicTypes path, got ${rootTag}.${cotName}`,
+      );
+    }
+    const cotDir = path.join(configRoot, COT_FOLDER, cotName);
+    return { configRoot, cotName, cotDir };
+  }
+
+  throw new AgentPathError(
+    'INVALID_AGENT_PATH',
+    `Invalid ChartOfCharacteristicTypes target: "${target}"`,
+  );
+}
+
 
 function predefinedXmlPath(cotDir: string): string {
   return path.join(cotDir, 'Ext', 'Predefined.xml');
@@ -95,9 +183,9 @@ function buildTypeObject(types: readonly string[]): Record<string, unknown> {
  */
 export async function listPredefinedCharacteristics(
   configRoot: string,
-  cotPath: string
+  cotTarget: CotTargetLike
 ): Promise<PredefinedCharacteristicEntry[]> {
-  const { cotDir } = resolveCotDir(configRoot, cotPath);
+  const { cotDir } = resolveCotTarget(configRoot, cotTarget);
   const xml = await readPredefinedXml(cotDir);
   if (!xml) {
     return [];
@@ -110,10 +198,10 @@ export async function listPredefinedCharacteristics(
  */
 export async function getPredefinedCharacteristicType(
   configRoot: string,
-  cotPath: string,
+  cotTarget: CotTargetLike,
   predefinedName: string
 ): Promise<string[]> {
-  const entries = await listPredefinedCharacteristics(configRoot, cotPath);
+  const entries = await listPredefinedCharacteristics(configRoot, cotTarget);
   const entry = entries.find((e) => e.name === predefinedName);
   if (!entry) {
     return [];
@@ -127,11 +215,11 @@ export async function getPredefinedCharacteristicType(
  */
 export async function setPredefinedCharacteristicType(
   configRoot: string,
-  cotPath: string,
+  cotTarget: CotTargetLike,
   predefinedName: string,
   types: readonly string[]
 ): Promise<void> {
-  const { cotDir } = resolveCotDir(configRoot, cotPath);
+  const { cotDir } = resolveCotTarget(configRoot, cotTarget);
   const xmlPath = predefinedXmlPath(cotDir);
   const originalContent = await fs.promises.readFile(xmlPath, 'utf-8');
   requireDocumentWriteFormatProfile(originalContent);
@@ -188,9 +276,9 @@ export async function setPredefinedCharacteristicType(
  */
 export async function getCharacteristicValueRegisters(
   configRoot: string,
-  cotPath: string
+  cotTarget: CotTargetLike
 ): Promise<string[]> {
-  const { cotName } = resolveCotDir(configRoot, cotPath);
+  const { cotName } = resolveCotTarget(configRoot, cotTarget);
   const irDir = path.join(configRoot, IR_FOLDER);
 
   let irEntries: string[];
