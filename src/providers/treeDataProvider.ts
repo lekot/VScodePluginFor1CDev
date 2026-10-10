@@ -1069,7 +1069,24 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (!el.properties) {
       el.properties = {};
     }
+    const childrenToRemove = new Set<TreeNode>();
+    if (el.children) {
+      for (const child of el.children) {
+        childrenToRemove.add(child);
+      }
+    }
+    if (element !== el && element.children) {
+      for (const child of element.children) {
+        childrenToRemove.add(child);
+      }
+    }
+    for (const child of childrenToRemove) {
+      this.cache.removeNode(child);
+    }
     el.children = [];
+    if (element !== el) {
+      element.children = [];
+    }
     delete (el.properties as Record<string, unknown>)._indexLoaded;
     if (R6_LAZY_SECTION_IDS.has(el.id) || el.type === MetadataType.Subsystem) {
       (el.properties as Record<string, unknown>)._lazy = true;
@@ -1262,6 +1279,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
             const existingSubsystems = (activeElement.children ?? []).filter(
               (c) => c.type === MetadataType.Subsystem
             );
+            const toRemove = (activeElement.children ?? []).filter(
+              (c) => c.type !== MetadataType.Subsystem
+            );
+            for (const child of toRemove) {
+              this.cache.removeNode(child);
+            }
             const children = existingSubsystems.length > 0 ? [...existingSubsystems, ...loaded] : loaded;
             for (const c of loaded) {
               c.parent = activeElement;

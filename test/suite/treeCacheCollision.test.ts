@@ -320,6 +320,103 @@ suite('TreeCacheService and name search multi-root collision (#193)', () => {
       (vscode.window as any).showTextDocument = origShow;
     }
   });
+
+  test('invalidateLoadedChildren cleans up previous children so renamed/deleted nodes are not returned by findByName, searchByName, or gotoHandler', async () => {
+    const provider = new MetadataTreeDataProvider();
+    const folderA: TreeNode = {
+      id: 'CommonModules-A',
+      name: 'CommonModules',
+      type: MetadataType.CommonModule,
+      children: [nodeA],
+      properties: { _indexLoaded: true } as any,
+    };
+    nodeA.parent = folderA;
+    rootA.children = [folderA];
+    folderA.parent = rootA;
+
+    const folderB: TreeNode = {
+      id: 'CommonModules-B',
+      name: 'CommonModules',
+      type: MetadataType.CommonModule,
+      children: [nodeB],
+      properties: { _indexLoaded: true } as any,
+    };
+    nodeB.parent = folderB;
+    rootB.children = [folderB];
+    folderB.parent = rootB;
+
+    provider.setRootNodes([rootA, rootB], new Map([
+      ['root-main', { configPath: pathA, format: ConfigFormat.Designer }],
+      ['root-ext', { configPath: pathB, format: ConfigFormat.Designer }],
+    ]));
+
+    // Initially both nodeA and nodeB are in cache
+    assert.strictEqual(provider.findNodesByName('Shared').length, 2);
+
+    // Invalidate loaded children for folderA
+    provider.invalidateLoadedChildren(folderA);
+
+    // After invalidation, folderA.children was cleared. Old children must be removed from cache immediately!
+    const nodesAfterInvalidate = provider.findNodesByName('Shared');
+    assert.strictEqual(nodesAfterInvalidate.length, 1, 'nodeA must be purged from cache on invalidateLoadedChildren');
+    assert.strictEqual(nodesAfterInvalidate[0], nodeB, 'nodeB from rootB must remain in cache');
+
+    // Simulate reloading children where nodeA was renamed to SharedRenamed
+    const nodeA2: TreeNode = {
+      id: 'CommonModules.SharedRenamed',
+      name: 'SharedRenamed',
+      type: MetadataType.CommonModule,
+      filePath: path.join(pathA, 'CommonModules', 'SharedRenamed.xml'),
+      properties: {},
+      parent: folderA,
+    };
+    folderA.children = [nodeA2];
+    (provider as any).cache.buildCache(nodeA2);
+
+    // Verify search results
+    const sharedResults = provider.findNodesByName('Shared');
+    assert.strictEqual(sharedResults.length, 1, 'Only nodeB must match Shared');
+    assert.strictEqual(sharedResults[0], nodeB);
+
+    const searchResults = provider.searchByName('shared');
+    assert.strictEqual(searchResults.length, 2, 'Must match Shared (nodeB) and SharedRenamed (nodeA2)');
+    assert.ok(searchResults.includes(nodeB));
+    assert.ok(searchResults.includes(nodeA2));
+    assert.ok(!searchResults.includes(nodeA), 'Stale nodeA must NOT appear in searchByName');
+
+    // Test gotoHandler with context from rootA
+    const openedUris: vscode.Uri[] = [];
+    const origOpen = vscode.workspace.openTextDocument;
+    (vscode.workspace as any).openTextDocument = async (uri: vscode.Uri) => {
+      openedUris.push(uri);
+      return { lineCount: 1, lineAt: () => ({ text: '' }), getText: () => '' } as any;
+    };
+    const origShow = vscode.window.showTextDocument;
+    (vscode.window as any).showTextDocument = async () => ({ revealRange: () => {}, selection: {} });
+
+    try {
+      // gotoHandler for 'SharedRenamed' from rootA should navigate to nodeA2 in pathA
+      await handleGotoHandlerMessage(
+        { type: 'gotoHandler', handler: 'CommonModule.SharedRenamed.DoWork' },
+        createMockHandlerContext(provider, nodeA2),
+      );
+      assert.strictEqual(openedUris.length, 1);
+      assert.ok(openedUris[0].fsPath.includes(pathA), `Must open module from pathA, got: ${openedUris[0].fsPath}`);
+
+      // gotoHandler for 'Shared' from rootA: nodeA is deleted, should NOT navigate to nodeA
+      openedUris.length = 0;
+      await handleGotoHandlerMessage(
+        { type: 'gotoHandler', handler: 'CommonModule.Shared.DoWork' },
+        createMockHandlerContext(provider, folderA),
+      );
+      for (const uri of openedUris) {
+        assert.ok(!uri.fsPath.includes(path.join(pathA, 'CommonModules', 'Shared.xml')), `Must not open stale nodeA path, got: ${uri.fsPath}`);
+      }
+    } finally {
+      (vscode.workspace as any).openTextDocument = origOpen;
+      (vscode.window as any).showTextDocument = origShow;
+    }
+  });
 });
 
 
