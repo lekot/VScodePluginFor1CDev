@@ -153,13 +153,24 @@ export class WorkspaceRegistry {
     const existing = this.sessions.get(identity.configurationId);
     const session = existing ?? new ConfigurationSession(identity);
     session.updateIdentity(identity);
+
+    // Clean up any stale session that previously owned this rootPath under a different configurationId
+    const rootKey = normalizePathKey(identity.rootPath);
+    for (const [id, s] of this.sessions.entries()) {
+      if (id !== identity.configurationId && normalizePathKey(s.identity.rootPath) === rootKey) {
+        this.sessions.delete(id);
+        this.descriptors.delete(id);
+        void s.dispose();
+      }
+    }
+
     this.sessions.set(identity.configurationId, session);
     this.descriptors.set(identity.configurationId, {
       ...identity,
       label: path.basename(identity.rootPath),
       health: facts.health,
     });
-    this.rootIndex.set(normalizePathKey(identity.rootPath), session);
+    this.rootIndex.set(rootKey, session);
     await this.persistIdentityStore();
     return session;
   }
@@ -230,9 +241,27 @@ export class WorkspaceRegistry {
       try {
         await fs.promises.access(candidate.identity.rootPath);
         const { canonicalTarget: verifiedTarget } = await assertPathWithinRoot(candidate.identity.rootPath, canonicalTarget);
-        if (isPathInside(candidate.identity.rootPath, verifiedTarget)) {
-          return candidate;
+        if (!isPathInside(candidate.identity.rootPath, verifiedTarget)) {
+          throw new Error('Target is not within candidate root');
         }
+
+        const markerPath = fileURLToPath(candidate.identity.descriptorUri);
+        await fs.promises.access(markerPath);
+
+        const facts = await discoverIdentityFacts({
+          configPath: candidate.identity.rootPath,
+          format: candidate.identity.format,
+        });
+
+        if (facts.health === 'degraded' && candidate.identity.capabilities.write) {
+          throw new Error('Configuration descriptor became degraded on disk');
+        }
+
+        if (facts.descriptorUuid !== candidate.identity.descriptorUuid) {
+          throw new Error('Configuration descriptor identity changed on disk');
+        }
+
+        return candidate;
       } catch {
         const id = candidate.identity.configurationId;
         this.sessions.delete(id);
@@ -348,6 +377,7 @@ export class WorkspaceRegistry {
       rootPath: facts.rootPath,
       rootUri: facts.rootUri,
       descriptorUri: facts.descriptorUri,
+      descriptorUuid: facts.descriptorUuid,
       workspaceFolderUris: [facts.workspaceFolderUri],
       format: facts.format,
       capabilities: {
@@ -376,7 +406,10 @@ export class WorkspaceRegistry {
 
 async function discoverIdentityFacts(candidate: DiscoveredConfiguration): Promise<DiscoveredIdentityFacts> {
   const rootPath = await fs.promises.realpath(path.resolve(candidate.configPath));
-  const descriptorPath = path.join(rootPath, CONFIGURATION_XML);
+  const format = candidate.format ?? ConfigFormat.Designer;
+  const descriptorPath = format === ConfigFormat.EDT
+    ? path.join(rootPath, 'src', 'Configuration', 'Configuration.mdo')
+    : path.join(rootPath, CONFIGURATION_XML);
   let descriptorUuid: string | undefined;
   let descriptorUri = pathToFileURL(descriptorPath).toString();
   let health: ConfigurationDescriptor['health'] = 'degraded';
@@ -392,7 +425,6 @@ async function discoverIdentityFacts(candidate: DiscoveredConfiguration): Promis
   const workspaceFolderPath = candidate.workspaceFolderPath
     ? await fs.promises.realpath(path.resolve(candidate.workspaceFolderPath))
     : rootPath;
-  const format = candidate.format ?? ConfigFormat.Designer;
   return {
     rootPath,
     rootUri: pathToFileURL(rootPath).toString(),

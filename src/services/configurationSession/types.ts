@@ -14,6 +14,7 @@ export interface ConfigurationIdentity {
   readonly rootPath: string;
   readonly rootUri: string;
   readonly descriptorUri: string;
+  readonly descriptorUuid?: string;
   readonly workspaceFolderUris: readonly string[];
   readonly format: ConfigFormat;
   readonly capabilities: ConfigurationCapabilities;

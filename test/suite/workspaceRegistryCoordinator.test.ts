@@ -154,6 +154,108 @@ suite('WorkspaceRegistryCoordinator and WorkspaceRegistry Lifecycle (#199)', () 
     }
   });
 
+  test('targeted validation invalidates stale session when Configuration.xml is removed while directory remains alive (#199 review)', async () => {
+    const registry = new WorkspaceRegistry();
+    const coordinator = new WorkspaceRegistryCoordinator(registry, {
+      getWorkspaceFolders: () => [workspaceRoot],
+    });
+
+    try {
+      const sessionA = await coordinator.resolveResource(configRootA);
+      assert.ok(sessionA);
+
+      // Remove Configuration.xml while directory configRootA remains intact on disk
+      await fs.promises.unlink(path.join(configRootA, 'Configuration.xml'));
+      assert.ok(fs.existsSync(configRootA), 'Root directory must still exist on disk');
+
+      // Resolving configRootA now must detect missing marker, invalidate session, and fail closed
+      await assert.rejects(
+        async () => coordinator.resolveResource(configRootA),
+        (err: unknown) => err instanceof WorkspaceRegistryError && err.code === 'CONFIGURATION_NOT_FOUND',
+      );
+
+      // Verify configA was removed from registry descriptors and sessions
+      const remainingRoots = registry.list().map((d) => d.rootPath);
+      assert.ok(!remainingRoots.includes(configRootA), 'configRootA must be removed from descriptors');
+      assert.strictEqual(registry.has(sessionA.identity.configurationId), false, 'Stale session must be evicted');
+    } finally {
+      await coordinator.dispose();
+    }
+  });
+
+  test('targeted validation refreshes session when Configuration.xml is replaced with a new identity while directory remains alive (#199 review)', async () => {
+    const registry = new WorkspaceRegistry();
+    const coordinator = new WorkspaceRegistryCoordinator(registry, {
+      getWorkspaceFolders: () => [workspaceRoot],
+    });
+
+    try {
+      const sessionA = await coordinator.resolveResource(configRootA);
+      assert.ok(sessionA);
+      const initialId = sessionA.identity.configurationId;
+
+      // Replace Configuration.xml with a new configuration UUID while directory configRootA remains intact
+      const newUuid = '99999999-9999-9999-9999-999999999999';
+      await fs.promises.writeFile(
+        path.join(configRootA, 'Configuration.xml'),
+        `<?xml version="1.0" encoding="UTF-8"?>\n<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">\n<Configuration uuid="${newUuid}"><ChildObjects/></Configuration>\n</MetaDataObject>\n`,
+        'utf8',
+      );
+
+      // Resolving configRootA now must detect stale identity, evict old session, and rediscover the new session
+      const refreshedSession = await coordinator.resolveResource(configRootA);
+      assert.notStrictEqual(refreshedSession.identity.configurationId, initialId, 'Configuration ID must change after descriptor replaced');
+      assert.strictEqual(refreshedSession.identity.descriptorUuid, newUuid, 'Descriptor UUID must match the new configuration marker');
+      assert.strictEqual(registry.has(initialId), false, 'Old session must be evicted from registry');
+      assert.strictEqual(registry.has(refreshedSession.identity.configurationId), true, 'New session must be registered');
+    } finally {
+      await coordinator.dispose();
+    }
+  });
+
+  test('direct registry resolution invalidates stale session when Configuration.xml is removed or changed (#199 review)', async () => {
+    const registry = new WorkspaceRegistry();
+    try {
+      const sessionA = await registry.registerTargetedRoot({ configPath: configRootA, format: ConfigFormat.Designer });
+      const initialId = sessionA.identity.configurationId;
+
+      // 1. Remove Configuration.xml
+      await fs.promises.unlink(path.join(configRootA, 'Configuration.xml'));
+      await assert.rejects(
+        async () => registry.resolveResource(configRootA),
+        (err: unknown) => err instanceof WorkspaceRegistryError && err.code === 'CONFIGURATION_NOT_FOUND',
+      );
+      assert.strictEqual(registry.has(initialId), false, 'Direct registry resolution must evict session when marker is deleted');
+
+      // Recreate with a new UUID and register
+      const newUuid = '77777777-7777-7777-7777-777777777777';
+      await fs.promises.writeFile(
+        path.join(configRootA, 'Configuration.xml'),
+        `<?xml version="1.0" encoding="UTF-8"?>\n<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">\n<Configuration uuid="${newUuid}"><ChildObjects/></Configuration>\n</MetaDataObject>\n`,
+        'utf8',
+      );
+      const sessionA2 = await registry.registerTargetedRoot({ configPath: configRootA, format: ConfigFormat.Designer });
+      assert.strictEqual(sessionA2.identity.descriptorUuid, newUuid);
+
+      // Overwrite with another UUID without calling registerTargetedRoot
+      const changedUuid = '88888888-8888-8888-8888-888888888888';
+      await fs.promises.writeFile(
+        path.join(configRootA, 'Configuration.xml'),
+        `<?xml version="1.0" encoding="UTF-8"?>\n<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">\n<Configuration uuid="${changedUuid}"><ChildObjects/></Configuration>\n</MetaDataObject>\n`,
+        'utf8',
+      );
+
+      // Direct registry resolution must detect descriptor mismatch, evict session, and fail closed
+      await assert.rejects(
+        async () => registry.resolveResource(configRootA),
+        (err: unknown) => err instanceof WorkspaceRegistryError && err.code === 'CONFIGURATION_NOT_FOUND',
+      );
+      assert.strictEqual(registry.has(sessionA2.identity.configurationId), false, 'Direct registry resolution must evict session when UUID changed');
+    } finally {
+      await registry.dispose();
+    }
+  });
+
   test('refreshWorkspace explicitly rescans and reconciles workspace roots', async () => {
     let globalScanCount = 0;
     const registry = new WorkspaceRegistry();
