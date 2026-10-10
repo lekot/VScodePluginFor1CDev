@@ -57,8 +57,10 @@ export class TreeCacheService {
   buildCache(node: TreeNode): void {
     this.nodeCache.set(node.id, node);
     const candidates = this.nodeCandidatesById.get(node.id) ?? [];
-    candidates.push(node);
-    this.nodeCandidatesById.set(node.id, candidates);
+    if (!candidates.includes(node)) {
+      candidates.push(node);
+      this.nodeCandidatesById.set(node.id, candidates);
+    }
     const key = (node.name || '').toLowerCase();
     if (key) {
       const list = this.nameIndex.get(key) ?? [];
@@ -72,6 +74,58 @@ export class TreeCacheService {
         this.buildCache(child);
       }
     }
+  }
+
+  /**
+   * Remove a node and all its descendants from cache, candidate lists, and name index.
+   */
+  removeNode(node: TreeNode): void {
+    const key = (node.name || '').toLowerCase();
+    if (key) {
+      const list = this.nameIndex.get(key);
+      if (list) {
+        const remaining = list.filter((n) => n !== node);
+        if (remaining.length === 0) {
+          this.nameIndex.delete(key);
+        } else {
+          this.nameIndex.set(key, remaining);
+        }
+      }
+    }
+
+    const candidates = this.nodeCandidatesById.get(node.id);
+    if (candidates) {
+      const remainingCandidates = candidates.filter((n) => n !== node);
+      if (remainingCandidates.length === 0) {
+        this.nodeCandidatesById.delete(node.id);
+      } else {
+        this.nodeCandidatesById.set(node.id, remainingCandidates);
+      }
+
+      if (this.nodeCache.get(node.id) === node) {
+        if (remainingCandidates.length > 0) {
+          this.nodeCache.set(node.id, remainingCandidates[0]);
+        } else {
+          this.nodeCache.delete(node.id);
+        }
+      }
+    } else if (this.nodeCache.get(node.id) === node) {
+      this.nodeCache.delete(node.id);
+    }
+
+    if (node.children) {
+      for (const child of node.children) {
+        this.removeNode(child);
+      }
+    }
+  }
+
+  /**
+   * Replaces an existing node instance in the cache with a new instance.
+   */
+  replaceNode(oldNode: TreeNode, newNode: TreeNode): void {
+    this.removeNode(oldNode);
+    this.buildCache(newNode);
   }
 
   /**
@@ -93,7 +147,7 @@ export class TreeCacheService {
     if (!normalizedKey) {return [];}
     const nodes = this.nameIndex.get(normalizedKey);
     if (!nodes || nodes.length === 0) {return [];}
-    const candidates = [...nodes];
+    const candidates = nodes.filter((n) => this.contains(n));
     if (contextNodeOrRootPath) {
       const targetRoot = typeof contextNodeOrRootPath === 'string'
         ? this.normalizeIdentityPath(contextNodeOrRootPath)
@@ -107,11 +161,6 @@ export class TreeCacheService {
       }
     }
     return candidates;
-
-
-
-
-
   }
 
   /**
@@ -126,8 +175,7 @@ export class TreeCacheService {
     for (const [key, nodes] of this.nameIndex) {
       if (key.includes(q)) {
         for (const node of nodes) {
-
-          if (!seen.has(node)) {
+          if (this.contains(node) && !seen.has(node)) {
             seen.add(node);
             result.push(node);
           }

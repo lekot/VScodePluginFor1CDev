@@ -1440,9 +1440,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }
 
     const [removedNode] = parent.children.splice(removedIndex, 1);
+
     if (!removedNode) {
       return null;
     }
+    this.cache.removeNode(removedNode);
 
     const configPath = this.getConfigPathForNode(parent) ?? '';
     const token: OptimisticDeleteToken = {

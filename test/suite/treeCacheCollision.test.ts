@@ -175,4 +175,151 @@ suite('TreeCacheService and name search multi-root collision (#193)', () => {
       (vscode.window as any).showTextDocument = origShow;
     }
   });
+
+  test('optimistic delete removes node from nameIndex and rollback restores single instance (#193 review)', () => {
+    const provider = new MetadataTreeDataProvider();
+    provider.setRootNodes([rootA, rootB], new Map([
+      ['root-main', { configPath: pathA, format: ConfigFormat.Designer }],
+      ['root-ext', { configPath: pathB, format: ConfigFormat.Designer }],
+    ]));
+
+    // 1. Before delete: search returns both nodes
+    const beforeSearch = provider.findNodesByName('Shared');
+    assert.strictEqual(beforeSearch.length, 2, 'Before delete: must return both nodes');
+    assert.ok(beforeSearch.includes(nodeA));
+    assert.ok(beforeSearch.includes(nodeB));
+
+    // 2. Apply optimistic delete on nodeA
+    const token = provider.applyOptimisticDelete(nodeA, 'op-delete-nodeA');
+    assert.ok(token, 'Must return delete token');
+
+    // 3. After delete: search must NOT return nodeA
+    const afterDeleteSearch = provider.findNodesByName('Shared');
+    assert.strictEqual(afterDeleteSearch.length, 1, 'After delete: must only return nodeB');
+    assert.strictEqual(afterDeleteSearch[0], nodeB);
+    assert.ok(!afterDeleteSearch.includes(nodeA), 'Must not contain deleted nodeA');
+
+    const afterDeleteFuzzy = provider.searchByName('share');
+    assert.strictEqual(afterDeleteFuzzy.length, 1, 'Fuzzy search must not contain deleted nodeA');
+    assert.strictEqual(afterDeleteFuzzy[0], nodeB);
+
+    // 4. Rollback optimistic delete
+    const rolledBack = provider.rollbackOptimisticDelete(token!);
+    assert.strictEqual(rolledBack, true, 'Rollback must succeed');
+
+    // 5. After rollback: must contain restored node and nodeB, NO duplicate instances
+    const afterRollbackSearch = provider.findNodesByName('Shared');
+    assert.strictEqual(afterRollbackSearch.length, 2, 'After rollback: must return exactly 2 nodes');
+    assert.ok(afterRollbackSearch.includes(nodeB), 'Must include nodeB');
+    assert.ok(!afterRollbackSearch.includes(nodeA), 'Must not include stale deleted nodeA instance');
+    const restoredNode = afterRollbackSearch.find((n) => n !== nodeB);
+    assert.ok(restoredNode, 'Must have restored node');
+    assert.strictEqual(restoredNode?.name, 'Shared');
+    assert.notStrictEqual(restoredNode, nodeA, 'Restored node must be rehydrated instance, not old reference');
+
+    const afterRollbackFuzzy = provider.searchByName('share');
+    assert.strictEqual(afterRollbackFuzzy.length, 2, 'Fuzzy search must return exactly 2 nodes without duplicates');
+  });
+
+  test('optimistic delete recursively evicts child nodes from nameIndex and cache (#193 review)', () => {
+    const childA: TreeNode = {
+      id: 'CommonModules.Shared.ChildAttr',
+      name: 'ChildAttr',
+      type: MetadataType.Attribute,
+      properties: {},
+      parent: nodeA,
+    };
+    nodeA.children = [childA];
+
+    const provider = new MetadataTreeDataProvider();
+    provider.setRootNodes([rootA, rootB], new Map([
+      ['root-main', { configPath: pathA, format: ConfigFormat.Designer }],
+      ['root-ext', { configPath: pathB, format: ConfigFormat.Designer }],
+    ]));
+
+    assert.strictEqual(provider.findNodesByName('ChildAttr').length, 1);
+
+    const token = provider.applyOptimisticDelete(nodeA, 'op-delete-parent');
+    assert.ok(token);
+
+    // Child must also be gone from search
+    assert.strictEqual(provider.findNodesByName('ChildAttr').length, 0, 'Child must be removed from name index');
+    assert.strictEqual(provider.searchByName('childattr').length, 0, 'Child must be removed from fuzzy search');
+
+    // Rollback
+    const rolledBack = provider.rollbackOptimisticDelete(token!);
+    assert.strictEqual(rolledBack, true);
+
+    const restoredChild = provider.findNodesByName('ChildAttr');
+    assert.strictEqual(restoredChild.length, 1, 'Restored child must be searchable again');
+    assert.notStrictEqual(restoredChild[0], childA, 'Restored child must be rehydrated instance');
+  });
+
+  test('TreeCacheService removeNode and replaceNode preserves other root candidates and cleans up descendants', () => {
+    cache.buildCache(rootA);
+    cache.buildCache(rootB);
+
+    assert.strictEqual(cache.findByName('Shared').length, 2);
+    assert.strictEqual(cache.findById('CommonModules.Shared'), nodeB, 'Initially points to last-built candidate nodeB');
+
+    // Remove nodeB: nodeCache must fall back to remaining candidate nodeA
+    cache.removeNode(nodeB);
+
+    assert.strictEqual(cache.contains(nodeB), false, 'nodeB must not be contained in cache');
+    assert.strictEqual(cache.contains(nodeA), true, 'nodeA must still be contained in cache');
+    assert.strictEqual(cache.findById('CommonModules.Shared'), nodeA, 'findById must fall back to remaining candidate nodeA');
+    assert.deepStrictEqual(cache.findByName('Shared'), [nodeA], 'findByName must only return nodeA');
+
+    // Replace nodeA with updatedNodeA
+    const updatedNodeA: TreeNode = {
+      id: 'CommonModules.Shared',
+      name: 'SharedRenamed',
+      type: MetadataType.CommonModule,
+      filePath: nodeA.filePath,
+      properties: {},
+      parent: rootA,
+    };
+    cache.replaceNode(nodeA, updatedNodeA);
+
+    assert.strictEqual(cache.contains(nodeA), false);
+    assert.strictEqual(cache.contains(updatedNodeA), true);
+    assert.deepStrictEqual(cache.findByName('Shared'), []);
+    assert.deepStrictEqual(cache.findByName('SharedRenamed'), [updatedNodeA]);
+  });
+
+  test('handleGotoHandlerMessage does not navigate to deleted node after optimistic delete', async () => {
+    const provider = new MetadataTreeDataProvider();
+    provider.setRootNodes([rootA, rootB], new Map([
+      ['root-main', { configPath: pathA, format: ConfigFormat.Designer }],
+      ['root-ext', { configPath: pathB, format: ConfigFormat.Designer }],
+    ]));
+
+    // Optimistically delete nodeA
+    provider.applyOptimisticDelete(nodeA, 'op-delete-goto');
+
+    const openedUris: vscode.Uri[] = [];
+    const origOpen = vscode.workspace.openTextDocument;
+    (vscode.workspace as any).openTextDocument = async (uri: vscode.Uri) => {
+      openedUris.push(uri);
+      return { lineCount: 1, lineAt: () => ({ text: '' }), getText: () => '' } as any;
+    };
+    const origShow = vscode.window.showTextDocument;
+    (vscode.window as any).showTextDocument = async () => ({ revealRange: () => {}, selection: {} });
+
+    try {
+      await handleGotoHandlerMessage(
+        { type: 'gotoHandler', handler: 'CommonModule.Shared.DoWork' },
+        createMockHandlerContext(provider, nodeA)
+      );
+      // Because nodeA is deleted, if any URI is opened, it must NOT be from Root A
+      for (const uri of openedUris) {
+        assert.ok(!uri.fsPath.includes(pathA), `Must not open deleted node path (${pathA}), opened: ${uri.fsPath}`);
+      }
+    } finally {
+      (vscode.workspace as any).openTextDocument = origOpen;
+      (vscode.window as any).showTextDocument = origShow;
+    }
+  });
 });
+
+
