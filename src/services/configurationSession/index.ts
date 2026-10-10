@@ -6,3 +6,4 @@ export * from './pathBoundary';
 export * from './types';
 export * from './WorkspaceRegistry';
 export * from './WorkspaceRegistryCoordinator';
+export * from './ConfigurationContextResolver';
