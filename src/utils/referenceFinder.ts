@@ -253,7 +253,7 @@ async function collectReplacementPlans(
     const message = `referenceFinder: max depth ${MAX_SCAN_DEPTH} reached at ${dir}`;
     Logger.warn(message);
     throw new ReferenceScanError(message, { path: dir, reason: 'max_depth_exceeded' });
-    return;
+
   }
   let entries: fs.Dirent[];
   try {
@@ -262,7 +262,7 @@ async function collectReplacementPlans(
     const message = `referenceFinder: cannot readdir at ${dir}`;
     Logger.error(message, err);
     throw new ReferenceScanError(message, { path: dir, reason: 'readdir_failed', cause: err });
-    return;
+
   }
   for (const e of entries) {
     const full = path.join(dir, e.name);
@@ -288,7 +288,7 @@ async function buildReplacementPlan(
     const message = `referenceFinder: cannot read XML file ${filePath}`;
     Logger.error(message, err);
     throw new ReferenceScanError(message, { path: filePath, reason: 'read_file_failed', cause: err });
-    return undefined;
+
   }
   let updatedContent = content;
   let replaceCount = 0;

@@ -176,6 +176,26 @@ suite('Webview CSP security policy', () => {
     assert.doesNotMatch(csp, /script-src[^;]*'unsafe-inline'/);
   });
 
+  test('buildWebviewCsp handles nonce styles, cspSource, fonts and extra directives', () => {
+    const csp = buildWebviewCsp({
+      nonce: 'xyz789',
+      cspSource: 'vscode-webview:',
+      allowUnsafeInlineStyles: false,
+      fontSources: ['vscode-webview:'],
+      baseUriNone: false,
+      formActionNone: false,
+      extraDirectives: {
+        'connect-src': ['https://api.example.com'],
+      },
+    });
+
+    assert.ok(csp.includes("style-src vscode-webview: 'nonce-xyz789'"));
+    assert.ok(csp.includes('font-src vscode-webview:'));
+    assert.ok(csp.includes('connect-src https://api.example.com'));
+    assert.doesNotMatch(csp, /base-uri 'none'/);
+    assert.doesNotMatch(csp, /form-action 'none'/);
+  });
+
   test('createNonce produces high-entropy nonces and applyNonceToHtml substitutes placeholders', () => {
     const n1 = createNonce();
     const n2 = createNonce();

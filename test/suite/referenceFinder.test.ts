@@ -238,4 +238,40 @@ suite('referenceFinder', () => {
       fs.promises.readFile = origReadFile;
     }
   });
+
+  test('findReferencesWithDiagnostics records diagnostic on readdir failure (#203)', async () => {
+    const brokenDir = path.join(tmpDir, 'ReaddirFail');
+    await fs.promises.mkdir(brokenDir);
+    const origReaddir = fs.promises.readdir;
+    const patchedReaddir = fs.promises as unknown as { readdir: typeof fs.promises.readdir };
+    patchedReaddir.readdir = (async (dirPath: Parameters<typeof fs.promises.readdir>[0], opts?: Parameters<typeof fs.promises.readdir>[1]) => {
+      if (String(dirPath).includes('ReaddirFail')) {
+        throw new Error('EPERM: cannot read directory');
+      }
+      return origReaddir.apply(fs.promises, [dirPath, opts as never]);
+    }) as typeof fs.promises.readdir;
+
+    try {
+      const result = await findReferencesWithDiagnostics(tmpDir, 'MyCatalog', MetadataType.Catalog);
+      assert.strictEqual(result.authoritative, false);
+      const diag = result.diagnostics.find((d) => d.reason === 'readdir_failed');
+      assert.ok(diag);
+      assert.ok(diag?.path.includes('ReaddirFail'));
+    } finally {
+      fs.promises.readdir = origReaddir;
+    }
+  });
+
+  test('findReferencesWithDiagnostics records diagnostic when max depth is exceeded (#203)', async () => {
+    let deepDir = tmpDir;
+    for (let i = 0; i <= 21; i++) {
+      deepDir = path.join(deepDir, `level${i}`);
+    }
+    await fs.promises.mkdir(deepDir, { recursive: true });
+
+    const result = await findReferencesWithDiagnostics(tmpDir, 'MyCatalog', MetadataType.Catalog);
+    assert.strictEqual(result.authoritative, false);
+    const diag = result.diagnostics.find((d) => d.reason === 'max_depth_exceeded');
+    assert.ok(diag);
+  });
 });
