@@ -1,0 +1,60 @@
+name: Vendor sync once
+
+on:
+  push:
+    branches:
+      - chore/update-cc-1c-skills-2026-10
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          ref: chore/update-cc-1c-skills-2026-10
+          fetch-depth: 0
+
+      - name: Checkout cc-1c-skills upstream
+        uses: actions/checkout@v4
+        with:
+          repository: Nikolay-Shirokov/cc-1c-skills
+          ref: 1fa205b961f4ed3659f58f4b55d2d9b1d5e4810e
+          path: _upstream
+
+      - name: Sync vendored SKD scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp _upstream/.claude/skills/skd-compile/scripts/skd-compile.ps1 resources/skd/skd-compile.ps1
+          cp _upstream/.claude/skills/skd-info/scripts/skd-info.ps1 resources/skd/skd-info.ps1
+          cp _upstream/.claude/skills/skd-edit/scripts/skd-edit.ps1 resources/skd/skd-edit.ps1
+          cp _upstream/.claude/skills/skd-validate/scripts/skd-validate.ps1 resources/skd/skd-validate.ps1
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('resources/UPSTREAM.md')
+          s = p.read_text(encoding='utf-8-sig')
+          s = re.sub(r'(?<=\*\*Commit:\*\* ).*', '1fa205b961f4ed3659f58f4b55d2d9b1d5e4810e', s)
+          s = re.sub(r'(?<=\*\*Date:\*\* ).*', '2026-10-10', s)
+          p.write_text('\ufeff' + s, encoding='utf-8')
+          PY
+          rm -f .github/workflows/vendor-sync-once.yml
+          rm -rf _upstream
+
+      - name: Commit synced vendor files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add resources/skd resources/UPSTREAM.md .github/workflows/vendor-sync-once.yml
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "chore: update vendored cc-1c-skills"
+          git push origin HEAD:chore/update-cc-1c-skills-2026-10
