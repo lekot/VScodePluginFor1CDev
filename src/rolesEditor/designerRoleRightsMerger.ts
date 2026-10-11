@@ -1,6 +1,6 @@
 import { XMLValidator } from 'fast-xml-parser';
 import { getRoleRightByKey, getRoleRightByXmlName, ROLE_RIGHTS_REGISTRY } from './roleRightsRegistry';
-import { createEmptyObjectRights, type RightsMap } from './models/roleModel';
+import type { ObjectRights, RightsMap } from './models/roleModel';
 
 const MD_CLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
 
@@ -223,14 +223,16 @@ export function extractDesignerRoleRightsXml(sourceXml: string): RightsMap {
       if (objectNode.localName !== 'Object' || objectNode.namespaceUri !== role.namespaceUri) {continue;}
       const objectName = getObjectName(sourceXml, objectNode, role.namespaceUri);
       if (!objectName) {continue;}
-      const objectRights = createEmptyObjectRights();
+      const objectRights: ObjectRights = {};
+      let hasRecognizedRight = false;
       for (const rightNode of objectNode.children) {
         if (rightNode.namespaceUri !== role.namespaceUri) {continue;}
         const descriptor = getRoleRightByXmlName(rightNode.localName);
         if (!descriptor || !descriptor.applicableTo.includes(typeName)) {continue;}
         objectRights[descriptor.key] = parseXmlBoolean(readSimpleText(sourceXml, rightNode));
+        hasRecognizedRight = true;
       }
-      if (Object.values(objectRights).some((value) => value === true)) {
+      if (hasRecognizedRight) {
         result[`${typeName}.${objectName}`] = objectRights;
       }
     }

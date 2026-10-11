@@ -23,7 +23,11 @@ export enum ConfigFormat {
  * Represents all possible rights for a metadata object
  */
 export interface ObjectRights {
-  /** Canonical registry keys, including recognized rights outside the rendered UI projection. */
+  /**
+   * Canonical registry keys, including recognized rights outside the rendered UI projection.
+   * For Designer source parsing, only present XML nodes are stored: false is explicit false,
+   * while a missing key means the source has no node for that right.
+   */
   [rightKey: string]: boolean;
 }
 

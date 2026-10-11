@@ -8,7 +8,10 @@ import { RoleXmlParser } from '../../src/rolesEditor/roleXmlParser';
 import { RoleXmlSerializer } from '../../src/rolesEditor/roleXmlSerializer';
 import { ConfigFormat, RoleModel } from '../../src/rolesEditor/models/roleModel';
 import { updateRight } from '../../src/rolesEditor/rightsUpdateUtils';
-import { mergeDesignerRoleRightsXml } from '../../src/rolesEditor/designerRoleRightsMerger';
+import {
+  extractDesignerRoleRightsXml,
+  mergeDesignerRoleRightsXml,
+} from '../../src/rolesEditor/designerRoleRightsMerger';
 import {
   createMinimalRightsDom,
   loadRightsXml,
@@ -251,6 +254,41 @@ suite('role rights lossless domain model (#262)', () => {
         'Document.Sale': { read: true },
       });
       assert.strictEqual(output, expected, 'the existing 1C Read must be patched without duplication or attribute changes');
+    }
+  });
+
+  test('preserves an explicit false non-grid right and omits a neighboring object with no rights after UI save', async () => {
+    const sourceXml = `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Role><Rights><Document><Object><Name>Sale</Name><Posting>false</Posting></Object><Object><Name>Neighbor</Name></Object></Document></Rights></Role></MetaDataObject>`;
+    const extracted = extractDesignerRoleRightsXml(sourceXml);
+    const saleRights = extracted['Document.Sale'];
+    assert.ok(saleRights, 'recognized explicit-false rights must retain their object in the intermediate model');
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(saleRights, 'posting'), true);
+    assert.strictEqual(saleRights.posting, false);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(saleRights, 'read'), false, 'an absent right must remain absent');
+    assert.strictEqual(extracted['Document.Neighbor'], undefined, 'an object with no rights must not be created');
+
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'role-rights-explicit-false-'));
+    const rolePath = path.join(root, 'Roles', 'Power', 'Role.xml');
+    await fs.promises.mkdir(path.dirname(rolePath), { recursive: true });
+    await fs.promises.writeFile(rolePath, sourceXml, 'utf8');
+
+    try {
+      const model = await RoleXmlParser.parseRoleXml(rolePath);
+      assert.strictEqual(model.rights['Document.Sale']?.posting, false);
+      assert.strictEqual(model.rights['Document.Neighbor'], undefined);
+
+      updateRight(model, 'Document.Sale', 'view', true);
+      const savedXml = RoleXmlSerializer.serializeToXml(model, '2.20');
+      assert.match(savedXml, /<Posting>false<\/Posting><View>true<\/View>/);
+      assert.match(savedXml, /<Object><Name>Neighbor<\/Name><\/Object>/);
+
+      await fs.promises.writeFile(rolePath, savedXml, 'utf8');
+      const reopened = await RoleXmlParser.parseRoleXml(rolePath);
+      assert.strictEqual(reopened.rights['Document.Sale']?.posting, false);
+      assert.strictEqual(reopened.rights['Document.Sale']?.view, true);
+      assert.strictEqual(reopened.rights['Document.Neighbor'], undefined);
+    } finally {
+      await fs.promises.rm(root, { recursive: true, force: true });
     }
   });
 
