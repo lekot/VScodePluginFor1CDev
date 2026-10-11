@@ -49,12 +49,39 @@ function localName(name: string): string {
 }
 
 function namespaceDeclarations(markup: string, inherited?: ReadonlyMap<string, string>): Map<string, string> {
-  const bindings = new Map(inherited ?? [['xml', 'http://www.w3.org/XML/1998/namespace'], ['', '']]);
-  const declaration = /\sxmlns(?::([\w.-]+))?\s*=\s*(["'])(.*?)\2/g;
-  let match: RegExpExecArray | null;
-  while ((match = declaration.exec(markup)) !== null) {
-    const prefix = match[1] ?? '';
-    bindings.set(prefix, decodeXmlText(match[3] ?? ''));
+  const bindings = inherited
+    ? new Map(inherited)
+    : new Map<string, string>([['xml', 'http://www.w3.org/XML/1998/namespace'], ['', '']]);
+  let index = 1;
+  while (/\s/.test(markup[index] ?? '')) {index++;}
+  while (index < markup.length && !/[\s/>]/.test(markup[index] ?? '')) {index++;}
+
+  while (index < markup.length) {
+    while (/\s/.test(markup[index] ?? '')) {index++;}
+    if (index >= markup.length || markup[index] === '>' || markup[index] === '/') {break;}
+
+    const nameStart = index;
+    while (index < markup.length && !/[\s=/>]/.test(markup[index] ?? '')) {index++;}
+    const attributeName = markup.slice(nameStart, index);
+    while (/\s/.test(markup[index] ?? '')) {index++;}
+    if (markup[index] !== '=') {continue;}
+    index++;
+    while (/\s/.test(markup[index] ?? '')) {index++;}
+
+    const quote = markup[index];
+    if (quote !== '"' && quote !== "'") {
+      while (index < markup.length && !/[\s/>]/.test(markup[index] ?? '')) {index++;}
+      continue;
+    }
+    const valueStart = ++index;
+    while (index < markup.length && markup[index] !== quote) {index++;}
+    const value = decodeXmlText(markup.slice(valueStart, index));
+    if (attributeName === 'xmlns') {
+      bindings.set('', value);
+    } else if (attributeName.startsWith('xmlns:') && attributeName.length > 'xmlns:'.length) {
+      bindings.set(attributeName.slice('xmlns:'.length), value);
+    }
+    if (index < markup.length) {index++;}
   }
   return bindings;
 }

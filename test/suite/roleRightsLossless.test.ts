@@ -233,6 +233,27 @@ suite('role rights lossless domain model (#262)', () => {
     }
   });
 
+  test('does not treat xmlns-like text inside quoted attributes as namespace declarations', () => {
+    const cases = [
+      {
+        attributes: `note=" xmlns:m='urn:shadow' " marker='keep &quot;quotes&quot; and xmlns:x="urn:shadow-x"'`,
+      },
+      {
+        attributes: `note=' xmlns:m="urn:shadow" ' marker="keep 'quotes' and xmlns:x='urn:shadow-x'"`,
+      },
+    ];
+
+    for (const { attributes } of cases) {
+      const sourceXml = `<m:MetaDataObject xmlns:m="http://v8.1c.ru/8.3/MDClasses"><m:Role><m:Rights><m:Document><m:Object><m:Name>Sale</m:Name><m:Read ${attributes}>false</m:Read></m:Object></m:Document></m:Rights></m:Role></m:MetaDataObject>`;
+      assert.strictEqual(XMLValidator.validate(sourceXml), true);
+      const expected = sourceXml.replace('>false</m:Read>', '>true</m:Read>');
+      const output = mergeDesignerRoleRightsXml(sourceXml, {
+        'Document.Sale': { read: true },
+      });
+      assert.strictEqual(output, expected, 'the existing 1C Read must be patched without duplication or attribute changes');
+    }
+  });
+
   test('parses only 1C Read elements when extension namespaces reuse their local name', async () => {
     const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'role-namespace-collision-'));
     const rolePath = path.join(root, 'Roles', 'Power', 'Role.xml');
