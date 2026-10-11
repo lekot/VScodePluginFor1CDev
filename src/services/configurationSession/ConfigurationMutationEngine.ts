@@ -60,7 +60,8 @@ export interface MutationIntent {
   readonly kind: string;
   readonly resourcePath?: string;
   readonly expectedConfigurationId?: ConfigurationId;
-  readonly expectedRevision?: string;
+  /** `null` records that the target was expected to be absent; `undefined` makes no revision assertion. */
+  readonly expectedRevision?: string | null;
   readonly session?: MutationSessionInfo;
 }
 
@@ -353,7 +354,10 @@ export class ConfigurationMutationEngine {
 
     const currentHash = exists ? hashContent(rawContent) : undefined;
 
-    if (intent.expectedRevision !== undefined && currentHash !== intent.expectedRevision) {
+    const expectedRevisionMismatch = intent.expectedRevision === null
+      ? exists
+      : intent.expectedRevision !== undefined && currentHash !== intent.expectedRevision;
+    if (expectedRevisionMismatch) {
       return {
         status: 'conflict',
         code: 'STALE_TARGET_REVISION',
@@ -463,6 +467,17 @@ export class ConfigurationMutationEngine {
       };
     }
     if (createOutcome.status === 'conflict' && createOutcome.code === 'TARGET_ALREADY_EXISTS') {
+      if (intent.expectedRevision === null) {
+        return {
+          status: 'conflict',
+          code: 'STALE_TARGET_REVISION',
+          message: 'Файл появился после чтения отсутствующего состояния; создание отменено.',
+          kind: intent.kind,
+          resourcePath: canonicalTarget,
+          configurationId,
+          session: intent.session,
+        };
+      }
       // Parallel creator race: re-read freshly created file and retry transform once
       const freshContent = await fs.promises.readFile(canonicalTarget, 'utf-8');
       const freshHash = hashContent(freshContent);

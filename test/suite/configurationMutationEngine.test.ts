@@ -181,6 +181,57 @@ suite('ConfigurationMutationEngine (#242)', () => {
       assert.strictEqual(diskContent, '<Content><Item>Catalog.Goods</Item></Content>');
     });
 
+    test('expected missing revision rejects a target created before the engine snapshot', async () => {
+      const targetFile = path.join(tmpDir, 'ExpectedMissing', 'Rights.xml');
+      await fsp.mkdir(path.dirname(targetFile), { recursive: true });
+      await fsp.writeFile(targetFile, 'created by another writer', 'utf-8');
+      let transformCalls = 0;
+
+      const receipt = await new ConfigurationMutationEngine().transformFile(
+        targetFile,
+        { kind: 'test.create-if-still-missing', resourcePath: targetFile, expectedRevision: null },
+        async () => {
+          transformCalls++;
+          return { content: 'ours', result: 'created' };
+        },
+      );
+
+      assert.strictEqual(receipt.status, 'conflict');
+      assert.strictEqual(receipt.code, 'STALE_TARGET_REVISION');
+      assert.strictEqual(transformCalls, 0, 'the transform must not inspect or merge an unexpected file');
+      assert.strictEqual(await fsp.readFile(targetFile, 'utf-8'), 'created by another writer');
+    });
+
+    test('expected missing revision preserves a parallel creator that wins atomic publication', async () => {
+      const targetFile = path.join(tmpDir, 'ExpectedMissingRace', 'Rights.xml');
+      let transformCalls = 0;
+      let publishedByOtherWriter = false;
+      const fileSystem = createAtomicFileSystem({
+        link: async (_tempPath, destination) => {
+          publishedByOtherWriter = true;
+          await fsp.writeFile(destination, 'parallel creator', { flag: 'wx' });
+          throw Object.assign(new Error('target was created concurrently'), { code: 'EEXIST' });
+        },
+      });
+
+      const receipt = await new ConfigurationMutationEngine({ fileSystem }).transformFile(
+        targetFile,
+        { kind: 'test.create-if-still-missing-race', resourcePath: targetFile, expectedRevision: null },
+        async ({ exists }) => {
+          transformCalls++;
+          assert.strictEqual(exists, false);
+          return { content: 'ours', result: 'created' };
+        },
+      );
+
+      assert.strictEqual(publishedByOtherWriter, true);
+      assert.strictEqual(receipt.status, 'conflict');
+      assert.strictEqual(receipt.code, 'STALE_TARGET_REVISION');
+      assert.strictEqual(transformCalls, 1, 'the engine must not retry over an expected-missing session');
+      assert.strictEqual(await fsp.readFile(targetFile, 'utf-8'), 'parallel creator');
+      assert.deepStrictEqual((await fsp.readdir(path.dirname(targetFile))).sort(), ['Rights.xml']);
+    });
+
     test('removes a partially written create target when publication fails', async () => {
       const targetFile = path.join(tmpDir, 'Faulted', 'Content.xml');
       let injectedFailure = false;

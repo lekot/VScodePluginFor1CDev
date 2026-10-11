@@ -21,6 +21,14 @@ import {
 } from '../../src/rolesEditor/rightsXmlEditWriter';
 import { RolesRightsEditorProvider } from '../../src/rolesEditor/rolesRightsEditorProvider';
 import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
+import {
+  ConfigurationMutationEngine,
+  setConfigurationMutationEngine,
+  type MutationReceipt,
+  type SingleFileMutationIntent,
+  type SingleFileTransform,
+} from '../../src/services/configurationSession/ConfigurationMutationEngine';
+import type { AtomicFileSystem } from '../../src/services/configurationSession/atomicFileStorage';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import {
   createFakeExtensionContext,
@@ -33,6 +41,27 @@ const createMinimalRightsDom = () => createMinimalRightsDomImpl(TEST_WRITE_VERSI
 const loadRightsXml = (rightsPath: string) => loadRightsXmlImpl(rightsPath, TEST_WRITE_VERSION);
 const serializeRightsDomToXml = (dom: ReturnType<typeof createMinimalRightsDom>) =>
   serializeRightsDomToXmlImpl(dom, TEST_WRITE_VERSION);
+
+function installMutationEngineSpy(
+  onTransform: (state: { exists: boolean; content: string }) => void | Promise<void>,
+  engine = new ConfigurationMutationEngine(),
+): () => void {
+  const originalTransformFile = engine.transformFile.bind(engine);
+  engine.transformFile = async <T>(
+    target: string,
+    intent: SingleFileMutationIntent,
+    transform: SingleFileTransform<T>,
+  ): Promise<MutationReceipt<T>> => originalTransformFile(
+    target,
+    intent,
+    async (state) => {
+      await onTransform(state);
+      return transform(state);
+    },
+  );
+  setConfigurationMutationEngine(engine);
+  return () => setConfigurationMutationEngine(undefined);
+}
 
 /**
  * Windows: immediate `fs.rm(recursive)` after rights save sometimes throws ENOTEMPTY on a
@@ -58,6 +87,227 @@ async function rmRfTestDir(dir: string): Promise<void> {
 }
 
 suite('rightsEditor integration', () => {
+  suite('ConfigurationMutationEngine role save integration (#267 step 4b)', () => {
+    test('EDT Rights.xml transforms the engine snapshot and preserves opaque namespaces, explicit false, and RLS', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-engine-edt-'));
+      const rolePath = path.join(tmpRoot, 'src', 'Roles', 'Power.xml');
+      const rightsPath = path.join(tmpRoot, 'src', 'Roles', 'Power', 'Ext', 'Rights.xml');
+      const rls = '<restrictionTemplate><condition>KEEP_EDT_RLS</condition></restrictionTemplate>';
+      const initialRightsXml = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ext="urn:future-rights" xsi:type="Rights" version="2.20">',
+        '  <setForNewObjects>false</setForNewObjects>',
+        '  <object>',
+        '    <name>Catalog.Products</name>',
+        '    <right><name>Posting</name><value>false</value></right>',
+        '    <right><name>FutureRight</name><value>true</value></right>',
+        '    <ext:opaque marker="preserve"><ext:value>keep &amp; future</ext:value></ext:opaque>',
+        '  </object>',
+        `  ${rls}`,
+        '</Rights>',
+      ].join('\n');
+      const capturedStates: Array<{ exists: boolean; content: string }> = [];
+      const restoreEngine = installMutationEngineSpy((state) => { capturedStates.push(state); });
+      try {
+        await fs.promises.mkdir(path.dirname(rightsPath), { recursive: true });
+        await fs.promises.writeFile(path.join(tmpRoot, 'Configuration.xml'),
+          '<MetaDataObject version="2.20"><Configuration><ChildObjects/></Configuration></MetaDataObject>', 'utf8');
+        await fs.promises.writeFile(rolePath,
+          '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Properties><Name>Power</Name></Properties><Rights/></Role>', 'utf8');
+        await fs.promises.writeFile(rightsPath, initialRightsXml, 'utf8');
+
+        const { panel } = createFakeWebviewPanel({ autoReplyFlushWith: rls });
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(createFakeExtensionContext());
+        try {
+          await provider.show(rolePath, tmpRoot);
+          const handler = (provider as unknown as { handleMessage(message: unknown): Promise<void> }).handleMessage;
+          await handler.call(provider, {
+            command: 'updateRight',
+            data: { objectName: 'Catalog.Products', rightType: 'read', value: true },
+          });
+          await provider.triggerSave();
+
+          assert.strictEqual(capturedStates.length, 1, 'the editor must execute exactly one engine transform');
+          assert.strictEqual(capturedStates[0]?.exists, true);
+          assert.strictEqual(capturedStates[0]?.content, initialRightsXml,
+            'transform input must be the engine snapshot, not an independent provider read');
+
+          const saved = await fs.promises.readFile(rightsPath, 'utf8');
+          assert.ok(saved.includes('<value>false</value>'), 'the pre-existing explicit false posting value must remain');
+          assert.ok(saved.includes('<name>FutureRight</name>'), 'unrecognized future rights must remain');
+          assert.ok(saved.includes('<ext:opaque marker="preserve">'), 'unknown extension namespace nodes must remain');
+          assert.ok(saved.includes('xmlns:ext="urn:future-rights"'), 'namespace declarations must remain');
+          assert.ok(saved.includes('<ext:value>keep &amp; future</ext:value>'), 'opaque extension payload must remain');
+          assert.ok(saved.includes('KEEP_EDT_RLS'), 'restriction templates must remain unchanged');
+          assert.ok(saved.includes('<name>Read</name>'), 'the edited right must be merged into the existing document');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        restoreEngine();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+
+    test('Designer Role.xml transforms its current source and preserves explicit false, extension rights, and RLS', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-engine-designer-'));
+      const rolePath = path.join(tmpRoot, 'Roles', 'Power', 'Role.xml');
+      const rls = '<restrictionTemplate><condition>KEEP_DESIGNER_RLS</condition></restrictionTemplate>';
+      const initialRoleXml = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:ext="urn:future-rights" version="2.20">',
+        '  <Properties><Name>Power</Name></Properties>',
+        '  <Rights><Document><Object custom="keep"><Name>Sales</Name><Posting>false</Posting><Read>false</Read><ext:Read>true</ext:Read><ext:FutureRight flag="keep">opaque</ext:FutureRight></Object></Document>',
+        `    ${rls}`,
+        '  </Rights>',
+        '</Role>',
+      ].join('\n');
+      const capturedStates: Array<{ exists: boolean; content: string }> = [];
+      const restoreEngine = installMutationEngineSpy((state) => { capturedStates.push(state); });
+      try {
+        await fs.promises.mkdir(path.dirname(rolePath), { recursive: true });
+        await fs.promises.writeFile(path.join(tmpRoot, 'Configuration.xml'),
+          '<MetaDataObject version="2.20"><Configuration><ChildObjects/></Configuration></MetaDataObject>', 'utf8');
+        await fs.promises.writeFile(rolePath, initialRoleXml, 'utf8');
+
+        const { panel } = createFakeWebviewPanel({ autoReplyFlushWith: rls });
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(createFakeExtensionContext());
+        try {
+          await provider.show(rolePath, tmpRoot);
+          const handler = (provider as unknown as { handleMessage(message: unknown): Promise<void> }).handleMessage;
+          await handler.call(provider, {
+            command: 'updateRight',
+            data: { objectName: 'Document.Sales', rightType: 'view', value: true },
+          });
+          await provider.triggerSave();
+
+          assert.strictEqual(capturedStates.length, 1, 'the Designer route must also use the engine');
+          assert.strictEqual(capturedStates[0]?.exists, true);
+          assert.strictEqual(capturedStates[0]?.content, initialRoleXml,
+            'Designer merge must use the current XML supplied by the engine');
+
+          const saved = await fs.promises.readFile(rolePath, 'utf8');
+          assert.ok(saved.includes('<Posting>false</Posting>'), 'explicit false rights must remain');
+          assert.ok(saved.includes('<Read>false</Read>'), 'untouched known rights must remain');
+          assert.ok(saved.includes('<ext:Read>true</ext:Read>'), 'same-local-name extension rights must remain unchanged');
+          assert.ok(saved.includes('<ext:FutureRight flag="keep">opaque</ext:FutureRight>'), 'unknown extension rights must remain');
+          assert.ok(saved.includes('xmlns:ext="urn:future-rights"'), 'Designer namespace declarations must remain');
+          assert.ok(saved.includes('KEEP_DESIGNER_RLS'), 'Designer restriction templates must remain unchanged');
+          assert.ok(saved.includes('<View>true</View>'), 'the edited known right must be merged');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        restoreEngine();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+
+    test('does not recreate a Designer Role.xml deleted after the engine snapshot', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-engine-designer-delete-'));
+      const rolePath = path.join(tmpRoot, 'Roles', 'Power', 'Role.xml');
+      const initialRoleXml = '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Properties><Name>Power</Name></Properties><Rights/></Role>';
+      const capturedStates: Array<{ exists: boolean; content: string }> = [];
+      const restoreEngine = installMutationEngineSpy(async (state) => {
+        capturedStates.push(state);
+        await fs.promises.unlink(rolePath);
+      });
+      try {
+        await fs.promises.mkdir(path.dirname(rolePath), { recursive: true });
+        await fs.promises.writeFile(path.join(tmpRoot, 'Configuration.xml'),
+          '<MetaDataObject version="2.20"><Configuration><ChildObjects/></Configuration></MetaDataObject>', 'utf8');
+        await fs.promises.writeFile(rolePath, initialRoleXml, 'utf8');
+
+        const { panel } = createFakeWebviewPanel({ autoReplyFlushWith: '' });
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(createFakeExtensionContext());
+        try {
+          await provider.show(rolePath, tmpRoot);
+          const handler = (provider as unknown as { handleMessage(message: unknown): Promise<void> }).handleMessage;
+          await handler.call(provider, {
+            command: 'updateRight',
+            data: { objectName: 'Catalog.Products', rightType: 'read', value: true },
+          });
+
+          await assert.rejects(provider.triggerSave(), /Конфликт сохранения|Ошибка записи/);
+          assert.strictEqual(capturedStates.length, 1);
+          assert.strictEqual(capturedStates[0]?.exists, true);
+          assert.strictEqual(capturedStates[0]?.content, initialRoleXml);
+          assert.strictEqual(fs.existsSync(rolePath), false, 'a deleted Designer target must not be recreated');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        restoreEngine();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+
+    test('EDT missing Rights.xml create failure is injected through the engine and leaves no partial target', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-engine-create-fail-'));
+      const rolePath = path.join(tmpRoot, 'Roles', 'Power.xml');
+      const rightsPath = path.join(tmpRoot, 'Roles', 'Power', 'Ext', 'Rights.xml');
+      let partialCreateInjected = false;
+      const faultingFileSystem: AtomicFileSystem = {
+        readFile: async (filePath) => Buffer.from(await fs.promises.readFile(filePath)),
+        open: async (filePath, flags) => {
+          const handle = await fs.promises.open(filePath, flags);
+          return {
+            writeFile: async (data) => {
+              partialCreateInjected = true;
+              await handle.writeFile(Buffer.from(data).subarray(0, 8));
+              throw new Error('injected partial Rights.xml create failure');
+            },
+            sync: () => handle.sync(),
+            close: () => handle.close(),
+          };
+        },
+        link: (existingPath, newPath) => fs.promises.link(existingPath, newPath),
+        rename: (oldPath, newPath) => fs.promises.rename(oldPath, newPath),
+        rm: (filePath, options) => fs.promises.rm(filePath, options),
+      };
+      const capturedStates: Array<{ exists: boolean; content: string }> = [];
+      const engine = new ConfigurationMutationEngine({ fileSystem: faultingFileSystem });
+      const restoreEngine = installMutationEngineSpy((state) => { capturedStates.push(state); }, engine);
+      try {
+        await fs.promises.mkdir(path.dirname(rolePath), { recursive: true });
+        await fs.promises.writeFile(path.join(tmpRoot, 'Configuration.xml'),
+          '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration name="TestConfig"/></MetaDataObject>', 'utf8');
+        await fs.promises.writeFile(rolePath,
+          '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Properties><Name>Power</Name></Properties><Rights/></Role>', 'utf8');
+
+        const { panel } = createFakeWebviewPanel({ autoReplyFlushWith: '' });
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(createFakeExtensionContext());
+        try {
+          await provider.show(rolePath, tmpRoot);
+          const handler = (provider as unknown as { handleMessage(message: unknown): Promise<void> }).handleMessage;
+          await handler.call(provider, {
+            command: 'updateRight',
+            data: { objectName: 'Catalog.Products', rightType: 'read', value: true },
+          });
+
+          await assert.rejects(provider.triggerSave(), /injected partial Rights\.xml create failure/);
+          assert.strictEqual(partialCreateInjected, true, 'the engine-owned atomic create path must be exercised');
+          assert.deepStrictEqual(capturedStates[0], { exists: false, content: '', revision: undefined });
+          assert.strictEqual(fs.existsSync(rightsPath), false, 'failed creation must leave no target file');
+          assert.deepStrictEqual(await fs.promises.readdir(path.dirname(rightsPath)), [], 'temporary file must be cleaned up');
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        restoreEngine();
+        await rmRfTestDir(tmpRoot);
+      }
+    });
+  });
+
   suite('axis 1 — regression (full save path, no unnecessary RLS round-trip)', () => {
     test('webview save with restrictionTemplatesText does not send requestSavePayload', async () => {
       const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-reg-save-'));
@@ -1290,7 +1540,7 @@ suite('rightsEditor integration', () => {
       }
     });
 
-    test('handleSave cleans up direct Rights.xml if fallback write fails (#206, PR #225 review comment 4230106700)', async () => {
+    test('handleSave fails closed when atomic create publication is unsupported (#206)', async () => {
       const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-fallback-fail-'));
       const gateway = configureConfigurationMutationGateway(
         async (targetPath, kind, operation) => operation(),
@@ -1329,10 +1579,8 @@ suite('rightsEditor integration', () => {
         try {
           await provider.show(rolePath, tmpRoot);
 
-          // Force link to fail so it falls back to direct open, then fail the direct write
+          // The engine must fail closed when it cannot atomically publish the completed temp file.
           const origLink = fs.promises.link;
-          const origOpen = fs.promises.open;
-          let openCalls = 0;
 
           (fs.promises as any).link = async () => {
             const err = new Error('ENOSYS: function not implemented');
@@ -1340,31 +1588,19 @@ suite('rightsEditor integration', () => {
             throw err;
           };
 
-          (fs.promises as any).open = async (...args: any[]) => {
-            openCalls++;
-            const handle = await origOpen.apply(fs.promises, args as any);
-            if (openCalls === 2) {
-              // Direct target handle
-              handle.writeFile = async () => {
-                throw new Error('EIO: input/output error');
-              };
-            }
-            return handle;
-          };
-
           let errorCaught = false;
           try {
             await priv.handleSave({ command: 'save', data: { restrictionTemplatesText: '' } });
           } catch (err: any) {
             errorCaught = true;
-            assert.ok(String(err).includes('EIO'));
+            assert.ok(String(err).includes('ENOSYS'));
           } finally {
             (fs.promises as any).link = origLink;
-            (fs.promises as any).open = origOpen;
           }
 
-          assert.strictEqual(errorCaught, true, 'Save must fail when fallback direct write throws EIO');
-          assert.strictEqual(fs.existsSync(rightsPath), false, 'Fallback target Rights.xml must be unlinked on failure');
+          assert.strictEqual(errorCaught, true, 'Save must fail when atomic publication is unsupported');
+          assert.strictEqual(fs.existsSync(rightsPath), false, 'No target may be published without an atomic create');
+          assert.deepStrictEqual(await fs.promises.readdir(path.dirname(rightsPath)), [], 'unpublished temp file must be removed');
         } finally {
           restorePanel();
           provider.dispose();
@@ -1611,5 +1847,3 @@ suite('rightsEditor integration', () => {
     });
   });
 });
-
-
