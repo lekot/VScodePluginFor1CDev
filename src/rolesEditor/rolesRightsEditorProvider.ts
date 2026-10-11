@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
-import { AtomicFileStorage, hashContent } from '../services/configurationSession/atomicFileStorage';
+import { getConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
+import { hashContent } from '../services/configurationSession/atomicFileStorage';
 import { randomUUID } from 'crypto';
 import { XMLValidator } from 'fast-xml-parser';
 import { RoleModel } from './models/roleModel';
@@ -13,7 +13,7 @@ import { RoleXmlSerializer } from './roleXmlSerializer';
 import { RightsValidator } from './rightsValidator';
 import {
   getRightsPath,
-  loadRightsXml,
+  parseRightsXmlContent,
   mergeRightsIntoDom,
   serializeRightsDomToXml,
   insertRestrictionTemplatesBeforeClosingRights,
@@ -618,149 +618,89 @@ export class RolesRightsEditorProvider {
 
 
 
-      await runConfigurationMutation(targetPath, 'rolesRights.save', async () => {
-        let xmlContent: string;
-        let originalHash: string;
-        const targetVersion = await this.resolveRoleWriteVersion(targetPath, snapshotRootPath);
-        if (isCaseB) {
-          const raw = await fs.promises.readFile(targetPath, 'utf8');
-          originalHash = hashContent(raw);
-          if (snapshotExpectedHash && originalHash !== snapshotExpectedHash) {
-            throw new Error(`Конфликт сохранения: файл роли "${targetPath}" был изменен другим процессом.`);
+      const receipt = await getConfigurationMutationEngine().transformFile(
+        targetPath,
+        {
+          kind: 'rolesRights.save',
+          resourcePath: targetPath,
+          expectedRevision: snapshotExpectedState === 'file'
+            ? snapshotExpectedHash
+            : snapshotExpectedState === 'missing'
+              ? null
+              : undefined,
+          session: { id: targetPath, generation: targetGeneration },
+        },
+        async (state) => {
+          if (isCaseB && !state.exists) {
+            throw new Error(`Конфликт сохранения: файл роли "${targetPath}" был удален другим процессом.`);
           }
-          xmlContent = RoleXmlSerializer.mergeExistingDesignerRoleXml(snapshotRoleModel, targetVersion);
-          Logger.debug('Serialized (Case B)');
-        } else {
-          Logger.debug('Loading Rights.xml...');
-          let raw: string | undefined;
-          try {
-            raw = await fs.promises.readFile(targetPath, 'utf8');
-            originalHash = hashContent(raw);
-            if (snapshotExpectedState === 'missing') {
-              throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был создан другим процессом.`);
-            }
-            if (snapshotExpectedHash && originalHash !== snapshotExpectedHash) {
-              throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был изменен другим процессом.`);
-            }
-          } catch (err: unknown) {
-            const code = err && typeof (err as NodeJS.ErrnoException).code === 'string'
-              ? (err as NodeJS.ErrnoException).code
-              : '';
-            if (code === 'ENOENT') {
-              if (snapshotExpectedState === 'file' || snapshotExpectedHash) {
-                throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был удален другим процессом.`);
-              }
-              originalHash = '';
-            } else {
-              throw err;
-            }
+          if (!isCaseB && snapshotExpectedState === 'missing' && state.exists) {
+            throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был создан другим процессом.`);
+          }
+          if (!isCaseB && snapshotExpectedState === 'file' && !state.exists) {
+            throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" был удален другим процессом.`);
+          }
+          if (snapshotExpectedState === undefined) {
+            throw new Error(`Конфликт сохранения: ревизия файла "${targetPath}" не зафиксирована для текущего сеанса.`);
           }
 
-
-
-
-          const dom = await loadRightsXml(targetPath, targetVersion);
-          Logger.debug('Merging rights into DOM...');
-          const compactWrite = vscode.workspace
-            .getConfiguration('1cMetadataTree')
-            .get<boolean>('rightsEditor.compactRightsWrite', true);
-          mergeRightsIntoDom(dom, snapshotRoleModel.changedRights ?? {}, { compactWrite });
-          Logger.debug('Serializing DOM to XML...');
-          xmlContent = serializeRightsDomToXml(dom, targetVersion);
-          xmlContent = insertRestrictionTemplatesBeforeClosingRights(
-            xmlContent,
-            snapshotRoleModel.restrictionTemplatesText ?? ''
+          const targetVersion = await this.resolveRoleWriteVersion(
+            state.exists ? state.content : undefined,
+            snapshotRootPath,
           );
-        }
+          let xmlContent: string;
+          if (isCaseB) {
+            const currentRoleModel = { ...snapshotRoleModel, sourceXml: state.content };
+            xmlContent = RoleXmlSerializer.mergeExistingDesignerRoleXml(currentRoleModel, targetVersion);
+            Logger.debug('Serialized (Case B)');
+          } else {
+            Logger.debug('Parsing engine Rights.xml snapshot...');
+            const dom = parseRightsXmlContent(state.content, targetVersion);
+            Logger.debug('Merging rights into DOM...');
+            const compactWrite = vscode.workspace
+              .getConfiguration('1cMetadataTree')
+              .get<boolean>('rightsEditor.compactRightsWrite', true);
+            mergeRightsIntoDom(dom, snapshotRoleModel.changedRights ?? {}, { compactWrite });
+            Logger.debug('Serializing DOM to XML...');
+            xmlContent = serializeRightsDomToXml(dom, targetVersion);
+            xmlContent = insertRestrictionTemplatesBeforeClosingRights(
+              xmlContent,
+              snapshotRoleModel.restrictionTemplatesText ?? ''
+            );
+          }
 
-        const validation = XMLValidator.validate(xmlContent);
-        if (validation !== true) {
-          const detail = typeof validation === 'object' && validation?.err?.msg
-            ? `: ${validation.err.msg}`
-            : '';
-          throw new Error(`Не удалось сохранить права роли: невалидный XML${detail}`);
-        }
+          const validation = XMLValidator.validate(xmlContent);
+          if (validation !== true) {
+            const detail = typeof validation === 'object' && validation?.err?.msg
+              ? `: ${validation.err.msg}`
+              : '';
+            throw new Error(`Не удалось сохранить права роли: невалидный XML${detail}`);
+          }
 
-        const rootPath = snapshotRootPath;
-        if (originalHash) {
-          const storage = new AtomicFileStorage(rootPath);
-        const outcome = await storage.replace(targetPath, xmlContent, originalHash);
-        if (outcome.status === 'conflict') {
-          throw new Error(`Конфликт сохранения прав роли: ${outcome.message}`);
-        }
-        if (outcome.status !== 'committed') {
-          throw new Error(`Ошибка записи файла прав роли: ${outcome.message}`);
-        }
-          if (this.sessionGeneration === targetGeneration) {
-            this.sessionExpectedHash = outcome.newHash;
-            this.sessionExpectedState = 'file';
-          }
-        } else {
-          const dir = path.dirname(targetPath);
-          await fs.promises.mkdir(dir, { recursive: true });
-          const tempPath = path.join(dir, `.cdt-${randomUUID()}.tmp`);
-          let tempHandle: fs.promises.FileHandle | undefined;
-          let published = false;
-          try {
-            tempHandle = await fs.promises.open(tempPath, 'wx');
-            await tempHandle.writeFile(xmlContent, 'utf8');
-            await tempHandle.sync();
-            await tempHandle.close();
-            tempHandle = undefined;
+          return { content: xmlContent, result: xmlContent };
+        },
+      );
 
-            // Attempt atomic publish via link (guarantees targetPath is only published if fully written, and fails with EEXIST if target already exists)
-            try {
-              await fs.promises.link(tempPath, targetPath);
-              published = true;
-            } catch (linkErr: unknown) {
-              const code = linkErr && typeof (linkErr as NodeJS.ErrnoException).code === 'string'
-                ? (linkErr as NodeJS.ErrnoException).code
-                : '';
-              if (code === 'EEXIST') {
-                throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" уже существует или был создан другим процессом.`);
-              }
-              // If link is not supported (e.g. EXDEV, ENOSYS, EPERM), fallback to exclusive open with cleanup on failure
-              let directHandle: fs.promises.FileHandle | undefined;
-              let directWritten = false;
-              try {
-                directHandle = await fs.promises.open(targetPath, 'wx');
-                await directHandle.writeFile(xmlContent, 'utf8');
-                await directHandle.sync();
-                directWritten = true;
-                published = true;
-              } catch (directErr: unknown) {
-                const directCode = directErr && typeof (directErr as NodeJS.ErrnoException).code === 'string'
-                  ? (directErr as NodeJS.ErrnoException).code
-                  : '';
-                if (directCode === 'EEXIST') {
-                  throw new Error(`Конфликт сохранения: файл прав роли "${targetPath}" уже существует или был создан другим процессом.`);
-                }
-                throw directErr;
-              } finally {
-                if (directHandle) {
-                  await directHandle.close().catch(() => undefined);
-                  if (!directWritten) {
-                    await fs.promises.unlink(targetPath).catch(() => undefined);
-                  }
-                }
-              }
-            }
-          } finally {
-            if (tempHandle) {
-              await tempHandle.close().catch(() => undefined);
-            }
-            await fs.promises.unlink(tempPath).catch(() => undefined);
-          }
-          if (!published) {
-            throw new Error(`Не удалось опубликовать файл прав роли: ${targetPath}`);
-          }
-          if (this.sessionGeneration === targetGeneration) {
-            this.sessionExpectedState = 'file';
-            this.sessionExpectedHash = hashContent(xmlContent);
-          }
+      if (receipt.status === 'conflict') {
+        if (receipt.code === 'STALE_TARGET_REVISION') {
+          const kind = isCaseB ? 'файл роли' : 'файл прав роли';
+          const reason = snapshotExpectedState === 'missing'
+            ? 'был создан другим процессом'
+            : receipt.oldRevision === undefined
+              ? 'был удален другим процессом'
+              : 'был изменен другим процессом';
+          throw new Error(`Конфликт сохранения: ${kind} "${targetPath}" ${reason}.`);
         }
-        return;
-      });
+        throw new Error(`Конфликт сохранения прав роли: ${receipt.message ?? receipt.code ?? 'неизвестная причина'}`);
+      }
+      if (receipt.status !== 'committed') {
+        throw new Error(`Ошибка записи файла прав роли: ${receipt.message ?? receipt.code ?? receipt.status}`);
+      }
+
+      if (this.sessionGeneration === targetGeneration) {
+        this.sessionExpectedHash = receipt.newRevision;
+        this.sessionExpectedState = 'file';
+      }
 
 
 
@@ -812,15 +752,10 @@ export class RolesRightsEditorProvider {
     }
   }
 
-  /** Resolve before the temporary file or its parent directory is created. */
-  private async resolveRoleWriteVersion(targetPath: string, rootPath?: string): Promise<string> {
-    try {
-      const existing = await fs.promises.readFile(targetPath, 'utf8');
-      return requireDocumentWriteFormatProfile(existing).version;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw error;
-      }
+  /** Resolve from the engine snapshot, or the owning project profile for a missing Rights.xml. */
+  private async resolveRoleWriteVersion(currentContent: string | undefined, rootPath?: string): Promise<string> {
+    if (currentContent !== undefined) {
+      return requireDocumentWriteFormatProfile(currentContent).version;
     }
     const resolvedRoot = rootPath ?? this.configurationRootPath;
     if (!resolvedRoot) {

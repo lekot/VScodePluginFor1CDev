@@ -167,26 +167,9 @@ export function createMinimalRightsDom(targetVersion?: string): RightsDom {
   return [{ Rights: content }];
 }
 
-/**
- * Load and parse existing Rights.xml into a DOM. Preserves full structure.
- * If file does not exist, returns minimal DOM. On parse error throws.
- */
-export async function loadRightsXml(rightsPath: string, targetVersion?: string): Promise<RightsDom> {
-  let xmlContent: string;
-  try {
-    xmlContent = await fs.promises.readFile(rightsPath, 'utf-8');
-  } catch (err) {
-    const code = err && typeof (err as NodeJS.ErrnoException).code === 'string' ? (err as NodeJS.ErrnoException).code : '';
-    if (code === 'ENOENT') {
-      Logger.debug(`Rights.xml not found at ${rightsPath}, using minimal document`);
-      return createMinimalRightsDom(targetVersion);
-    }
-    Logger.error(`Failed to read Rights.xml: ${rightsPath}`, err);
-    throw new Error(`Не удалось прочитать Rights.xml: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
+/** Parse already-read Rights.xml content into a DOM while preserving its full structure. */
+export function parseRightsXmlContent(xmlContent: string, targetVersion?: string): RightsDom {
   if (!xmlContent || xmlContent.trim() === '') {
-    Logger.debug('Rights.xml is empty, using minimal document');
     return createMinimalRightsDom(targetVersion);
   }
   const existingProfile = requireDocumentWriteFormatProfile(xmlContent);
@@ -203,7 +186,6 @@ export async function loadRightsXml(rightsPath: string, targetVersion?: string):
     parsed = parser.parse(xmlContent);
   } catch (parseErr) {
     const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
-    Logger.error(`Failed to parse Rights.xml: ${rightsPath}`, parseErr);
     throw new Error(`Не удалось разобрать Rights.xml (некорректный XML). ${msg}`);
   }
 
@@ -214,6 +196,32 @@ export async function loadRightsXml(rightsPath: string, targetVersion?: string):
   const dom = parsed as RightsDom;
   ensureRightsRootAttrsFor1CXdto(dom, existingProfile.version);
   return dom;
+}
+
+/** Load and parse existing Rights.xml, or return a minimal DOM when the file is absent. */
+export async function loadRightsXml(rightsPath: string, targetVersion?: string): Promise<RightsDom> {
+  let xmlContent: string;
+  try {
+    xmlContent = await fs.promises.readFile(rightsPath, 'utf-8');
+  } catch (err) {
+    const code = err && typeof (err as NodeJS.ErrnoException).code === 'string' ? (err as NodeJS.ErrnoException).code : '';
+    if (code === 'ENOENT') {
+      Logger.debug(`Rights.xml not found at ${rightsPath}, using minimal document`);
+      return createMinimalRightsDom(targetVersion);
+    }
+    Logger.error(`Failed to read Rights.xml: ${rightsPath}`, err);
+    throw new Error(`Не удалось прочитать Rights.xml: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (!xmlContent || xmlContent.trim() === '') {
+    Logger.debug('Rights.xml is empty, using minimal document');
+  }
+  try {
+    return parseRightsXmlContent(xmlContent, targetVersion);
+  } catch (error) {
+    Logger.error(`Failed to parse Rights.xml: ${rightsPath}`, error);
+    throw error;
+  }
 }
 
 function getRightsContentArray(dom: RightsDom): unknown[] {
