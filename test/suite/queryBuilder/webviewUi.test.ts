@@ -96,10 +96,11 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
 
     assert.strictEqual(html.includes('id="table-joins"'), true, 'Must have joins table');
     assert.strictEqual(html.includes('id="btn-add-join"'), true, 'Must have add join button');
-    assert.strictEqual(html.includes('Внутреннее (INNER)'), true, 'Must support Inner join');
-    assert.strictEqual(html.includes('Левое (LEFT)'), true, 'Must support Left join');
-    assert.strictEqual(html.includes('Правое (RIGHT)'), true, 'Must support Right join');
-    assert.strictEqual(html.includes('Полное (FULL)'), true, 'Must support Full join');
+    // The join type list names the types in Russian only, as the Designer does: «Внутреннее», «Левое»...
+    assert.strictEqual(html.includes("{ value: 'Inner', text: 'Внутреннее' }"), true, 'Must support Inner join');
+    assert.strictEqual(html.includes("{ value: 'Left', text: 'Левое' }"), true, 'Must support Left join');
+    assert.strictEqual(html.includes("{ value: 'Right', text: 'Правое' }"), true, 'Must support Right join');
+    assert.strictEqual(html.includes("{ value: 'Full', text: 'Полное' }"), true, 'Must support Full join');
   });
 
   test('7. Tab 3: Grouping and Aggregates', () => {
@@ -208,7 +209,9 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       public children: MockElement[] = [];
       public parentElement: MockElement | null = null;
       public _listeners: { [event: string]: ((e: any) => void)[] } = {};
-      public style: { [key: string]: string } = {};
+      public style: { [key: string]: any } = { setProperty: () => {}, removeProperty: () => {} };
+      public hidden: boolean = false;
+      public dataset: { [key: string]: string } = {};
       public _classes: Set<string> = new Set();
       public value: string = '';
       public checked: boolean = false;
@@ -249,6 +252,12 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
           add: (c: string) => this._classes.add(c),
           remove: (c: string) => this._classes.delete(c),
           contains: (c: string) => this._classes.has(c),
+          toggle: (c: string, force?: boolean) => {
+            const on = force === undefined ? !this._classes.has(c) : force;
+            if (on) this._classes.add(c);
+            else this._classes.delete(c);
+            return on;
+          },
         };
       }
 
@@ -265,6 +274,9 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       }
 
       dispatchEvent(event: { type: string; [key: string]: any }) {
+        // A real DOM event always carries these methods
+        if (!event.stopPropagation) event.stopPropagation = () => {};
+        if (!event.preventDefault) event.preventDefault = () => {};
         const handlers = this._listeners[event.type] || [];
         for (const h of handlers) {
           h(event);
@@ -280,6 +292,63 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         this.children.push(child);
         return child;
       }
+
+      append(...nodes: MockElement[]): void {
+        nodes.forEach((n) => this.appendChild(n));
+      }
+
+      replaceChildren(...nodes: MockElement[]): void {
+        this.children = [];
+        nodes.forEach((n) => this.appendChild(n));
+      }
+
+      insertBefore(child: MockElement, ref: MockElement | null): MockElement {
+        const idx = ref ? this.children.indexOf(ref) : -1;
+        child.parentElement = this;
+        if (idx === -1) this.children.push(child);
+        else this.children.splice(idx, 0, child);
+        return child;
+      }
+
+      replaceChild(next: MockElement, old: MockElement): MockElement {
+        const idx = this.children.indexOf(old);
+        if (idx !== -1) {
+          next.parentElement = this;
+          old.parentElement = null;
+          this.children[idx] = next;
+        }
+        return old;
+      }
+
+      remove(): void {
+        if (this.parentElement) this.parentElement.removeChild(this);
+      }
+
+      contains(other: MockElement | null): boolean {
+        for (let n = other; n; n = n.parentElement) if (n === this) return true;
+        return false;
+      }
+
+      closest(): MockElement {
+        return this;
+      }
+
+      removeAttribute(k: string): void {
+        delete this._attrs[k];
+      }
+
+      get rows(): MockElement[] {
+        return this.children.filter((c) => c.tagName === 'TR');
+      }
+
+      focus(): void {}
+
+      // Canvas text metrics: about 7 px per character.
+      getContext(): { font: string; measureText: (text: string) => { width: number } } {
+        return { font: '', measureText: (text: string) => ({ width: String(text).length * 7 }) };
+      }
+
+      scrollIntoView(): void {}
 
       removeChild(child: MockElement): MockElement {
         const idx = this.children.indexOf(child);
@@ -417,6 +486,14 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
           }
           return null;
         },
+        body: new MockElement('body'),
+        documentElement: new MockElement('html'),
+        addEventListener: () => {},
+        createTextNode: (text: string) => {
+          const node = new MockElement('#text');
+          node.textContent = text;
+          return node;
+        },
         querySelectorAll: (sel: string) => {
           if (sel === '.tab-btn') return tabButtons;
           if (sel === '.tab-pane') return tabPanes;
@@ -452,6 +529,20 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         clearTimeout: clearTimeout,
         prompt: () => '',
         alert: () => {},
+        Option: function (text?: string, value?: string) {
+          const option = new MockElement('option');
+          option.textContent = text || '';
+          option.value = value === undefined ? text || '' : value;
+          option.setAttribute('value', option.value);
+          return option;
+        },
+        MutationObserver: class {
+          observe(): void {}
+          disconnect(): void {}
+        },
+        getComputedStyle: () => ({ getPropertyValue: () => '' }),
+        requestAnimationFrame: (fn: () => void) => setTimeout(fn, 0),
+        cancelAnimationFrame: (handle: ReturnType<typeof setTimeout>) => clearTimeout(handle),
       };
 
       vm.createContext(sandbox);
@@ -473,6 +564,12 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       };
     }
 
+    // Typing in the text tab: the page marks the text as unchecked on the input event (the value alone does not)
+    function editQueryText(env: WebviewSandbox, text: string): void {
+      env.elements.sdblTextEditor.value = text;
+      env.elements.sdblTextEditor.dispatchEvent({ type: 'input' });
+    }
+
     test('P1.1: parseSdblClient parses Russian SELECT, FROM, fields and aliases', () => {
       const env = createWebviewEnvironment();
       const parseSdbl = env.window.parseSdblClient;
@@ -486,8 +583,10 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       const sel = ast.queries[0];
       assert.strictEqual(sel.type, 'Select');
       assert.strictEqual(sel.fields.length, 2, 'Must parse 2 fields');
-      assert.strictEqual(sel.fields[0].expression, 'Поле1');
-      assert.strictEqual(sel.fields[1].expression, 'Поле2');
+      // The client parser builds expression nodes (Identifier), not strings
+      assert.strictEqual(sel.fields[0].expression.type, 'Identifier');
+      assert.strictEqual(env.window.getExpressionString(sel.fields[0].expression), 'Поле1');
+      assert.strictEqual(env.window.getExpressionString(sel.fields[1].expression), 'Поле2');
       assert.strictEqual(sel.fields[1].alias, 'Алиас');
 
       assert.strictEqual(sel.from.length, 1, 'Must parse 1 from table');
@@ -505,10 +604,10 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       assert.ok(ast);
       assert.strictEqual(ast.queries.length, 1);
       const sel = ast.queries[0];
-      assert.strictEqual(sel.fields[0].expression, 'Поле1');
+      assert.strictEqual(env.window.getExpressionString(sel.fields[0].expression), 'Поле1');
       assert.ok(sel.unions && sel.unions.length === 1, 'Must have 1 union');
       assert.strictEqual(sel.unions[0].unionType, 'UnionAll');
-      assert.strictEqual(sel.unions[0].statement.fields[0].expression, 'Поле1');
+      assert.strictEqual(env.window.getExpressionString(sel.unions[0].statement.fields[0].expression), 'Поле1');
     });
 
     test('P1.1: invalid syntax throws error and does not wipe AST', () => {
@@ -549,7 +648,8 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
     test('P1.2: opening AST with where: BinaryOp unfolds conditions into UI rows', () => {
       const env = createWebviewEnvironment();
       const q = env.window.getActiveQuery();
-      q.whereConditions = [];
+      // whereConditions are derived from the AST when they were never set (an empty list means "no conditions")
+      delete q.whereConditions;
       q.where = {
         type: 'BinaryOp',
         operator: '=',
@@ -559,9 +659,12 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
 
       env.window.renderTab4();
 
+      // The first row is the root group (the conditions form a tree, as in the Designer)
       const rows = env.elements.tbodyConditions.children;
-      assert.strictEqual(rows.length, 1, 'Should unfold 1 condition row');
-      const inputs = rows[0].querySelectorAll('input');
+      assert.strictEqual(rows.length, 2, 'Should have the root group row and 1 condition row');
+      assert.ok(rows[0].classList.contains('condition-root'));
+      // The НЕ and selection checkboxes come first: only the text inputs hold field and value
+      const inputs = rows[1].querySelectorAll('input').filter((i: MockElement) => i.type === 'text');
       assert.strictEqual(inputs[0].value, 'Склад', 'Field input should be Склад');
       assert.strictEqual(inputs[1].value, '&Склад', 'Value input should be &Склад');
     });
@@ -698,23 +801,24 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       env.window.renderSelectedFields();
       env.window.renderTab8();
 
-      // Rename alias of first field
-      const fieldRows = env.elements.tbodySelectedFields.children;
-      const aliasInput0 = fieldRows[0].querySelectorAll('input')[1];
+      // Rename alias of first field: aliases are edited on the Unions/Aliases tab, not in the fields table
+      env.window.renderTab6();
+      const aliasInput0 = env.elements.tbodyUnionsFields.querySelectorAll('.union-alias-input')[0];
+      assert.ok(aliasInput0, 'Alias input must exist on the Unions tab');
       aliasInput0.value = 'НоваяСсылка';
       aliasInput0.dispatchEvent({ type: 'change', target: aliasInput0 });
 
       assert.deepStrictEqual(q.indexBy, ['НоваяСсылка', 'СуммаДокумента'], 'indexBy must reflect renamed alias');
 
       // Delete the second field
-      const delBtn1 = fieldRows[1].querySelector('button.danger');
+      const delBtn1 = env.elements.tbodySelectedFields.children[1].querySelector('button.danger');
       assert.ok(delBtn1, 'Delete button must exist');
       delBtn1.click();
 
       assert.deepStrictEqual(q.indexBy, ['НоваяСсылка'], 'Deleted field must be removed from indexBy');
     });
 
-    test('P2.15: aggregate function dropdown and distinct checkbox update AST', () => {
+    test('P2.15: aggregate function dropdown (including «Количество различных») updates AST', () => {
       const env = createWebviewEnvironment();
       const q = env.window.getActiveQuery();
       q.fields = [
@@ -736,17 +840,19 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
 
       const selFn = aggRows[0].querySelector('select');
       assert.ok(selFn, 'Function select must exist');
-      selFn.value = 'КОЛИЧЕСТВО';
+      // The dropdown values are aggregate types (Sum, Count, ...); DISTINCT is its own item, not a checkbox
+      selFn.value = 'Count';
       selFn.dispatchEvent({ type: 'change', target: selFn });
 
       const expr = q.fields[0].expression;
       assert.strictEqual(expr.aggregateType, 'Count', 'Aggregate type should be updated to Count in AST');
+      assert.ok(!expr.distinct, 'Plain Count is not distinct');
+      assert.strictEqual(aggRows[0].querySelector('input[type="checkbox"]'), null, 'There is no distinct checkbox');
 
-      const chDist = aggRows[0].querySelector('input[type="checkbox"]');
-      assert.ok(chDist, 'Distinct checkbox must exist');
-      chDist.checked = true;
-      chDist.dispatchEvent({ type: 'change', target: chDist });
+      selFn.value = 'CountDistinct';
+      selFn.dispatchEvent({ type: 'change', target: selFn });
 
+      assert.strictEqual(expr.aggregateType, 'Count');
       assert.strictEqual(expr.distinct, true, 'Distinct should be true in AST');
     });
 
@@ -783,7 +889,11 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       assert.ok(delBtn);
       delBtn.click();
 
-      assert.strictEqual(q.from[1].joins.length, 0, 'Join must be removed from q.from[1]');
+      // An emptied joins list is dropped from the clause; the joined table returns to FROM with its source name
+      assert.strictEqual((q.from[1].joins || []).length, 0, 'Join must be removed from q.from[1]');
+      assert.strictEqual(q.from.length, 3, 'Joined table must return to FROM');
+      assert.strictEqual(q.from[2].source.name, 'Справочник.Склады');
+      assert.strictEqual(q.from[2].alias, 'Скл');
     });
 
     test('R1: query without totals does not create phantom empty totals upon render or save', () => {
@@ -872,7 +982,8 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       const pkg = env.window.parseSdblClient(text);
       const parsed = pkg.queries[0];
       assert.strictEqual(parsed.fields.length, 1);
-      assert.strictEqual(parsed.fields[0].raw, '*');
+      // The client parser keeps * as an Identifier node
+      assert.strictEqual(env.window.getExpressionString(parsed.fields[0].expression), '*');
 
       const formatted = env.window.formatSdblQuery(parsed);
       assert.ok(formatted.includes('ВЫБРАТЬ\n\t*'));
@@ -914,7 +1025,8 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       const parsed = pkg.queries[0];
 
       assert.ok(parsed.totals, 'totals must exist');
-      assert.strictEqual(parsed.totals.fields.length, 0, 'totals.fields must be empty when no aggregates');
+      // An empty totals.fields list is not kept at all
+      assert.strictEqual((parsed.totals.fields || []).length, 0, 'totals.fields must be empty when no aggregates');
       assert.strictEqual(parsed.totals.by.length, 1, 'totals.by must contain 1 group item');
       assert.strictEqual(env.window.getExpressionString(parsed.totals.by[0].expression), 'A');
       assert.strictEqual(parsed.totals.by[0].periods, true);
@@ -934,7 +1046,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       const parsed = pkg.queries[0];
 
       assert.ok(parsed.totals);
-      assert.strictEqual(parsed.totals.fields.length, 0);
+      assert.strictEqual((parsed.totals.fields || []).length, 0);
       assert.strictEqual(parsed.totals.by.length, 1);
       assert.strictEqual(env.window.getExpressionString(parsed.totals.by[0].expression), 'A');
     });
@@ -974,7 +1086,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       );
     });
 
-    test('Finding 7: unchecking periods checkbox deletes periodDefinition and removes periods from formatted query', () => {
+    test('Finding 7: switching the totals type from Periods deletes periodDefinition and removes periods from formatted query', () => {
       const env = createWebviewEnvironment();
       const q = env.window.getActiveQuery();
       q.fields = [{ expression: { type: 'Identifier', name: 'A' }, alias: 'A' }];
@@ -996,17 +1108,16 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
 
       env.window.renderTab9();
 
-      // Find the checkbox for periods in tbodyTotalsGroups
+      // The type dropdown of the group in tbodyTotalsGroups replaces the Periods checkbox
       const rows = env.elements.tbodyTotalsGroups.children;
       assert.strictEqual(rows.length, 1);
-      const checkboxes = rows[0].querySelectorAll('input[type="checkbox"]');
-      assert.strictEqual(checkboxes.length, 2);
-      const chPer = checkboxes[1];
-      assert.strictEqual(chPer.checked, true, 'Periods checkbox must initially be checked');
+      const selType = rows[0].querySelector('select');
+      assert.ok(selType, 'Totals type dropdown must exist');
+      assert.strictEqual(selType.value, 'Periods', 'Periods must initially be chosen');
 
-      // Uncheck it
-      chPer.checked = false;
-      chPer.dispatchEvent({ type: 'change', target: chPer });
+      // Choose «Элементы»
+      selType.value = 'Elements';
+      selType.dispatchEvent({ type: 'change', target: selType });
 
       assert.strictEqual(q.totals.by[0].periods, false, 'tb.periods must be false');
       assert.strictEqual(q.totals.by[0].periodDefinition, undefined, 'tb.periodDefinition must be deleted');
@@ -1027,7 +1138,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       textTabBtn.className = 'tab-btn active';
 
       // Set invalid text in editor
-      env.elements.sdblTextEditor.value = 'НЕВАЛИДНЫЙ ТЕКСТ БЕЗ ВЫБРАТЬ';
+      editQueryText(env, 'НЕВАЛИДНЫЙ ТЕКСТ БЕЗ ВЫБРАТЬ');
 
       // Click save button
       env.elements.btnSave.click();
@@ -1038,10 +1149,11 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
 
       // Verify error message is shown
       assert.strictEqual(env.elements.textParseError.style.display, 'flex');
-      assert.ok(env.elements.textParseError.textContent.includes('Ошибка парсинга SDBL'));
+      // The message names the query text: «Ошибка в тексте запроса: ...»
+      assert.ok(env.elements.textParseError.textContent.includes('Ошибка в тексте запроса'));
     });
 
-    test('Finding 3 (Review 64ca628): unchecking periods on real parsed AST leaves NO ПЕРИОДАМИ in production formatter', () => {
+    test('Finding 3 (Review 64ca628): leaving the Periods totals type on real parsed AST leaves NO ПЕРИОДАМИ in production formatter', () => {
       const realParsed = parseSdbl('ВЫБРАТЬ A ИЗ T ИТОГИ ПО A ПЕРИОДАМИ(ДЕНЬ, &Нач, &Кон)');
       const sel = realParsed.queries[0] as any;
       assert.strictEqual(sel.totals?.by[0].period, true, 'Real parser sets period: true');
@@ -1054,13 +1166,14 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
 
       const rows = env.elements.tbodyTotalsGroups.children;
       assert.strictEqual(rows.length, 1);
-      const checkboxes = rows[0].querySelectorAll('input[type="checkbox"]');
-      const chPer = checkboxes[1];
-      assert.strictEqual(chPer.checked, true, 'Periods checkbox must be checked initially');
+      // The totals type dropdown replaces the Periods checkbox
+      const selType = rows[0].querySelector('select');
+      assert.ok(selType, 'Totals type dropdown must exist');
+      assert.strictEqual(selType.value, 'Periods', 'Periods must be chosen initially');
 
-      // Uncheck it
-      chPer.checked = false;
-      chPer.dispatchEvent({ type: 'change', target: chPer });
+      // Choose «Элементы»
+      selType.value = 'Elements';
+      selType.dispatchEvent({ type: 'change', target: selType });
 
       const q = env.window.getActiveQuery();
       assert.strictEqual(q.totals.by[0].periods, false, 'periods must be false');
@@ -1075,9 +1188,9 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       const backendFormatted = formatSdbl(savedPkg);
       assert.ok(!backendFormatted.includes('ПЕРИОДАМИ'), 'Backend production formatSdbl must NOT contain ПЕРИОДАМИ');
 
-      // Now re-check periods checkbox
-      chPer.checked = true;
-      chPer.dispatchEvent({ type: 'change', target: chPer });
+      // Now choose «Периодами» again
+      selType.value = 'Periods';
+      selType.dispatchEvent({ type: 'change', target: selType });
       assert.strictEqual(q.totals.by[0].periods, true, 'periods must be true after recheck');
 
       env.elements.btnSave.click();
@@ -1380,7 +1493,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         assert.ok(env.elements.sdblTextEditor.value.includes('1 КАК Поле'));
 
         // Corrupt text to syntax error: "ВЫБРАТЬ"
-        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ';
+        editQueryText(env, 'ВЫБРАТЬ');
 
         // Attempt to switch to Tab 1
         tab1Btn.click();
@@ -1396,7 +1509,8 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
 
         // Error message must be visible
         assert.strictEqual(env.elements.textParseError.style.display, 'flex');
-        assert.ok(env.elements.textParseError.textContent.includes('Ошибка парсинга SDBL'));
+        // The message names the query text: «Ошибка в тексте запроса: ...»
+      assert.ok(env.elements.textParseError.textContent.includes('Ошибка в тексте запроса'));
       });
 
       test('2. Changing packageSelect or clicking toolbar query buttons is blocked on parse error, preserving draft', () => {
@@ -1411,7 +1525,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         textTabBtn.click();
 
         // Corrupt text
-        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ';
+        editQueryText(env, 'ВЫБРАТЬ');
 
         // Attempt to change packageSelect
         assert.strictEqual(env.state.activeQueryIndex, 0);
@@ -1422,7 +1536,8 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         assert.strictEqual(env.state.activeQueryIndex, 0, 'activeQueryIndex must remain 0');
         assert.strictEqual(env.elements.packageSelect.value, '0', 'packageSelect value must be reset to 0');
         assert.strictEqual(env.elements.sdblTextEditor.value, 'ВЫБРАТЬ', 'Draft must be preserved');
-        assert.strictEqual(env.elements.textParseError.style.display, 'flex');
+        // An unchecked draft only blocks the switch; the parse error is shown when the text is checked (leaving the field, tab or save)
+        assert.strictEqual(env.elements.textParseError.style.display, 'none');
 
         // Attempt btnAddQuery
         const prevCount = env.state.ast.queries.length;
@@ -1455,12 +1570,12 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         textTabBtn.click();
 
         // Introduce syntax error
-        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ';
+        editQueryText(env, 'ВЫБРАТЬ');
         tab1Btn.click();
         assert.strictEqual(textTabBtn.classList.contains('active'), true, 'Blocked on error');
 
         // Now fix error
-        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ 2 КАК Поле2';
+        editQueryText(env, 'ВЫБРАТЬ 2 КАК Поле2');
         tab1Btn.click();
 
         // Switch succeeds
@@ -1479,7 +1594,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         assert.strictEqual(env.elements.textParseError.style.display, 'none');
       });
 
-      test('5. Apply text button preserves feedback status "Разобрано во вкладки" and editor input sets "Текст изменен"', () => {
+      test('5. Apply text button sets feedback status "Проверено — вкладки обновлены" and editor input sets "Текст изменён"', () => {
         const env = createWebviewEnvironment();
         env.postMessageToWebview({
           command: 'init',
@@ -1491,13 +1606,13 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         textTabBtn.click();
 
         // User edits text
-        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ 2 КАК Поле2';
-        env.elements.sdblTextEditor.dispatchEvent({ type: 'input' });
-        assert.strictEqual(env.elements.editorSyncStatus.textContent, 'Текст изменен (не разобран)');
+        editQueryText(env, 'ВЫБРАТЬ 2 КАК Поле2');
+        assert.strictEqual(env.elements.editorSyncStatus.textContent, 'Текст изменён — будет проверен при выходе из поля');
 
         // User clicks btnApplyText
         env.elements.btnApplyText.click();
-        assert.strictEqual(env.elements.editorSyncStatus.textContent, 'Разобрано во вкладки');
+        // Applying the text reports the check: «Проверено — вкладки обновлены»
+        assert.strictEqual(env.elements.editorSyncStatus.textContent, 'Проверено — вкладки обновлены');
         assert.strictEqual(env.elements.textParseError.style.display, 'none');
 
         // Check AST was updated
@@ -1522,7 +1637,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         assert.ok(env.elements.sdblTextEditor.value.includes('2 КАК П2'));
 
         // Corrupt 2nd query
-        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ 1 КАК П1; ВЫБРАТЬ';
+        editQueryText(env, 'ВЫБРАТЬ 1 КАК П1; ВЫБРАТЬ');
 
         // Try tab switch
         tab1Btn.click();
@@ -1532,7 +1647,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         assert.strictEqual(env.elements.textParseError.style.display, 'flex');
 
         // Fix error in 2nd query
-        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ 1 КАК П1; ВЫБРАТЬ 3 КАК П3';
+        editQueryText(env, 'ВЫБРАТЬ 1 КАК П1; ВЫБРАТЬ 3 КАК П3');
         tab1Btn.click();
 
         assert.strictEqual(tab1Btn.classList.contains('active'), true);
@@ -1762,7 +1877,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         assert.strictEqual(onStr, 'СтарееСтарых.чекчек = Справочник55.Ссылка');
       });
 
-      test('6. btnAddJoin automatically applies autoSuggestJoinCondition', () => {
+      test('6. a join made in the draft row automatically applies autoSuggestJoinCondition', () => {
         const env = createWebviewEnvironment();
         env.postMessageToWebview({
           command: 'init',
@@ -1770,8 +1885,15 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
           metadata: mockMetadataTree,
         });
 
-        // Click add join
+        // Click add join: it adds a draft row, the join is made once both its tables are chosen
         env.elements.btnAddJoin.click();
+        for (const [cell, table] of [[0, 'СтарееСтарых'], [2, 'Справочник55']] as [number, string][]) {
+          const draft = env.elements.tbodyJoins.children.find((row: MockElement) => row.classList.contains('join-draft'));
+          assert.ok(draft, 'Draft row must exist');
+          const select = draft.children[cell].querySelector('select');
+          select.value = table;
+          select.dispatchEvent({ type: 'change', target: select });
+        }
 
         const q = env.window.getActiveQuery();
         assert.strictEqual(q.from[0].joins.length, 1);

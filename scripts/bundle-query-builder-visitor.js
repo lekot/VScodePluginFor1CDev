@@ -4,7 +4,7 @@ const path = require('path');
 
 function bundleQueryBuilderVisitor() {
   const rootDir = path.resolve(__dirname, '..');
-  const entryPoint = path.join(rootDir, 'src', 'queryBuilder', 'sdbl', 'sdblAstVisitor.ts');
+  const entryPoint = path.join(rootDir, 'src', 'queryBuilder', 'ui', 'webviewCore.ts');
   const htmlPath = path.join(rootDir, 'src', 'queryBuilder', 'ui', 'queryBuilderWebview.html');
 
   if (!fs.existsSync(entryPoint)) {

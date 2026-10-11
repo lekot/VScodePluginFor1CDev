@@ -35,10 +35,15 @@ suite('Query Builder: Backend & Webview AST Visitor Parity', () => {
     const elementsById: { [id: string]: any } = {};
     const getOrCreateElement = (id: string) => {
       if (!elementsById[id]) {
-        elementsById[id] = {
+        const el: any = {
           tagName: 'DIV',
-          classList: { add: () => {}, remove: () => {}, contains: () => false },
-          style: {},
+          classList: { add: () => {}, remove: () => {}, contains: () => false, toggle: () => false },
+          dataset: {},
+          children: [],
+          hidden: false,
+          textContent: '',
+          value: '',
+          style: { setProperty: () => {}, removeProperty: () => {} },
           setAttribute: () => {},
           getAttribute: () => null,
           appendChild: (c: any) => c,
@@ -46,7 +51,18 @@ suite('Query Builder: Backend & Webview AST Visitor Parity', () => {
           addEventListener: () => {},
           querySelectorAll: () => [],
           querySelector: () => null,
+          removeAttribute: () => {},
+          insertBefore: (c: any) => c,
+          // The page looks up the containers of its tables; the mock is its own.
+          closest: () => elementsById[id],
+          replaceChildren: () => {},
+          append: () => {},
+          click: () => {},
+          contains: () => false,
+          focus: () => {},
+          scrollIntoView: () => {},
         };
+        elementsById[id] = el;
       }
       return elementsById[id];
     };
@@ -56,6 +72,9 @@ suite('Query Builder: Backend & Webview AST Visitor Parity', () => {
       createElement: (tag: string) => getOrCreateElement('created-' + tag),
       querySelector: () => null,
       querySelectorAll: () => [],
+      body: getOrCreateElement('body'),
+      documentElement: getOrCreateElement('html'),
+      addEventListener: () => {},
     };
 
     const mockWindow: any = {
@@ -72,6 +91,13 @@ suite('Query Builder: Backend & Webview AST Visitor Parity', () => {
       clearTimeout: clearTimeout,
       prompt: () => '',
       alert: () => {},
+      MutationObserver: class {
+        observe(): void {}
+        disconnect(): void {}
+      },
+      getComputedStyle: () => ({ getPropertyValue: () => '' }),
+      requestAnimationFrame: (fn: () => void) => setTimeout(fn, 0),
+      cancelAnimationFrame: (handle: ReturnType<typeof setTimeout>) => clearTimeout(handle),
     };
 
     vm.createContext(sandbox);

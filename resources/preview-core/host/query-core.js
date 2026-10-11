@@ -216,6 +216,7 @@ var BslQueryBuilderCore = (() => {
       if (ch === '"') {
         advance();
         let value = "";
+        let closed = false;
         while (offset < len) {
           const nextChar = peek();
           if (nextChar === '"') {
@@ -225,11 +226,20 @@ var BslQueryBuilderCore = (() => {
               value += '"';
             } else {
               advance();
+              closed = true;
               break;
             }
           } else {
             value += advance();
           }
+        }
+        if (!closed) {
+          const error = new Error(`Не закрыта строка. Получено «"», строка ${startLine}, колонка ${startColumn}`);
+          error.sdblParse = true;
+          error.sdblLine = startLine;
+          error.sdblColumn = startColumn;
+          error.sdblLength = 1;
+          throw error;
         }
         const raw = text.slice(startOffset, offset);
         tokens.push({
@@ -276,7 +286,7 @@ var BslQueryBuilderCore = (() => {
         while (offset < len && isDigit(peek())) {
           advance();
         }
-        if (peek() === "." && isDigit(peek(1))) {
+        if (peek() === "." && !IDENT_START_RE.test(peek(1))) {
           advance();
           while (offset < len && isDigit(peek())) {
             advance();
@@ -524,6 +534,21 @@ var BslQueryBuilderCore = (() => {
     }
     visitor.enter?.(expr);
     switch (expr.type) {
+      case "Tuple":
+        expr.items.forEach((x) => traverseExpression(x, visitor));
+        break;
+      case "TableProjection":
+        expr.fields.forEach((f) => {
+          if (typeof f.expression !== "string") {
+            traverseExpression(f.expression, visitor);
+          }
+        });
+        traverseExpression(expr.expression, visitor);
+        break;
+      case "AnnotatedExpression":
+      case "MemberAccess":
+        traverseExpression(expr.expression, visitor);
+        break;
       case "Identifier":
       case "CompoundIdentifier":
       case "Literal":
@@ -620,7 +645,11 @@ var BslQueryBuilderCore = (() => {
     if (!source) {
       return;
     }
-    if (source.type === "Table" && source.params) {
+    if (source.type === "JoinedTable") {
+      traverseSelectStatement({ type: "Select", fields: [], from: source.clauses }, visitor);
+    } else if (source.type === "Table" && source.name.startsWith("&")) {
+      visitor.enter?.({ type: "Parameter", name: source.name.slice(1) });
+    } else if (source.type === "Table" && source.params) {
       for (const param of source.params) {
         traverseExpression(param, visitor);
       }
@@ -633,6 +662,10 @@ var BslQueryBuilderCore = (() => {
     if (!stmt || typeof stmt !== "object") {
       return;
     }
+    if (typeof stmt.top === "string" && stmt.top.startsWith("&")) {
+      visitor.enter?.({ type: "Parameter", name: stmt.top.slice(1) });
+    }
+    stmt.extensions?.forEach((x) => visitor.enter?.({ type: "RawExpression", raw: x.raw }));
     stmt.fields?.forEach((f) => {
       if (typeof f.expression === "string") {
         visitor.enter?.({ type: "RawExpression", raw: f.expression });
@@ -702,6 +735,9 @@ var BslQueryBuilderCore = (() => {
     return "";
   }
   function normalizeFromClauses(from) {
+    if (from?.some((c) => c.source.type === "JoinedTable" || c.joins?.some((j) => j.source.type === "JoinedTable" || j.optional))) {
+      return from;
+    }
     if (!from || !Array.isArray(from) || from.length === 0) {
       return [];
     }
@@ -932,6 +968,153 @@ var BslQueryBuilderCore = (() => {
     };
   }
 
+  // src/queryBuilder/sdbl/sdblAstEquivalence.ts
+  function semanticAst(value) {
+    if (Array.isArray(value)) {
+      return value.map(semanticAst);
+    }
+    if (!value || typeof value !== "object") {
+      return value;
+    }
+    if (value.type === "Literal") {
+      return {
+        type: "Literal",
+        valueType: value.valueType,
+        value: value.valueType === "null" && /^(UNDEFINED|НЕОПРЕДЕЛЕНО)$/i.test(value.raw || "") ? { undefined: true } : value.value ?? null,
+        omitted: value.raw === "" ? true : void 0
+      };
+    }
+    const result = {};
+    for (const key of Object.keys(value).sort()) {
+      if (key.startsWith("_") || ["whereConditions", "havingConditions", "t1", "isCustom", "isVirtual"].includes(key) || key === "raw" && (value.type === "Literal" || !value.type && "expression" in value)) {
+        continue;
+      }
+      if (Array.isArray(value[key]) && !value[key].length && ["from", "joins", "groupBy", "unions", "orderBy", "indexBy", "forUpdateTables", "extensions"].includes(key)) {
+        continue;
+      }
+      if (value[key] === false && ["allowed", "distinct", "forUpdate", "autoOrder", "optional", "optionalEnd", "inHierarchy"].includes(key)) {
+        continue;
+      }
+      if (value[key] !== void 0) {
+        result[key] = semanticAst(value[key]);
+      }
+    }
+    if (result.type === "FunctionCall" && /^(CAST|ВЫРАЗИТЬ)$/i.test(result.name)) {
+      result.name = "CAST";
+    }
+    if (["In", "Between", "Like"].includes(result.type)) {
+      const negative = result.not;
+      delete result.not;
+      if (negative) {
+        return { type: "UnaryOp", operator: "NOT", operand: result };
+      }
+    }
+    if (result.type === "BinaryOp" && result.operator === "IS NOT NULL") {
+      return { type: "UnaryOp", operator: "NOT", operand: { ...result, operator: "IS NULL" } };
+    }
+    if (result.type === "BinaryOp" && ["AND", "OR"].includes(result.operator)) {
+      return {
+        type: "BooleanChain",
+        operator: result.operator,
+        operands: [result.left, result.right].flatMap((x) => x?.type === "BooleanChain" && x.operator === result.operator ? x.operands : [x])
+      };
+    }
+    return result;
+  }
+  function semanticKey(value) {
+    return JSON.stringify(semanticAst(value), (_, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item);
+  }
+
+  // src/queryBuilder/sdbl/sdblComments.ts
+  function tokenKey(t) {
+    return t.type + ":" + (t.type === "StringLiteral" /* StringLiteral */ ? t.value : t.value.toUpperCase());
+  }
+  function captureComments(text, ast, opaqueRanges) {
+    const tokens = tokenizeSdbl(text, { includeComments: true });
+    const lines = text.split(/\r?\n/);
+    const contextLines = [...lines];
+    for (const token of tokens) {
+      if (token.type === "Comment" /* Comment */) {
+        contextLines[token.line - 1] = contextLines[token.line - 1].slice(0, token.column - 1);
+      }
+    }
+    let queryIndex = 0, seenCode = false, delimiterLine = -1;
+    for (const token of tokens) {
+      if (token.type === "Comment" /* Comment */) {
+        const index = !seenCode && token.line === delimiterLine ? queryIndex - 1 : queryIndex;
+        const query = ast.queries[Math.max(0, Math.min(index, ast.queries.length - 1))];
+        if (!query) {
+          continue;
+        }
+        const prefix = (lines[token.line - 1] || "").slice(0, token.column - 1).trim();
+        const previous = contextLines.slice(0, token.line - 1).reverse().find((line) => line.trim());
+        const next = contextLines.slice(token.line).find((line) => line.trim());
+        const context = prefix || (seenCode ? previous : next) || "";
+        (query._displayComments || (query._displayComments = [])).push({ text: token.raw, line: token.line, context: context.trim() });
+      } else if (token.type === "Symbol" /* Symbol */ && token.value === ";" && !opaqueRanges.some(([start, end]) => token.offset >= start && token.offset < end)) {
+        if (seenCode) {
+          queryIndex++;
+        }
+        seenCode = false;
+        delimiterLine = token.line;
+      } else if (token.type !== "EOF" /* EOF */) {
+        seenCode = true;
+      }
+    }
+    const comments = tokens.filter((t) => t.type === "Comment" /* Comment */ && !opaqueRanges.some(([start, end]) => t.offset >= start && t.offset < end));
+    if (!comments.length) {
+      return;
+    }
+    const code = tokens.filter((t) => t.type !== "Comment" /* Comment */), keys = code.map(tokenKey);
+    ast._comments = comments.map((t) => {
+      const boundary = code.findIndex((x) => x.offset > t.offset);
+      const index = boundary < 0 ? code.length : boundary;
+      const trailing = (lines[t.line - 1] || "").slice(0, t.column - 1).trim() !== "";
+      const comment = {
+        text: t.raw,
+        before: keys.slice(Math.max(0, index - 4), index),
+        after: keys.slice(index, index + 4),
+        trailing,
+        line: t.line,
+        column: t.column,
+        context: { before: keys.slice(Math.max(0, index - 64), index), after: keys.slice(index, index + 64) },
+        ordinal: 0,
+        count: 0
+      };
+      const matches = windowMatches(keys, comment);
+      comment.ordinal = matches.indexOf(index);
+      comment.count = matches.length;
+      return comment;
+    });
+    ast._originalText = text;
+    ast._originalSemantics = semanticKey(ast);
+  }
+  function sameKeys(keys, start, expected) {
+    if (start < 0 || start + expected.length > keys.length) {
+      return false;
+    }
+    for (let i = 0; i < expected.length; i++) {
+      if (keys[start + i] !== expected[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+  function windowMatches(keys, comment) {
+    const before = comment.before || [];
+    const after = comment.after || [];
+    if (!before.length && !after.length) {
+      return [0];
+    }
+    const result = [];
+    for (let i = before.length; i <= keys.length; i++) {
+      if (sameKeys(keys, i - before.length, before) && sameKeys(keys, i, after)) {
+        result.push(i);
+      }
+    }
+    return result;
+  }
+
   // src/queryBuilder/sdbl/sdblParser.ts
   function parseSdbl(input) {
     const tokens = typeof input === "string" ? tokenizeSdbl(input, { includeComments: false, includeEof: true }) : input.filter((t) => t.type !== "Comment" /* Comment */);
@@ -945,13 +1128,87 @@ var BslQueryBuilderCore = (() => {
         offset: 0
       });
     }
-    const parser = new SdblParser(tokens);
-    return parser.parsePackage();
+    const parser = new SdblParser(tokens, typeof input === "string" ? input : void 0);
+    let pkg;
+    try {
+      pkg = parser.parsePackage();
+    } catch (error) {
+      if (error instanceof Error && !error.sdblParse) {
+        parser.fail(error.message);
+      }
+      throw error;
+    }
+    if (typeof input === "string") {
+      captureComments(input, pkg, parser.opaqueRanges);
+    }
+    return pkg;
   }
+  var RESERVED_KEYWORDS = /* @__PURE__ */ new Set([
+    "SELECT" /* Select */,
+    "FROM" /* From */,
+    "WHERE" /* Where */,
+    "AND" /* And */,
+    "OR" /* Or */,
+    "NOT" /* Not */,
+    "AS" /* As */,
+    "LEFT" /* Left */,
+    "RIGHT" /* Right */,
+    "FULL" /* Full */,
+    "INNER" /* Inner */,
+    "OUTER" /* Outer */,
+    "JOIN" /* Join */,
+    "ON" /* On */,
+    "BY" /* By */,
+    "GROUP" /* Group */,
+    "ORDER" /* Order */,
+    "UNION" /* Union */,
+    "HAVING" /* Having */,
+    "INTO" /* Into */,
+    "DROP" /* Drop */
+  ]);
+  var NOT_AFTER_DOT_KEYWORDS = /* @__PURE__ */ new Set([
+    "AS" /* As */,
+    "SELECT" /* Select */,
+    "FROM" /* From */,
+    "WHERE" /* Where */,
+    "UNION" /* Union */,
+    "INTO" /* Into */,
+    "DROP" /* Drop */,
+    "HAVING" /* Having */,
+    "AND" /* And */,
+    "OR" /* Or */
+  ]);
   var SdblParser = class {
-    constructor(tokens) {
+    constructor(tokens, input) {
       this.tokens = tokens;
+      this.input = input;
       this.pos = 0;
+      this.runtimeTemplate = false;
+      this.opaqueRanges = [];
+    }
+    parseBrace() {
+      const first = this.peek();
+      this.consumeSymbol("{");
+      let depth = 1;
+      const consumed = [first];
+      while (depth && !this.isAtEnd()) {
+        const token = this.advance();
+        consumed.push(token);
+        if (token.value === "{") {
+          depth++;
+        } else if (token.value === "}") {
+          depth--;
+        }
+      }
+      if (depth) {
+        this.fail("Незакрытая директива СКД", first);
+      }
+      const end = consumed[consumed.length - 1];
+      this.opaqueRanges.push([first.offset, end.offset + end.raw.length]);
+      return this.input !== void 0 ? this.input.slice(first.offset, end.offset + end.raw.length) : consumed.map((x) => x.raw).join(" ");
+    }
+    isBraceClause() {
+      return this.checkSymbol("{") && /^(SELECT|FROM|WHERE|GROUP|ORDER|TOTALS|HAVING|LEFT|RIGHT|INNER|FULL|JOIN|ХАРАКТЕРИСТИКИ)$/i.test(this.peek(1)?.value || "");
     }
     parsePackage() {
       const queries = [];
@@ -962,19 +1219,34 @@ var BslQueryBuilderCore = (() => {
         if (this.isAtEnd()) {
           break;
         }
+        const leading = [];
+        while (this.isTemplateFragment() && !this.isAtEnd()) {
+          this.runtimeTemplate = true;
+          leading.push(this.consumeFragment());
+        }
         if (this.matchKeyword("DROP" /* Drop */)) {
           queries.push(this.parseDropTable());
         } else if (this.matchKeyword("SELECT" /* Select */)) {
-          queries.push(this.parseSelectStatement(true));
+          const statement = this.parseSelectStatement(true);
+          if (leading.length) {
+            statement.extensions = leading.map((raw) => ({ after: "beforeSelect", raw })).concat(statement.extensions || []);
+          }
+          queries.push(statement);
         } else {
-          const tok = this.peek();
-          throw new Error(
-            `Unexpected token '${tok?.raw || ""}' at line ${tok?.line || 0}, col ${tok?.column || 0}. Expected SELECT or DROP statement.`
-          );
+          this.fail("Ожидается ВЫБРАТЬ или УНИЧТОЖИТЬ");
         }
-        this.matchSymbol(";");
+        if (!this.matchSymbol(";") && !this.isAtEnd()) {
+          const tok = this.peek();
+          if (this.checkKeyword("SELECT" /* Select */) || this.checkKeyword("DROP" /* Drop */)) {
+            this.fail("Между запросами пакета ожидается «;»", tok);
+          }
+          if (this.checkSymbol(")")) {
+            this.fail("Лишняя закрывающая скобка", tok);
+          }
+          this.fail("Синтаксическая ошибка", tok);
+        }
       }
-      return { queries };
+      return { queries, ...this.runtimeTemplate ? { _runtimeTemplate: true } : {} };
     }
     // --- DROP TABLE ---
     parseDropTable() {
@@ -997,17 +1269,37 @@ var BslQueryBuilderCore = (() => {
       let autoOrder = void 0;
       let into = void 0;
       let indexBy = void 0;
+      let indexSets;
+      const extensions = [];
+      const extras = (after) => {
+        for (; ; ) {
+          if (this.checkSymbol("{") && this.isBraceClause()) {
+            extensions.push({ after, raw: this.parseBrace() });
+          } else if (this.isTemplateFragment()) {
+            this.runtimeTemplate = true;
+            extensions.push({ after, raw: this.consumeFragment() });
+          } else {
+            break;
+          }
+        }
+      };
       while (!this.isAtEnd()) {
         if (this.matchKeyword("DISTINCT" /* Distinct */)) {
           distinct = true;
         } else if (this.matchKeyword("ALLOWED" /* Allowed */)) {
           allowed = true;
         } else if (this.matchKeyword("TOP" /* Top */)) {
-          const topTok = this.consume(
-            "NumberLiteral" /* NumberLiteral */,
-            "Expected integer count after TOP / ПЕРВЫЕ"
-          );
-          top = Number.parseInt(topTok.value, 10);
+          if (this.peek()?.type === "Parameter" /* Parameter */) {
+            top = "&" + this.advance().value;
+          } else if (this.checkSymbol("%")) {
+            top = this.consumeTemplateName();
+          } else {
+            const topTok = this.consume("NumberLiteral" /* NumberLiteral */, "После ПЕРВЫЕ ожидается целое число");
+            if (!/^\d+$/.test(topTok.value)) {
+              this.fail("После ПЕРВЫЕ ожидается целое число", topTok);
+            }
+            top = Number(topTok.value);
+          }
         } else {
           break;
         }
@@ -1016,44 +1308,91 @@ var BslQueryBuilderCore = (() => {
       do {
         fields.push(this.parseSelectedField());
       } while (this.matchSymbol(","));
-      if (this.matchKeyword("INTO" /* Into */)) {
-        into = this.consumeIdentifierOrKeyword();
-        if (this.matchKeyword("INDEX" /* Index */)) {
-          this.matchOnOrBy();
-          indexBy = this.parseIndexFields();
+      {
+        const next = this.peek();
+        if (next && (next.type === "Identifier" /* Identifier */ || next.type === "NumberLiteral" /* NumberLiteral */ || next.type === "StringLiteral" /* StringLiteral */ || next.type === "Keyword" /* Keyword */ && !this.isReserved(next) && !this.isSectionKeyword(next) && [
+          "SUM" /* Sum */,
+          "COUNT" /* Count */,
+          "MAX" /* Max */,
+          "MIN" /* Min */,
+          "AVG" /* Avg */,
+          "CASE" /* Case */,
+          "CAST" /* Cast */,
+          "NULL" /* Null */,
+          "TRUE" /* True */,
+          "FALSE" /* False */,
+          "UNDEFINED" /* Undefined */
+        ].includes(next.value))) {
+          this.fail("Ожидается запятая между полями или ИЗ", next);
         }
       }
+      extras("afterFields");
+      if (this.matchKeyword("INTO" /* Into */)) {
+        this.expectName("Ожидается имя временной таблицы");
+        into = this.consumeTemplateName();
+        if (this.matchKeyword("INDEX" /* Index */)) {
+          if (!this.matchOnOrBy()) {
+            this.fail("После ИНДЕКСИРОВАТЬ ожидается ПО");
+          }
+          {
+            const index = this.parseIndexFields();
+            indexBy = index.fields;
+            indexSets = index.sets;
+          }
+        }
+      }
+      extras("afterInto");
       let from = void 0;
       if (this.matchKeyword("FROM" /* From */)) {
         from = this.parseFromClauseList();
       }
+      extras("afterFrom");
       if (!into && this.matchKeyword("INTO" /* Into */)) {
-        into = this.consumeIdentifierOrKeyword();
+        this.expectName("Ожидается имя временной таблицы");
+        into = this.consumeTemplateName();
         if (this.matchKeyword("INDEX" /* Index */)) {
-          this.matchOnOrBy();
-          indexBy = this.parseIndexFields();
+          if (!this.matchOnOrBy()) {
+            this.fail("После ИНДЕКСИРОВАТЬ ожидается ПО");
+          }
+          {
+            const index = this.parseIndexFields();
+            indexBy = index.fields;
+            indexSets = index.sets;
+          }
         }
       }
       let where = void 0;
       if (this.matchKeyword("WHERE" /* Where */)) {
         where = this.parseExpression();
       }
+      extras("afterWhere");
       let groupBy = void 0;
       if (this.matchKeyword("GROUP" /* Group */)) {
-        this.matchOnOrBy();
+        if (!this.matchOnOrBy()) {
+          this.fail("После СГРУППИРОВАТЬ ожидается ПО");
+        }
         groupBy = [];
         do {
           groupBy.push(this.parseExpression());
         } while (this.matchSymbol(","));
       }
+      extras("afterGroupBy");
       let having = void 0;
       if (this.matchKeyword("HAVING" /* Having */)) {
         having = this.parseExpression();
       }
-      if (!indexBy && this.matchKeyword("INDEX" /* Index */)) {
-        this.matchOnOrBy();
-        indexBy = this.parseIndexFields();
+      extras("afterHaving");
+      if (!indexBy && !indexSets && this.matchKeyword("INDEX" /* Index */)) {
+        if (!this.matchOnOrBy()) {
+          this.fail("После ИНДЕКСИРОВАТЬ ожидается ПО");
+        }
+        {
+          const index = this.parseIndexFields();
+          indexBy = index.fields;
+          indexSets = index.sets;
+        }
       }
+      extras("afterIndex");
       let unions = void 0;
       if (allowUnions) {
         while (this.checkKeyword("UNION" /* Union */)) {
@@ -1062,7 +1401,7 @@ var BslQueryBuilderCore = (() => {
           if (this.matchKeyword("ALL" /* All */)) {
             unionType = "UnionAll";
           }
-          this.consumeKeyword("SELECT" /* Select */, "Expected SELECT after UNION");
+          this.consumeKeyword("SELECT" /* Select */, "После ОБЪЕДИНИТЬ ожидается ВЫБРАТЬ");
           const statement = this.parseSelectStatement(false);
           if (!unions) {
             unions = [];
@@ -1070,9 +1409,12 @@ var BslQueryBuilderCore = (() => {
           unions.push({ unionType, statement });
         }
       }
+      extras("afterUnions");
       let orderBy = void 0;
       if (this.matchKeyword("ORDER" /* Order */)) {
-        this.matchOnOrBy();
+        if (!this.matchOnOrBy()) {
+          this.fail("После УПОРЯДОЧИТЬ ожидается ПО");
+        }
         orderBy = [];
         do {
           if (this.matchKeyword("AUTOORDER" /* Autoorder */)) {
@@ -1081,16 +1423,21 @@ var BslQueryBuilderCore = (() => {
           }
           const expr = this.parseExpression();
           let direction = void 0;
+          const hierarchy = this.matchKeyword("HIERARCHY" /* Hierarchy */) || void 0;
           if (this.matchKeyword("ASC" /* Asc */)) {
             direction = "Asc";
           } else if (this.matchKeyword("DESC" /* Desc */)) {
             direction = "Desc";
           }
-          orderBy.push({ expression: expr, direction });
+          orderBy.push(hierarchy ? { expression: expr, direction, hierarchy } : { expression: expr, direction });
           if (this.matchKeyword("AUTOORDER" /* Autoorder */)) {
             autoOrder = true;
           }
         } while (this.matchSymbol(","));
+      }
+      extras("afterOrderBy");
+      if (this.matchKeyword("AUTOORDER" /* Autoorder */)) {
+        autoOrder = true;
       }
       let totals = void 0;
       if (this.matchKeyword("TOTALS" /* Totals */)) {
@@ -1099,6 +1446,7 @@ var BslQueryBuilderCore = (() => {
       if (this.matchKeyword("AUTOORDER" /* Autoorder */)) {
         autoOrder = true;
       }
+      extras("afterTotals");
       if (this.matchKeyword("FOR UPDATE" /* ForUpdate */)) {
         forUpdate = true;
         if (this.isTableIdentifierStart()) {
@@ -1114,10 +1462,22 @@ var BslQueryBuilderCore = (() => {
       if (this.matchKeyword("AUTOORDER" /* Autoorder */)) {
         autoOrder = true;
       }
+      if (!indexBy && !indexSets && this.matchKeyword("INDEX" /* Index */)) {
+        if (!this.matchOnOrBy()) {
+          this.fail("После ИНДЕКСИРОВАТЬ ожидается ПО");
+        }
+        const index = this.parseIndexFields();
+        indexBy = index.fields;
+        indexSets = index.sets;
+      }
+      extras("end");
       const selectStmt = {
         type: "Select",
         fields
       };
+      if (extensions.length) {
+        selectStmt.extensions = extensions;
+      }
       if (distinct !== void 0) {
         selectStmt.distinct = distinct;
       }
@@ -1141,6 +1501,9 @@ var BslQueryBuilderCore = (() => {
       }
       if (indexBy !== void 0) {
         selectStmt.indexBy = indexBy;
+      }
+      if (indexSets) {
+        selectStmt.indexSets = indexSets;
       }
       if (from !== void 0) {
         selectStmt.from = from;
@@ -1166,11 +1529,27 @@ var BslQueryBuilderCore = (() => {
       return selectStmt;
     }
     parseIndexFields() {
+      if (/^(НАБОРАМ|SETS)$/i.test(this.peek()?.raw || "")) {
+        this.advance();
+        this.consumeSymbol("(");
+        const sets = [];
+        do {
+          this.consumeSymbol("(");
+          const fields2 = [];
+          do {
+            fields2.push(this.parseCompoundName());
+          } while (this.matchSymbol(","));
+          this.consumeSymbol(")");
+          sets.push(fields2);
+        } while (this.matchSymbol(","));
+        this.consumeSymbol(")");
+        return { sets };
+      }
       const fields = [];
       do {
-        fields.push(this.consumeIdentifierOrKeyword());
+        fields.push(this.parseCompoundName());
       } while (this.matchSymbol(","));
-      return fields;
+      return { fields };
     }
     // --- FIELDS ---
     parseSelectedField() {
@@ -1182,9 +1561,10 @@ var BslQueryBuilderCore = (() => {
       }
       let alias = void 0;
       if (this.matchKeyword("AS" /* As */)) {
-        alias = this.consumeIdentifierOrKeyword();
+        this.expectName("Ожидается псевдоним после КАК");
+        alias = this.consumeTemplateName();
       } else if (this.isPotentialAlias()) {
-        alias = this.consumeIdentifierOrKeyword();
+        alias = this.consumeTemplateName();
       }
       return { expression, alias };
     }
@@ -1216,13 +1596,24 @@ var BslQueryBuilderCore = (() => {
         const source = this.parseTableOrSubquery();
         let alias = void 0;
         if (this.matchKeyword("AS" /* As */)) {
-          alias = this.consumeIdentifierOrKeyword();
+          this.expectName("Ожидается псевдоним после КАК");
+          alias = this.consumeTemplateName();
         } else if (this.isPotentialFromAlias()) {
-          alias = this.consumeIdentifierOrKeyword();
+          alias = this.consumeTemplateName();
         }
         const joins = [];
         while (this.isJoinStart()) {
-          joins.push(this.parseJoinClause());
+          joins.push(...this.parseJoinSequence());
+        }
+        while (this.checkSymbol(",")) {
+          this.advance();
+          if (!this.isJoinStart()) {
+            this.pos--;
+            break;
+          }
+          while (this.isJoinStart()) {
+            joins.push(...this.parseJoinSequence());
+          }
         }
         list.push({
           source,
@@ -1246,19 +1637,25 @@ var BslQueryBuilderCore = (() => {
       return true;
     }
     parseTableOrSubquery() {
+      const first = this.peek();
+      if (!first || first.type === "EOF" /* EOF */ || this.isReserved(first)) {
+        this.fail("Ожидается имя таблицы", first);
+      }
       if (this.matchSymbol("(")) {
         if (this.checkKeyword("SELECT" /* Select */)) {
           this.advance();
           const query = this.parseSelectStatement(true);
-          this.consumeSymbol(")", "Expected ')' after subquery in FROM");
+          this.consumeSymbol(")", "Ожидается «)» после вложенного запроса");
           return {
             type: "Subquery",
             query
           };
         }
-        throw new Error("Expected SELECT inside '(' in FROM clause");
+        const clauses = this.parseFromClauseList();
+        this.consumeSymbol(")", "Ожидается «)» после соединяемых таблиц");
+        return { type: "JoinedTable", clauses };
       }
-      const name = this.parseCompoundName();
+      const name = this.peek()?.type === "Parameter" /* Parameter */ ? "&" + this.advance().value : this.parseCompoundName();
       let params = void 0;
       if (this.checkSymbol("(")) {
         params = this.parseVirtualTableParams();
@@ -1313,10 +1710,13 @@ var BslQueryBuilderCore = (() => {
           }
         }
       }
-      this.consumeSymbol(")", "Expected ')' after virtual table parameters");
+      this.consumeSymbol(")", "Ожидается «)» после параметров виртуальной таблицы");
       return params;
     }
     isJoinStart() {
+      if (this.checkSymbol("{") && /^(LEFT|RIGHT|FULL|INNER|JOIN)$/.test(this.peek(1)?.value || "")) {
+        return true;
+      }
       const tok = this.peek();
       if (!tok || tok.type !== "Keyword" /* Keyword */) {
         return false;
@@ -1324,34 +1724,58 @@ var BslQueryBuilderCore = (() => {
       const kw = tok.value;
       return kw === "LEFT" /* Left */ || kw === "RIGHT" /* Right */ || kw === "FULL" /* Full */ || kw === "INNER" /* Inner */ || kw === "JOIN" /* Join */;
     }
+    parseJoinSequence() {
+      if (!this.matchSymbol("{")) {
+        return [this.parseJoinClause()];
+      }
+      const joins = [];
+      do {
+        joins.push(this.parseJoinClause());
+      } while (this.isJoinStart());
+      this.consumeSymbol("}", "Ожидается «}» после необязательных соединений");
+      joins[0].optional = true;
+      joins[joins.length - 1].optionalEnd = true;
+      return joins;
+    }
     parseJoinClause() {
       let joinType = "Inner";
       if (this.matchKeyword("LEFT" /* Left */)) {
         joinType = "Left";
         this.matchKeyword("OUTER" /* Outer */);
-        this.consumeKeyword("JOIN" /* Join */, "Expected JOIN / СОЕДИНЕНИЕ after LEFT");
+        this.consumeKeyword("JOIN" /* Join */, "После ЛЕВОЕ ожидается СОЕДИНЕНИЕ");
       } else if (this.matchKeyword("RIGHT" /* Right */)) {
         joinType = "Right";
         this.matchKeyword("OUTER" /* Outer */);
-        this.consumeKeyword("JOIN" /* Join */, "Expected JOIN / СОЕДИНЕНИЕ after RIGHT");
+        this.consumeKeyword("JOIN" /* Join */, "После ПРАВОЕ ожидается СОЕДИНЕНИЕ");
       } else if (this.matchKeyword("FULL" /* Full */)) {
         joinType = "Full";
         this.matchKeyword("OUTER" /* Outer */);
-        this.consumeKeyword("JOIN" /* Join */, "Expected JOIN / СОЕДИНЕНИЕ after FULL");
+        this.consumeKeyword("JOIN" /* Join */, "После ПОЛНОЕ ожидается СОЕДИНЕНИЕ");
       } else if (this.matchKeyword("INNER" /* Inner */)) {
         joinType = "Inner";
-        this.consumeKeyword("JOIN" /* Join */, "Expected JOIN / СОЕДИНЕНИЕ after INNER");
+        this.consumeKeyword("JOIN" /* Join */, "После ВНУТРЕННЕЕ ожидается СОЕДИНЕНИЕ");
       } else if (this.matchKeyword("JOIN" /* Join */)) {
         joinType = "Inner";
       }
-      const source = this.parseTableOrSubquery();
+      let source = this.parseTableOrSubquery();
       let alias = void 0;
       if (this.matchKeyword("AS" /* As */)) {
+        this.expectName("Ожидается псевдоним после КАК");
         alias = this.consumeIdentifierOrKeyword();
       } else if (this.isPotentialFromAlias()) {
         alias = this.consumeIdentifierOrKeyword();
       }
-      this.matchOnOrBy();
+      const nested = [];
+      while (this.isJoinStart()) {
+        nested.push(...this.parseJoinSequence());
+      }
+      if (nested.length) {
+        source = { type: "JoinedTable", clauses: [{ source, alias, joins: nested }] };
+        alias = void 0;
+      }
+      if (!this.matchOnOrBy()) {
+        this.fail("Ожидается ПО с условием соединения");
+      }
       const on = this.parseExpression();
       return {
         joinType,
@@ -1368,6 +1792,7 @@ var BslQueryBuilderCore = (() => {
           const expr = this.parseExpression();
           let alias = void 0;
           if (this.matchKeyword("AS" /* As */)) {
+            this.expectName("Ожидается псевдоним после КАК");
             alias = this.consumeIdentifierOrKeyword();
           } else if (this.isPotentialAlias()) {
             alias = this.consumeIdentifierOrKeyword();
@@ -1426,7 +1851,7 @@ var BslQueryBuilderCore = (() => {
                     }
                   }
                 }
-                this.consumeSymbol(")", "Expected ')' after PERIODS parameters");
+                this.consumeSymbol(")", "Ожидается «)» после параметров ПЕРИОДАМИ");
                 periodDefinition = {
                   periodType,
                   from,
@@ -1438,7 +1863,13 @@ var BslQueryBuilderCore = (() => {
             }
           }
         }
+        let byAlias = void 0;
+        if (this.matchKeyword("AS" /* As */)) {
+          this.expectName("Ожидается псевдоним после КАК");
+          byAlias = this.consumeIdentifierOrKeyword();
+        }
         by.push({
+          ...byAlias ? { alias: byAlias } : {},
           expression: expr,
           hierarchy,
           hierarchyType,
@@ -1524,7 +1955,7 @@ var BslQueryBuilderCore = (() => {
         }
         if (this.matchKeyword("BETWEEN" /* Between */)) {
           const from = this.parseAdditive();
-          this.consumeKeyword("AND" /* And */, "Expected AND / И in BETWEEN expression");
+          this.consumeKeyword("AND" /* And */, "В условии МЕЖДУ ожидается И");
           const to = this.parseAdditive();
           expr = {
             type: "Between",
@@ -1555,11 +1986,11 @@ var BslQueryBuilderCore = (() => {
           if (this.matchKeyword("HIERARCHY" /* Hierarchy */)) {
             inHierarchy = true;
           }
-          this.consumeSymbol("(", "Expected '(' after IN");
+          this.consumeSymbol("(", "После В ожидается «(»");
           if (this.checkKeyword("SELECT" /* Select */)) {
             this.advance();
             const subquery = this.parseSelectStatement(true);
-            this.consumeSymbol(")", "Expected ')' after subquery in IN");
+            this.consumeSymbol(")", "Ожидается «)» после вложенного запроса");
             expr = {
               type: "In",
               expression: expr,
@@ -1572,7 +2003,7 @@ var BslQueryBuilderCore = (() => {
             do {
               values.push(this.parseExpression());
             } while (this.matchSymbol(","));
-            this.consumeSymbol(")", "Expected ')' after IN values list");
+            this.consumeSymbol(")", "Ожидается «)» после списка значений");
             expr = {
               type: "In",
               expression: expr,
@@ -1588,7 +2019,7 @@ var BslQueryBuilderCore = (() => {
           if (this.matchKeyword("NOT" /* Not */)) {
             isNot = true;
           }
-          this.consumeKeyword("NULL" /* Null */, "Expected NULL after IS / ЕСТЬ");
+          this.consumeKeyword("NULL" /* Null */, "После ЕСТЬ ожидается NULL");
           expr = {
             type: "BinaryOp",
             operator: isNot ? "IS NOT NULL" : "IS NULL",
@@ -1613,6 +2044,9 @@ var BslQueryBuilderCore = (() => {
           continue;
         }
         break;
+      }
+      while (this.checkSymbol("{") && !this.isBraceClause()) {
+        expr = { type: "AnnotatedExpression", expression: expr, annotation: this.parseBrace() };
       }
       return expr;
     }
@@ -1656,12 +2090,38 @@ var BslQueryBuilderCore = (() => {
           operand
         };
       }
-      return this.parsePrimary();
+      let expression = this.parsePrimary();
+      for (; ; ) {
+        if (this.matchSymbol(".")) {
+          if (this.matchSymbol("(")) {
+            const fields = [];
+            do {
+              fields.push(this.parseSelectedField());
+            } while (this.matchSymbol(","));
+            this.consumeSymbol(")", "Ожидается «)» после списка полей");
+            expression = { type: "TableProjection", expression, fields };
+          } else {
+            expression = { type: "MemberAccess", expression, member: this.consumeIdentifierOrKeyword() };
+          }
+        } else {
+          break;
+        }
+      }
+      return expression;
     }
     parsePrimary() {
       const tok = this.peek();
       if (!tok) {
-        throw new Error("Unexpected end of input while parsing expression");
+        this.fail("Ожидается выражение");
+      }
+      if (this.checkSymbol("%")) {
+        return this.peek(2)?.value === "." || this.peek(3)?.value === "." ? this.parseIdentifierOrCompound() : { type: "RawExpression", raw: this.consumeTemplateName() };
+      }
+      if (this.checkSymbol("#")) {
+        return this.parseIdentifierOrCompound();
+      }
+      if (this.checkSymbol("{")) {
+        return { type: "RawExpression", raw: this.parseBrace() };
       }
       if (tok.type === "NumberLiteral" /* NumberLiteral */) {
         this.advance();
@@ -1683,10 +2143,15 @@ var BslQueryBuilderCore = (() => {
       }
       if (tok.type === "Parameter" /* Parameter */) {
         this.advance();
-        return {
-          type: "Parameter",
-          name: tok.value
-        };
+        let name = tok.value;
+        while (this.checkSymbol("%")) {
+          name += this.consumeTemplateName();
+          const next = this.peek(), previous = this.previous();
+          if (next?.type === "Identifier" /* Identifier */ && next.offset === previous.offset + previous.raw.length) {
+            name += this.advance().raw;
+          }
+        }
+        return { type: "Parameter", name };
       }
       if (this.matchKeyword("TRUE" /* True */)) {
         return {
@@ -1723,7 +2188,7 @@ var BslQueryBuilderCore = (() => {
       if ((this.checkKeyword("SUM" /* Sum */) || this.checkKeyword("COUNT" /* Count */) || this.checkKeyword("AVG" /* Avg */) || this.checkKeyword("MIN" /* Min */) || this.checkKeyword("MAX" /* Max */)) && this.peek(1)?.value === "(") {
         const aggTok = this.advance();
         const kw = aggTok.value;
-        this.consumeSymbol("(", "Expected '(' after aggregate function");
+        this.consumeSymbol("(", "После агрегатной функции ожидается «(»");
         const distinct = this.matchKeyword("DISTINCT" /* Distinct */);
         let innerExpr;
         if (kw === "COUNT" /* Count */ && this.matchSymbol("*")) {
@@ -1731,7 +2196,7 @@ var BslQueryBuilderCore = (() => {
         } else {
           innerExpr = this.parseExpression();
         }
-        this.consumeSymbol(")", "Expected ')' after aggregate argument");
+        this.consumeSymbol(")", "Ожидается «)» после аргумента агрегатной функции");
         const aggregateType = kw === "SUM" /* Sum */ ? "Sum" : kw === "COUNT" /* Count */ ? "Count" : kw === "AVG" /* Avg */ ? "Avg" : kw === "MIN" /* Min */ ? "Min" : "Max";
         return {
           type: "Aggregate",
@@ -1742,9 +2207,11 @@ var BslQueryBuilderCore = (() => {
       }
       if (this.matchKeyword("CASE" /* Case */)) {
         const cases = [];
+        const operand = this.checkKeyword("WHEN" /* When */) ? void 0 : this.parseExpression();
         while (this.matchKeyword("WHEN" /* When */)) {
-          const when = this.parseExpression();
-          this.consumeKeyword("THEN" /* Then */, "Expected THEN / ТОГДА in CASE expression");
+          const value = this.parseExpression();
+          const when = operand ? { type: "BinaryOp", operator: "=", left: operand, right: value } : value;
+          this.consumeKeyword("THEN" /* Then */, "В ВЫБОР ожидается ТОГДА");
           const then = this.parseExpression();
           cases.push({ when, then });
         }
@@ -1752,7 +2219,7 @@ var BslQueryBuilderCore = (() => {
         if (this.matchKeyword("ELSE" /* Else */)) {
           elseExpr = this.parseExpression();
         }
-        this.consumeKeyword("END" /* End */, "Expected END / КОНЕЦ in CASE expression");
+        this.consumeKeyword("END" /* End */, "Ожидается КОНЕЦ выражения ВЫБОР");
         return {
           type: "CaseWhen",
           cases,
@@ -1761,8 +2228,19 @@ var BslQueryBuilderCore = (() => {
       }
       if (this.matchSymbol("(")) {
         const expr = this.parseExpression();
-        this.consumeSymbol(")", "Expected ')' to close expression");
+        if (this.matchSymbol(",")) {
+          const items = [expr];
+          do {
+            items.push(this.parseExpression());
+          } while (this.matchSymbol(","));
+          this.consumeSymbol(")", "Ожидается «)» после списка");
+          return { type: "Tuple", items };
+        }
+        this.consumeSymbol(")", "Ожидается «)»");
         return expr;
+      }
+      if (this.isReserved(tok)) {
+        this.fail("Ожидается выражение", tok);
       }
       if (tok.type === "Identifier" /* Identifier */ || tok.type === "Keyword" /* Keyword */) {
         if (this.checkKeyword("CAST" /* Cast */) && this.peek(1)?.value === "(") {
@@ -1771,7 +2249,7 @@ var BslQueryBuilderCore = (() => {
           const expr = this.parseExpression();
           this.consumeKeyword(
             "AS" /* As */,
-            "Expected AS / КАК in CAST / ВЫРАЗИТЬ"
+            "В ВЫРАЗИТЬ ожидается КАК"
           );
           const typeExpr = this.parseExpression();
           this.consumeSymbol(")");
@@ -1799,18 +2277,18 @@ var BslQueryBuilderCore = (() => {
         }
         return this.parseIdentifierOrCompound();
       }
-      throw new Error(
-        `Unexpected token '${tok.raw}' at line ${tok.line}, col ${tok.column} while parsing expression`
-      );
+      this.fail("Ожидается выражение");
     }
     parseIdentifierOrCompound() {
-      const parts = [this.consumeIdentifierOrKeyword()];
-      while (this.matchSymbol(".")) {
+      const parts = [this.consumeTemplateName()];
+      while (this.checkSymbol(".") && this.peek(1)?.value !== "(") {
+        this.advance();
         if (this.matchSymbol("*")) {
           parts.push("*");
           break;
         }
-        parts.push(this.consumeIdentifierOrKeyword());
+        this.expectName("После точки ожидается имя", true);
+        parts.push(this.consumeTemplateName());
       }
       if (parts.length === 1) {
         return { type: "Identifier", name: parts[0] };
@@ -1818,11 +2296,81 @@ var BslQueryBuilderCore = (() => {
       return { type: "CompoundIdentifier", parts };
     }
     parseCompoundName() {
-      const parts = [this.consumeIdentifierOrKeyword()];
+      const parts = [this.consumeTemplateName()];
       while (this.matchSymbol(".")) {
-        parts.push(this.consumeIdentifierOrKeyword());
+        this.expectName("После точки ожидается имя", true);
+        parts.push(this.consumeTemplateName());
       }
       return parts.join(".");
+    }
+    /**
+     * A name, possibly assembled from pieces written without spaces:
+     * Префикс%Имя%, %ИмяТаблицы%%Суффикс%, ВТ#Номер. Pieces are glued only
+     * when they touch, so the text is reproduced exactly.
+     */
+    consumeTemplateName() {
+      let name = this.consumeNamePiece();
+      for (; ; ) {
+        const previous = this.previous(), next = this.peek(), after = this.peek(1);
+        if (!next || !previous || next.offset !== previous.offset + previous.raw.length) {
+          break;
+        }
+        const nameToken = (token) => !!token && ["Identifier" /* Identifier */, "Keyword" /* Keyword */, "NumberLiteral" /* NumberLiteral */].includes(token.type);
+        const template = (next.value === "%" || next.value === "#") && next.type !== "StringLiteral" /* StringLiteral */ && nameToken(after);
+        const tail = (next.type === "Identifier" /* Identifier */ || next.type === "NumberLiteral" /* NumberLiteral */) && /[%#]/.test(name);
+        if (!template && !tail) {
+          break;
+        }
+        name += this.consumeNamePiece();
+      }
+      if (/[%#]/.test(name)) {
+        this.runtimeTemplate = true;
+      }
+      return name;
+    }
+    /** A standalone substitution where a clause may end: %Отбор%, &ТекстУсловия. */
+    isTemplateFragment() {
+      const token = this.peek();
+      if (!token) {
+        return false;
+      }
+      if (token.type === "Parameter" /* Parameter */) {
+        return true;
+      }
+      return this.checkSymbol("%") && !!this.peek(1) && ["Identifier" /* Identifier */, "Keyword" /* Keyword */, "NumberLiteral" /* NumberLiteral */].includes(this.peek(1).type);
+    }
+    consumeFragment() {
+      if (this.peek()?.type === "Parameter" /* Parameter */) {
+        let raw = "&" + this.advance().value;
+        while (this.checkSymbol("%")) {
+          raw += this.consumeTemplateName();
+        }
+        return raw;
+      }
+      return this.consumeTemplateName();
+    }
+    consumeNamePiece() {
+      if (this.peek()?.type === "Parameter" /* Parameter */) {
+        this.runtimeTemplate = true;
+        return "&" + this.advance().value;
+      }
+      if (this.matchSymbol("#")) {
+        this.runtimeTemplate = true;
+        return "#" + this.consumeIdentifierOrKeyword();
+      }
+      if (this.matchSymbol("%")) {
+        this.runtimeTemplate = true;
+        const token = this.peek();
+        if (!token || !["NumberLiteral" /* NumberLiteral */, "Identifier" /* Identifier */, "Keyword" /* Keyword */].includes(token.type)) {
+          this.fail("После % требуется номер или имя подстановки");
+        }
+        if (token.type === "NumberLiteral" /* NumberLiteral */ && !/^\d+$/.test(token.value)) {
+          this.fail("Номер подстановки должен быть целым");
+        }
+        this.advance();
+        return "%" + token.raw + (this.matchSymbol("%") ? "%" : "");
+      }
+      return this.consumeIdentifierOrKeyword();
     }
     // --- HELPER UTILITIES ---
     isSectionKeyword(tok) {
@@ -1888,12 +2436,55 @@ var BslQueryBuilderCore = (() => {
       }
       return false;
     }
+    isReserved(tok) {
+      return !!tok && tok.type === "Keyword" /* Keyword */ && RESERVED_KEYWORDS.has(tok.value);
+    }
+    /** A name (alias, temporary table, path part) cannot be a reserved word. */
+    expectName(message = "Ожидается имя", afterDot = false) {
+      const tok = this.peek();
+      const name = !!tok && (tok.type === "Identifier" /* Identifier */ || tok.type === "Keyword" /* Keyword */ || tok.type === "Parameter" /* Parameter */ || tok.value === "%" || tok.value === "#");
+      if (!name || (afterDot ? tok.type === "Keyword" /* Keyword */ && NOT_AFTER_DOT_KEYWORDS.has(tok.value) : this.isReserved(tok))) {
+        this.fail(message, tok);
+      }
+    }
+    // The unclosed bracket a missing «)» belongs to.
+    openBracketBefore() {
+      let depth = 0;
+      for (let i = this.pos - 1; i >= 0; i--) {
+        const tok = this.tokens[i];
+        if (tok.type !== "Symbol" /* Symbol */ && tok.type !== "Operator" /* Operator */) {
+          continue;
+        }
+        if (tok.value === ")") {
+          depth++;
+        } else if (tok.value === "(") {
+          if (!depth) {
+            return tok;
+          }
+          depth--;
+        }
+      }
+      return void 0;
+    }
+    /** Throws the message with the token the parser stopped at: «Х», строка N, колонка M. */
+    fail(message, tok = this.peek(), label = "Получено") {
+      const located = tok && tok.line > 0;
+      const got = !tok || tok.type === "EOF" /* EOF */ ? "конец текста" : `«${tok.raw}»`;
+      const error = new Error(located ? `${message}. ${label} ${got}, строка ${tok.line}, колонка ${tok.column}` : `${message}. ${label} ${got}`);
+      error.sdblParse = true;
+      if (located) {
+        error.sdblLine = tok.line;
+        error.sdblColumn = tok.column;
+        error.sdblLength = tok.type === "EOF" /* EOF */ ? 0 : tok.raw.length;
+      }
+      throw error;
+    }
     consumeKeyword(kw, errorMsg) {
       if (this.checkKeyword(kw)) {
         return this.advance();
       }
       const tok = this.peek();
-      throw new Error(`${errorMsg}. Got '${tok?.raw || ""}' at line ${tok?.line}, col ${tok?.column}`);
+      this.fail(errorMsg, tok);
     }
     checkSymbol(sym) {
       const tok = this.peek();
@@ -1909,12 +2500,19 @@ var BslQueryBuilderCore = (() => {
       }
       return false;
     }
-    consumeSymbol(sym, errorMsg = `Expected '${sym}'`) {
+    consumeSymbol(sym, errorMsg = `Ожидается «${sym}»`) {
       if (this.checkSymbol(sym)) {
         return this.advance();
       }
       const tok = this.peek();
-      throw new Error(`${errorMsg}. Got '${tok?.raw || ""}' at line ${tok?.line}, col ${tok?.column}`);
+      const open = sym === ")" ? this.openBracketBefore() : void 0;
+      if (open && (!tok || tok.type === "EOF" /* EOF */)) {
+        this.fail(`Не закрыта скобка: ${errorMsg[0].toLowerCase()}${errorMsg.slice(1)}`, open, "Открыта");
+      }
+      if (open) {
+        this.fail(`${errorMsg} (скобка открыта в строке ${open.line}, колонке ${open.column})`, tok);
+      }
+      this.fail(errorMsg, tok);
     }
     consumeIdentifierOrKeyword() {
       const tok = this.peek();
@@ -1922,16 +2520,14 @@ var BslQueryBuilderCore = (() => {
         this.advance();
         return tok.raw;
       }
-      throw new Error(
-        `Expected identifier. Got '${tok?.raw || ""}' at line ${tok?.line}, col ${tok?.column}`
-      );
+      this.fail("Ожидается имя", tok);
     }
     consume(type, errorMsg) {
       if (this.check(type)) {
         return this.advance();
       }
       const tok = this.peek();
-      throw new Error(`${errorMsg}. Got '${tok?.raw || ""}' at line ${tok?.line}, col ${tok?.column}`);
+      this.fail(errorMsg, tok);
     }
   };
   return __toCommonJS(dcsQueryCore_exports);

@@ -260,12 +260,12 @@ suite('SDBL Tokenizer', () => {
       assert.strictEqual(tokens[0].value, 'строка 1\nстрока 2');
     });
 
-    test('handles unclosed string at EOF gracefully', () => {
-      const tokens = tokenizeSdbl('"незакрытая');
-      assert.strictEqual(tokens.length, 1);
-      assert.strictEqual(tokens[0].type, TokenType.StringLiteral);
-      assert.strictEqual(tokens[0].raw, '"незакрытая');
-      assert.strictEqual(tokens[0].value, 'незакрытая');
+    test('reports an unclosed string at EOF with its position', () => {
+      assert.throws(
+        () => tokenizeSdbl('ВЫБРАТЬ "незакрытая'),
+        (err: Error & { sdblLine?: number; sdblColumn?: number }) =>
+          /^Не закрыта строка/.test(err.message) && err.sdblLine === 1 && err.sdblColumn === 9
+      );
     });
   });
 

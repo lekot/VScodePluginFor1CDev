@@ -215,6 +215,7 @@ export class QueryBuilderProvider {
       context: {
         editor: targetEditor,
         ast,
+        initialAst: extracted.isNewQuery ? undefined : (JSON.parse(JSON.stringify(ast)) as QueryPackage),
         mode,
         replaceRange: extracted.replaceRange,
         statementRange: extracted.statementRange,

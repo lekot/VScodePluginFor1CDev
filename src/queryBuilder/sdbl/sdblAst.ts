@@ -4,6 +4,10 @@
 
 export interface QueryPackage {
   queries: QueryStatement[];
+  _runtimeTemplate?: boolean;
+  _comments?: unknown[];
+  _originalText?: string;
+  _originalSemantics?: string;
 }
 
 export type QueryStatement = SelectStatement | DropTableStatement;
@@ -29,10 +33,16 @@ export interface SubquerySource {
   type: 'Subquery';
   query: SelectStatement;
 }
+export interface JoinedTableSource {
+  type: 'JoinedTable';
+  clauses: FromClause[];
+}
 
-export type TableOrSubquery = TableSource | SubquerySource;
+export type TableOrSubquery = TableSource | SubquerySource | JoinedTableSource;
 
 export interface JoinClause {
+  optional?: boolean;
+  optionalEnd?: boolean;
   joinType: 'Left' | 'Right' | 'Full' | 'Inner';
   source: TableOrSubquery;
   alias?: string;
@@ -54,6 +64,8 @@ export interface UnionClause {
 export interface OrderItem {
   expression: ExpressionNode;
   direction?: 'Asc' | 'Desc';
+  /** УПОРЯДОЧИТЬ ПО Поле ИЕРАРХИЯ: hierarchical order of a reference field. */
+  hierarchy?: boolean;
   autoOrder?: boolean;
 }
 
@@ -74,6 +86,8 @@ export interface TotalsGroupItem {
     to?: ExpressionNode;
   };
   overall?: boolean;
+  /** ИТОГИ ПО Поле КАК Имя: the name of the grouping in the result. */
+  alias?: string;
 }
 
 export interface TotalsClause {
@@ -84,14 +98,16 @@ export interface TotalsClause {
 
 export interface SelectStatement {
   type: 'Select';
+  extensions?: Array<{ after: string; raw: string }>;
   distinct?: boolean;
   allowed?: boolean;
-  top?: number;
+  top?: number | string;
   forUpdate?: boolean;
   forUpdateTables?: string[];
   autoOrder?: boolean;
   into?: string;
   indexBy?: string[];
+  indexSets?: string[][];
   fields: SelectedField[];
   from?: FromClause[];
   where?: ExpressionNode;
@@ -186,6 +202,10 @@ export interface RawExpressionNode {
   type: 'RawExpression';
   raw: string;
 }
+export interface AnnotatedExpressionNode { type: 'AnnotatedExpression'; expression: ExpressionNode; annotation: string; }
+export interface TableProjectionNode { type: 'TableProjection'; expression: ExpressionNode; fields: SelectedField[]; }
+export interface TupleNode { type: 'Tuple'; items: ExpressionNode[]; }
+export interface MemberAccessNode { type: 'MemberAccess'; expression: ExpressionNode; member: string; }
 
 export type ExpressionNode =
   | IdentifierNode
@@ -200,4 +220,8 @@ export type ExpressionNode =
   | InNode
   | BetweenNode
   | LikeNode
-  | RawExpressionNode;
+  | RawExpressionNode
+  | AnnotatedExpressionNode
+  | TableProjectionNode
+  | TupleNode
+  | MemberAccessNode;

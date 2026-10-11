@@ -10,12 +10,15 @@ import {
 import {
   extractParametersFromPackage,
   normalizeFromClauses,
+  hasRuntimeColumns,
 } from './sdblAstVisitor';
 
 export interface SdblFormatOptions {
   indent?: string;
   newline?: string;
 }
+
+import { restoreComments } from './sdblComments';
 
 const DEFAULT_INDENT = '\t';
 const DEFAULT_NEWLINE = '\n';
@@ -27,9 +30,9 @@ export function formatSdbl(pkg: QueryPackage, options?: SdblFormatOptions): stri
   const indent = options?.indent ?? DEFAULT_INDENT;
   const newline = options?.newline ?? DEFAULT_NEWLINE;
 
-  return pkg.queries
+  return restoreComments(pkg.queries
     .map((query) => formatStatement(query, indent, newline))
-    .join(`${newline};${newline}${newline}`);
+    .join(`${newline};${newline}${newline}`), pkg);
 }
 
 /**
@@ -58,6 +61,7 @@ function formatDropTable(stmt: DropTableStatement): string {
  * to ensure positional alignment and an equal number of columns.
  */
 export function normalizeUnionColumns(stmt: SelectStatement): void {
+  if (hasRuntimeColumns(stmt) || stmt.unions?.some(u => hasRuntimeColumns(u.statement))) {return;}
   if (!stmt.unions || stmt.unions.length === 0) {
     return;
   }
@@ -140,7 +144,9 @@ function formatSelect(
     normalizeUnionColumns(stmt);
   }
   const lines: string[] = [];
+  const extras = (after: string) => lines.push(...(stmt.extensions || []).filter(x => x.after === after).map(x => x.raw));
 
+  extras('beforeSelect');
   // 1. SELECT header with modifiers
   const selectParts: string[] = ['ВЫБРАТЬ'];
   if (stmt.allowed) {
@@ -161,7 +167,7 @@ function formatSelect(
       const exprStr =
         typeof field.expression === 'string'
           ? field.expression
-          : formatExpression(field.expression, indent, newline);
+          : formatFieldExpression(field.expression, indent, newline, 1);
       const aliasStr = field.alias ? ` КАК ${field.alias}` : '';
       const comma = i < stmt.fields.length - 1 ? ',' : '';
       lines.push(`${indent}${exprStr}${aliasStr}${comma}`);
@@ -170,10 +176,14 @@ function formatSelect(
     lines.push(`${indent}*`);
   }
 
+  extras('afterFields');
+
   // 3. INTO / ПОМЕСТИТЬ
   if (stmt.into) {
     lines.push(`ПОМЕСТИТЬ ${stmt.into}`);
   }
+
+  extras('afterInto');
 
   // 4. FROM / ИЗ and JOINS
   const normalizedFrom = stmt.from ? normalizeFromClauses(stmt.from) : undefined;
@@ -189,7 +199,14 @@ function formatSelect(
 
       lines.push(`${indent}${srcStr}${aliasStr}${fromComma}`);
 
-      if (fromClause.joins && fromClause.joins.length > 0) {
+      if (fromClause.joins?.some(j => j.optional)) {
+        fromClause.joins.forEach((j, index) => {
+          const text = getJoinKeyword(j.joinType) + ' ' + formatTableOrSubquery(j.source, indent, newline)
+            + (j.alias ? ' КАК ' + j.alias : '') + newline + indent + indent + 'ПО ' + formatExpression(j.on, indent, newline);
+          lines.push(indent + indent + (j.optional ? '{' : '') + text + (j.optionalEnd ? '}' : '')
+            + (index === fromClause.joins!.length - 1 && i < normalizedFrom.length - 1 ? ',' : ''));
+        });
+      } else if (fromClause.joins && fromClause.joins.length > 0) {
         interface GroupedJoin {
           joinKw: string;
           joinSrc: string;
@@ -204,7 +221,11 @@ function formatSelect(
           const joinAlias = join.alias ? ` КАК ${join.alias}` : '';
           const condStr = formatExpression(join.on, indent, newline);
 
-          const existing = groupedJoins.find(
+          // Rows of one join to a table are merged. A parameter or a
+          // substitution (&Текст, %1, #Имя) is replaced by its own text at
+          // run time, so two joins to it stay two joins.
+          const substituted = /^&|[%#]/.test(joinSrc);
+          const existing = substituted ? undefined : groupedJoins.find(
             (g) =>
               g.joinKw === joinKw &&
               g.joinSrc === joinSrc &&
@@ -242,6 +263,8 @@ function formatSelect(
     }
   }
 
+  extras('afterFrom');
+
   // 5. WHERE / ГДЕ
   if (stmt.where) {
     lines.push('ГДЕ');
@@ -264,6 +287,8 @@ function formatSelect(
     }
   }
 
+  extras('afterWhere');
+
   // 6. GROUP BY / СГРУППИРОВАТЬ ПО
   if (stmt.groupBy && stmt.groupBy.length > 0) {
     lines.push('СГРУППИРОВАТЬ ПО');
@@ -274,6 +299,8 @@ function formatSelect(
       );
     }
   }
+
+  extras('afterGroupBy');
 
   // 7. HAVING / ИМЕЮЩИЕ
   if (stmt.having) {
@@ -297,14 +324,21 @@ function formatSelect(
     }
   }
 
+  extras('afterHaving');
+
   // INDEX BY / ИНДЕКСИРОВАТЬ ПО (after FROM, WHERE, GROUP BY, HAVING)
-  if (stmt.indexBy && stmt.indexBy.length > 0) {
+  if (stmt.indexSets?.length) {
+    lines.push('ИНДЕКСИРОВАТЬ ПО НАБОРАМ');
+    lines.push('(' + stmt.indexSets.map(set => '(' + set.join(', ') + ')').join(', ') + ')');
+  } else if (stmt.indexBy && stmt.indexBy.length > 0) {
     lines.push('ИНДЕКСИРОВАТЬ ПО');
     for (let i = 0; i < stmt.indexBy.length; i++) {
       const comma = i < stmt.indexBy.length - 1 ? ',' : '';
       lines.push(`${indent}${stmt.indexBy[i]}${comma}`);
     }
   }
+
+  extras('afterIndex');
 
   // 8. UNIONS / ОБЪЕДИНИТЬ [ВСЕ]
   if (stmt.unions && stmt.unions.length > 0) {
@@ -318,12 +352,17 @@ function formatSelect(
     }
   }
 
+  extras('afterUnions');
+
   // 9. ORDER BY / УПОРЯДОЧИТЬ ПО
   if (stmt.orderBy && stmt.orderBy.length > 0) {
     lines.push('УПОРЯДОЧИТЬ ПО');
     for (let i = 0; i < stmt.orderBy.length; i++) {
       const orderItem = stmt.orderBy[i];
       let itemStr = formatExpression(orderItem.expression, indent, newline);
+      if (orderItem.hierarchy) {
+        itemStr += ' ИЕРАРХИЯ';
+      }
       if (orderItem.direction === 'Asc') {
         itemStr += ' ВОЗР';
       } else if (orderItem.direction === 'Desc') {
@@ -339,6 +378,8 @@ function formatSelect(
     lines.push('АВТОУПОРЯДОЧИВАНИЕ');
   }
 
+  extras('afterOrderBy');
+
   // 11. TOTALS / ИТОГИ
   if (
     !stmt.into &&
@@ -350,6 +391,8 @@ function formatSelect(
     lines.push(...formatTotals(stmt.totals, indent, newline));
   }
 
+  extras('afterTotals');
+
   // 12. FOR UPDATE / ДЛЯ ИЗМЕНЕНИЯ
   if (stmt.forUpdate) {
     if (stmt.forUpdateTables && stmt.forUpdateTables.length > 0) {
@@ -359,6 +402,7 @@ function formatSelect(
     }
   }
 
+  extras('end');
   return lines.join(newline);
 }
 
@@ -370,6 +414,14 @@ function formatTableOrSubquery(
   indent: string,
   newline: string
 ): string {
+  if (source.type === 'JoinedTable') {
+    return '(' + source.clauses.map(c => formatTableOrSubquery(c.source, indent, newline)
+      + (c.alias ? ' КАК ' + c.alias : '')
+      // Optional DCS joins keep their braces inside a nested join too.
+      + (c.joins || []).map(j => newline + indent + (j.optional ? '{' : '') + getJoinKeyword(j.joinType) + ' '
+        + formatTableOrSubquery(j.source, indent, newline) + (j.alias ? ' КАК ' + j.alias : '')
+        + ' ПО ' + formatExpression(j.on, indent, newline) + (j.optionalEnd ? '}' : '')).join('')).join(', ') + ')';
+  }
   if (source.type === 'Table') {
     let name = source.name;
     if (source.params !== undefined) {
@@ -467,6 +519,9 @@ function formatTotals(
       } else if (hasPeriods) {
         bStr += ' ПЕРИОДАМИ';
       }
+      if (item.alias) {
+        bStr += ` КАК ${item.alias}`;
+      }
       byItems.push(bStr);
     }
   }
@@ -558,6 +613,12 @@ function flattenConditions(
     if (parentOp && isAndOp(parentOp) && isOrOp(node.operator)) {
       return [{ expr: node }];
     }
+    // Nor AND inside OR: an OR list item is a whole conjunction, so the
+    // layout does not depend on how the OR chain happens to be grouped and
+    // formatting a re-parsed text gives the same text.
+    if (parentOp && isOrOp(parentOp) && isAndOp(node.operator)) {
+      return [{ expr: node }];
+    }
 
     const currentOp = node.operator;
     const leftItems = flattenConditions(node.left, currentOp);
@@ -595,6 +656,10 @@ function getOperatorPrecedence(expr: ExpressionNode): number {
     case 'Aggregate':
     case 'CaseWhen':
     case 'RawExpression':
+    case 'Tuple':
+    case 'MemberAccess':
+    case 'TableProjection':
+    case 'AnnotatedExpression':
       return 100;
     case 'UnaryOp':
       return expr.operator === 'NOT' ? 40 : 80;
@@ -634,6 +699,33 @@ function getOperatorPrecedence(expr: ExpressionNode): number {
     default:
       return 100;
   }
+}
+
+/**
+ * A selected field: ВЫБОР is laid out as the platform constructor does, one
+ * КОГДА, ТОГДА and ИНАЧЕ per line under ВЫБОР and КОНЕЦ. Lines after the first
+ * carry their own indentation, level counts indents of the ВЫБОР line.
+ */
+function formatFieldExpression(
+  expr: ExpressionNode,
+  indent: string,
+  newline: string,
+  level: number
+): string {
+  if (!expr || typeof expr !== 'object' || expr.type !== 'CaseWhen') {
+    return formatExpression(expr, indent, newline);
+  }
+  const pad = indent.repeat(level);
+  const lines = ['ВЫБОР'];
+  for (const c of expr.cases) {
+    lines.push(`${pad}${indent}КОГДА ${formatExpression(c.when, indent, newline)}`);
+    lines.push(`${pad}${indent}${indent}ТОГДА ${formatFieldExpression(c.then, indent, newline, level + 2)}`);
+  }
+  if (expr.else) {
+    lines.push(`${pad}${indent}ИНАЧЕ ${formatFieldExpression(expr.else, indent, newline, level + 1)}`);
+  }
+  lines.push(`${pad}КОНЕЦ`);
+  return lines.join(newline);
 }
 
 /**
@@ -685,6 +777,12 @@ function formatExpressionCore(
   indent: string,
   newline: string
 ): string {
+  if (expr.type === 'TableProjection') {return formatExpression(expr.expression, indent, newline) + '.(' + expr.fields.map(f => formatExpression(f.expression, indent, newline) + (f.alias ? ' КАК ' + f.alias : '')).join(', ') + ')';}
+  // The parser attaches {…} after a comparison: an AND/OR operand needs its
+  // parentheses back, or (А ИЛИ Б) {…} would re-parse as А ИЛИ Б {…}.
+  if (expr.type === 'AnnotatedExpression') {return formatSubExpression(expr.expression, 50, indent, newline) + ' ' + expr.annotation;}
+  if (expr.type === 'Tuple') {return '(' + expr.items.map(x => formatExpression(x, indent, newline)).join(', ') + ')';}
+  if (expr.type === 'MemberAccess') {return formatSubExpression(expr.expression, 100, indent, newline) + '.' + expr.member;}
   switch (expr.type) {
     case 'Identifier':
       return expr.name;

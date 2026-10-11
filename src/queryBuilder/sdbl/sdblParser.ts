@@ -11,8 +11,6 @@ import {
   DropTableStatement,
   SelectedField,
   FromClause,
-  TableSource,
-  SubquerySource,
   JoinClause,
   UnionClause,
   OrderItem,
@@ -20,8 +18,10 @@ import {
   TotalsField,
   TotalsGroupItem,
   ExpressionNode,
+  TableOrSubquery,
 } from './sdblAst';
 import { normalizeFromClauses } from './sdblAstVisitor';
+import { captureComments } from './sdblComments';
 
 /**
  * Recursive descent parser for SDBL (1C:Enterprise Query Language).
@@ -44,14 +44,71 @@ export function parseSdbl(input: string | SdblToken[]): QueryPackage {
     });
   }
 
-  const parser = new SdblParser(tokens);
-  return parser.parsePackage();
+  const parser = new SdblParser(tokens, typeof input === 'string' ? input : undefined);
+  let pkg: QueryPackage;
+  try {
+    pkg = parser.parsePackage();
+  } catch (error) {
+    // Every error names the place the parser stopped at.
+    if (error instanceof Error && !(error as SdblParseError).sdblParse) {parser.fail(error.message);}
+    throw error;
+  }
+  if (typeof input === 'string') {captureComments(input, pkg, parser.opaqueRanges);}
+  return pkg;
 }
+
+/** A parse error with the place of the token the parser stopped at (1-based). */
+export interface SdblParseError extends Error {
+  sdblParse?: true;
+  sdblLine?: number;
+  sdblColumn?: number;
+  sdblLength?: number;
+}
+
+// Words that start or join clauses and conditions are never a name or an
+// operand: «ЛЕВОЕ СОЕДИНЕНИЕ И Справочник.Х» is an error at «И», not a table «И»,
+// and «ГДЕ А = 1 И СГРУППИРОВАТЬ» is an error at СГРУППИРОВАТЬ, not a field.
+// Short operators such as В and the words of ВЫБОР (КОНЕЦ, КОГДА…) stay
+// possible names: configurations use them as aliases («Период КАК Конец»).
+const RESERVED_KEYWORDS = new Set<string>([
+  SdblKeyword.Select, SdblKeyword.From, SdblKeyword.Where, SdblKeyword.And, SdblKeyword.Or,
+  SdblKeyword.Not, SdblKeyword.As, SdblKeyword.Left, SdblKeyword.Right, SdblKeyword.Full,
+  SdblKeyword.Inner, SdblKeyword.Outer, SdblKeyword.Join, SdblKeyword.On, SdblKeyword.By,
+  SdblKeyword.Group, SdblKeyword.Order, SdblKeyword.Union, SdblKeyword.Having, SdblKeyword.Into,
+  SdblKeyword.Drop,
+]);
+
+// After a dot comes a metadata name, and English ones may coincide with
+// keywords (Document.Order): only words that cannot end a path are refused.
+const NOT_AFTER_DOT_KEYWORDS = new Set<string>([
+  SdblKeyword.As, SdblKeyword.Select, SdblKeyword.From, SdblKeyword.Where, SdblKeyword.Union,
+  SdblKeyword.Into, SdblKeyword.Drop, SdblKeyword.Having, SdblKeyword.And, SdblKeyword.Or,
+]);
 
 class SdblParser {
   private pos = 0;
+  private runtimeTemplate = false;
 
-  constructor(private readonly tokens: SdblToken[]) {}
+  public opaqueRanges: Array<[number, number]> = [];
+  constructor(private readonly tokens: SdblToken[], private readonly input?: string) {}
+
+  private parseBrace(): string {
+    const first = this.peek()!; this.consumeSymbol('{'); let depth = 1; const consumed = [first];
+    while (depth && !this.isAtEnd()) {
+      const token = this.advance(); consumed.push(token);
+      if (token.value === '{') {depth++;}
+      else if (token.value === '}') {depth--;}
+    }
+    if (depth) {this.fail('Незакрытая директива СКД', first);}
+    const end = consumed[consumed.length - 1];
+    this.opaqueRanges.push([first.offset, end.offset + end.raw.length]);
+    return this.input !== undefined ? this.input.slice(first.offset, end.offset + end.raw.length)
+      : consumed.map(x => x.raw).join(' ');
+  }
+
+  private isBraceClause(): boolean {
+    return this.checkSymbol('{') && /^(SELECT|FROM|WHERE|GROUP|ORDER|TOTALS|HAVING|LEFT|RIGHT|INNER|FULL|JOIN|ХАРАКТЕРИСТИКИ)$/i.test(this.peek(1)?.value || '');
+  }
 
   public parsePackage(): QueryPackage {
     const queries: QueryStatement[] = [];
@@ -65,22 +122,31 @@ class SdblParser {
         break;
       }
 
+      // Text substituted before a statement (%ТекстЗапроса%ВЫБРАТЬ …).
+      const leading: string[] = [];
+      while (this.isTemplateFragment() && !this.isAtEnd()) { this.runtimeTemplate = true; leading.push(this.consumeFragment()); }
       if (this.matchKeyword(SdblKeyword.Drop)) {
         queries.push(this.parseDropTable());
       } else if (this.matchKeyword(SdblKeyword.Select)) {
-        queries.push(this.parseSelectStatement(true));
+        const statement = this.parseSelectStatement(true);
+        if (leading.length) {statement.extensions = leading.map(raw => ({ after: 'beforeSelect', raw }))
+          .concat(statement.extensions || []);}
+        queries.push(statement);
       } else {
-        const tok = this.peek();
-        throw new Error(
-          `Unexpected token '${tok?.raw || ''}' at line ${tok?.line || 0}, col ${tok?.column || 0}. Expected SELECT or DROP statement.`
-        );
+        this.fail('Ожидается ВЫБРАТЬ или УНИЧТОЖИТЬ');
       }
 
-      // Optional semicolon delimiter between statements
-      this.matchSymbol(';');
+      // Statements are separated by «;»; anything else here is left over.
+      if (!this.matchSymbol(';') && !this.isAtEnd()) {
+        const tok = this.peek();
+        if (this.checkKeyword(SdblKeyword.Select) || this.checkKeyword(SdblKeyword.Drop))
+          {this.fail('Между запросами пакета ожидается «;»', tok);}
+        if (this.checkSymbol(')')) {this.fail('Лишняя закрывающая скобка', tok);}
+        this.fail('Синтаксическая ошибка', tok);
+      }
     }
 
-    return { queries };
+    return { queries, ...(this.runtimeTemplate ? { _runtimeTemplate: true } : {}) };
   }
 
   // --- DROP TABLE ---
@@ -105,12 +171,24 @@ class SdblParser {
   private parseSelectStatement(allowUnions = true): SelectStatement {
     let distinct: boolean | undefined = undefined;
     let allowed: boolean | undefined = undefined;
-    let top: number | undefined = undefined;
+    let top: number | string | undefined = undefined;
     let forUpdate: boolean | undefined = undefined;
     let forUpdateTables: string[] | undefined = undefined;
     let autoOrder: boolean | undefined = undefined;
     let into: string | undefined = undefined;
     let indexBy: string[] | undefined = undefined;
+    let indexSets: string[][] | undefined;
+
+    const extensions: Array<{ after: string; raw: string }> = [];
+    // DCS blocks {…} and text substituted at run time (%Отбор%, &ТекстУсловия)
+    // stand between sections; both are kept verbatim at their place.
+    const extras = (after: string) => {
+      for (;;) {
+        if (this.checkSymbol('{') && this.isBraceClause()) {extensions.push({ after, raw: this.parseBrace() });}
+        else if (this.isTemplateFragment()) { this.runtimeTemplate = true; extensions.push({ after, raw: this.consumeFragment() }); }
+        else {break;}
+      }
+    };
 
     // Modifiers right after SELECT
     while (!this.isAtEnd()) {
@@ -119,11 +197,13 @@ class SdblParser {
       } else if (this.matchKeyword(SdblKeyword.Allowed)) {
         allowed = true;
       } else if (this.matchKeyword(SdblKeyword.Top)) {
-        const topTok = this.consume(
-          TokenType.NumberLiteral,
-          'Expected integer count after TOP / ПЕРВЫЕ'
-        );
-        top = Number.parseInt(topTok.value, 10);
+        if (this.peek()?.type === TokenType.Parameter) {top = '&' + this.advance().value;}
+        else if (this.checkSymbol('%')) {top = this.consumeTemplateName();}
+        else {
+          const topTok = this.consume(TokenType.NumberLiteral, 'После ПЕРВЫЕ ожидается целое число');
+          if (!/^\d+$/.test(topTok.value)) {this.fail('После ПЕРВЫЕ ожидается целое число', topTok);}
+          top = Number(topTok.value);
+        }
       } else {
         break;
       }
@@ -134,15 +214,29 @@ class SdblParser {
     do {
       fields.push(this.parseSelectedField());
     } while (this.matchSymbol(','));
+    {
+      const next = this.peek();
+      if (next && (next.type === TokenType.Identifier || next.type === TokenType.NumberLiteral
+          || next.type === TokenType.StringLiteral
+          || next.type === TokenType.Keyword && !this.isReserved(next) && !this.isSectionKeyword(next)
+            && [SdblKeyword.Sum, SdblKeyword.Count, SdblKeyword.Max, SdblKeyword.Min, SdblKeyword.Avg,
+              SdblKeyword.Case, SdblKeyword.Cast, SdblKeyword.Null, SdblKeyword.True, SdblKeyword.False,
+              SdblKeyword.Undefined].includes(next.value as SdblKeyword)))
+        {this.fail('Ожидается запятая между полями или ИЗ', next);}
+    }
+
+    extras('afterFields');
 
     // Optional INTO / ПОМЕСТИТЬ before FROM
     if (this.matchKeyword(SdblKeyword.Into)) {
-      into = this.consumeIdentifierOrKeyword();
+      this.expectName('Ожидается имя временной таблицы'); into = this.consumeTemplateName();
       if (this.matchKeyword(SdblKeyword.Index)) {
-        this.matchOnOrBy();
-        indexBy = this.parseIndexFields();
+        if (!this.matchOnOrBy()) {this.fail('После ИНДЕКСИРОВАТЬ ожидается ПО');}
+        { const index = this.parseIndexFields(); indexBy = index.fields; indexSets = index.sets; }
       }
     }
+
+    extras('afterInto');
 
     // FROM / ИЗ
     let from: FromClause[] | undefined = undefined;
@@ -150,12 +244,14 @@ class SdblParser {
       from = this.parseFromClauseList();
     }
 
+    extras('afterFrom');
+
     // Optional INTO / ПОМЕСТИТЬ after FROM
     if (!into && this.matchKeyword(SdblKeyword.Into)) {
-      into = this.consumeIdentifierOrKeyword();
+      this.expectName('Ожидается имя временной таблицы'); into = this.consumeTemplateName();
       if (this.matchKeyword(SdblKeyword.Index)) {
-        this.matchOnOrBy();
-        indexBy = this.parseIndexFields();
+        if (!this.matchOnOrBy()) {this.fail('После ИНДЕКСИРОВАТЬ ожидается ПО');}
+        { const index = this.parseIndexFields(); indexBy = index.fields; indexSets = index.sets; }
       }
     }
 
@@ -165,15 +261,19 @@ class SdblParser {
       where = this.parseExpression();
     }
 
+    extras('afterWhere');
+
     // GROUP BY / СГРУППИРОВАТЬ ПО
     let groupBy: ExpressionNode[] | undefined = undefined;
     if (this.matchKeyword(SdblKeyword.Group)) {
-      this.matchOnOrBy();
+      if (!this.matchOnOrBy()) {this.fail('После СГРУППИРОВАТЬ ожидается ПО');}
       groupBy = [];
       do {
         groupBy.push(this.parseExpression());
       } while (this.matchSymbol(','));
     }
+
+    extras('afterGroupBy');
 
     // HAVING / ИМЕЮЩИЕ
     let having: ExpressionNode | undefined = undefined;
@@ -181,11 +281,15 @@ class SdblParser {
       having = this.parseExpression();
     }
 
+    extras('afterHaving');
+
     // INDEX BY / ИНДЕКСИРОВАТЬ ПО (canonical position: after FROM, WHERE, GROUP BY, HAVING)
-    if (!indexBy && this.matchKeyword(SdblKeyword.Index)) {
-      this.matchOnOrBy();
-      indexBy = this.parseIndexFields();
+    if (!indexBy && !indexSets && this.matchKeyword(SdblKeyword.Index)) {
+      if (!this.matchOnOrBy()) {this.fail('После ИНДЕКСИРОВАТЬ ожидается ПО');}
+      { const index = this.parseIndexFields(); indexBy = index.fields; indexSets = index.sets; }
     }
+
+    extras('afterIndex');
 
     // UNIONS / ОБЪЕДИНИТЬ [ВСЕ]
     let unions: UnionClause[] | undefined = undefined;
@@ -196,7 +300,7 @@ class SdblParser {
         if (this.matchKeyword(SdblKeyword.All)) {
           unionType = 'UnionAll';
         }
-        this.consumeKeyword(SdblKeyword.Select, 'Expected SELECT after UNION');
+        this.consumeKeyword(SdblKeyword.Select, 'После ОБЪЕДИНИТЬ ожидается ВЫБРАТЬ');
         const statement = this.parseSelectStatement(false);
         if (!unions) {
           unions = [];
@@ -205,10 +309,12 @@ class SdblParser {
       }
     }
 
+    extras('afterUnions');
+
     // ORDER BY / УПОРЯДОЧИТЬ ПО
     let orderBy: OrderItem[] | undefined = undefined;
     if (this.matchKeyword(SdblKeyword.Order)) {
-      this.matchOnOrBy();
+      if (!this.matchOnOrBy()) {this.fail('После УПОРЯДОЧИТЬ ожидается ПО');}
       orderBy = [];
       do {
         if (this.matchKeyword(SdblKeyword.Autoorder)) {
@@ -217,12 +323,13 @@ class SdblParser {
         }
         const expr = this.parseExpression();
         let direction: 'Asc' | 'Desc' | undefined = undefined;
+        const hierarchy = this.matchKeyword(SdblKeyword.Hierarchy) || undefined;
         if (this.matchKeyword(SdblKeyword.Asc)) {
           direction = 'Asc';
         } else if (this.matchKeyword(SdblKeyword.Desc)) {
           direction = 'Desc';
         }
-        orderBy.push({ expression: expr, direction });
+        orderBy.push(hierarchy ? { expression: expr, direction, hierarchy } : { expression: expr, direction });
 
         if (this.matchKeyword(SdblKeyword.Autoorder)) {
           autoOrder = true;
@@ -230,7 +337,12 @@ class SdblParser {
       } while (this.matchSymbol(','));
     }
 
-    // TOTALS / ИТОГИ
+    extras('afterOrderBy');
+
+    // TOTALS / ИТОГИ; АВТОУПОРЯДОЧИВАНИЕ may stand before them without ORDER BY.
+    if (this.matchKeyword(SdblKeyword.Autoorder)) {
+      autoOrder = true;
+    }
     let totals: TotalsClause | undefined = undefined;
     if (this.matchKeyword(SdblKeyword.Totals)) {
       totals = this.parseTotalsClause();
@@ -240,6 +352,8 @@ class SdblParser {
     if (this.matchKeyword(SdblKeyword.Autoorder)) {
       autoOrder = true;
     }
+
+    extras('afterTotals');
 
     // Trailing FOR UPDATE / ДЛЯ ИЗМЕНЕНИЯ
     if (this.matchKeyword(SdblKeyword.ForUpdate)) {
@@ -260,10 +374,15 @@ class SdblParser {
       autoOrder = true;
     }
 
+    if (!indexBy && !indexSets && this.matchKeyword(SdblKeyword.Index)) {
+      if (!this.matchOnOrBy()) {this.fail('После ИНДЕКСИРОВАТЬ ожидается ПО');} const index = this.parseIndexFields(); indexBy = index.fields; indexSets = index.sets;
+    }
+    extras('end');
     const selectStmt: SelectStatement = {
       type: 'Select',
       fields,
     };
+    if (extensions.length) {selectStmt.extensions = extensions;}
     if (distinct !== undefined) {selectStmt.distinct = distinct;}
     if (allowed !== undefined) {selectStmt.allowed = allowed;}
     if (top !== undefined) {selectStmt.top = top;}
@@ -274,6 +393,7 @@ class SdblParser {
     if (autoOrder !== undefined) {selectStmt.autoOrder = autoOrder;}
     if (into !== undefined) {selectStmt.into = into;}
     if (indexBy !== undefined) {selectStmt.indexBy = indexBy;}
+    if (indexSets) {selectStmt.indexSets = indexSets;}
     if (from !== undefined) {selectStmt.from = from;}
     if (where !== undefined) {selectStmt.where = where;}
     if (groupBy !== undefined) {selectStmt.groupBy = groupBy;}
@@ -285,12 +405,21 @@ class SdblParser {
     return selectStmt;
   }
 
-  private parseIndexFields(): string[] {
+  private parseIndexFields(): { fields?: string[]; sets?: string[][] } {
+    if (/^(НАБОРАМ|SETS)$/i.test(this.peek()?.raw || '')) {
+      this.advance(); this.consumeSymbol('('); const sets: string[][] = [];
+      do {
+        this.consumeSymbol('('); const fields: string[] = [];
+        do { fields.push(this.parseCompoundName()); } while (this.matchSymbol(','));
+        this.consumeSymbol(')'); sets.push(fields);
+      } while (this.matchSymbol(','));
+      this.consumeSymbol(')'); return { sets };
+    }
     const fields: string[] = [];
     do {
-      fields.push(this.consumeIdentifierOrKeyword());
+      fields.push(this.parseCompoundName());
     } while (this.matchSymbol(','));
-    return fields;
+    return { fields };
   }
 
   // --- FIELDS ---
@@ -304,10 +433,11 @@ class SdblParser {
     }
 
     let alias: string | undefined = undefined;
+    // An alias may be substituted at run time too: КАК %Псевдоним%.
     if (this.matchKeyword(SdblKeyword.As)) {
-      alias = this.consumeIdentifierOrKeyword();
+      this.expectName('Ожидается псевдоним после КАК'); alias = this.consumeTemplateName();
     } else if (this.isPotentialAlias()) {
-      alias = this.consumeIdentifierOrKeyword();
+      alias = this.consumeTemplateName();
     }
 
     return { expression, alias };
@@ -352,14 +482,22 @@ class SdblParser {
       const source = this.parseTableOrSubquery();
       let alias: string | undefined = undefined;
       if (this.matchKeyword(SdblKeyword.As)) {
-        alias = this.consumeIdentifierOrKeyword();
+        this.expectName('Ожидается псевдоним после КАК'); alias = this.consumeTemplateName();
       } else if (this.isPotentialFromAlias()) {
-        alias = this.consumeIdentifierOrKeyword();
+        alias = this.consumeTemplateName();
       }
 
       const joins: JoinClause[] = [];
       while (this.isJoinStart()) {
-        joins.push(this.parseJoinClause());
+        joins.push(...this.parseJoinSequence());
+      }
+
+      // The platform takes a comma before a join as nothing: «А КАК А, ЛЕВОЕ
+      // СОЕДИНЕНИЕ Б …» joins Б to А, and typical configurations write so.
+      while (this.checkSymbol(',')) {
+        this.advance();
+        if (!this.isJoinStart()) { this.pos--; break; }
+        while (this.isJoinStart()) {joins.push(...this.parseJoinSequence());}
       }
 
       list.push({
@@ -384,21 +522,28 @@ class SdblParser {
     return true;
   }
 
-  private parseTableOrSubquery(): TableSource | SubquerySource {
+  private parseTableOrSubquery(): TableOrSubquery {
+    const first = this.peek();
+    if (!first || first.type === TokenType.EOF
+        || this.isReserved(first))
+      {this.fail('Ожидается имя таблицы', first);}
     if (this.matchSymbol('(')) {
       if (this.checkKeyword(SdblKeyword.Select)) {
         this.advance(); // consume SELECT
         const query = this.parseSelectStatement(true);
-        this.consumeSymbol(')', "Expected ')' after subquery in FROM");
+        this.consumeSymbol(')', 'Ожидается «)» после вложенного запроса');
         return {
           type: 'Subquery',
           query,
         };
       }
-      throw new Error("Expected SELECT inside '(' in FROM clause");
+      const clauses = this.parseFromClauseList();
+      this.consumeSymbol(')', 'Ожидается «)» после соединяемых таблиц');
+      return { type: 'JoinedTable', clauses };
     }
 
-    const name = this.parseCompoundName();
+    const name = this.peek()?.type === TokenType.Parameter
+      ? '&' + this.advance().value : this.parseCompoundName();
     let params: ExpressionNode[] | undefined = undefined;
     if (this.checkSymbol('(')) {
       params = this.parseVirtualTableParams();
@@ -461,11 +606,12 @@ class SdblParser {
       }
     }
 
-    this.consumeSymbol(')', "Expected ')' after virtual table parameters");
+    this.consumeSymbol(')', 'Ожидается «)» после параметров виртуальной таблицы');
     return params;
   }
 
   private isJoinStart(): boolean {
+    if (this.checkSymbol('{') && /^(LEFT|RIGHT|FULL|INNER|JOIN)$/.test(this.peek(1)?.value || '')) {return true;}
     const tok = this.peek();
     if (!tok || tok.type !== TokenType.Keyword) {return false;}
     const kw = tok.value as SdblKeyword;
@@ -478,37 +624,52 @@ class SdblParser {
     );
   }
 
+  private parseJoinSequence(): JoinClause[] {
+    if (!this.matchSymbol('{')) {return [this.parseJoinClause()];}
+    const joins: JoinClause[] = [];
+    do { joins.push(this.parseJoinClause()); } while (this.isJoinStart());
+    this.consumeSymbol('}', 'Ожидается «}» после необязательных соединений');
+    joins[0].optional = true; joins[joins.length - 1].optionalEnd = true;
+    return joins;
+  }
+
   private parseJoinClause(): JoinClause {
     let joinType: 'Left' | 'Right' | 'Full' | 'Inner' = 'Inner';
 
     if (this.matchKeyword(SdblKeyword.Left)) {
       joinType = 'Left';
       this.matchKeyword(SdblKeyword.Outer);
-      this.consumeKeyword(SdblKeyword.Join, 'Expected JOIN / СОЕДИНЕНИЕ after LEFT');
+      this.consumeKeyword(SdblKeyword.Join, 'После ЛЕВОЕ ожидается СОЕДИНЕНИЕ');
     } else if (this.matchKeyword(SdblKeyword.Right)) {
       joinType = 'Right';
       this.matchKeyword(SdblKeyword.Outer);
-      this.consumeKeyword(SdblKeyword.Join, 'Expected JOIN / СОЕДИНЕНИЕ after RIGHT');
+      this.consumeKeyword(SdblKeyword.Join, 'После ПРАВОЕ ожидается СОЕДИНЕНИЕ');
     } else if (this.matchKeyword(SdblKeyword.Full)) {
       joinType = 'Full';
       this.matchKeyword(SdblKeyword.Outer);
-      this.consumeKeyword(SdblKeyword.Join, 'Expected JOIN / СОЕДИНЕНИЕ after FULL');
+      this.consumeKeyword(SdblKeyword.Join, 'После ПОЛНОЕ ожидается СОЕДИНЕНИЕ');
     } else if (this.matchKeyword(SdblKeyword.Inner)) {
       joinType = 'Inner';
-      this.consumeKeyword(SdblKeyword.Join, 'Expected JOIN / СОЕДИНЕНИЕ after INNER');
+      this.consumeKeyword(SdblKeyword.Join, 'После ВНУТРЕННЕЕ ожидается СОЕДИНЕНИЕ');
     } else if (this.matchKeyword(SdblKeyword.Join)) {
       joinType = 'Inner';
     }
 
-    const source = this.parseTableOrSubquery();
+    let source = this.parseTableOrSubquery();
     let alias: string | undefined = undefined;
     if (this.matchKeyword(SdblKeyword.As)) {
-      alias = this.consumeIdentifierOrKeyword();
+      this.expectName('Ожидается псевдоним после КАК'); alias = this.consumeIdentifierOrKeyword();
     } else if (this.isPotentialFromAlias()) {
       alias = this.consumeIdentifierOrKeyword();
     }
 
-    this.matchOnOrBy();
+    const nested: JoinClause[] = [];
+    while (this.isJoinStart()) {nested.push(...this.parseJoinSequence());}
+    if (nested.length) {
+      source = { type: 'JoinedTable', clauses: [{ source, alias, joins: nested }] };
+      alias = undefined;
+    }
+    if (!this.matchOnOrBy()) {this.fail('Ожидается ПО с условием соединения');}
     const on = this.parseExpression();
 
     return {
@@ -530,7 +691,7 @@ class SdblParser {
         const expr = this.parseExpression();
         let alias: string | undefined = undefined;
         if (this.matchKeyword(SdblKeyword.As)) {
-          alias = this.consumeIdentifierOrKeyword();
+          this.expectName('Ожидается псевдоним после КАК'); alias = this.consumeIdentifierOrKeyword();
         } else if (this.isPotentialAlias()) {
           alias = this.consumeIdentifierOrKeyword();
         }
@@ -603,7 +764,7 @@ class SdblParser {
                 }
               }
 
-              this.consumeSymbol(')', "Expected ')' after PERIODS parameters");
+              this.consumeSymbol(')', 'Ожидается «)» после параметров ПЕРИОДАМИ');
               periodDefinition = {
                 periodType,
                 from,
@@ -615,8 +776,13 @@ class SdblParser {
           }
         }
       }
+      let byAlias: string | undefined = undefined;
+      if (this.matchKeyword(SdblKeyword.As)) {
+        this.expectName('Ожидается псевдоним после КАК'); byAlias = this.consumeIdentifierOrKeyword();
+      }
 
       by.push({
+        ...(byAlias ? { alias: byAlias } : {}),
         expression: expr,
         hierarchy,
         hierarchyType,
@@ -736,7 +902,7 @@ class SdblParser {
       // BETWEEN / МЕЖДУ
       if (this.matchKeyword(SdblKeyword.Between)) {
         const from = this.parseAdditive();
-        this.consumeKeyword(SdblKeyword.And, 'Expected AND / И in BETWEEN expression');
+        this.consumeKeyword(SdblKeyword.And, 'В условии МЕЖДУ ожидается И');
         const to = this.parseAdditive();
         expr = {
           type: 'Between',
@@ -771,11 +937,11 @@ class SdblParser {
         if (this.matchKeyword(SdblKeyword.Hierarchy)) {
           inHierarchy = true;
         }
-        this.consumeSymbol('(', "Expected '(' after IN");
+        this.consumeSymbol('(', 'После В ожидается «(»');
         if (this.checkKeyword(SdblKeyword.Select)) {
           this.advance(); // consume SELECT
           const subquery = this.parseSelectStatement(true);
-          this.consumeSymbol(')', "Expected ')' after subquery in IN");
+          this.consumeSymbol(')', 'Ожидается «)» после вложенного запроса');
           expr = {
             type: 'In',
             expression: expr,
@@ -788,7 +954,7 @@ class SdblParser {
           do {
             values.push(this.parseExpression());
           } while (this.matchSymbol(','));
-          this.consumeSymbol(')', "Expected ')' after IN values list");
+          this.consumeSymbol(')', 'Ожидается «)» после списка значений');
           expr = {
             type: 'In',
             expression: expr,
@@ -806,7 +972,7 @@ class SdblParser {
         if (this.matchKeyword(SdblKeyword.Not)) {
           isNot = true;
         }
-        this.consumeKeyword(SdblKeyword.Null, 'Expected NULL after IS / ЕСТЬ');
+        this.consumeKeyword(SdblKeyword.Null, 'После ЕСТЬ ожидается NULL');
         expr = {
           type: 'BinaryOp',
           operator: isNot ? 'IS NOT NULL' : 'IS NULL',
@@ -836,6 +1002,8 @@ class SdblParser {
       break;
     }
 
+    while (this.checkSymbol('{') && !this.isBraceClause())
+      {expr = { type: 'AnnotatedExpression', expression: expr, annotation: this.parseBrace() };}
     return expr;
   }
 
@@ -881,14 +1049,33 @@ class SdblParser {
         operand,
       };
     }
-    return this.parsePrimary();
+    let expression = this.parsePrimary();
+    for (;;) {
+      if (this.matchSymbol('.')) {
+        if (this.matchSymbol('(')) {
+          const fields: SelectedField[] = [];
+          do { fields.push(this.parseSelectedField()); } while (this.matchSymbol(','));
+          this.consumeSymbol(')', 'Ожидается «)» после списка полей');
+          expression = { type: 'TableProjection', expression, fields };
+        } else {expression = { type: 'MemberAccess', expression, member: this.consumeIdentifierOrKeyword() };}
+      } else {break;}
+    }
+    return expression;
   }
 
   private parsePrimary(): ExpressionNode {
     const tok = this.peek();
     if (!tok) {
-      throw new Error('Unexpected end of input while parsing expression');
+      this.fail('Ожидается выражение');
     }
+
+    // A substituted table or field name may start a path: %Таблица%.Ссылка.
+    if (this.checkSymbol('%')) {
+      return this.peek(2)?.value === '.' || this.peek(3)?.value === '.'
+        ? this.parseIdentifierOrCompound() : { type: 'RawExpression', raw: this.consumeTemplateName() };
+    }
+    if (this.checkSymbol('#')) {return this.parseIdentifierOrCompound();}
+    if (this.checkSymbol('{')) {return { type: 'RawExpression', raw: this.parseBrace() };}
 
     // Number literal
     if (tok.type === TokenType.NumberLiteral) {
@@ -914,11 +1101,14 @@ class SdblParser {
 
     // Parameter
     if (tok.type === TokenType.Parameter) {
-      this.advance();
-      return {
-        type: 'Parameter',
-        name: tok.value,
-      };
+      this.advance(); let name = tok.value;
+      while (this.checkSymbol('%')) {
+        name += this.consumeTemplateName();
+        const next = this.peek(), previous = this.previous();
+        if (next?.type === TokenType.Identifier && next.offset === previous.offset + previous.raw.length)
+          {name += this.advance().raw;}
+      }
+      return { type: 'Parameter', name };
     }
 
     // Booleans and NULL
@@ -966,7 +1156,7 @@ class SdblParser {
     ) {
       const aggTok = this.advance();
       const kw = aggTok.value as SdblKeyword;
-      this.consumeSymbol('(', "Expected '(' after aggregate function");
+      this.consumeSymbol('(', 'После агрегатной функции ожидается «(»');
       const distinct = this.matchKeyword(SdblKeyword.Distinct);
       let innerExpr: ExpressionNode;
       if (kw === SdblKeyword.Count && this.matchSymbol('*')) {
@@ -974,7 +1164,7 @@ class SdblParser {
       } else {
         innerExpr = this.parseExpression();
       }
-      this.consumeSymbol(')', "Expected ')' after aggregate argument");
+      this.consumeSymbol(')', 'Ожидается «)» после аргумента агрегатной функции');
       const aggregateType =
         kw === SdblKeyword.Sum
           ? 'Sum'
@@ -996,9 +1186,13 @@ class SdblParser {
     // CASE WHEN ... THEN ... ELSE ... END / ВЫБОР КОГДА ... ТОГДА ... ИНАЧЕ ... КОНЕЦ
     if (this.matchKeyword(SdblKeyword.Case)) {
       const cases: Array<{ when: ExpressionNode; then: ExpressionNode }> = [];
+      const operand = this.checkKeyword(SdblKeyword.When) ? undefined : this.parseExpression();
       while (this.matchKeyword(SdblKeyword.When)) {
-        const when = this.parseExpression();
-        this.consumeKeyword(SdblKeyword.Then, 'Expected THEN / ТОГДА in CASE expression');
+        const value = this.parseExpression();
+        const when: ExpressionNode = operand
+          ? { type: 'BinaryOp', operator: '=', left: operand, right: value }
+          : value;
+        this.consumeKeyword(SdblKeyword.Then, 'В ВЫБОР ожидается ТОГДА');
         const then = this.parseExpression();
         cases.push({ when, then });
       }
@@ -1006,7 +1200,7 @@ class SdblParser {
       if (this.matchKeyword(SdblKeyword.Else)) {
         elseExpr = this.parseExpression();
       }
-      this.consumeKeyword(SdblKeyword.End, 'Expected END / КОНЕЦ in CASE expression');
+      this.consumeKeyword(SdblKeyword.End, 'Ожидается КОНЕЦ выражения ВЫБОР');
       return {
         type: 'CaseWhen',
         cases,
@@ -1017,9 +1211,17 @@ class SdblParser {
     // Parentheses: ( Expression )
     if (this.matchSymbol('(')) {
       const expr = this.parseExpression();
-      this.consumeSymbol(')', "Expected ')' to close expression");
+      if (this.matchSymbol(',')) {
+        const items = [expr];
+        do { items.push(this.parseExpression()); } while (this.matchSymbol(','));
+        this.consumeSymbol(')', 'Ожидается «)» после списка');
+        return { type: 'Tuple', items };
+      }
+      this.consumeSymbol(')', 'Ожидается «)»');
       return expr;
     }
+
+    if (this.isReserved(tok)) {this.fail('Ожидается выражение', tok);}
 
     // Function call or Identifier / CompoundIdentifier
     if (tok.type === TokenType.Identifier || tok.type === TokenType.Keyword) {
@@ -1030,7 +1232,7 @@ class SdblParser {
         const expr = this.parseExpression();
         this.consumeKeyword(
           SdblKeyword.As,
-          'Expected AS / КАК in CAST / ВЫРАЗИТЬ'
+          'В ВЫРАЗИТЬ ожидается КАК'
         );
         const typeExpr = this.parseExpression();
         this.consumeSymbol(')');
@@ -1063,19 +1265,19 @@ class SdblParser {
       return this.parseIdentifierOrCompound();
     }
 
-    throw new Error(
-      `Unexpected token '${tok.raw}' at line ${tok.line}, col ${tok.column} while parsing expression`
-    );
+    this.fail('Ожидается выражение');
   }
 
   private parseIdentifierOrCompound(): ExpressionNode {
-    const parts: string[] = [this.consumeIdentifierOrKeyword()];
-    while (this.matchSymbol('.')) {
+    const parts: string[] = [this.consumeTemplateName()];
+    while (this.checkSymbol('.') && this.peek(1)?.value !== '(') {
+      this.advance();
       if (this.matchSymbol('*')) {
         parts.push('*');
         break;
       }
-      parts.push(this.consumeIdentifierOrKeyword());
+      this.expectName('После точки ожидается имя', true);
+      parts.push(this.consumeTemplateName());
     }
     if (parts.length === 1) {
       return { type: 'Identifier', name: parts[0] };
@@ -1084,11 +1286,67 @@ class SdblParser {
   }
 
   private parseCompoundName(): string {
-    const parts: string[] = [this.consumeIdentifierOrKeyword()];
+    const parts: string[] = [this.consumeTemplateName()];
     while (this.matchSymbol('.')) {
-      parts.push(this.consumeIdentifierOrKeyword());
+      this.expectName('После точки ожидается имя', true);
+      parts.push(this.consumeTemplateName());
     }
     return parts.join('.');
+  }
+
+  /**
+   * A name, possibly assembled from pieces written without spaces:
+   * Префикс%Имя%, %ИмяТаблицы%%Суффикс%, ВТ#Номер. Pieces are glued only
+   * when they touch, so the text is reproduced exactly.
+   */
+  private consumeTemplateName(): string {
+    let name = this.consumeNamePiece();
+    for (;;) {
+      const previous = this.previous(), next = this.peek(), after = this.peek(1);
+      if (!next || !previous || next.offset !== previous.offset + previous.raw.length) {break;}
+      const nameToken = (token?: SdblToken) => !!token
+        && [TokenType.Identifier, TokenType.Keyword, TokenType.NumberLiteral].includes(token.type);
+      const template = (next.value === '%' || next.value === '#') && next.type !== TokenType.StringLiteral && nameToken(after);
+      const tail = (next.type === TokenType.Identifier || next.type === TokenType.NumberLiteral) && /[%#]/.test(name);
+      if (!template && !tail) {break;}
+      name += this.consumeNamePiece();
+    }
+    if (/[%#]/.test(name)) {this.runtimeTemplate = true;}
+    return name;
+  }
+
+  /** A standalone substitution where a clause may end: %Отбор%, &ТекстУсловия. */
+  private isTemplateFragment(): boolean {
+    const token = this.peek();
+    if (!token) {return false;}
+    if (token.type === TokenType.Parameter) {return true;}
+    return this.checkSymbol('%') && !!this.peek(1)
+      && [TokenType.Identifier, TokenType.Keyword, TokenType.NumberLiteral].includes(this.peek(1)!.type);
+  }
+
+  private consumeFragment(): string {
+    if (this.peek()?.type === TokenType.Parameter) {
+      let raw = '&' + this.advance().value;
+      while (this.checkSymbol('%')) {raw += this.consumeTemplateName();}
+      return raw;
+    }
+    return this.consumeTemplateName();
+  }
+
+  private consumeNamePiece(): string {
+    if (this.peek()?.type === TokenType.Parameter) { this.runtimeTemplate = true; return '&' + this.advance().value; }
+    if (this.matchSymbol('#')) { this.runtimeTemplate = true; return '#' + this.consumeIdentifierOrKeyword(); }
+    if (this.matchSymbol('%')) {
+      this.runtimeTemplate = true;
+      const token = this.peek();
+      if (!token || ![TokenType.NumberLiteral, TokenType.Identifier, TokenType.Keyword].includes(token.type))
+        {this.fail('После % требуется номер или имя подстановки');}
+      if (token.type === TokenType.NumberLiteral && !/^\d+$/.test(token.value))
+        {this.fail('Номер подстановки должен быть целым');}
+      this.advance();
+      return '%' + token.raw + (this.matchSymbol('%') ? '%' : '');
+    }
+    return this.consumeIdentifierOrKeyword();
   }
 
   // --- HELPER UTILITIES ---
@@ -1175,12 +1433,56 @@ class SdblParser {
     return false;
   }
 
+  private isReserved(tok: SdblToken | undefined): boolean {
+    return !!tok && tok.type === TokenType.Keyword && RESERVED_KEYWORDS.has(tok.value);
+  }
+
+  /** A name (alias, temporary table, path part) cannot be a reserved word. */
+  private expectName(message = 'Ожидается имя', afterDot = false): void {
+    const tok = this.peek();
+    const name = !!tok && (tok.type === TokenType.Identifier || tok.type === TokenType.Keyword
+      || tok.type === TokenType.Parameter || tok.value === '%' || tok.value === '#');
+    if (!name || (afterDot ? tok.type === TokenType.Keyword && NOT_AFTER_DOT_KEYWORDS.has(tok.value)
+        : this.isReserved(tok))) {this.fail(message, tok);}
+  }
+
+  // The unclosed bracket a missing «)» belongs to.
+  private openBracketBefore(): SdblToken | undefined {
+    let depth = 0;
+    for (let i = this.pos - 1; i >= 0; i--) {
+      const tok = this.tokens[i];
+      if (tok.type !== TokenType.Symbol && tok.type !== TokenType.Operator) {continue;}
+      if (tok.value === ')') {depth++;}
+      else if (tok.value === '(') {
+        if (!depth) {return tok;}
+        depth--;
+      }
+    }
+    return undefined;
+  }
+
+  /** Throws the message with the token the parser stopped at: «Х», строка N, колонка M. */
+  public fail(message: string, tok: SdblToken | undefined = this.peek(), label = 'Получено'): never {
+    const located = tok && tok.line > 0;
+    const got = !tok || tok.type === TokenType.EOF ? 'конец текста' : `«${tok.raw}»`;
+    const error = new Error(located
+      ? `${message}. ${label} ${got}, строка ${tok.line}, колонка ${tok.column}`
+      : `${message}. ${label} ${got}`) as SdblParseError;
+    error.sdblParse = true;
+    if (located) {
+      error.sdblLine = tok.line;
+      error.sdblColumn = tok.column;
+      error.sdblLength = tok.type === TokenType.EOF ? 0 : tok.raw.length;
+    }
+    throw error;
+  }
+
   private consumeKeyword(kw: SdblKeyword, errorMsg: string): SdblToken {
     if (this.checkKeyword(kw)) {
       return this.advance();
     }
     const tok = this.peek();
-    throw new Error(`${errorMsg}. Got '${tok?.raw || ''}' at line ${tok?.line}, col ${tok?.column}`);
+    this.fail(errorMsg, tok);
   }
 
   private checkSymbol(sym: string): boolean {
@@ -1200,12 +1502,16 @@ class SdblParser {
     return false;
   }
 
-  private consumeSymbol(sym: string, errorMsg = `Expected '${sym}'`): SdblToken {
+  private consumeSymbol(sym: string, errorMsg = `Ожидается «${sym}»`): SdblToken {
     if (this.checkSymbol(sym)) {
       return this.advance();
     }
     const tok = this.peek();
-    throw new Error(`${errorMsg}. Got '${tok?.raw || ''}' at line ${tok?.line}, col ${tok?.column}`);
+    const open = sym === ')' ? this.openBracketBefore() : undefined;
+    if (open && (!tok || tok.type === TokenType.EOF))
+      {this.fail(`Не закрыта скобка: ${errorMsg[0].toLowerCase()}${errorMsg.slice(1)}`, open, 'Открыта');}
+    if (open) {this.fail(`${errorMsg} (скобка открыта в строке ${open.line}, колонке ${open.column})`, tok);}
+    this.fail(errorMsg, tok);
   }
 
   private consumeIdentifierOrKeyword(): string {
@@ -1217,9 +1523,7 @@ class SdblParser {
       this.advance();
       return tok.raw;
     }
-    throw new Error(
-      `Expected identifier. Got '${tok?.raw || ''}' at line ${tok?.line}, col ${tok?.column}`
-    );
+    this.fail('Ожидается имя', tok);
   }
 
   private consume(type: TokenType, errorMsg: string): SdblToken {
@@ -1227,6 +1531,6 @@ class SdblParser {
       return this.advance();
     }
     const tok = this.peek();
-    throw new Error(`${errorMsg}. Got '${tok?.raw || ''}' at line ${tok?.line}, col ${tok?.column}`);
+    this.fail(errorMsg, tok);
   }
 }

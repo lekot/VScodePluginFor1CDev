@@ -32,6 +32,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## BslEdit query builder page
+
+`src/queryBuilder/ui/queryBuilderWebview.html` and the SDBL changes that came with it (`src/queryBuilder/sdbl/sdblComments.ts`, `sdblAstEquivalence.ts`, `sdblUnionAlign.ts` and the parser, formatter and tokenizer updates) are the query builder of BslEdit ([repository](https://github.com/alonehobo/BslEdit)), which started from this extension's builder and is contributed back under the same MIT terms as the BslEdit notice below.
+
 ## BslEdit form editor adaptations
 
 `src/formEditor/formXmlTextEditor.ts` adapts the source-offset scanner and splice approach from BslEdit v2.0.0, `packages/1c-preview-core/browser/form-edit.js`. `src/formEditor/formWebviewHtml.ts` adapts selected Taxi thin-client palette, control metrics, and CSS treatments from `packages/1c-preview-core/browser/viewer.css` and the semantic preview structure in `form-preview.js` ([repository](https://github.com/alonehobo/BslEdit)). The form preview keeps its own markup and contains no BslEdit platform PNGs or other platform artwork. The MIT notice from BslEdit is reproduced below.

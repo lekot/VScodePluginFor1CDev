@@ -99,6 +99,7 @@ export function tokenizeSdbl(text: string, options?: TokenizeOptions): SdblToken
     if (ch === '"') {
       advance(); // consume opening quote
       let value = '';
+      let closed = false;
 
       while (offset < len) {
         const nextChar = peek();
@@ -111,11 +112,22 @@ export function tokenizeSdbl(text: string, options?: TokenizeOptions): SdblToken
           } else {
             // Closing quote
             advance();
+            closed = true;
             break;
           }
         } else {
           value += advance();
         }
+      }
+      if (!closed) {
+        // The opening quote is the place: the rest of the text became the string.
+        const error = new Error(`Не закрыта строка. Получено «"», строка ${startLine}, колонка ${startColumn}`) as Error
+          & { sdblParse: true; sdblLine: number; sdblColumn: number; sdblLength: number };
+        error.sdblParse = true;
+        error.sdblLine = startLine;
+        error.sdblColumn = startColumn;
+        error.sdblLength = 1;
+        throw error;
       }
 
       const raw = text.slice(startOffset, offset);
@@ -170,7 +182,7 @@ export function tokenizeSdbl(text: string, options?: TokenizeOptions): SdblToken
       }
 
       // Check for decimal part: must be '.' followed by at least one digit
-      if (peek() === '.' && isDigit(peek(1))) {
+      if (peek() === '.' && !IDENT_START_RE.test(peek(1))) {
         advance(); // consume '.'
         while (offset < len && isDigit(peek())) {
           advance();

@@ -9,6 +9,7 @@ import {
   generateBslSimpleQuery,
 } from './editor/queryCodeTemplates';
 import { formatSdbl } from './sdbl/sdblFormatter';
+import { semanticallyEqual } from './sdbl/sdblAstEquivalence';
 import { Logger } from '../utils/logger';
 
 export interface QueryBuilderReplaceRange {
@@ -24,6 +25,8 @@ export interface QueryBuilderMessageContext {
   panel: vscode.WebviewPanel;
   editor?: vscode.TextEditor;
   ast: QueryPackage;
+  /** The query as it was opened; absent for a new query. */
+  initialAst?: QueryPackage;
   metadata: QueryMetadataNode[];
   mode: 'simple' | 'withProcessing';
   replaceRange: QueryBuilderReplaceRange;
@@ -81,6 +84,12 @@ export interface QueryBuilderInboundMessage {
   [key: string]: unknown;
 }
 
+function sameComments(left: QueryPackage, right: QueryPackage): boolean {
+  const texts = (pkg: QueryPackage): string =>
+    JSON.stringify((pkg._comments ?? []).map((c) => (c as { text?: string }).text));
+  return texts(left) === texts(right);
+}
+
 export async function handleQueryBuilderMessage(
   message: unknown,
   context: QueryBuilderMessageContext
@@ -123,6 +132,23 @@ export async function handleQueryBuilderMessage(
         // Abort save to prevent BSL code corruption!
         // NOTE (Finding 2): For pure SDBL documents, statementRange is not expected and formatSdbl is used.
         const isExistingQuery = context.replaceRange.startOffset !== context.replaceRange.endOffset;
+
+        // The page reports whether the user changed anything (`edited`). Without
+        // a change, OK leaves the source text as it is: a text the generator would
+        // lay out differently is not rewritten. A different meaning without a
+        // change means the page altered the query by itself, so nothing is saved.
+        if (msg.edited === false && context.initialAst && targetMode === 'simple') {
+          if (!semanticallyEqual(targetAst, context.initialAst)) {
+            void vscode.window.showErrorMessage(
+              'Конструктор изменил структуру запроса без правки пользователя. Сохранение остановлено.'
+            );
+            return;
+          }
+          if (sameComments(targetAst, context.initialAst)) {
+            context.panel.dispose();
+            return;
+          }
+        }
         if (!context.isSdblDocument && targetMode === 'withProcessing' && isExistingQuery && !context.statementRange) {
           void vscode.window.showErrorMessage(
             'Невозможно сгенерировать обработку результата запроса: исходный запрос находится внутри сложного выражения или оператора Возврат. Сохранение отменено.'

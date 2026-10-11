@@ -18,7 +18,9 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
     public children: MockElement[] = [];
     public parentElement: MockElement | null = null;
     public _listeners: { [event: string]: ((e: any) => void)[] } = {};
-    public style: { [key: string]: string } = {};
+    public style: { [key: string]: any } = { setProperty: () => {}, removeProperty: () => {} };
+    public hidden: boolean = false;
+    public dataset: { [key: string]: string } = {};
     public _classes: Set<string> = new Set();
     public checked: boolean = false;
     public disabled: boolean = false;
@@ -46,6 +48,8 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       return this._value || '';
     }
     set value(v: string) {
+      // input.value is always a string in a real DOM
+      v = v === null || v === undefined ? '' : String(v);
       this._value = v;
       if (this.tagName === 'SELECT') {
         for (const c of this.children) {
@@ -78,6 +82,12 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
         add: (c: string) => this._classes.add(c),
         remove: (c: string) => this._classes.delete(c),
         contains: (c: string) => this._classes.has(c),
+        toggle: (c: string, force?: boolean) => {
+          const on = force === undefined ? !this._classes.has(c) : force;
+          if (on) this._classes.add(c);
+          else this._classes.delete(c);
+          return on;
+        },
       };
     }
 
@@ -94,6 +104,9 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
     }
 
     dispatchEvent(event: { type: string; [key: string]: any }) {
+      // A real DOM event always carries these methods
+      if (!event.stopPropagation) event.stopPropagation = () => {};
+      if (!event.preventDefault) event.preventDefault = () => {};
       const handlers = this._listeners[event.type] || [];
       for (const h of handlers) {
         h(event);
@@ -110,6 +123,87 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       this.children.push(child);
       return child;
     }
+
+    append(...nodes: MockElement[]): void {
+      nodes.forEach((n) => this.appendChild(n));
+    }
+
+    replaceChildren(...nodes: MockElement[]): void {
+      this.children = [];
+      nodes.forEach((n) => this.appendChild(n));
+    }
+
+    insertBefore(child: MockElement, ref: MockElement | null): MockElement {
+      const idx = ref ? this.children.indexOf(ref) : -1;
+      child.parentElement = this;
+      if (idx === -1) this.children.push(child);
+      else this.children.splice(idx, 0, child);
+      return child;
+    }
+
+    replaceChild(next: MockElement, old: MockElement): MockElement {
+      const idx = this.children.indexOf(old);
+      if (idx !== -1) {
+        next.parentElement = this;
+        old.parentElement = null;
+        this.children[idx] = next;
+      }
+      return old;
+    }
+
+    remove(): void {
+      if (this.parentElement) this.parentElement.removeChild(this);
+    }
+
+    contains(other: MockElement | null): boolean {
+      for (let n = other; n; n = n.parentElement) if (n === this) return true;
+      return false;
+    }
+
+    // Simple selectors only: a comma list of tag, .class and [attr] / [attr="value"] parts
+    matches(sel: string): boolean {
+      return sel.split(',').some((part) => {
+        const m = part.trim().match(/^([A-Za-z0-9_-]*)((?:\.[A-Za-z0-9_-]+)*)(?:\[([A-Za-z0-9_-]+)(?:="([^"]*)")?\])?$/);
+        if (!m) return false;
+        const [, tag, classes, attr, val] = m;
+        if (tag && this.tagName !== tag.toUpperCase()) return false;
+        for (const c of classes.split('.').filter(Boolean)) if (!this.classList.contains(c)) return false;
+        if (attr) {
+          const actual = attr === 'draggable' ? (this.draggable ? 'true' : null) : this.getAttribute(attr);
+          if (val !== undefined ? actual !== val : actual === null) return false;
+        }
+        return true;
+      });
+    }
+
+    // Like the real one: the element itself or its nearest matching ancestor
+    closest(sel: string): MockElement | null {
+      for (let n: MockElement | null = this; n; n = n.parentElement) if (n.matches(sel)) return n;
+      return null;
+    }
+
+    // Rows are 20 px high, one under another
+    getBoundingClientRect(): { top: number; height: number } {
+      const index = this.parentElement ? this.parentElement.children.indexOf(this) : 0;
+      return { top: index * 20, height: 20 };
+    }
+
+    removeAttribute(k: string): void {
+      delete this._attrs[k];
+    }
+
+    get rows(): MockElement[] {
+      return this.children.filter((c) => c.tagName === 'TR');
+    }
+
+    focus(): void {}
+
+    // Canvas text metrics: about 7 px per character.
+    getContext(): { font: string; measureText: (text: string) => { width: number } } {
+      return { font: '', measureText: (text: string) => ({ width: String(text).length * 7 }) };
+    }
+
+    scrollIntoView(): void {}
 
     removeChild(child: MockElement): MockElement {
       const idx = this.children.indexOf(child);
@@ -128,6 +222,12 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
     }
 
     querySelectorAll(sel: string): MockElement[] {
+      // Child combinator: "parent > child" (":scope" is this element)
+      if (sel.includes(' > ')) {
+        const [parentSel, childSel] = sel.split(' > ').map((s) => s.trim());
+        return this.querySelectorAll(childSel).filter((el) => el.parentElement &&
+          (parentSel === ':scope' ? el.parentElement === this : el.parentElement.matches(parentSel)));
+      }
       const res: MockElement[] = [];
       const search = (node: MockElement) => {
         for (const c of node.children) {
@@ -203,6 +303,18 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
         el.type = type;
         el.setAttribute('id', id);
         elementsById[id] = el;
+        // As in the page: a table (and the table of a tbody) lies in a .table-responsive box
+        if (tag === 'tbody' || tag === 'table') {
+          const box = new MockElement('div');
+          box.className = 'table-responsive';
+          let tableEl = el;
+          if (tag === 'tbody') {
+            tableEl = new MockElement('table');
+            tableEl.className = 'data-table';
+            tableEl.appendChild(el);
+          }
+          box.appendChild(tableEl);
+        }
       }
       return elementsById[id];
     };
@@ -254,6 +366,14 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
         }
         return null;
       },
+      body: new MockElement('body'),
+      documentElement: new MockElement('html'),
+      addEventListener: () => {},
+      createTextNode: (text: string) => {
+        const node = new MockElement('#text');
+        node.textContent = text;
+        return node;
+      },
       querySelectorAll: (sel: string) => {
         if (sel === '.tab-btn') return tabButtons;
         if (sel === '.tab-pane') return tabPanes;
@@ -285,6 +405,20 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       clearTimeout: clearTimeout,
       prompt: () => '',
       alert: () => {},
+      Option: function (text?: string, value?: string) {
+        const option = new MockElement('option');
+        option.textContent = text || '';
+        option.value = value === undefined ? text || '' : value;
+        option.setAttribute('value', option.value);
+        return option;
+      },
+      MutationObserver: class {
+        observe(): void {}
+        disconnect(): void {}
+      },
+      getComputedStyle: () => ({ getPropertyValue: () => '' }),
+      requestAnimationFrame: (fn: () => void) => setTimeout(fn, 0),
+      cancelAnimationFrame: (handle: ReturnType<typeof setTimeout>) => clearTimeout(handle),
     };
 
     vm.createContext(sandbox);
@@ -305,6 +439,61 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       postMessageToWebview,
     };
   }
+
+  // A new join is built in a draft row: «Добавить связь» adds it, the tables are chosen in its
+  // «Таблица 1» (cell 0) and «Таблица 2» (cell 2) lists; with both chosen the join is created.
+  // Every change re-renders the rows, so they are looked up again each time.
+  function addJoinViaDraft(env: WebviewSandbox, left: string, right: string): void {
+    env.elements.btnAddJoin.click();
+    for (const [cell, table] of [[0, left], [2, right]] as [number, string][]) {
+      const select = env.elements.tbodyJoins.querySelector('tr.join-draft').children[cell].querySelector('select');
+      select.value = table;
+      select.dispatchEvent({ type: 'change' });
+    }
+  }
+
+  function setJoinTypeAndCondition(env: WebviewSandbox, rowIndex: number, joinType: string, condition: string): void {
+    const typeSelect = env.elements.tbodyJoins.children[rowIndex].children[1].querySelector('select');
+    typeSelect.value = joinType;
+    typeSelect.dispatchEvent({ type: 'change' });
+    const inputOn = env.elements.tbodyJoins.children[rowIndex].children[3].querySelector('input.join-input-raw');
+    inputOn.value = condition;
+    inputOn.dispatchEvent({ type: 'change' });
+  }
+
+  suite('Package query ordering preserves leading comments', () => {
+    test('moving one of two commented queries down keeps each leading comment with its query', () => {
+      const text =
+        '// комментарий запроса А\n' +
+        'ВЫБРАТЬ 1 КАК ЗначениеА ИЗ Справочник.А КАК А;\n' +
+        '// комментарий запроса Б\n' +
+        'ВЫБРАТЬ 2 КАК ЗначениеБ ИЗ Справочник.Б КАК Б';
+      const env = createWebviewEnvironment();
+      env.postMessageToWebview({
+        command: 'init',
+        ast: parseSdbl(text),
+        metadata: [],
+        mode: 'simple',
+      });
+
+      assert.strictEqual(env.state.ast.queries.length, 2);
+      env.elements.btnMoveQueryDown.click();
+      assert.strictEqual(env.state.ast.queries[0].fields[0].alias, 'ЗначениеБ');
+
+      env.elements.btnSave.click();
+      const saveMsg = env.sentMessages.find((message: any) => message.command === 'save');
+      assert.ok(saveMsg, 'save command must be sent');
+      const formatted = formatSdbl(saveMsg.ast);
+      const queryB = formatted.indexOf('2 КАК ЗначениеБ');
+      const commentB = formatted.indexOf('// комментарий запроса Б');
+      const queryA = formatted.indexOf('1 КАК ЗначениеА');
+      const commentA = formatted.indexOf('// комментарий запроса А');
+
+      assert.ok(queryB >= 0 && queryA > queryB, formatted);
+      assert.ok(commentB >= 0 && commentB < queryB, formatted);
+      assert.ok(commentA > queryB && commentA < queryA, formatted);
+    });
+  });
 
   suite('Point 1 & 9: Tables, Fields & SDBL Syntax', () => {
     test('getTableAliasWithoutPrefix strips metadata prefixes in Russian and English', () => {
@@ -395,6 +584,7 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
         type: 'drop',
         preventDefault: () => {},
         dataTransfer: {
+          types: ['application/json'],
           getData: (format: string) => {
             if (format === 'application/json') {
               return JSON.stringify({
@@ -409,7 +599,8 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
         },
       };
 
-      env.elements.tbodySelectedFields.dispatchEvent(dropEvent);
+      // The drop zone is the table box around the rows (events do not bubble in this mock)
+      env.elements.tbodySelectedFields.closest('.table-responsive').dispatchEvent(dropEvent);
 
       assert.strictEqual(q.fields.length, 1);
       assert.strictEqual(q.fields[0].expression, 'Товары.Артикул');
@@ -467,7 +658,9 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       assert.strictEqual(jn.on.raw, 'ИСТИНА');
     });
 
-    test('copyJoin duplicates the selected join', () => {
+    // A row of the «Связи» tab is one condition of a join, as in the Designer:
+    // copying the row adds the same condition to that join.
+    test('copyJoin duplicates the selected join condition row', () => {
       const env = createWebviewEnvironment();
       const q = env.window.getActiveQuery();
 
@@ -487,9 +680,13 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       ];
 
       assert.strictEqual(q.from[0].joins.length, 1);
+      env.window.renderTab2();
       env.window.copyJoin(0);
-      assert.strictEqual(q.from[0].joins.length, 2);
-      assert.strictEqual(q.from[0].joins[1].on.raw, 'Таблица1.ID = Таблица2.ID');
+      assert.strictEqual(q.from[0].joins.length, 1);
+      assert.strictEqual(
+        env.window.getExpressionString(q.from[0].joins[0].on),
+        'Таблица1.ID = Таблица2.ID И Таблица1.ID = Таблица2.ID'
+      );
     });
 
     test('formatSdblQuery combines multiple ON conditions for same table pair with И', () => {
@@ -587,16 +784,22 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       env.elements.btnGroupbyRemoveAll.click();
       assert.strictEqual(q.groupBy.length, 0);
 
-      // Test Add All to Aggregates
+      // Add All to Aggregates: as in the Designer, the numeric selected fields
+      // become summed in place rather than being added a second time.
+      q.fields = [
+        { expression: 'T.Наименование', alias: 'Наименование' },
+        { expression: 'T.Сумма', alias: 'Сумма' },
+      ];
       env.elements.btnAggAddAll.click();
-      // Added two aggregate fields
-      assert.strictEqual(q.fields.length, 4);
-      assert.strictEqual(q.fields[2].expression.type, 'Aggregate');
-      assert.strictEqual(q.fields[3].expression.type, 'Aggregate');
+      assert.strictEqual(q.fields.length, 2);
+      assert.notStrictEqual(q.fields[0].expression.type, 'Aggregate');
+      assert.strictEqual(q.fields[1].expression.type, 'Aggregate');
+      assert.strictEqual(q.fields[1].expression.aggregateType, 'Sum');
 
-      // Test Remove All Aggregates
+      // Remove All Aggregates turns them back into plain fields.
       env.elements.btnAggRemoveAll.click();
       assert.strictEqual(q.fields.length, 2);
+      assert.ok(q.fields.every((f: any) => f.expression.type !== 'Aggregate'));
     });
   });
 
@@ -607,7 +810,8 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
 
       env.window.addConditionFromField('Номенклатура.Артикул');
       assert.strictEqual(q.whereConditions.length, 1);
-      assert.strictEqual(q.whereConditions[0].op, '');
+      // Rendering the conditions tab normalises every row's link to И/ИЛИ (the first row is a tree leaf too)
+      assert.strictEqual(q.whereConditions[0].op, 'И');
       assert.strictEqual(q.whereConditions[0].field, 'Номенклатура.Артикул');
       assert.strictEqual(q.whereConditions[0].cmp, '=');
       assert.strictEqual(q.whereConditions[0].value, '&Артикул');
@@ -634,15 +838,23 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
     test('renderTab4 populates conditionsFieldsList and double-clicking row adds condition', () => {
       const env = createWebviewEnvironment();
       const q = env.window.getActiveQuery();
-      q.fields = [{ expression: 'Ном.Наименование', alias: 'Наименование' }];
+      q.from = [{ source: { type: 'Table', name: 'Справочник.Номенклатура' }, alias: 'Ном' }];
       env.window.renderTab4();
 
-      const items = env.elements.conditionsFieldsList.querySelectorAll('.item-row');
-      assert.ok(items.length > 0, 'Conditions fields list must have items');
-      assert.strictEqual(items[0].textContent, 'Ном.Наименование');
+      // The left panel is a tree of the query's tables; a field is reached by unfolding its table
+      const tables = env.elements.conditionsFieldsList.querySelectorAll('.table-node');
+      assert.strictEqual(tables.length, 1, 'Conditions fields list must have the query table');
+      assert.strictEqual(tables[0].textContent, 'Ном');
+      assert.strictEqual(env.elements.conditionsFieldsList.querySelectorAll('.field-node').length, 0);
 
-      // Double click first item
-      items[0].dispatchEvent({ type: 'dblclick' });
+      // Double click on a table unfolds it
+      tables[0].dispatchEvent({ type: 'dblclick' });
+      const items = env.elements.conditionsFieldsList.querySelectorAll('.field-node');
+      const nameRow = items.find((r: any) => r.textContent.startsWith('Наименование'));
+      assert.ok(nameRow, 'Unfolded table must list its fields');
+
+      // Double click on a field adds a condition on Table.Field
+      nameRow.dispatchEvent({ type: 'dblclick' });
       assert.strictEqual(q.whereConditions.length, 1);
       assert.strictEqual(q.whereConditions[0].field, 'Ном.Наименование');
     });
@@ -678,7 +890,8 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       env.elements.checkTopEnabled.checked = true;
       env.elements.checkTopEnabled.dispatchEvent({ type: 'change' });
       assert.strictEqual(env.elements.inputTop.disabled, false);
-      assert.strictEqual(q.top, 100);
+      // The default TOP is 1 row (the input shows 1 while TOP is off)
+      assert.strictEqual(q.top, 1);
 
       env.elements.checkTopEnabled.checked = false;
       env.elements.checkTopEnabled.dispatchEvent({ type: 'change' });
@@ -712,23 +925,29 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       const totalsTabBtn = env.tabButtons.find((b) => b.getAttribute('data-tab') === 'tab-totals');
       assert.ok(totalsTabBtn);
 
+      // The tab button is no longer hidden: it is disabled (with an explaining title)
       env.window.updateTotalsTabVisibility();
-      assert.strictEqual(totalsTabBtn.style.display, '');
+      assert.strictEqual(totalsTabBtn.disabled, false);
+      assert.strictEqual(totalsTabBtn.title, '');
 
-      // Into query hides totals tab
+      // Into query disables totals tab
       q.into = 'ВТ_Данные';
       env.window.updateTotalsTabVisibility();
-      assert.strictEqual(totalsTabBtn.style.display, 'none');
+      assert.strictEqual(totalsTabBtn.disabled, true);
+      assert.strictEqual(totalsTabBtn.title, 'Недоступно для этого типа запроса');
 
-      // Regular select shows totals tab
+      // Regular select enables totals tab
       delete q.into;
       env.window.updateTotalsTabVisibility();
-      assert.strictEqual(totalsTabBtn.style.display, '');
+      assert.strictEqual(totalsTabBtn.disabled, false);
 
-      // Drop table hides totals tab
+      // Drop table disables totals tab (and every tab but Extra, Package and Query text)
       q.type = 'DropTable';
       env.window.updateTotalsTabVisibility();
-      assert.strictEqual(totalsTabBtn.style.display, 'none');
+      assert.strictEqual(totalsTabBtn.disabled, true);
+      const extraTabBtn = env.tabButtons.find((b) => b.getAttribute('data-tab') === 'tab-extra');
+      assert.ok(extraTabBtn);
+      assert.strictEqual(extraTabBtn.disabled, false);
     });
   });
 
@@ -822,7 +1041,7 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       assert.strictEqual(q.orderBy[0].direction, 'Desc');
     });
 
-    test('reordering order fields via up and down buttons', () => {
+    test('reordering order fields by dragging a row', () => {
       const env = createWebviewEnvironment();
       const q = env.window.getActiveQuery();
 
@@ -831,10 +1050,20 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       assert.strictEqual(env.window.getExpressionString(q.orderBy[0].expression), 'Поле1');
       assert.strictEqual(env.window.getExpressionString(q.orderBy[1].expression), 'Поле2');
 
+      // The up/down buttons are gone: rows are moved by dragging them inside the table area
       env.window.renderTab7();
       const rows = env.elements.tbodyOrder.querySelectorAll('tr');
-      const btnDown = rows[0].querySelectorAll('button')[1]; // second button is down
-      btnDown.click();
+      assert.strictEqual(rows.length, 2);
+      assert.strictEqual(rows[0].querySelectorAll('button').length, 1, 'only the delete button remains');
+      const store: { [type: string]: string } = {};
+      const dataTransfer = {
+        types: [] as string[],
+        setData: (type: string, value: string) => { store[type] = value; },
+        getData: (type: string) => store[type] || '',
+      };
+      rows[0].dispatchEvent({ type: 'dragstart', target: rows[0], dataTransfer });
+      // Dropped below the lower half of the last row: the dragged row goes last
+      rows[1].dispatchEvent({ type: 'drop', target: rows[1], clientY: 35, dataTransfer });
 
       assert.strictEqual(env.window.getExpressionString(q.orderBy[0].expression), 'Поле2');
       assert.strictEqual(env.window.getExpressionString(q.orderBy[1].expression), 'Поле1');
@@ -868,7 +1097,7 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       assert.strictEqual(q.totals.by[0].periods, false);
     });
 
-    test('Totals type dropdown syncs bidirectionally with Hierarchy and Periods checkboxes', () => {
+    test('Totals type dropdown sets the Hierarchy and Periods flags of the group', () => {
       const env = createWebviewEnvironment();
       const q = env.window.getActiveQuery();
       env.window.addTotalGroupField('Контрагент');
@@ -877,39 +1106,39 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       const rows = env.elements.tbodyTotalsGroups.querySelectorAll('tr');
       assert.strictEqual(rows.length, 1);
       const selType = rows[0].querySelector('select');
-      const checkboxes = rows[0].querySelectorAll('input[type="checkbox"]');
-      const chHier = checkboxes[0];
-      const chPer = checkboxes[1];
+      // The Hierarchy and Periods checkboxes are gone: the dropdown alone sets the group's type
+      assert.strictEqual(rows[0].querySelectorAll('input[type="checkbox"]').length, 0);
+      assert.strictEqual(selType.value, 'Elements');
 
       // Switch to Hierarchy via dropdown
       selType.value = 'Hierarchy';
       selType.dispatchEvent({ type: 'change' });
       assert.strictEqual(q.totals.by[0].hierarchy, true);
       assert.strictEqual(q.totals.by[0].hierarchyType, 'Hierarchy');
-      assert.strictEqual(chHier.checked, true);
-      assert.strictEqual(chPer.checked, false);
+      assert.strictEqual(q.totals.by[0].periods, false);
 
       // Switch to Periods via dropdown
       selType.value = 'Periods';
       selType.dispatchEvent({ type: 'change' });
       assert.strictEqual(q.totals.by[0].periods, true);
       assert.strictEqual(q.totals.by[0].hierarchy, false);
-      assert.strictEqual(chHier.checked, false);
-      assert.strictEqual(chPer.checked, true);
 
       // Switch to Elements via dropdown
       selType.value = 'Elements';
       selType.dispatchEvent({ type: 'change' });
       assert.strictEqual(q.totals.by[0].periods, false);
       assert.strictEqual(q.totals.by[0].hierarchy, false);
-      assert.strictEqual(chHier.checked, false);
-      assert.strictEqual(chPer.checked, false);
 
-      // Checking chHier checkbox syncs back to dropdown
-      chHier.checked = true;
-      chHier.dispatchEvent({ type: 'change' });
+      // OnlyHierarchy is a type of its own
+      selType.value = 'OnlyHierarchy';
+      selType.dispatchEvent({ type: 'change' });
       assert.strictEqual(q.totals.by[0].hierarchy, true);
-      assert.strictEqual(selType.value, 'Hierarchy');
+      assert.strictEqual(q.totals.by[0].hierarchyType, 'OnlyHierarchy');
+      assert.strictEqual(q.totals.by[0].periods, false);
+
+      // The chosen type is shown again after the tab is re-rendered
+      env.window.renderTab9();
+      assert.strictEqual(env.elements.tbodyTotalsGroups.querySelector('select').value, 'OnlyHierarchy');
     });
 
     test('addTotalValueField applies Sum for numeric and Count(Distinct) for non-numeric', () => {
@@ -990,13 +1219,17 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       // For Catalog, conditions list should not have Проведен or Дата
       const condList = env.elements.conditionsFieldsList;
       assert.ok(condList);
-      const condTexts = condList.children.map((c: any) => c.textContent || '');
-      assert.ok(condTexts.some((t: string) => t.includes('Товары.Ссылка')));
-      assert.ok(!condTexts.some((t: string) => t.includes('Товары.Проведен')), 'Catalog should NOT contain Проведен');
+      // The list is a tree of the query's tables: the fields appear when the table is unfolded
+      condList.querySelectorAll('.table-node')[0].dispatchEvent({ type: 'dblclick' });
+      const condTexts = condList.querySelectorAll('.field-node').map((c: any) => c.textContent || '');
+      assert.ok(condTexts.some((t: string) => t.startsWith('Ссылка')));
+      assert.ok(!condTexts.some((t: string) => t.includes('Проведен')), 'Catalog should NOT contain Проведен');
 
       env.window.renderTab7();
       const orderTree = env.elements.orderAllFieldsTree;
       assert.ok(orderTree);
+      // Fields show only after the table node of the tree is unfolded
+      orderTree.querySelectorAll('.table-node')[0].dispatchEvent({ type: 'dblclick' });
       const orderRows = orderTree.querySelectorAll('.tree-row');
       const orderHtml = orderRows.map((c: any) => c.innerHTML || c.textContent || '').join(' ');
       assert.ok(orderHtml.includes('Товары.Ссылка') || orderHtml.includes('Ссылка'));
@@ -1646,7 +1879,9 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       env1.elements.btnSave.click();
       const saveMsg1 = env1.sentMessages.find((m: any) => m.command === 'save');
       assert.strictEqual(saveMsg1.ast.queries[0].whereConditions.length, 1);
-      assert.strictEqual(saveMsg1.ast.queries[0].whereConditions[0].cmp, 'НЕ МЕЖДУ');
+      // The negation is kept in the row's НЕ checkbox (op ends with НЕ), the comparison stays МЕЖДУ
+      assert.strictEqual(saveMsg1.ast.queries[0].whereConditions[0].cmp, 'МЕЖДУ');
+      assert.strictEqual(saveMsg1.ast.queries[0].whereConditions[0].op, 'И НЕ');
       assert.strictEqual(saveMsg1.ast.queries[0].whereConditions[0].value, '1 И 10');
 
       // 2. English BETWEEN ... AND ... AND ...
@@ -1660,7 +1895,8 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       const saveMsg2 = env2.sentMessages.find((m: any) => m.command === 'save');
       assert.strictEqual(saveMsg2.ast.queries[0].whereConditions.length, 2);
       assert.strictEqual(saveMsg2.ast.queries[0].whereConditions[0].field, 'Т.Число');
-      assert.strictEqual(saveMsg2.ast.queries[0].whereConditions[0].value, '1 AND 10');
+      // The bounds of an English BETWEEN are shown joined by the Russian И, as for МЕЖДУ
+      assert.strictEqual(saveMsg2.ast.queries[0].whereConditions[0].value, '1 И 10');
       assert.strictEqual(saveMsg2.ast.queries[0].whereConditions[1].field, 'Т.Статус');
       assert.strictEqual(saveMsg2.ast.queries[0].whereConditions[1].value, '1');
 
@@ -1687,7 +1923,8 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       env4.elements.btnSave.click();
       const saveMsg4 = env4.sentMessages.find((m: any) => m.command === 'save');
       assert.strictEqual(saveMsg4.ast.queries[0].whereConditions.length, 2);
-      assert.strictEqual(saveMsg4.ast.queries[0].whereConditions[0].value, '(1 + 2) И (10 * 2)');
+      // Bounds come from the parsed AST: parentheses that do not change the meaning are not kept
+      assert.strictEqual(saveMsg4.ast.queries[0].whereConditions[0].value, '1 + 2 И 10 * 2');
       assert.strictEqual(saveMsg4.ast.queries[0].whereConditions[1].op, 'ИЛИ');
     });
 
@@ -1917,23 +2154,10 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       });
 
       env.window.renderTab2();
-      env.elements.btnAddJoin.click();
-
-      const tr = env.elements.tbodyJoins.children[0];
-      const selT1 = tr.children[0].querySelector('select');
-      const selType = tr.children[1].querySelector('select');
-      const selT2 = tr.children[2].querySelector('select');
-      const inputOn = tr.children[3].querySelector('input');
-
-      // Select T1 = 'b', Type = 'Left', T2 = 'c', ON = 'b.id = c.bid'
-      selT1.value = 'b';
-      selT1.dispatchEvent({ type: 'change' });
-      selType.value = 'Left';
-      selType.dispatchEvent({ type: 'change' });
-      selT2.value = 'c';
-      selT2.dispatchEvent({ type: 'change' });
-      inputOn.value = 'b.id = c.bid';
-      inputOn.dispatchEvent({ type: 'change' });
+      // Select T1 = 'b' and T2 = 'c' in the draft row, then Type = 'Left', ON = 'b.id = c.bid'
+      addJoinViaDraft(env, 'b', 'c');
+      assert.strictEqual(env.elements.tbodyJoins.children.length, 1, 'The draft row is replaced by the join');
+      setJoinTypeAndCondition(env, 0, 'Left', 'b.id = c.bid');
 
       env.elements.btnSave.click();
       const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
@@ -2000,28 +2224,13 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
 
       env.window.renderTab2();
       // Join 1: A Left B
-      env.elements.btnAddJoin.click();
-      const tr1 = env.elements.tbodyJoins.children[0];
-      tr1.children[0].querySelector('select').value = 'a';
-      tr1.children[0].querySelector('select').dispatchEvent({ type: 'change' });
-      tr1.children[1].querySelector('select').value = 'Left';
-      tr1.children[1].querySelector('select').dispatchEvent({ type: 'change' });
-      tr1.children[2].querySelector('select').value = 'b';
-      tr1.children[2].querySelector('select').dispatchEvent({ type: 'change' });
-      tr1.children[3].querySelector('input').value = 'a.id = b.aid';
-      tr1.children[3].querySelector('input').dispatchEvent({ type: 'change' });
+      addJoinViaDraft(env, 'a', 'b');
+      setJoinTypeAndCondition(env, 0, 'Left', 'a.id = b.aid');
 
-      // Join 2: C Left D
-      env.elements.btnAddJoin.click();
-      const tr2 = env.elements.tbodyJoins.children[1];
-      tr2.children[0].querySelector('select').value = 'c';
-      tr2.children[0].querySelector('select').dispatchEvent({ type: 'change' });
-      tr2.children[1].querySelector('select').value = 'Left';
-      tr2.children[1].querySelector('select').dispatchEvent({ type: 'change' });
-      tr2.children[2].querySelector('select').value = 'd';
-      tr2.children[2].querySelector('select').dispatchEvent({ type: 'change' });
-      tr2.children[3].querySelector('input').value = 'c.id = d.cid';
-      tr2.children[3].querySelector('input').dispatchEvent({ type: 'change' });
+      // Join 2: C Left D (its row follows the first one)
+      addJoinViaDraft(env, 'c', 'd');
+      assert.strictEqual(env.elements.tbodyJoins.children.length, 2);
+      setJoinTypeAndCondition(env, 1, 'Left', 'c.id = d.cid');
 
       env.elements.btnSave.click();
       const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
@@ -2039,4 +2248,3 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
     });
   });
 });
-

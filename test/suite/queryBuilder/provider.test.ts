@@ -349,6 +349,56 @@ suite('QueryBuilder Provider & Message Handler', () => {
       assert.strictEqual(replacedRange?.end.character, 5);
     });
 
+    suite('OK without an edit', () => {
+      const opened = (): QueryPackage => ({
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Ссылка' } }],
+            from: [{ source: { type: 'Table', name: 'Справочник.Номенклатура' } }],
+          },
+        ],
+      });
+      const run = async (message: Record<string, unknown>): Promise<{ disposed: boolean; replaced?: string }> => {
+        const mock = createMockPanel();
+        let replaced: string | undefined;
+        const editor = createMockEditor('"ВЫБРАТЬ Ссылка ИЗ Справочник.Номенклатура"', (_range, text) => {
+          replaced = text;
+        });
+        const context: QueryBuilderMessageContext = {
+          panel: mock.panel,
+          editor,
+          ast: opened(),
+          initialAst: opened(),
+          metadata: [],
+          mode: 'simple',
+          replaceRange: { startOffset: 0, endOffset: 5, startLine: 1, startColumn: 1, endLine: 1, endColumn: 6 },
+        };
+        await handleQueryBuilderMessage({ command: 'save', ...message }, context);
+        return { disposed: mock.isDisposed(), replaced };
+      };
+
+      test('leaves the source text untouched and closes the builder', async () => {
+        const result = await run({ ast: opened(), edited: false });
+        assert.strictEqual(result.disposed, true);
+        assert.strictEqual(result.replaced, undefined);
+      });
+
+      test('refuses to save a query the page changed by itself', async () => {
+        const changed = opened();
+        (changed.queries[0] as { distinct?: boolean }).distinct = true;
+        const result = await run({ ast: changed, edited: false });
+        assert.strictEqual(result.disposed, false);
+        assert.strictEqual(result.replaced, undefined);
+      });
+
+      test('an edit with the same meaning still lays the text out anew', async () => {
+        const result = await run({ ast: opened(), edited: true });
+        assert.strictEqual(result.disposed, true);
+        assert.ok(result.replaced && result.replaced.includes('ВЫБРАТЬ'));
+      });
+    });
+
     test('saves withProcessing mode query: generates full execution boilerplate with parameters', async () => {
       const mock = createMockPanel();
       let replacedText: string | undefined;
@@ -1576,6 +1626,55 @@ suite('QueryBuilder Provider & Message Handler', () => {
       assert.strictEqual(initMsg.command, 'init');
       assert.strictEqual(initMsg.ast.queries.length, 1);
       assert.strictEqual(initMsg.ast.queries[0].fields[0].alias, 'Товар');
+    });
+
+    test('an unchanged query opened from an editor keeps its initial AST and skips rewriting the source', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const sdblText = [
+        '// Комментарий запроса',
+        'ВЫБРАТЬ Товар.Ссылка КАК Ссылка',
+        'ИЗ Справочник.Номенклатура КАК Товар',
+      ].join('\n');
+      let editCount = 0;
+      const editor = createMockEditor(
+        sdblText,
+        () => { editCount++; },
+        { languageId: 'sdbl', fileName: 'test.sdbl' }
+      );
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'simple');
+
+      mockPanel.simulateMessage({ command: 'ready' });
+      const initialAst = mockPanel.postedMessages[0]?.ast;
+      assert.ok(initialAst, 'the editor path should initialize the webview AST');
+      mockPanel.simulateMessage({ command: 'save', ast: initialAst, edited: false });
+
+      assert.strictEqual(editCount, 0, 'a no-op Save must not rewrite the source document');
+      assert.strictEqual(editor.getFullText(), sdblText);
+      assert.strictEqual(mockPanel.isDisposed(), true, 'a no-op Save should close the panel');
+    });
+
+    test('openText saves SDBL without requiring an editor', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+      (vscode.window as any).activeTextEditor = undefined;
+
+      const sdblText = 'ВЫБРАТЬ Товар.Ссылка КАК Ссылка ИЗ Справочник.Номенклатура КАК Товар';
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const savePromise = provider.openText(sdblText);
+
+      mockPanel.simulateMessage({ command: 'ready' });
+      const initialAst = mockPanel.postedMessages[0]?.ast;
+      assert.ok(initialAst, 'openText should initialize the webview AST');
+      mockPanel.simulateMessage({ command: 'save', ast: initialAst, edited: true });
+
+      const savedText = await savePromise;
+      assert.match(savedText ?? '', /ВЫБРАТЬ\s+Товар\.Ссылка/);
+      assert.ok(savedText?.includes('Справочник.Номенклатура'));
+      assert.strictEqual(mockPanel.isDisposed(), true);
+      assert.strictEqual(errorMessage, undefined);
     });
 
     test('re-opening panel disposes previous message subscription and prevents duplicate message handling', async () => {

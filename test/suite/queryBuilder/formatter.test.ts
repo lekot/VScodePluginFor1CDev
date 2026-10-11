@@ -824,6 +824,8 @@ suite('SDBL Formatter & BSL Serializer', () => {
       assert.strictEqual(formatSdbl(pkg), expected);
     });
 
+    // An OR item is a whole conjunction on its line: «A И B» under ИЛИ would
+    // otherwise read as if И applied to the whole OR list.
     test('formats WHERE with chained AND and OR conditions', () => {
       const pkg: QueryPackage = {
         queries: [
@@ -867,8 +869,7 @@ suite('SDBL Formatter & BSL Serializer', () => {
         'ИЗ',
         '\tТаблица',
         'ГДЕ',
-        '\tA = 1',
-        '\tИ B = 2',
+        '\tA = 1 И B = 2',
         '\tИЛИ C = 3',
       ].join('\n');
 

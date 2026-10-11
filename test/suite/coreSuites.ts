@@ -302,6 +302,7 @@ export const coreSuiteFiles: string[] = [
   'suite/queryBuilder/provider.test.js',
   'suite/queryBuilder/astVisitor.test.js',
   'suite/queryBuilder/astVisitorParity.test.js',
+  'suite/queryBuilder/sdblRoundTrip.test.js',
   'suite/chartOfAccountsWizardService.test.js',
   'suite/chartOfAccountsWizard.test.js',
   'suite/chartOfAccountsIbcmdImport.test.js',

@@ -85,7 +85,7 @@ export function cleanBslLiteral(rawLiteral: string): string {
   }
 
   const lines = text.split(/\r?\n/);
-  const cleanedLines = lines.map((line) => line.replace(/^[ \t]*\|/, ''));
+  const cleanedLines = lines.map((line, index) => index > 0 && /^[ \t]*\/\//.test(line) ? '' : line.replace(/^[ \t]*\|/, ''));
   return cleanedLines.join('\n').replace(/""/g, '"');
 }
 
@@ -137,8 +137,18 @@ export function findBslLiterals(text: string): BslLiteralSpan[] {
             temp++;
           }
 
-          if (temp < len && text[temp] === '|') {
+          if (text[temp] === '\r' || text[temp] === '\n') {
+            // Empty physical BSL lines may separate continuation lines.
+            i = temp;
+          } else if (text[temp] === '/' && text[temp + 1] === '/') {
+            i = temp + 2;
+            while (i < len && text[i] !== '\r' && text[i] !== '\n') {i++;}
+          } else if (temp < len && text[temp] === '|') {
             i = temp + 1; // move past '|'
+          } else if (temp < len && text[temp] === '"' && text[temp + 1] !== '"') {
+            // A multiline query may put its closing quote on a separate line.
+            i = temp + 1;
+            break;
           } else {
             // Unclosed string literal terminated at newline
             break;
@@ -260,18 +270,29 @@ export function findStatementRange(
     const varName = (assignMatch[2] || assignMatch[3] || '').trim();
 
     // Check if `varName = Новый Запрос;` (or New Query;) immediately precedes this assignment
+    // Walk back line by line over blank and comment lines. A single regular
+    // expression over the whole prefix backtracked catastrophically on long
+    // modules indented with tabs and froze the editor.
     if (varName) {
-      const beforeAssign = documentText.slice(0, startOffset);
-      const prevConstructorRegex = new RegExp(
-        `(?:^|\\r?\\n)[ \\t]*(${escapeRegExp(varName)}\\s*=\\s*(?:Новый\\s+Запрос|New\\s+Query)\\s*;)(?:[ \\t]*(?:\\/\\/[^\\r\\n]*)?\\r?\\n[ \\t]*)*$`,
+      const constructorLine = new RegExp(
+        `^[ \\t]*(${escapeRegExp(varName)}\\s*=\\s*(?:Новый\\s+Запрос|New\\s+Query)\\s*;)[ \\t]*(?:\\/\\/[^\\r\\n]*)?$`,
         'iu'
       );
-      const prevMatch = beforeAssign.match(prevConstructorRegex);
-      if (prevMatch && prevMatch.index !== undefined) {
-        const prevInitIdx = beforeAssign.lastIndexOf(prevMatch[1]);
-        if (prevInitIdx !== -1) {
-          startOffset = prevInitIdx;
+      let lineEnd = startOffset;
+      // The assignment starts its own line: skip back over its indentation.
+      while (lineEnd > 0 && (documentText[lineEnd - 1] === ' ' || documentText[lineEnd - 1] === '\t')) {lineEnd--;}
+      while (lineEnd > 0 && (documentText[lineEnd - 1] === '\n' || documentText[lineEnd - 1] === '\r')) {
+        if (documentText[lineEnd - 1] === '\n') {lineEnd--;}
+        if (lineEnd > 0 && documentText[lineEnd - 1] === '\r') {lineEnd--;}
+        const lineStart = documentText.lastIndexOf('\n', lineEnd - 1) + 1;
+        const line = documentText.slice(lineStart, lineEnd);
+        const constructor = constructorLine.exec(line);
+        if (constructor) {
+          startOffset = lineStart + line.indexOf(constructor[1]);
+          break;
         }
+        if (!/^[ \t]*(?:\/\/.*)?$/.test(line)) {break;}
+        lineEnd = lineStart;
       }
     }
 

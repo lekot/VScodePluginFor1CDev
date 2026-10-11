@@ -37,6 +37,17 @@ export function traverseExpression(expr: ExpressionNode, visitor: ExpressionVisi
   visitor.enter?.(expr);
 
   switch (expr.type) {
+    case 'Tuple':
+      expr.items.forEach(x => traverseExpression(x, visitor));
+      break;
+    case 'TableProjection':
+      expr.fields.forEach(f => { if (typeof f.expression !== 'string') {traverseExpression(f.expression, visitor);} });
+      traverseExpression(expr.expression, visitor);
+      break;
+    case 'AnnotatedExpression':
+    case 'MemberAccess':
+      traverseExpression(expr.expression, visitor);
+      break;
     case 'Identifier':
     case 'CompoundIdentifier':
     case 'Literal':
@@ -161,6 +172,13 @@ export function transformExpression(
   const current = custom !== undefined ? custom : expr;
 
   switch (current.type) {
+    case 'Tuple':
+      return { ...current, items: current.items.map(x => transformExpression(x, transformer)) };
+    case 'TableProjection':
+      return { ...current, expression: transformExpression(current.expression, transformer), fields: current.fields.map(f => ({ ...f, expression: typeof f.expression === 'string' ? f.expression : transformExpression(f.expression, transformer) })) };
+    case 'AnnotatedExpression':
+    case 'MemberAccess':
+      return { ...current, expression: transformExpression(current.expression, transformer) };
     case 'Identifier':
     case 'CompoundIdentifier':
     case 'Literal':
@@ -414,7 +432,11 @@ export function traverseTableSource(
   if (!source) {
     return;
   }
-  if (source.type === 'Table' && source.params) {
+  if (source.type === 'JoinedTable') {
+    traverseSelectStatement({ type: 'Select', fields: [], from: source.clauses }, visitor);
+  } else if (source.type === 'Table' && source.name.startsWith('&')) {
+    visitor.enter?.({ type: 'Parameter', name: source.name.slice(1) });
+  } else if (source.type === 'Table' && source.params) {
     for (const param of source.params) {
       traverseExpression(param, visitor);
     }
@@ -435,6 +457,8 @@ export function traverseSelectStatement(
     return;
   }
 
+  if (typeof stmt.top === 'string' && stmt.top.startsWith('&')) {visitor.enter?.({ type: 'Parameter', name: stmt.top.slice(1) });}
+  stmt.extensions?.forEach(x => visitor.enter?.({ type: 'RawExpression', raw: x.raw }));
   stmt.fields?.forEach((f) => {
     if (typeof f.expression === 'string') {
       visitor.enter?.({ type: 'RawExpression', raw: f.expression });
@@ -643,6 +667,8 @@ interface RawJoinEntry {
 }
 
 export function normalizeFromClauses(from?: FromClause[]): FromClause[] {
+  // Explicit nested joins have their own associativity; do not flatten that tree into a graph.
+  if (from?.some(c => c.source.type === 'JoinedTable' || c.joins?.some(j => j.source.type === 'JoinedTable' || j.optional))) {return from;}
   if (!from || !Array.isArray(from) || from.length === 0) {
     return [];
   }
@@ -917,4 +943,11 @@ function normalizeSingleFromClause(fc: FromClause): FromClause {
     alias: root.alias,
     joins: newJoins,
   };
+}
+
+/** Field-list placeholders may expand to several columns at runtime. */
+export function hasRuntimeColumns(stmt: SelectStatement): boolean {
+  return stmt.fields.some(f => typeof f.expression === 'string'
+    ? /^%[\p{L}\p{N}_]+%?$/u.test(f.expression.trim())
+    : f.expression.type === 'RawExpression' && /^%[\p{L}\p{N}_]+%?$/u.test(f.expression.raw.trim()));
 }
