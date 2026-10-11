@@ -36,6 +36,7 @@ import {
 } from '../services/configurationSession/mutationPlan';
 import { planCreateFilterCriterion } from '../services/filterCriterionWizardService';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
+import { getIdentitySensitiveMetadataPropertyNames } from '../domain/metadataPropertyClassifier';
 
 /** Types whose templates include default ChildObjects (Dimension+Resource); rules engine cannot generate those yet. */
 const TEMPLATE_ONLY_TYPES = new Set(['InformationRegister', 'AccumulationRegister']);
@@ -1296,6 +1297,10 @@ export class AgentOperations {
 
     async setProperties(params: SetPropertiesParams): Promise<AgentResult<MutationResultData>> {
         try {
+            if (getIdentitySensitiveMetadataPropertyNames(params.properties).length > 0) {
+                return { success: false, error: 'Нельзя менять Name через setProperties. Используйте renameObject.' };
+            }
+
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath } = resolved;
             await assertCfeGenericMutationAllowed(filePath, 'update');
@@ -1307,10 +1312,6 @@ export class AgentOperations {
             }
 
             await this.validateExternalDataSourcePath(resolved);
-
-            if ('Name' in params.properties) {
-                return { success: false, error: 'Нельзя менять Name через setProperties. Используйте renameObject.' };
-            }
 
             return await this.withTargetMutationLock(filePath, async () => {
                 const check = await this.checkMutationPreconditions(filePath, params.path, params);

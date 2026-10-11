@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpToolDefinition } from './types';
 import { READ_CLOSED, WRITE_CLOSED } from './types';
+import { getIdentitySensitiveMetadataPropertyNames } from '../../../domain/metadataPropertyClassifier';
 import {
   agentPath,
   attributePath,
@@ -60,7 +61,7 @@ const setPropertiesInput = z.strictObject({
   ...mutationOptionsShape,
   path: agentPath,
   properties: z.record(z.string(), z.unknown()).refine(
-    (properties) => !Object.prototype.hasOwnProperty.call(properties, 'Name'),
+    (properties) => getIdentitySensitiveMetadataPropertyNames(properties).length === 0,
     { message: 'Name cannot be changed through setProperties' },
   ),
 });

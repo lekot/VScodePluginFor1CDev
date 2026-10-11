@@ -354,6 +354,8 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'tabular section path has wrong marker', tool: 'cdt_add_tabular_section_column', input: { path: 'Catalog.Goods.Attribute.Items', name: 'Quantity' } },
   { label: 'tabular section path has six segments', tool: 'cdt_delete_tabular_section', input: { path: 'Catalog.Goods.TabularSection.Items.Attribute.Quantity' } },
   { label: 'setProperties cannot rename through Name', tool: 'cdt_set_properties', input: { path: 'Catalog.Goods', properties: { Name: 'Products' } } },
+  { label: 'setProperties cannot rename through lowercase name alias', tool: 'cdt_set_properties', input: { path: 'Catalog.Goods', properties: { name: 'Products' } } },
+  { label: 'setProperties cannot rename through Russian name alias', tool: 'cdt_set_properties', input: { path: 'Catalog.Goods', properties: { Имя: 'Products' } } },
   { label: 'setType rejects unsupported primitive type', tool: 'cdt_set_type', input: { path: 'Catalog.Goods.Attribute.Code', types: ['xs:integer'] } },
   { label: 'setType rejects incomplete cfg reference', tool: 'cdt_set_type', input: { path: 'Catalog.Goods.Attribute.Code', types: ['cfg:CatalogRef'] } },
   { label: 'event subscription source rejects nested path', tool: 'cdt_get_event_subscription_source', input: { path: 'EventSubscription.OnWrite.Attribute.Source' } },

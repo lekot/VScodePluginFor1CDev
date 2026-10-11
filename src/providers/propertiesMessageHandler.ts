@@ -14,6 +14,11 @@ import type { WebviewMessage, ExtensionMessage } from './propertiesWebviewTypes'
 import { CONTENT_EDITOR_COMMANDS } from './propertiesWebviewContent';
 import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
 import { assertCfeGenericMutationAllowed } from '../extensionSupport/cfeProject/mutationPolicy';
+import { isContainerNode } from '../utils/treeNormalization';
+import {
+  getIdentitySensitiveMetadataPropertyNames,
+  IDENTITY_PROPERTY_EDIT_ERROR,
+} from '../domain/metadataPropertyClassifier';
 
 /**
  * Context passed to all message handlers — replaces class `this`.
@@ -104,6 +109,10 @@ export async function handleMessage(
       case 'editContent':
         Logger.info(`editContent message received from webview: nodeType=${message.nodeType}`);
         await handleEditContentMessage(message, ctx);
+        break;
+
+      case 'renameElement':
+        await handleRenameElementMessage(ctx);
         break;
 
       case 'propertyChanged':
@@ -614,6 +623,17 @@ export async function handleEditContentMessage(
   await vscode.commands.executeCommand(command, ctx.currentNode);
 }
 
+/** Delegate identity changes to the already registered element rename command. */
+export async function handleRenameElementMessage(ctx: MessageHandlerContext): Promise<void> {
+  if (!ctx.currentNode
+    || ctx.currentNode.type === MetadataType.Configuration
+    || isContainerNode(ctx.currentNode)
+    || !(ctx.currentNode.parentFilePath || ctx.currentNode.filePath)) {
+    return;
+  }
+  await vscode.commands.executeCommand('1c-metadata-tree.renameElement', ctx.currentNode);
+}
+
 // ---------------------------------------------------------------------------
 // Save helpers
 // ---------------------------------------------------------------------------
@@ -626,6 +646,10 @@ export async function saveProperties(
   properties: Record<string, unknown>,
   ctx: MessageHandlerContext
 ): Promise<void> {
+  if (getIdentitySensitiveMetadataPropertyNames(properties).length > 0) {
+    throw new Error(IDENTITY_PROPERTY_EDIT_ERROR);
+  }
+
   // Use parentFilePath for nested elements (Attributes), filePath for regular elements
   const targetFilePath = node.parentFilePath || node.filePath;
 
@@ -770,7 +794,7 @@ export async function saveProperties(
     setTimeout(() => { ctx.setIsSaving(false); }, 600);
 
     // Update TreeNode.properties with new values after successful save
-    node.properties = { ...properties };
+    node.properties = { ...(node.properties ?? {}), ...properties };
 
     // Refresh tree view to reflect changes
     ctx.treeDataProvider.refresh();

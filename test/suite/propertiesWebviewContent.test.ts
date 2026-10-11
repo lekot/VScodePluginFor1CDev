@@ -227,17 +227,18 @@ suite('propertiesWebviewContent — renderPropertyInput', () => {
   });
 
   test('returns a string for a simple string property', () => {
-    const html = renderPropertyInput('name', 'TestValue', false, attrNode);
+    const html = renderPropertyInput('description', 'TestValue', false, attrNode);
     assert.ok(typeof html === 'string' && html.length > 0);
   });
 
   test('string property renders text input', () => {
-    const html = renderPropertyInput('name', 'TestValue', false, attrNode);
+    const html = renderPropertyInput('description', 'TestValue', false, attrNode);
     assert.ok(html.includes('type="text"'));
+    assert.ok(!html.includes('disabled'));
   });
 
   test('string value is included in output', () => {
-    const html = renderPropertyInput('name', 'TestValue', false, attrNode);
+    const html = renderPropertyInput('description', 'TestValue', false, attrNode);
     assert.ok(html.includes('TestValue'));
   });
 
@@ -274,7 +275,7 @@ suite('propertiesWebviewContent — renderPropertyInput', () => {
   });
 
   test('globalReadOnly=true disables the input', () => {
-    const html = renderPropertyInput('name', 'val', true, attrNode);
+    const html = renderPropertyInput('myProp', 'val', true, attrNode);
     assert.ok(html.includes('disabled'));
   });
 
@@ -341,7 +342,7 @@ suite('propertiesWebviewContent — renderPropertyInput', () => {
   });
 
   test('special chars in string value are HTML-escaped', () => {
-    const html = renderPropertyInput('name', '<script>xss</script>', false, attrNode);
+    const html = renderPropertyInput('description', '<script>xss</script>', false, attrNode);
     assert.ok(!html.includes('<script>'));
     assert.ok(html.includes('&lt;script&gt;'));
   });
@@ -354,12 +355,12 @@ suite('propertiesWebviewContent — renderPropertyInput', () => {
   });
 
   test('property-row class is present in output', () => {
-    const html = renderPropertyInput('name', 'val', false, attrNode);
+    const html = renderPropertyInput('description', 'val', false, attrNode);
     assert.ok(html.includes('class="property-row"'));
   });
 
   test('property-label class is present in output', () => {
-    const html = renderPropertyInput('name', 'val', false, attrNode);
+    const html = renderPropertyInput('description', 'val', false, attrNode);
     assert.ok(html.includes('class="property-label"'));
   });
 });
