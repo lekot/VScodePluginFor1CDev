@@ -274,6 +274,57 @@ suite('predefinedCharacteristicOperations: semantic address boundary and cross-t
     assert.strictEqual(contentAfter, contentBefore, 'Predefined.xml must not be modified when target is Catalog.Shared');
   });
 
+  test('setter rejects forged COT targets that escape or disagree with the selected configuration', async () => {
+    const selectedRoot = path.join(tmpDir, 'selected-config');
+    const outsideRoot = path.join(tmpDir, 'other-config');
+    setupCotWorkspace(selectedRoot, COT_NAME, SAMPLE_PREDEFINED_XML);
+    setupCotWorkspace(outsideRoot, COT_NAME, SAMPLE_PREDEFINED_XML);
+
+    const selectedPredefinedPath = path.join(
+      selectedRoot,
+      'ChartsOfCharacteristicTypes',
+      COT_NAME,
+      'Ext',
+      'Predefined.xml',
+    );
+    const outsidePredefinedPath = path.join(
+      outsideRoot,
+      'ChartsOfCharacteristicTypes',
+      COT_NAME,
+      'Ext',
+      'Predefined.xml',
+    );
+    const selectedBefore = await fs.promises.readFile(selectedPredefinedPath, 'utf-8');
+    const outsideBefore = await fs.promises.readFile(outsidePredefinedPath, 'utf-8');
+    const forgedTargets = [
+      {
+        configRoot: selectedRoot,
+        cotName: COT_NAME,
+        cotDir: path.dirname(path.dirname(outsidePredefinedPath)),
+      },
+      {
+        configRoot: outsideRoot,
+        cotName: COT_NAME,
+        cotDir: path.dirname(path.dirname(selectedPredefinedPath)),
+      },
+    ];
+
+    for (const target of forgedTargets) {
+      await assert.rejects(
+        async () => setPredefinedCharacteristicType(
+          selectedRoot,
+          target,
+          'Номенклатура',
+          ['xs:string'],
+        ),
+        (err: unknown) => err instanceof AgentPathError && err.code === 'INVALID_AGENT_PATH',
+        'Setter must reject a cotDir or configRoot outside the selected configuration',
+      );
+      assert.strictEqual(await fs.promises.readFile(selectedPredefinedPath, 'utf-8'), selectedBefore);
+      assert.strictEqual(await fs.promises.readFile(outsidePredefinedPath, 'utf-8'), outsideBefore);
+    }
+  });
+
   test('read operations reject Catalog.Shared with INVALID_AGENT_PATH', async () => {
     await assert.rejects(
       async () => listPredefinedCharacteristics(tmpDir, 'Catalog.Shared'),

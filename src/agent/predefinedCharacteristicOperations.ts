@@ -14,6 +14,7 @@ import { AgentPathError } from './agentPathResolver';
 import type { ResolvedAgentPath } from './types';
 import type { ResolvedSourceAddress } from './agentSourceAddressResolver';
 import { MetadataType } from '../models/treeNode';
+import { isPathInside, isSamePath } from '../services/configurationSession/pathBoundary';
 
 // Designer folder name for COT
 const COT_FOLDER = 'ChartsOfCharacteristicTypes';
@@ -74,7 +75,25 @@ export function resolveCotTarget(
 ): ResolvedCotTarget {
   if (typeof target === 'object' && target !== null) {
     if ('cotDir' in target && typeof target.cotDir === 'string') {
-      return target;
+      if (
+        !('configRoot' in target)
+        || typeof target.configRoot !== 'string'
+        || !isSamePath(target.configRoot, configRoot)
+        || !isValidCotName(target.cotName)
+      ) {
+        throw invalidCotTarget('COT target does not belong to the selected configuration.');
+      }
+      const expectedCotDir = path.resolve(configRoot, COT_FOLDER, target.cotName);
+      if (!isPathInside(configRoot, expectedCotDir) || !isSamePath(target.cotDir, expectedCotDir)) {
+        throw invalidCotTarget('COT directory is outside the selected configuration.');
+      }
+      return { configRoot, cotName: target.cotName, cotDir: expectedCotDir };
+    }
+    if (
+      'configRoot' in target
+      && (typeof target.configRoot !== 'string' || !isSamePath(target.configRoot, configRoot))
+    ) {
+      throw invalidCotTarget('COT target does not belong to the selected configuration.');
     }
     const resolvedPath = 'resolvedPath' in target ? target.resolvedPath : (target as ResolvedAgentPath);
     if (
@@ -87,7 +106,13 @@ export function resolveCotTarget(
       );
     }
     const cotName = resolvedPath.objectName;
-    const cotDir = path.join(configRoot, COT_FOLDER, cotName);
+    if (!isValidCotName(cotName)) {
+      throw invalidCotTarget('Invalid ChartOfCharacteristicTypes object name.');
+    }
+    const cotDir = path.resolve(configRoot, COT_FOLDER, cotName);
+    if (!isPathInside(configRoot, cotDir)) {
+      throw invalidCotTarget('COT directory is outside the selected configuration.');
+    }
     return { configRoot, cotName, cotDir };
   }
 
@@ -110,7 +135,13 @@ export function resolveCotTarget(
         `Expected ChartOfCharacteristicTypes path, got ${rootTag}.${cotName}`,
       );
     }
-    const cotDir = path.join(configRoot, COT_FOLDER, cotName);
+    if (!isValidCotName(cotName)) {
+      throw invalidCotTarget('Invalid ChartOfCharacteristicTypes object name.');
+    }
+    const cotDir = path.resolve(configRoot, COT_FOLDER, cotName);
+    if (!isPathInside(configRoot, cotDir)) {
+      throw invalidCotTarget('COT directory is outside the selected configuration.');
+    }
     return { configRoot, cotName, cotDir };
   }
 
@@ -118,6 +149,21 @@ export function resolveCotTarget(
     'INVALID_AGENT_PATH',
     `Invalid ChartOfCharacteristicTypes target: "${target}"`,
   );
+}
+
+function isValidCotName(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.trim() === value
+    && value !== '.'
+    && value !== '..'
+    && !value.includes('\0')
+    && !value.includes('/')
+    && !value.includes('\\');
+}
+
+function invalidCotTarget(message: string): AgentPathError {
+  return new AgentPathError('INVALID_AGENT_PATH', message);
 }
 
 

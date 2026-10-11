@@ -225,7 +225,7 @@ function toConfigurationContext(
     rootUri: identity.rootUri,
     workspaceFolderUri,
     format: identity.format,
-    capabilities: identity.capabilities,
+    capabilities: Object.freeze({ ...identity.capabilities }),
     descriptorUri: identity.descriptorUri,
     descriptorUuid: identity.descriptorUuid,
     session,
