@@ -14,7 +14,13 @@ import { AgentPathError } from './agentPathResolver';
 import type { ResolvedAgentPath } from './types';
 import type { ResolvedSourceAddress } from './agentSourceAddressResolver';
 import { MetadataType } from '../models/treeNode';
-import { isPathInside, isSamePath } from '../services/configurationSession/pathBoundary';
+import {
+  assertNoSymlinkSegments,
+  assertPathWithinRoot,
+  isPathInside,
+  isSamePath,
+  PathBoundaryError,
+} from '../services/configurationSession/pathBoundary';
 
 // Designer folder name for COT
 const COT_FOLDER = 'ChartsOfCharacteristicTypes';
@@ -171,10 +177,44 @@ function predefinedXmlPath(cotDir: string): string {
   return path.join(cotDir, 'Ext', 'Predefined.xml');
 }
 
+async function assertConfiguredPathHasNoSymlinks(
+  configRoot: string,
+  targetPath: string,
+): Promise<{ canonicalRoot: string; canonicalTarget: string }> {
+  try {
+    const boundary = await assertPathWithinRoot(configRoot, targetPath);
+    const relativeTarget = path.relative(path.resolve(configRoot), path.resolve(targetPath));
+    const canonicalLexicalTarget = path.resolve(boundary.canonicalRoot, relativeTarget);
+    await assertNoSymlinkSegments(boundary.canonicalRoot, canonicalLexicalTarget);
+    try {
+      const stat = await fs.promises.lstat(targetPath);
+      if (stat.isSymbolicLink()) {
+        throw new PathBoundaryError('PATH_OUTSIDE_ROOT', `Target is a symbolic link: ${targetPath}`, targetPath);
+      }
+    } catch (error) {
+      if (error instanceof PathBoundaryError) {
+        throw error;
+      }
+      if (!isMissingPathError(error)) {
+        throw error;
+      }
+    }
+    return boundary;
+  } catch (error) {
+    if (error instanceof PathBoundaryError) {
+      throw invalidCotTarget('Predefined.xml path is not a regular path inside the selected configuration.');
+    }
+    throw error;
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT');
+}
+
 // ─── Read helpers ────────────────────────────────────────────────────────────
 
-async function readPredefinedXml(cotDir: string): Promise<string | null> {
-  const xmlPath = predefinedXmlPath(cotDir);
+async function readPredefinedXml(xmlPath: string): Promise<string | null> {
   try {
     return await fs.promises.readFile(xmlPath, 'utf-8');
   } catch {
@@ -232,7 +272,10 @@ export async function listPredefinedCharacteristics(
   cotTarget: CotTargetLike
 ): Promise<PredefinedCharacteristicEntry[]> {
   const { cotDir } = resolveCotTarget(configRoot, cotTarget);
-  const xml = await readPredefinedXml(cotDir);
+  const boundary = await assertConfiguredPathHasNoSymlinks(configRoot, predefinedXmlPath(cotDir));
+  const xmlPath = boundary.canonicalTarget;
+  const xml = await readPredefinedXml(xmlPath);
+  await assertConfiguredPathHasNoSymlinks(configRoot, predefinedXmlPath(cotDir));
   if (!xml) {
     return [];
   }
@@ -266,7 +309,8 @@ export async function setPredefinedCharacteristicType(
   types: readonly string[]
 ): Promise<void> {
   const { cotDir } = resolveCotTarget(configRoot, cotTarget);
-  const xmlPath = predefinedXmlPath(cotDir);
+  const initialBoundary = await assertConfiguredPathHasNoSymlinks(configRoot, predefinedXmlPath(cotDir));
+  const xmlPath = initialBoundary.canonicalTarget;
   const originalContent = await fs.promises.readFile(xmlPath, 'utf-8');
   requireDocumentWriteFormatProfile(originalContent);
 
@@ -311,7 +355,26 @@ export async function setPredefinedCharacteristicType(
   targetItem['Type'] = buildTypeObject(types);
 
   const updated = buildXmlString(parsed);
-  await writeUtf8FileWithBackup(xmlPath, originalContent, updated);
+  const currentBoundary = await assertConfiguredPathHasNoSymlinks(configRoot, predefinedXmlPath(cotDir));
+  if (!isSamePath(xmlPath, currentBoundary.canonicalTarget)) {
+    throw invalidCotTarget('Predefined.xml target changed while the update was being prepared.');
+  }
+  await writeUtf8FileWithBackup(xmlPath, originalContent, updated, {
+    hooks: {
+      readFile: async (filePath, encoding) => {
+        await assertConfiguredPathHasNoSymlinks(initialBoundary.canonicalRoot, filePath);
+        return fs.promises.readFile(filePath, encoding);
+      },
+      writeFile: async (filePath, content, optionsOrEncoding) => {
+        await assertConfiguredPathHasNoSymlinks(initialBoundary.canonicalRoot, filePath);
+        return fs.promises.writeFile(filePath, content, optionsOrEncoding);
+      },
+      unlink: async (filePath) => {
+        await assertConfiguredPathHasNoSymlinks(initialBoundary.canonicalRoot, filePath);
+        return fs.promises.unlink(filePath);
+      },
+    },
+  });
   Logger.info(`setPredefinedCharacteristicType: updated "${predefinedName}" in ${xmlPath}`);
 }
 
