@@ -2,7 +2,7 @@ import { XMLValidator } from 'fast-xml-parser';
 import { getRoleRightByKey, getRoleRightByXmlName, ROLE_RIGHTS_REGISTRY } from './roleRightsRegistry';
 import type { ObjectRights, RightsMap } from './models/roleModel';
 
-const MD_CLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
+const MD_CLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses'; // NOSONAR: fixed 1C namespace name; HTTPS would be a different XML namespace.
 
 interface XmlNode {
   readonly name: string;
@@ -177,8 +177,8 @@ function walk(nodes: readonly XmlNode[], predicate: (node: XmlNode) => boolean):
 
 function decodeXmlText(value: string): string {
   return value
-    .replace(/&#x([\da-f]+);/gi, (_match, code: string) => String.fromCodePoint(parseInt(code, 16)))
-    .replace(/&#(\d+);/g, (_match, code: string) => String.fromCodePoint(parseInt(code, 10)))
+    .replace(/&#x([\da-f]+);/gi, (_match, code: string) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&#(\d+);/g, (_match, code: string) => String.fromCodePoint(Number.parseInt(code, 10)))
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
@@ -308,7 +308,10 @@ function insertionPatch(xml: string, parent: XmlNode, blocks: readonly string[])
 }
 
 function rightTag(parent: XmlNode, xmlName: string, value: boolean): string {
-  const prefix = preferredPrefix(parent);
+  return rightTagWithPrefix(preferredPrefix(parent), xmlName, value);
+}
+
+function rightTagWithPrefix(prefix: string, xmlName: string, value: boolean): string {
   const name = `${prefix}${xmlName}`;
   return `<${name}>${value ? 'true' : 'false'}</${name}>`;
 }
@@ -318,15 +321,32 @@ function objectBlock(
   objectName: string,
   changes: Readonly<Record<string, boolean>>,
 ): string {
-  const prefix = preferredPrefix(typeNode);
+  return objectBlockWithPrefix(preferredPrefix(typeNode), objectName, changes);
+}
+
+function objectBlockWithPrefix(
+  prefix: string,
+  objectName: string,
+  changes: Readonly<Record<string, boolean>>,
+): string {
   const objectTag = `${prefix}Object`;
   const nameTag = `${prefix}Name`;
   const rights = Object.entries(changes).map(([key, value]) => {
     const descriptor = getRoleRightByKey(key);
     if (!descriptor) {throw new Error(`Unrecognized 1C role right key: ${key}`);}
-    return rightTag(typeNode, descriptor.xmlName, value);
+    return rightTagWithPrefix(prefix, descriptor.xmlName, value);
   }).join('');
   return `<${objectTag}><${nameTag}>${xmlEscape(objectName)}</${nameTag}>${rights}</${objectTag}>`;
+}
+
+function metadataTypeBlock(
+  prefix: string,
+  typeName: string,
+  objects: readonly { name: string; changes: Readonly<Record<string, boolean>> }[],
+): string {
+  const typeTag = `${prefix}${typeName}`;
+  const objectXml = objects.map(({ name, changes }) => objectBlockWithPrefix(prefix, name, changes)).join('');
+  return `<${typeTag}>${objectXml}</${typeTag}>`;
 }
 
 function applyPatches(xml: string, patches: readonly XmlPatch[]): string {
@@ -414,11 +434,14 @@ export function mergeDesignerRoleRightsXml(sourceXml: string, changes: DesignerR
       if (inner.includes('<')) {
         throw new Error(`Cannot update complex Designer right element ${existing.name} without losing nested XML.`);
       }
-      const whitespace = /^(\s*)([\s\S]*?)(\s*)$/.exec(inner);
+      let contentStart = 0;
+      while (contentStart < inner.length && /\s/.test(inner[contentStart]!)) {contentStart++;}
+      let contentEnd = inner.length;
+      while (contentEnd > contentStart && /\s/.test(inner[contentEnd - 1]!)) {contentEnd--;}
       patches.push({
         start: existing.openEnd,
         end: existing.closeStart,
-        replacement: `${whitespace?.[1] ?? ''}${value ? 'true' : 'false'}${whitespace?.[3] ?? ''}`,
+        replacement: `${inner.slice(0, contentStart)}${value ? 'true' : 'false'}${inner.slice(contentEnd)}`,
       });
     }
     if (additions.length > 0) {patches.push(insertionPatch(sourceXml, objectNode, additions));}
@@ -428,20 +451,9 @@ export function mergeDesignerRoleRightsXml(sourceXml: string, changes: DesignerR
     if (!rights) {
       const prefix = prefixOf(role.name);
       const rightsName = `${prefix}Rights`;
-      const typeBlocks = [...pendingByType.entries()].map(([typeName, objects]) => {
-        const typeTag = `${prefix}${typeName}`;
-        const objectXml = objects.map(({ name, changes: objectChanges }) => {
-          const objectTag = `${prefix}Object`;
-          const nameTag = `${prefix}Name`;
-          const rightsXml = Object.entries(objectChanges).map(([key, value]) => {
-            const descriptor = getRoleRightByKey(key)!;
-            const rightName = `${prefix}${descriptor.xmlName}`;
-            return `<${rightName}>${value ? 'true' : 'false'}</${rightName}>`;
-          }).join('');
-          return `<${objectTag}><${nameTag}>${xmlEscape(name)}</${nameTag}>${rightsXml}</${objectTag}>`;
-        }).join('');
-        return `<${typeTag}>${objectXml}</${typeTag}>`;
-      }).join('');
+      const typeBlocks = [...pendingByType.entries()]
+        .map(([typeName, objects]) => metadataTypeBlock(prefix, typeName, objects))
+        .join('');
       patches.push(insertionPatch(sourceXml, role, [`<${rightsName}>${typeBlocks}</${rightsName}>`]));
     } else {
       const typeBlocks = [...pendingByType.entries()].map(([typeName, objects]) => {
@@ -452,18 +464,7 @@ export function mergeDesignerRoleRightsXml(sourceXml: string, changes: DesignerR
           return undefined;
         }
         const prefix = preferredPrefix(rights);
-        const typeTag = `${prefix}${typeName}`;
-        const objectXml = objects.map(({ name, changes: objectChanges }) => {
-          const objectTag = `${prefix}Object`;
-          const nameTag = `${prefix}Name`;
-          const rightsXml = Object.entries(objectChanges).map(([key, value]) => {
-            const descriptor = getRoleRightByKey(key)!;
-            const rightName = `${prefix}${descriptor.xmlName}`;
-            return `<${rightName}>${value ? 'true' : 'false'}</${rightName}>`;
-          }).join('');
-          return `<${objectTag}><${nameTag}>${xmlEscape(name)}</${nameTag}>${rightsXml}</${objectTag}>`;
-        }).join('');
-        return `<${typeTag}>${objectXml}</${typeTag}>`;
+        return metadataTypeBlock(prefix, typeName, objects);
       }).filter((block): block is string => block !== undefined);
       if (typeBlocks.length > 0) {patches.push(insertionPatch(sourceXml, rights, typeBlocks));}
     }

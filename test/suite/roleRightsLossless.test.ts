@@ -218,6 +218,25 @@ suite('role rights lossless domain model (#262)', () => {
     }
   });
 
+  test('uses the same metadata block serializer for new types with and without a Rights section', () => {
+    const sources = [
+      '<Role xmlns="http://v8.1c.ru/8.3/MDClasses"><Rights><Catalog><Object><Name>Products</Name><Read>true</Read></Object></Catalog></Rights></Role>',
+      '<Role xmlns="http://v8.1c.ru/8.3/MDClasses"><Properties><Name>Power</Name></Properties></Role>',
+    ];
+
+    for (const sourceXml of sources) {
+      const output = mergeDesignerRoleRightsXml(sourceXml, {
+        'Document.Sale & Return': { posting: true },
+      });
+
+      assert.strictEqual(XMLValidator.validate(output), true);
+      assert.match(output, /<Document><Object><Name>Sale &amp; Return<\/Name><Posting>true<\/Posting><\/Object><\/Document>/);
+      if (sourceXml.includes('<Rights>')) {
+        assert.match(output, /<Catalog><Object><Name>Products<\/Name><Read>true<\/Read><\/Object><\/Catalog>/);
+      }
+    }
+  });
+
   test('updates a prefixed self-closing right without dropping its attributes', () => {
     const sourceXml = '<v8:MetaDataObject xmlns:v8="http://v8.1c.ru/8.3/MDClasses"><v8:Role><v8:Rights><v8:Document><v8:Object><v8:Name>Sale</v8:Name><v8:View marker="keep" /></v8:Object></v8:Document></v8:Rights></v8:Role></v8:MetaDataObject>';
     const output = mergeDesignerRoleRightsXml(sourceXml, {
@@ -234,6 +253,18 @@ suite('role rights lossless domain model (#262)', () => {
       });
       assert.strictEqual(output, fixture.expected, `${fixture.name} extension elements must remain untouched`);
     }
+  });
+
+  test('preserves multiline whitespace around a patched Designer right value', () => {
+    const sourceXml = `<Role xmlns="http://v8.1c.ru/8.3/MDClasses"><Rights><Document><Object><Name>Sale</Name><Read>\r\n  false \t\r\n</Read></Object></Document></Rights></Role>`;
+    const expected = sourceXml.replace('false', 'true');
+
+    const output = mergeDesignerRoleRightsXml(sourceXml, {
+      'Document.Sale': { read: true },
+    });
+
+    assert.strictEqual(output, expected, 'only the boolean text should change; line endings and surrounding spaces stay intact');
+    assert.strictEqual(XMLValidator.validate(output), true);
   });
 
   test('does not treat xmlns-like text inside quoted attributes as namespace declarations', () => {
