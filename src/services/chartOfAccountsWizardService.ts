@@ -3,33 +3,13 @@ import * as fs from 'fs';
 import { XMLWriter } from '../utils/XMLWriter';
 import { validateElementName } from '../utils/elementNameValidator';
 import { hashContent } from './configurationSession/atomicFileStorage';
-import type { MutationExpectation, MutationPlan, MutationStep } from './configurationSession/mutationPlan';
+import type { MutationPlan, MutationStep } from './configurationSession/mutationPlan';
+import { readMutationExpectation } from './filesystemReadSemantics';
 import type { AgentResult } from '../agent/types';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { requireProjectWriteFormatProfile } from '../utils/format/formatRank';
 import { buildRootObjectConfigurationContent } from './configurationXmlUpdater';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
-
-async function expectationForPath(targetPath: string): Promise<MutationExpectation> {
-  try {
-    const stat = await fs.promises.lstat(targetPath);
-    if (stat.isSymbolicLink()) {
-      throw new Error(`Symbolic-link metadata path is forbidden: ${targetPath}`);
-    }
-    if (stat.isDirectory()) {
-      return { state: 'directory' };
-    }
-    if (stat.isFile()) {
-      return { state: 'file', hash: hashContent(await fs.promises.readFile(targetPath)) };
-    }
-    throw new Error(`Unsupported metadata filesystem entry: ${targetPath}`);
-  } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { state: 'missing' };
-    }
-    throw error;
-  }
-}
 
 export interface InitialPredefinedAccount {
   name: string;
@@ -408,7 +388,7 @@ export async function planCreateChartOfAccounts(
   const predefinedXmlPath = path.join(extDir, 'Predefined.xml');
   const configXmlPath = path.join(configPath, CONFIGURATION_XML);
 
-  const fileExpected = await expectationForPath(coaXmlPath);
+  const fileExpected = await readMutationExpectation(coaXmlPath);
   if (fileExpected.state !== 'missing') {
     throw new Error(`План счетов с именем «${name}» уже существует.`);
   }
@@ -424,7 +404,7 @@ export async function planCreateChartOfAccounts(
 
   const coaXmlContent = generateChartOfAccountsXml(params, targetVersion);
   const predefinedContent = generatePredefinedAccountsXml(params, targetVersion);
-  const predefinedExpected = await expectationForPath(predefinedXmlPath);
+  const predefinedExpected = await readMutationExpectation(predefinedXmlPath);
 
   const steps: MutationStep[] = [
     { type: 'ensureDirectory', targetPath: coasDir },

@@ -27,10 +27,10 @@ import {
     planCreateMetadataObject,
     planDeleteMetadataObject,
 } from '../services/metadataCrudService';
+import { listXmlSiblingNames, readMutationExpectation } from '../services/filesystemReadSemantics';
 import { hashContent } from '../services/configurationSession/atomicFileStorage';
 import {
     MutationPlanExecutor,
-    type MutationExpectation,
     type MutationPlan,
     type MutationStep,
 } from '../services/configurationSession/mutationPlan';
@@ -295,7 +295,7 @@ export class AgentOperations {
         const { rootTag, objectName, filePath } = resolved;
         assertMetadataCrudSupported(rootTag as MetadataType, 'rename');
         await assertCfeGenericMutationAllowed(filePath, 'rename');
-        const sourceExpected = await expectationForPath(filePath);
+        const sourceExpected = await readMutationExpectation(filePath);
         if (sourceExpected.state !== 'file') { throw new Error(`Object file not found: ${filePath}`); }
         const folderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ?? `${rootTag}s`;
         const folderPath = path.join(this.configRootPath, folderName);
@@ -308,12 +308,12 @@ export class AgentOperations {
         );
         if (validation) { throw new Error(validation); }
         const newFilePath = path.join(folderPath, `${newName}.xml`);
-        const targetExpected = await expectationForPath(newFilePath);
+        const targetExpected = await readMutationExpectation(newFilePath);
         if (targetExpected.state !== 'missing') { throw new Error(`Object already exists: ${newFilePath}`); }
         const oldDir = path.join(folderPath, objectName);
         const newDir = path.join(folderPath, newName);
-        const oldDirExpected = await expectationForPath(oldDir);
-        const newDirExpected = await expectationForPath(newDir);
+        const oldDirExpected = await readMutationExpectation(oldDir);
+        const newDirExpected = await readMutationExpectation(newDir);
         if (newDirExpected.state !== 'missing') { throw new Error(`Object directory already exists: ${newDir}`); }
         const objectContent = await fs.promises.readFile(filePath, 'utf8');
         const configurationPath = path.join(this.configRootPath, CONFIGURATION_XML);
@@ -1671,20 +1671,6 @@ function extractChildObjects(parsed: unknown): Record<string, unknown> | null {
     return childObjects as Record<string, unknown>;
 }
 
-async function listXmlSiblingNames(typeFolderPath: string): Promise<string[]> {
-    try {
-        const entries = await fs.promises.readdir(typeFolderPath, { withFileTypes: true });
-        return entries
-            .filter((entry) => entry.isFile() && entry.name.toLocaleLowerCase().endsWith('.xml'))
-            .map((entry) => path.basename(entry.name, path.extname(entry.name)));
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-            return [];
-        }
-        throw error;
-    }
-}
-
 function toAgentCreatePlan(
     plan: MutationPlan<{ readonly filePath: string }>,
 ): MutationPlan<AgentResult<{ filePath: string }>> {
@@ -1701,25 +1687,4 @@ function toAgentDeletePlan(plan: MutationPlan<void>): MutationPlan<AgentResult> 
         steps: plan.steps,
         result: { success: true },
     };
-}
-
-async function expectationForPath(targetPath: string): Promise<MutationExpectation> {
-    try {
-        const stat = await fs.promises.lstat(targetPath);
-        if (stat.isSymbolicLink()) {
-            throw new Error(`Symbolic-link metadata path is forbidden: ${targetPath}`);
-        }
-        if (stat.isDirectory()) {
-            return { state: 'directory' };
-        }
-        if (stat.isFile()) {
-            return { state: 'file', hash: hashContent(await fs.promises.readFile(targetPath)) };
-        }
-        throw new Error(`Unsupported metadata filesystem entry: ${targetPath}`);
-    } catch (error) {
-        if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-            return { state: 'missing' };
-        }
-        throw error;
-    }
 }

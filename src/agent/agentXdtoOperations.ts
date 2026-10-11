@@ -38,9 +38,9 @@ import {
 import { validateElementName } from '../utils/elementNameValidator';
 import { assertPathWithinRoot } from '../services/configurationSession/pathBoundary';
 import { hashContent } from '../services/configurationSession/atomicFileStorage';
+import { readMutationExpectation } from '../services/filesystemReadSemantics';
 import {
   MutationPlanExecutor,
-  type MutationExpectation,
   type MutationPlan,
 } from '../services/configurationSession/mutationPlan';
 import { CONFIGURATION_XML } from '../constants/fileNames';
@@ -55,6 +55,11 @@ const METADATA_XML_OPTIONS = {
 };
 
 const metadataParser = new XMLParser(METADATA_XML_OPTIONS);
+
+const XDTO_EXPECTATION_ERRORS = {
+  symbolicLink: (targetPath: string) => new Error(`Symbolic-link XDTO target is forbidden: ${targetPath}`),
+  unsupportedEntry: (targetPath: string) => new Error(`Unsupported XDTO filesystem target: ${targetPath}`),
+};
 
 export class XdtoAgentOperations {
   constructor(private readonly configRoot: string) {}
@@ -131,7 +136,7 @@ export class XdtoAgentOperations {
       throw new Error('XDTO export outputPath must have the .xsd extension.');
     }
     await assertPathWithinRoot(this.configRoot, outputPath);
-    const expected = await expectationForPath(outputPath);
+    const expected = await readMutationExpectation(outputPath, XDTO_EXPECTATION_ERRORS);
     if (expected.state === 'directory') {
       throw new Error(`XDTO export target is a directory: ${outputPath}`);
     }
@@ -171,7 +176,7 @@ export class XdtoAgentOperations {
     const fallbackNamespace = parseXdtoPackage(source).targetNamespace ?? '';
     const packageSource = convertXsdTo1cPackage(source, fallbackNamespace);
     const model = this.parseValidPackageSource(packageSource);
-    const expected = await expectationForPath(resolved.schemaPath);
+    const expected = await readMutationExpectation(resolved.schemaPath, XDTO_EXPECTATION_ERRORS);
     return {
       kind: 'agent.xdto.importXsd',
       steps: [
@@ -216,8 +221,8 @@ export class XdtoAgentOperations {
       assertPathWithinRoot(this.configRoot, metadataPath),
       assertPathWithinRoot(this.configRoot, schemaPath),
     ]);
-    const metadataExpected = await expectationForPath(metadataPath);
-    const schemaExpected = await expectationForPath(schemaPath);
+    const metadataExpected = await readMutationExpectation(metadataPath, XDTO_EXPECTATION_ERRORS);
+    const schemaExpected = await readMutationExpectation(schemaPath, XDTO_EXPECTATION_ERRORS);
     if (metadataExpected.state !== 'missing' || schemaExpected.state !== 'missing') {
       throw new Error(`XDTO package already exists: ${packageName}`);
     }
@@ -309,7 +314,7 @@ export class XdtoAgentOperations {
     if (!validation.ok) {
       throw new Error(validation.message);
     }
-    const expected = await expectationForPath(resolved.schemaPath);
+    const expected = await readMutationExpectation(resolved.schemaPath, XDTO_EXPECTATION_ERRORS);
     if (expected.state !== 'file') {
       throw new Error(`XDTO schema file not found: ${resolved.schemaPath}`);
     }
@@ -500,25 +505,4 @@ function localXmlName(name: string): string {
 
 function failure<T>(err: unknown): AgentResult<T> {
   return { success: false, error: err instanceof Error ? err.message : String(err) };
-}
-
-async function expectationForPath(targetPath: string): Promise<MutationExpectation> {
-  try {
-    const stat = await fs.promises.lstat(targetPath);
-    if (stat.isSymbolicLink()) {
-      throw new Error(`Symbolic-link XDTO target is forbidden: ${targetPath}`);
-    }
-    if (stat.isDirectory()) {
-      return { state: 'directory' };
-    }
-    if (stat.isFile()) {
-      return { state: 'file', hash: hashContent(await fs.promises.readFile(targetPath)) };
-    }
-    throw new Error(`Unsupported XDTO filesystem target: ${targetPath}`);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { state: 'missing' };
-    }
-    throw error;
-  }
 }

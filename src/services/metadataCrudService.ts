@@ -13,7 +13,8 @@ import { generatePredefinedAccountsXml } from './chartOfAccountsWizardService';
 import { planCreateFilterCriterion } from './filterCriterionWizardService';
 import { hashContent } from './configurationSession/atomicFileStorage';
 import { assertPathWithinRoot } from './configurationSession/pathBoundary';
-import type { MutationExpectation, MutationPlan, MutationStep } from './configurationSession/mutationPlan';
+import type { MutationPlan, MutationStep } from './configurationSession/mutationPlan';
+import { listXmlSiblingNames, readMutationExpectation } from './filesystemReadSemantics';
 import { assertCfeGenericCreateAllowed, assertCfeGenericMutationAllowed } from '../extensionSupport/cfeProject/mutationPolicy';
 import { validateElementName } from '../utils/elementNameValidator';
 import { CONFIGURATION_XML } from '../constants/fileNames';
@@ -86,11 +87,11 @@ export async function planCreateMetadataObject(
   const elementDir = path.join(folderPath, name);
   await assertPathWithinRoot(context.configurationRootPath, filePath);
   await assertPathWithinRoot(context.configurationRootPath, elementDir);
-  const fileExpected = await expectationForPath(filePath);
+  const fileExpected = await readMutationExpectation(filePath);
   if (fileExpected.state !== 'missing') {
     throw new Error(`Object already exists: ${filePath}`);
   }
-  const directoryExpected = await expectationForPath(elementDir);
+  const directoryExpected = await readMutationExpectation(elementDir);
   if (directoryExpected.state !== 'missing') {
     throw new Error(`Object directory already exists: ${elementDir}`);
   }
@@ -172,7 +173,7 @@ export async function planCreateMetadataObject(
     const extDir = path.join(elementDir, 'Ext');
     const predefinedPath = path.join(extDir, 'Predefined.xml');
     const predefinedContent = generatePredefinedAccountsXml({ name }, targetVersion);
-    const predefinedExpected = await expectationForPath(predefinedPath);
+    const predefinedExpected = await readMutationExpectation(predefinedPath);
     steps.push({ type: 'ensureDirectory', targetPath: extDir });
     steps.push({ type: 'writeFile', targetPath: predefinedPath, content: predefinedContent, encoding: 'utf8', expected: predefinedExpected });
   }
@@ -207,11 +208,11 @@ export async function planDeleteMetadataObject(
   await assertPathWithinRoot(rootPath, configurationPath);
   await assertCfeGenericMutationAllowed(filePath, 'delete');
 
-  const fileExpected = await expectationForPath(filePath);
+  const fileExpected = await readMutationExpectation(filePath);
   if (fileExpected.state !== 'file') {
     throw new Error(`Object file not found: ${filePath}`);
   }
-  const directoryExpected = await expectationForPath(elementDir);
+  const directoryExpected = await readMutationExpectation(elementDir);
   const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
   const steps: MutationStep[] = [
     { type: 'deletePath', targetPath: filePath, expected: fileExpected },
@@ -279,39 +280,4 @@ function planned<T>(plan: MutationPlan<T>): PlannedMetadataMutation<T> {
       deletePaths: Object.freeze(deletePaths),
     }),
   };
-}
-
-async function listXmlSiblingNames(typeFolderPath: string): Promise<string[]> {
-  try {
-    const entries = await fs.promises.readdir(typeFolderPath, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isFile() && entry.name.toLocaleLowerCase().endsWith('.xml'))
-      .map((entry) => path.basename(entry.name, path.extname(entry.name)));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return [];
-    }
-    throw error;
-  }
-}
-
-async function expectationForPath(targetPath: string): Promise<MutationExpectation> {
-  try {
-    const stat = await fs.promises.lstat(targetPath);
-    if (stat.isSymbolicLink()) {
-      throw new Error(`Symbolic-link metadata path is forbidden: ${targetPath}`);
-    }
-    if (stat.isDirectory()) {
-      return { state: 'directory' };
-    }
-    if (stat.isFile()) {
-      return { state: 'file', hash: hashContent(await fs.promises.readFile(targetPath)) };
-    }
-    throw new Error(`Unsupported metadata filesystem entry: ${targetPath}`);
-  } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { state: 'missing' };
-    }
-    throw error;
-  }
 }
