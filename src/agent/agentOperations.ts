@@ -9,13 +9,6 @@ import { rulesRegistry, metadataConverter } from '../rules';
 import {
     buildRootObjectConfigurationContent,
 } from '../services/configurationXmlUpdater';
-import { getDesignerTemplateXml } from '../services/designerTemplateRepository';
-import { substituteDesignerTemplate } from '../services/designerTemplateSubstitutor';
-import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
-import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
-import { requireProjectWriteFormatProfile } from '../utils/format/formatRank';
-import { generatePredefinedAccountsXml } from '../services/chartOfAccountsWizardService';
-import { generateSimpleUuid } from '../utils/xml/xmlHelpers';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { MetadataType } from '../models/treeNode';
 import { validateElementName } from '../utils/elementNameValidator';
@@ -26,7 +19,14 @@ import {
     CfeFilesystemMutationPolicyResolver,
 } from '../extensionSupport/cfeProject/mutationPolicy';
 import { CfeOwnershipError, type CfeObjectIdentity } from '../extensionSupport/cfeProject/ownership';
-import { getMetadataTypeDescriptorByRootTag } from '../constants/metadataTypeDescriptors';
+import {
+    assertMetadataCrudSupported,
+    getMetadataTypeDescriptorByRootTag,
+} from '../constants/metadataTypeDescriptors';
+import {
+    planCreateMetadataObject,
+    planDeleteMetadataObject,
+} from '../services/metadataCrudService';
 import { hashContent } from '../services/configurationSession/atomicFileStorage';
 import {
     MutationPlanExecutor,
@@ -34,12 +34,9 @@ import {
     type MutationPlan,
     type MutationStep,
 } from '../services/configurationSession/mutationPlan';
-import { planCreateFilterCriterion } from '../services/filterCriterionWizardService';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
 import { getIdentitySensitiveMetadataPropertyNames } from '../domain/metadataPropertyClassifier';
 
-/** Types whose templates include default ChildObjects (Dimension+Resource); rules engine cannot generate those yet. */
-const TEMPLATE_ONLY_TYPES = new Set(['InformationRegister', 'AccumulationRegister']);
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { AgentPathError, parseSourceAddress, resolveAgentPath } from './agentPathResolver';
 import { XMLWriter } from '../utils/XMLWriter';
@@ -242,108 +239,23 @@ export class AgentOperations {
 
     /** Builds the serializable multi-file create plan without applying filesystem effects. */
     async planCreateObject(params: CreateObjectParams): Promise<MutationPlan<AgentResult<{ filePath: string }>>> {
-        const { type, name, synonym, properties } = params;
+        const { type, name } = params;
         if (!type || typeof type !== 'string') {
             throw new Error('Parameter type is required and must be a string.');
         }
         if (!name || typeof name !== 'string' || !name.trim()) {
             throw new Error('Parameter name is required and cannot be empty.');
         }
-        const trimmedName = name.trim();
-        await assertCfeGenericCreateAllowed(this.configRootPath, trimmedName, { isRootObjectCreate: true });
-        const typeValidation = validateElementName(type, []);
-        if (typeValidation) { throw new Error(`Invalid type "${type}": ${typeValidation}`); }
-        const rules = !TEMPLATE_ONLY_TYPES.has(type) ? rulesRegistry.get(type) : undefined;
-        const templateXml = !rules ? await getDesignerTemplateXml(type) : null;
-        if (!rules && templateXml === null) {
-            throw new Error(`Type "${type}" is not supported.`);
-        }
-        const folderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(type as MetadataType) ?? `${type}s`;
-        const folderPath = path.join(this.configRootPath, folderName);
-        const validation = validateElementName(trimmedName, await listXmlSiblingNames(folderPath));
-        if (validation) { throw new Error(validation); }
-        const filePath = path.join(folderPath, `${trimmedName}.xml`);
-        const elementDir = path.join(folderPath, trimmedName);
-        const fileExpected = await expectationForPath(filePath);
-        if (fileExpected.state !== 'missing') { throw new Error(`Object already exists: ${filePath}`); }
-        const directoryExpected = await expectationForPath(elementDir);
-        if (directoryExpected.state !== 'missing') { throw new Error(`Object directory already exists: ${elementDir}`); }
-
-        if (type === 'FilterCriterion') {
-            const types = properties && properties['Type'] !== undefined
-                ? (Array.isArray(properties['Type'])
-                    ? (properties['Type'] as unknown[]).map(String)
-                    : [String(properties['Type'])])
-                : [];
-            const rawContent = properties && properties['Content'] !== undefined
-                ? (Array.isArray(properties['Content'])
-                    ? (properties['Content'] as unknown[]).map(String)
-                    : [String(properties['Content'])])
-                : [];
-            const contentRefs = rawContent.map((c) => c.trim()).filter((c) => c.length > 0);
-            if (contentRefs.length === 0) {
-                throw new Error('FilterCriterion requires non-empty "Content" property with at least one metadata item reference.');
-            }
-            return planCreateFilterCriterion(this.configRootPath, {
-                name: trimmedName,
-                synonym: synonym ?? trimmedName,
-                comment: typeof properties?.['Comment'] === 'string' ? properties['Comment'] : undefined,
-                types,
-                content: contentRefs,
-                useStandardCommands: typeof properties?.['UseStandardCommands'] === 'boolean' ? properties['UseStandardCommands'] : false,
-            });
-        }
-
-        const uuid = generateSimpleUuid();
-        let content: string;
-        if (rules) {
-            let ir = metadataConverter.createDefaultIR(rules, { name: trimmedName, uuid });
-            const overrides: Record<string, unknown> = {};
-            if (synonym !== undefined) { overrides['Synonym'] = synonym; }
-            if (properties) { Object.assign(overrides, properties); }
-            if (Object.keys(overrides).length > 0) { ir = metadataConverter.mergeProperties(ir, overrides); }
-            content = metadataConverter.irToXml(ir, rules);
-        } else {
-            content = substituteDesignerTemplate(templateXml!, {
-                uuid,
-                Name: trimmedName,
-                Synonym_ru: synonym ?? trimmedName,
-                uuidDim: generateSimpleUuid(),
-                uuidResource: generateSimpleUuid(),
-            });
-        }
-        const configurationPath = path.join(this.configRootPath, CONFIGURATION_XML);
-        const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
-        const targetVersion = requireProjectWriteFormatProfile(configurationContent).version;
-        content = normalizeMetaDataObjectRoot(injectInternalInfoIntoMetadataXml(content, type, trimmedName), targetVersion);
-        const nextConfigurationContent = buildRootObjectConfigurationContent(configurationContent, {
-            type: 'add', rootTag: type, objectName: trimmedName,
-        });
-        const steps: MutationStep[] = [
-            { type: 'ensureDirectory', targetPath: folderPath },
-            { type: 'writeFile', targetPath: filePath, content, encoding: 'utf8', expected: fileExpected },
-            { type: 'ensureDirectory', targetPath: elementDir },
-        ];
-        if (type === 'ChartOfAccounts') {
-            const extDir = path.join(elementDir, 'Ext');
-            const predefinedPath = path.join(extDir, 'Predefined.xml');
-            const predefinedContent = generatePredefinedAccountsXml({ name: trimmedName }, targetVersion);
-            const predefinedExpected = await expectationForPath(predefinedPath);
-            steps.push({ type: 'ensureDirectory', targetPath: extDir });
-            steps.push({ type: 'writeFile', targetPath: predefinedPath, content: predefinedContent, encoding: 'utf8', expected: predefinedExpected });
-        }
-        steps.push({
-            type: 'writeFile',
-            targetPath: configurationPath,
-            content: nextConfigurationContent,
-            encoding: 'utf8',
-            expected: { state: 'file', hash: hashContent(configurationContent) },
-        });
-        return {
-            kind: 'agent.createObject',
-            steps,
-            result: { success: true, data: { filePath } },
-        };
+        const planned = await planCreateMetadataObject(
+            { configurationRootPath: this.configRootPath },
+            {
+                type: type as MetadataType,
+                name,
+                synonym: params.synonym,
+                properties: params.properties,
+            },
+        );
+        return toAgentCreatePlan(planned.plan);
     }
 
     /** Builds the serializable multi-file delete plan without applying filesystem effects. */
@@ -352,31 +264,15 @@ export class AgentOperations {
         if (dotPath.split('.').length !== 2) {
             throw new AgentPathError('INVALID_AGENT_PATH', `deleteObject supports only a root object path: "${params.path}".`);
         }
-        const { rootTag, objectName, filePath } = await this.resolveContainedAgentPath(params.path);
-        await assertCfeGenericMutationAllowed(filePath, 'delete');
-        const fileExpected = await expectationForPath(filePath);
-        if (fileExpected.state !== 'file') { throw new Error(`Object file not found: ${filePath}`); }
-        const folderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ?? `${rootTag}s`;
-        const elementDir = path.join(this.configRootPath, folderName, objectName);
-        const directoryExpected = await expectationForPath(elementDir);
-        const configurationPath = path.join(this.configRootPath, CONFIGURATION_XML);
-        const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
-        const steps: MutationStep[] = [
-            { type: 'deletePath', targetPath: filePath, expected: fileExpected },
-        ];
-        if (directoryExpected.state !== 'missing') {
-            steps.push({ type: 'deletePath', targetPath: elementDir, expected: directoryExpected });
-        }
-        steps.push({
-            type: 'writeFile',
-            targetPath: configurationPath,
-            content: buildRootObjectConfigurationContent(configurationContent, {
-                type: 'remove', rootTag, objectName,
-            }),
-            encoding: 'utf8',
-            expected: { state: 'file', hash: hashContent(configurationContent) },
-        });
-        return { kind: 'agent.deleteObject', steps, result: { success: true } };
+        const resolved = await this.resolveContainedAgentPath(params.path);
+        const planned = await planDeleteMetadataObject(
+            { configurationRootPath: this.configRootPath },
+            {
+                type: resolved.rootTag as MetadataType,
+                name: resolved.objectName,
+            },
+        );
+        return toAgentDeletePlan(planned.plan);
     }
 
     /** Builds the serializable multi-file rename plan without applying filesystem effects. */
@@ -397,6 +293,7 @@ export class AgentOperations {
             );
         }
         const { rootTag, objectName, filePath } = resolved;
+        assertMetadataCrudSupported(rootTag as MetadataType, 'rename');
         await assertCfeGenericMutationAllowed(filePath, 'rename');
         const sourceExpected = await expectationForPath(filePath);
         if (sourceExpected.state !== 'file') { throw new Error(`Object file not found: ${filePath}`); }
@@ -471,19 +368,15 @@ export class AgentOperations {
                 return { success: false, error: `Некорректный type "${type}": ${typeValidation}` };
             }
 
-            // Проверяем наличие правил или шаблона
-            const rules = !TEMPLATE_ONLY_TYPES.has(type) ? rulesRegistry.get(type) : undefined;
-            const templateXml = !rules ? await getDesignerTemplateXml(type) : null;
-            if (!rules && templateXml === null && type !== 'FilterCriterion') {
+            const descriptor = getMetadataTypeDescriptorByRootTag(type);
+            if (!descriptor) {
                 return {
                     success: false,
                     error: `Тип "${type}" не поддерживается. Доступные типы: ${rulesRegistry.allRootTags().join(', ')}`,
                 };
             }
 
-            // Определяем папку типа через маппинг, fallback = rootTag + 's'
-            const typeFolderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(type as MetadataType) ?? `${type}s`;
-            const typeFolderPath = path.join(this.configRootPath, typeFolderName);
+            const typeFolderPath = path.join(this.configRootPath, descriptor.designerFolder);
             const nameValidation = validateElementName(trimmedName, await listXmlSiblingNames(typeFolderPath));
             if (nameValidation) {
                 return { success: false, error: nameValidation };
@@ -506,12 +399,17 @@ export class AgentOperations {
                     return check.errorResult!;
                 }
 
-                const plan = await this.planCreateObject(params);
-                const plannedFiles = Array.from(new Set(
-                    plan.steps
-                        .map((step) => 'targetPath' in step ? step.targetPath : undefined)
-                        .filter((p): p is string => typeof p === 'string'),
-                ));
+                const metadataMutation = await planCreateMetadataObject(
+                    { configurationRootPath: this.configRootPath },
+                    {
+                        type: type as MetadataType,
+                        name: trimmedName,
+                        synonym: params.synonym,
+                        properties: params.properties,
+                    },
+                );
+                const plan = toAgentCreatePlan(metadataMutation.plan);
+                const plannedFiles = metadataMutation.impact.affectedPaths;
 
                 if (params.dryRun) {
                     return {
@@ -525,7 +423,7 @@ export class AgentOperations {
                             rev: check.currentRev,
                             target: targetPath,
                             plannedChanges: {
-                                files: plannedFiles.length > 0 ? plannedFiles : [newFilePath, path.join(this.configRootPath, CONFIGURATION_XML)],
+                                files: plannedFiles.length > 0 ? [...plannedFiles] : [newFilePath, path.join(this.configRootPath, CONFIGURATION_XML)],
                                 summary: `Создание объекта ${targetPath}`,
                             },
                         },
@@ -920,12 +818,15 @@ export class AgentOperations {
                     return check.errorResult!;
                 }
 
-                const plan = await this.planDeleteObject(params);
-                const plannedFiles = Array.from(new Set(
-                    plan.steps
-                        .map((step) => 'targetPath' in step ? step.targetPath : undefined)
-                        .filter((p): p is string => typeof p === 'string'),
-                ));
+                const metadataMutation = await planDeleteMetadataObject(
+                    { configurationRootPath: this.configRootPath },
+                    {
+                        type: resolved.rootTag as MetadataType,
+                        name: resolved.objectName,
+                    },
+                );
+                const plan = toAgentDeletePlan(metadataMutation.plan);
+                const plannedFiles = metadataMutation.impact.affectedPaths;
 
                 if (params.dryRun) {
                     return {
@@ -938,7 +839,7 @@ export class AgentOperations {
                             rev: check.currentRev,
                             target: params.path,
                             plannedChanges: {
-                                files: plannedFiles.length > 0 ? plannedFiles : [filePath, path.join(this.configRootPath, CONFIGURATION_XML)],
+                                files: plannedFiles.length > 0 ? [...plannedFiles] : [filePath, path.join(this.configRootPath, CONFIGURATION_XML)],
                                 summary: `Удаление объекта ${params.path}`,
                             },
                         },
@@ -1782,6 +1683,24 @@ async function listXmlSiblingNames(typeFolderPath: string): Promise<string[]> {
         }
         throw error;
     }
+}
+
+function toAgentCreatePlan(
+    plan: MutationPlan<{ readonly filePath: string }>,
+): MutationPlan<AgentResult<{ filePath: string }>> {
+    return {
+        kind: 'agent.createObject',
+        steps: plan.steps,
+        result: { success: true, data: plan.result },
+    };
+}
+
+function toAgentDeletePlan(plan: MutationPlan<void>): MutationPlan<AgentResult> {
+    return {
+        kind: 'agent.deleteObject',
+        steps: plan.steps,
+        result: { success: true },
+    };
 }
 
 async function expectationForPath(targetPath: string): Promise<MutationExpectation> {

@@ -5,7 +5,6 @@ import { validateElementName } from '../utils/elementNameValidator';
 import { XmlParser } from '../parsers/xmlParser';
 import { hashContent } from './configurationSession/atomicFileStorage';
 import type { MutationExpectation, MutationPlan } from './configurationSession/mutationPlan';
-import type { AgentResult } from '../agent/types';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { requireProjectWriteFormatProfile } from '../utils/format/formatRank';
 import { buildRootObjectConfigurationContent } from './configurationXmlUpdater';
@@ -516,7 +515,7 @@ export async function collectAvailableFilterCandidates(
 export async function planCreateFilterCriterion(
   configRoot: string,
   params: FilterCriterionWizardParams
-): Promise<MutationPlan<AgentResult<{ filePath: string }>>> {
+): Promise<MutationPlan<{ filePath: string }>> {
   const trimmedName = params.name.trim();
   const folderPath = path.join(configRoot, 'FilterCriteria');
   const filePath = path.join(folderPath, `${trimmedName}.xml`);
@@ -574,6 +573,6 @@ export async function planCreateFilterCriterion(
         expected: { state: 'file', hash: hashContent(configurationContent) },
       },
     ],
-    result: { success: true, data: { filePath } },
+    result: { filePath },
   };
 }

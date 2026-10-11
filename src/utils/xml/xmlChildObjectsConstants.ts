@@ -1,56 +1,10 @@
-import { MetadataType } from '../../models/treeNode';
+import { DESIGNER_ROOT_OBJECT_TYPES } from '../../constants/metadataTypeDescriptors';
 import type { MetadataObjectPathSegment } from '../../types/metadataObjectPath';
 
 /**
- * Same coverage as `elementOperations` TOP_LEVEL_TYPES (Designer single-object XML).
+ * Structural root set derived from the canonical metadata descriptor registry.
  */
-export const TOP_LEVEL_TYPES = new Set<MetadataType>([
-  MetadataType.Catalog,
-  MetadataType.Document,
-  MetadataType.Enum,
-  MetadataType.Report,
-  MetadataType.DataProcessor,
-  MetadataType.ChartOfCharacteristicTypes,
-  MetadataType.ChartOfAccounts,
-  MetadataType.ChartOfCalculationTypes,
-  MetadataType.InformationRegister,
-  MetadataType.AccumulationRegister,
-  MetadataType.AccountingRegister,
-  MetadataType.CalculationRegister,
-  MetadataType.BusinessProcess,
-  MetadataType.Task,
-  MetadataType.ExternalDataSource,
-  MetadataType.Constant,
-  MetadataType.SessionParameter,
-  MetadataType.FilterCriterion,
-  MetadataType.ScheduledJob,
-  MetadataType.FunctionalOption,
-  MetadataType.FunctionalOptionsParameter,
-  MetadataType.SettingsStorage,
-  MetadataType.EventSubscription,
-  MetadataType.CommonModule,
-  MetadataType.CommandGroup,
-  MetadataType.Role,
-  MetadataType.Interface,
-  MetadataType.Style,
-  MetadataType.WebService,
-  MetadataType.HTTPService,
-  MetadataType.IntegrationService,
-  MetadataType.Subsystem,
-  MetadataType.ExchangePlan,
-  MetadataType.DocumentJournal,
-  MetadataType.DefinedType,
-  MetadataType.CommonAttribute,
-  MetadataType.CommonCommand,
-  MetadataType.CommonForm,
-  MetadataType.CommonPicture,
-  MetadataType.CommonTemplate,
-  MetadataType.DocumentNumerator,
-  MetadataType.Language,
-  MetadataType.WSReference,
-  MetadataType.XDTOPackage,
-  MetadataType.StyleItem,
-]);
+export const TOP_LEVEL_TYPES = DESIGNER_ROOT_OBJECT_TYPES;
 
 /**
  * Root metadata tags that omit ChildObjects in Designer XML (docs/1c-config-objects-spec.md).

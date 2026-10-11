@@ -1,6 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
+import {
+  assertMetadataCrudSupported,
+  DESIGNER_ROOT_OBJECT_TYPES,
+} from '../constants/metadataTypeDescriptors';
 import { Logger } from '../utils/logger';
 import { ROOT_TAGS_WITHOUT_CHILDOBJECTS, XMLWriter } from '../utils/XMLWriter';
 import { validateElementName } from '../utils/elementNameValidator';
@@ -111,54 +115,8 @@ function isAllowedTypeFolderParent(parent: TreeNode): boolean {
   return parent.type === MetadataType.Unknown && parent.id === 'Common';
 }
 
-/** Top-level metadata types that have their own XML file in Designer. */
-export const TOP_LEVEL_TYPES = new Set<MetadataType>([
-  MetadataType.Catalog,
-  MetadataType.Document,
-  MetadataType.Enum,
-  MetadataType.Report,
-  MetadataType.DataProcessor,
-  MetadataType.ChartOfCharacteristicTypes,
-  MetadataType.ChartOfAccounts,
-  MetadataType.ChartOfCalculationTypes,
-  MetadataType.InformationRegister,
-  MetadataType.AccumulationRegister,
-  MetadataType.AccountingRegister,
-  MetadataType.CalculationRegister,
-  MetadataType.BusinessProcess,
-  MetadataType.Task,
-  MetadataType.ExternalDataSource,
-  MetadataType.Constant,
-  MetadataType.SessionParameter,
-  MetadataType.FilterCriterion,
-  MetadataType.ScheduledJob,
-  MetadataType.FunctionalOption,
-  MetadataType.FunctionalOptionsParameter,
-  MetadataType.SettingsStorage,
-  MetadataType.EventSubscription,
-  MetadataType.CommonModule,
-  MetadataType.CommandGroup,
-  MetadataType.Role,
-  MetadataType.Interface,
-  MetadataType.Style,
-  MetadataType.WebService,
-  MetadataType.HTTPService,
-  MetadataType.IntegrationService,
-  MetadataType.Subsystem,
-  MetadataType.ExchangePlan,
-  MetadataType.DocumentJournal,
-  MetadataType.DefinedType,
-  MetadataType.CommonAttribute,
-  MetadataType.CommonCommand,
-  MetadataType.CommonForm,
-  MetadataType.CommonPicture,
-  MetadataType.CommonTemplate,
-  MetadataType.DocumentNumerator,
-  MetadataType.Language,
-  MetadataType.WSReference,
-  MetadataType.XDTOPackage,
-  MetadataType.StyleItem,
-]);
+/** Structural Designer-root types. CRUD support is defined independently in the descriptor registry. */
+export const TOP_LEVEL_TYPES = DESIGNER_ROOT_OBJECT_TYPES;
 
 /**
  * True when `createElement` would create a new root metadata XML under a type folder
@@ -272,6 +230,7 @@ async function handleCreateForm(parentNode: TreeNode, name: string): Promise<voi
 
 /** Branch: parentNode is a type folder (e.g. Catalogs) — create a root metadata object file. */
 async function handleCreateRootObject(parentNode: TreeNode, name: string): Promise<void> {
+  assertMetadataCrudSupported(parentNode.type, 'create');
   const typeFolderPath = parentNode.filePath;
   if (!typeFolderPath) {
     throw new Error(`Папка типа не найдена: ${typeFolderPath}`);
@@ -855,6 +814,7 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
   }
 
   if (TOP_LEVEL_TYPES.has(node.type)) {
+    assertMetadataCrudSupported(node.type, 'duplicate');
     const typeNode = parent;
     const typeFolderPath = typeNode.filePath;
     if (!typeFolderPath) {
@@ -1135,6 +1095,7 @@ export async function planDuplicateRootElement(
   node: TreeNode,
   newName: string,
 ): Promise<MutationPlan<void>> {
+  assertMetadataCrudSupported(node.type, 'duplicate');
   const { parent, filePath, typeFolderPath, rootTag } = requireRootMutationNode(node);
   const name = newName.trim();
   const validation = validateElementName(name, getSiblingNames(parent));
@@ -1219,6 +1180,7 @@ export async function planRenameRootElement(
   newName: string,
   configPath: string,
 ): Promise<MutationPlan<void>> {
+  assertMetadataCrudSupported(node.type, 'rename');
   const { parent, filePath, typeFolderPath, rootTag } = requireRootMutationNode(node);
   const name = newName.trim();
   const validation = validateElementName(
@@ -1437,6 +1399,7 @@ export async function deleteElement(
   }
 
   if (TOP_LEVEL_TYPES.has(node.type)) {
+    assertMetadataCrudSupported(node.type, 'delete');
     try {
       await fs.promises.access(filePath);
     } catch {
@@ -1589,6 +1552,7 @@ export async function renameElement(
   }
 
   if (TOP_LEVEL_TYPES.has(node.type)) {
+    assertMetadataCrudSupported(node.type, 'rename');
     const typeFolderPath = path.dirname(filePath);
     const configRootPath = await findConfigurationRootDir(typeFolderPath);
     // Rename writes a new descriptor and updates Configuration.xml.

@@ -40,6 +40,7 @@ export const coreSuiteFiles: string[] = [
   'suite/metadataDefaultValues.test.js',
   'suite/compareCodeUnits.test.js',
   'suite/metadataFileLocator.test.js',
+  'suite/metadataCrudService.test.js',
   'suite/metadataTypeMapper.test.js',
   'suite/metadataLoader.test.js',
   'suite/xmlChildObjects.test.js',
