@@ -18,7 +18,10 @@ import { ExtensionState } from '../state/extensionState';
 import { getSelectedNode, requireDesignerFormat } from '../helpers/commandHelpers';
 import { optimisticAppendCreatedNode } from '../helpers/optimisticNodeBuilder';
 import { Logger } from '../utils/logger';
-import { AgentOperations } from '../agent/agentOperations';
+import {
+  planCreateMetadataObject,
+  planDeleteMetadataObject,
+} from '../services/metadataCrudService';
 import { runFilterCriterionWizard } from '../wizards/filterCriterionWizard';
 import { runChartOfAccountsWizard } from '../wizards/chartOfAccountsWizard';
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
@@ -101,11 +104,11 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
       try {
         const trimmedName = name.trim();
         if (isRootObjectCreateInTypeFolder(target)) {
-          const plan = await new AgentOperations(configPath).planCreateObject({
-            type: String(target.type),
-            name: trimmedName,
-          });
-          await runConfigurationPlan(configPath, plan);
+          const planned = await planCreateMetadataObject(
+            { configurationRootPath: configPath },
+            { type: target.type, name: trimmedName },
+          );
+          await runConfigurationPlan(configPath, planned.plan);
         } else {
           await runConfigurationMutation(configPath, 'ui.createElement', () => createElement(target, trimmedName));
         }
@@ -254,10 +257,11 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
       try {
         const operationId = `delete-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
         if (TOP_LEVEL_TYPES.has(target.type)) {
-          const plan = await new AgentOperations(configPath).planDeleteObject({
-            path: `${String(target.type)}.${target.name}`,
-          });
-          await runConfigurationPlan(configPath, plan);
+          const planned = await planDeleteMetadataObject(
+            { configurationRootPath: configPath },
+            { type: target.type, name: target.name },
+          );
+          await runConfigurationPlan(configPath, planned.plan);
         } else {
           await runConfigurationMutation(configPath, 'ui.deleteElement', () =>
             deleteElement(target, { trustedRootPath: configPath })

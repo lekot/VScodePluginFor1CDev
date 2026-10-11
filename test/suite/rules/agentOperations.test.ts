@@ -127,6 +127,18 @@ suite('AgentOperations: createObject', () => {
         assert.ok(content.includes('<Enum '), 'XML should contain <Enum root tag');
     });
 
+    test('Sequence root create and delete are supported by the Agent API', async () => {
+        const createResult = await ops.createObject({ type: 'Sequence', name: 'PostingOrder' });
+        assert.ok(createResult.success, `Expected Sequence creation, got error: ${createResult.error}`);
+        assert.ok(fs.existsSync(path.join(tmpDir, 'Sequences', 'PostingOrder.xml')));
+
+        const deleteResult = await ops.deleteObject({ path: 'Sequence.PostingOrder' });
+        assert.ok(deleteResult.success, `Expected Sequence deletion, got error: ${deleteResult.error}`);
+        assert.strictEqual(fs.existsSync(path.join(tmpDir, 'Sequences', 'PostingOrder.xml')), false);
+        const configContent = fs.readFileSync(path.join(tmpDir, 'Configuration.xml'), 'utf-8');
+        assert.strictEqual(configContent.includes('<Sequence>PostingOrder</Sequence>'), false);
+    });
+
     test('FilterCriterion: rejects creation when Content is missing, empty array, or whitespace-only', async () => {
         // Missing properties
         const r1 = await ops.createObject({ type: 'FilterCriterion', name: 'КритерийБезСвойств' });

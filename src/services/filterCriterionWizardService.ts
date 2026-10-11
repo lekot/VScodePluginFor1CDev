@@ -4,33 +4,12 @@ import { XMLWriter } from '../utils/XMLWriter';
 import { validateElementName } from '../utils/elementNameValidator';
 import { XmlParser } from '../parsers/xmlParser';
 import { hashContent } from './configurationSession/atomicFileStorage';
-import type { MutationExpectation, MutationPlan } from './configurationSession/mutationPlan';
-import type { AgentResult } from '../agent/types';
+import type { MutationPlan } from './configurationSession/mutationPlan';
+import { readMutationExpectation } from './filesystemReadSemantics';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { requireProjectWriteFormatProfile } from '../utils/format/formatRank';
 import { buildRootObjectConfigurationContent } from './configurationXmlUpdater';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
-
-async function expectationForPath(targetPath: string): Promise<MutationExpectation> {
-  try {
-    const stat = await fs.promises.lstat(targetPath);
-    if (stat.isSymbolicLink()) {
-      throw new Error(`Symbolic-link metadata path is forbidden: ${targetPath}`);
-    }
-    if (stat.isDirectory()) {
-      return { state: 'directory' };
-    }
-    if (stat.isFile()) {
-      return { state: 'file', hash: hashContent(await fs.promises.readFile(targetPath)) };
-    }
-    throw new Error(`Unsupported metadata filesystem entry: ${targetPath}`);
-  } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { state: 'missing' };
-    }
-    throw error;
-  }
-}
 
 export interface FilterCriterionWizardParams {
   name: string;
@@ -516,7 +495,7 @@ export async function collectAvailableFilterCandidates(
 export async function planCreateFilterCriterion(
   configRoot: string,
   params: FilterCriterionWizardParams
-): Promise<MutationPlan<AgentResult<{ filePath: string }>>> {
+): Promise<MutationPlan<{ filePath: string }>> {
   const trimmedName = params.name.trim();
   const folderPath = path.join(configRoot, 'FilterCriteria');
   const filePath = path.join(folderPath, `${trimmedName}.xml`);
@@ -535,7 +514,7 @@ export async function planCreateFilterCriterion(
     throw new Error(validation);
   }
 
-  const fileExpected = await expectationForPath(filePath);
+  const fileExpected = await readMutationExpectation(filePath);
   if (fileExpected.state !== 'missing') {
     throw new Error(`Object already exists: ${filePath}`);
   }
@@ -574,6 +553,6 @@ export async function planCreateFilterCriterion(
         expected: { state: 'file', hash: hashContent(configurationContent) },
       },
     ],
-    result: { success: true, data: { filePath } },
+    result: { filePath },
   };
 }

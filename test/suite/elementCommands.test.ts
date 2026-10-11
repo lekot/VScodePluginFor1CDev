@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { registerElementCommands } from '../../src/commands/elementCommands';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import type { ExtensionState } from '../../src/state/extensionState';
+import { MutationPlanExecutor } from '../../src/services/configurationSession/mutationPlan';
 
 suite('elementCommands', () => {
   const defaultRegisterCommand = vscode.commands.registerCommand.bind(vscode.commands);
@@ -102,6 +103,107 @@ suite('elementCommands', () => {
     } finally {
       (vscode.window as unknown as { showWarningMessage: typeof origShowWarning }).showWarningMessage = origShowWarning;
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('Sequence root create and delete commands execute the shared metadata CRUD plans', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), '1c-sequence-command-'));
+    fs.writeFileSync(
+      path.join(tempRoot, 'Configuration.xml'),
+      '<?xml version="1.0" encoding="UTF-8"?><MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses"><Configuration uuid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"><Properties><Name>TestConfig</Name></Properties><ChildObjects/></Configuration></MetaDataObject>',
+      'utf8',
+    );
+
+    const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+    const patchedCommands = vscode.commands as unknown as {
+      registerCommand: (id: string, handler: (...args: unknown[]) => Promise<unknown>) => vscode.Disposable;
+    };
+    patchedCommands.registerCommand = (id: string, handler: (...args: unknown[]) => Promise<unknown>) => {
+      handlers.set(id, handler);
+      return { dispose: () => undefined };
+    };
+
+    const originalShowInputBox = vscode.window.showInputBox;
+    const originalShowWarningMessage = vscode.window.showWarningMessage;
+    const originalShowInformationMessage = vscode.window.showInformationMessage;
+    const originalShowErrorMessage = vscode.window.showErrorMessage;
+    const patchedWindow = vscode.window as unknown as {
+      showInputBox: (...args: unknown[]) => Promise<string | undefined>;
+      showWarningMessage: (...args: unknown[]) => Promise<string | undefined>;
+      showInformationMessage: (...args: unknown[]) => Promise<unknown>;
+      showErrorMessage: (...args: unknown[]) => Promise<unknown>;
+    };
+    patchedWindow.showInputBox = async () => 'PostingOrder';
+    patchedWindow.showWarningMessage = async () => 'Удалить';
+    patchedWindow.showInformationMessage = async () => undefined;
+    patchedWindow.showErrorMessage = async () => undefined;
+
+    const sequenceFolderPath = path.join(tempRoot, 'Sequences');
+    const sequenceFilePath = path.join(sequenceFolderPath, 'PostingOrder.xml');
+    const configurationNode: TreeNode = {
+      id: 'Configuration',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+    };
+    const sequenceFolder: TreeNode = {
+      id: 'Sequences',
+      name: 'Sequences',
+      type: MetadataType.Sequence,
+      filePath: sequenceFolderPath,
+      parent: configurationNode,
+      properties: {},
+    };
+
+    try {
+      registerElementCommands({
+        state: {
+          treeDataProvider: {
+            getConfigPathForNode: () => tempRoot,
+            getConfigPath: () => tempRoot,
+            resolveNodeForUi: (node: TreeNode) => node,
+            refresh: () => undefined,
+            applyOptimisticDelete: () => true,
+          },
+        } as unknown as ExtensionState,
+        loadMetadataTree: async () => undefined,
+        invalidateCacheAndReload: async () => undefined,
+        scheduleDeleteReconcile: () => undefined,
+        runConfigurationPlan: async <T>(configPath: string, plan: import('../../src/services/configurationSession/mutationPlan').MutationPlan<T>) =>
+          new MutationPlanExecutor(configPath).execute(plan),
+      });
+
+      const createHandler = handlers.get('1c-metadata-tree.createElement');
+      assert.ok(createHandler);
+      await createHandler(sequenceFolder);
+      assert.ok(fs.existsSync(sequenceFilePath), 'UI create should write the Sequence root descriptor');
+      assert.match(
+        fs.readFileSync(path.join(tempRoot, 'Configuration.xml'), 'utf8'),
+        /<Sequence>PostingOrder<\/Sequence>/,
+      );
+
+      const sequenceNode: TreeNode = {
+        id: 'Sequences.PostingOrder',
+        name: 'PostingOrder',
+        type: MetadataType.Sequence,
+        filePath: sequenceFilePath,
+        parent: sequenceFolder,
+        properties: {},
+      };
+      const deleteHandler = handlers.get('1c-metadata-tree.deleteElement');
+      assert.ok(deleteHandler);
+      await deleteHandler(sequenceNode);
+      assert.strictEqual(fs.existsSync(sequenceFilePath), false, 'UI delete should remove the Sequence root descriptor');
+      assert.doesNotMatch(
+        fs.readFileSync(path.join(tempRoot, 'Configuration.xml'), 'utf8'),
+        /<Sequence>PostingOrder<\/Sequence>/,
+      );
+    } finally {
+      patchedWindow.showInputBox = originalShowInputBox as unknown as (...args: unknown[]) => Promise<string | undefined>;
+      patchedWindow.showWarningMessage = originalShowWarningMessage as unknown as (...args: unknown[]) => Promise<string | undefined>;
+      patchedWindow.showInformationMessage = originalShowInformationMessage as unknown as (...args: unknown[]) => Promise<unknown>;
+      patchedWindow.showErrorMessage = originalShowErrorMessage as unknown as (...args: unknown[]) => Promise<unknown>;
+      fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 });
