@@ -83,6 +83,7 @@ export class ConfigurationSession {
   readonly mutations: MutationPlanExecutor;
 
   constructor(private _identity: ConfigurationIdentity) {
+    this._identity = snapshotIdentity(this._identity);
     this.storage = new AtomicFileStorage(_identity.rootPath);
     this.mutations = new MutationPlanExecutor(_identity.rootPath);
   }
@@ -99,7 +100,7 @@ export class ConfigurationSession {
     if (identity.configurationId !== this._identity.configurationId) {
       throw new Error('Configuration identity cannot be reassigned to another session.');
     }
-    this._identity = identity;
+    this._identity = snapshotIdentity(identity);
   }
 
   private processQueue(): void {
@@ -316,3 +317,9 @@ export class ConfigurationSession {
   }
 }
 
+function snapshotIdentity(identity: ConfigurationIdentity): ConfigurationIdentity {
+  return {
+    ...identity,
+    capabilities: Object.freeze({ ...identity.capabilities }),
+  };
+}

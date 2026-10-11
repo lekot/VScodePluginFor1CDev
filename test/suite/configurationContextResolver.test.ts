@@ -77,6 +77,63 @@ suite('ConfigurationContext and ConfigurationContextResolver (#256)', () => {
     assert.ok(Object.isFrozen(context), 'ConfigurationContext must be frozen and immutable');
   });
 
+  test('capability snapshots cannot change the session mutation gate', async () => {
+    const edtConfigRoot = await createTestEdtConfiguration(
+      path.join(workspaceRoot, 'edtCapabilitySnapshot'),
+      '66666666-6666-6666-6666-666666666666',
+    );
+    const registry = new WorkspaceRegistry();
+    const readOnlySession = await registry.registerTargetedRoot({
+      configPath: edtConfigRoot,
+      format: ConfigFormat.EDT,
+    });
+    const writableSession = await registry.registerTargetedRoot({
+      configPath: standaloneConfigRoot,
+      format: ConfigFormat.Designer,
+    });
+    const resolver = new ConfigurationContextResolver(registry);
+    const readOnlyContext = await resolver.resolveFromConfigurationId(readOnlySession.identity.configurationId);
+    const writableContext = await resolver.resolveFromConfigurationId(writableSession.identity.configurationId);
+
+    let readOnlyExecutionCount = 0;
+    let writableExecutionCount = 0;
+    const readOnlyContextMutation = Reflect.set(readOnlyContext.capabilities, 'write', true);
+    const readOnlyIdentityMutation = Reflect.set(readOnlySession.identity.capabilities, 'write', true);
+    const writableContextMutation = Reflect.set(writableContext.capabilities, 'write', false);
+    const writableIdentityMutation = Reflect.set(writableSession.identity.capabilities, 'write', false);
+
+    const readOnlyOutcome = await readOnlySession.enqueue({
+      kind: 'capability-snapshot-read-only',
+      execute: async () => {
+        readOnlyExecutionCount++;
+        return 'should-not-run';
+      },
+    });
+    const writableOutcome = await writableSession.enqueue({
+      kind: 'capability-snapshot-writable',
+      execute: async () => {
+        writableExecutionCount++;
+        return 'written';
+      },
+    });
+
+    assert.strictEqual(readOnlyOutcome.status, 'conflict');
+    assert.strictEqual((readOnlyOutcome as { code?: string }).code, 'CONFIGURATION_CAPABILITY_UNSUPPORTED');
+    assert.strictEqual(readOnlyExecutionCount, 0);
+    assert.strictEqual(writableOutcome.status, 'committed');
+    assert.strictEqual(writableExecutionCount, 1);
+    assert.strictEqual(readOnlyContextMutation, false);
+    assert.strictEqual(readOnlyIdentityMutation, false);
+    assert.strictEqual(writableContextMutation, false);
+    assert.strictEqual(writableIdentityMutation, false);
+    for (const context of [readOnlyContext, writableContext]) {
+      assert.notStrictEqual(context.capabilities, context.session.identity.capabilities);
+      assert.ok(Object.isFrozen(context.capabilities), 'Capability snapshots must be frozen');
+      assert.ok(Object.isFrozen(context.session.identity.capabilities), 'Session capabilities must be frozen');
+      assert.deepStrictEqual(context.capabilities, context.session.identity.capabilities);
+    }
+  });
+
   test('resolveFromResource with file:// URI string and Uri-like object', async () => {
     const registry = new WorkspaceRegistry();
     await registry.registerTargetedRoot({ configPath: standaloneConfigRoot, format: ConfigFormat.Designer });
