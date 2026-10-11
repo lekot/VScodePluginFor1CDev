@@ -274,6 +274,11 @@ export interface ResolvedAgentPath {
     tabularSection?: string;
 }
 
+export interface AgentResolutionContext {
+    readonly session: import('../services/configurationSession/ConfigurationSession').ConfigurationSession;
+    readonly resolvedAddress?: import('./agentSourceAddressResolver').ResolvedSourceAddress;
+}
+
 export interface AddAttributeParams extends MutationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары' */
     path: string;

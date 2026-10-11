@@ -10,6 +10,17 @@ import { parsePredefinedCharacteristics } from '../parsers/predefinedCharacteris
 import { buildXmlString, writeUtf8FileWithBackup } from '../utils/xml/xmlFileIo';
 import { requireDocumentWriteFormatProfile } from '../utils/format/formatRank';
 import type { PredefinedCharacteristicEntry } from '../types/predefinedCharacteristic';
+import { AgentPathError } from './agentPathResolver';
+import type { ResolvedAgentPath } from './types';
+import type { ResolvedSourceAddress } from './agentSourceAddressResolver';
+import { MetadataType } from '../models/treeNode';
+import {
+  assertNoSymlinkSegments,
+  assertPathWithinRoot,
+  isPathInside,
+  isSamePath,
+  PathBoundaryError,
+} from '../services/configurationSession/pathBoundary';
 
 // Designer folder name for COT
 const COT_FOLDER = 'ChartsOfCharacteristicTypes';
@@ -24,23 +35,186 @@ const xmlParser = new XMLParser({
 
 // ─── Path helpers ────────────────────────────────────────────────────────────
 
-/** Resolve a COT name or agent path (ChartOfCharacteristicTypes.Name) to the COT directory. */
-function resolveCotDir(configRoot: string, cotPath: string): { cotName: string; cotDir: string } {
-  const segments = cotPath.split('.');
-  // Accept 'ChartOfCharacteristicTypes.Name' or plain 'Name'
-  const cotName = segments.length >= 2 ? segments[segments.length - 1] : cotPath;
-  const cotDir = path.join(configRoot, COT_FOLDER, cotName);
-  return { cotName, cotDir };
+/**
+ * Normalizes a COT address or plain name into a canonical 2-segment metadata address.
+ * e.g. "Shared" -> "ChartOfCharacteristicTypes.Shared"
+ *      "ext:Shared" -> "ext:ChartOfCharacteristicTypes.Shared"
+ *      "ChartOfCharacteristicTypes.Shared" -> "ChartOfCharacteristicTypes.Shared"
+ *      "Catalog.Shared" -> "Catalog.Shared" (preserves other metadata types for authoritative validation)
+ */
+export function normalizeCotAddress(address: string): string {
+  if (typeof address !== 'string') {
+    return '';
+  }
+  const trimmed = address.trim();
+  if (!trimmed) {
+    return '';
+  }
+  const colonIndex = trimmed.indexOf(':');
+  const prefix = colonIndex >= 0 ? trimmed.slice(0, colonIndex + 1) : '';
+  const body = colonIndex >= 0 ? trimmed.slice(colonIndex + 1).trim() : trimmed;
+  if (!body.includes('.')) {
+    return `${prefix}ChartOfCharacteristicTypes.${body}`;
+  }
+  return trimmed;
 }
+
+export interface ResolvedCotTarget {
+  readonly configRoot: string;
+  readonly cotName: string;
+  readonly cotDir: string;
+}
+
+export type CotTargetLike =
+  | string
+  | ResolvedCotTarget
+  | ResolvedAgentPath
+  | ResolvedSourceAddress;
+
+/**
+ * Resolves a COT target (either typed ResolvedAgentPath / ResolvedSourceAddress or string)
+ * into a verified ResolvedCotTarget. Rejects mismatched metadata types with AgentPathError.
+ */
+export function resolveCotTarget(
+  configRoot: string,
+  target: CotTargetLike,
+): ResolvedCotTarget {
+  if (typeof target === 'object' && target !== null) {
+    if ('cotDir' in target && typeof target.cotDir === 'string') {
+      if (
+        !('configRoot' in target)
+        || typeof target.configRoot !== 'string'
+        || !isSamePath(target.configRoot, configRoot)
+        || !isValidCotName(target.cotName)
+      ) {
+        throw invalidCotTarget('COT target does not belong to the selected configuration.');
+      }
+      const expectedCotDir = path.resolve(configRoot, COT_FOLDER, target.cotName);
+      if (!isPathInside(configRoot, expectedCotDir) || !isSamePath(target.cotDir, expectedCotDir)) {
+        throw invalidCotTarget('COT directory is outside the selected configuration.');
+      }
+      return { configRoot, cotName: target.cotName, cotDir: expectedCotDir };
+    }
+    if (
+      'configRoot' in target
+      && (typeof target.configRoot !== 'string' || !isSamePath(target.configRoot, configRoot))
+    ) {
+      throw invalidCotTarget('COT target does not belong to the selected configuration.');
+    }
+    const resolvedPath = 'resolvedPath' in target ? target.resolvedPath : (target as ResolvedAgentPath);
+    if (
+      resolvedPath.rootTag !== 'ChartOfCharacteristicTypes' &&
+      resolvedPath.rootTag !== MetadataType.ChartOfCharacteristicTypes
+    ) {
+      throw new AgentPathError(
+        'INVALID_AGENT_PATH',
+        `Expected ChartOfCharacteristicTypes path, got ${resolvedPath.rootTag}.${resolvedPath.objectName}`,
+      );
+    }
+    const cotName = resolvedPath.objectName;
+    if (!isValidCotName(cotName)) {
+      throw invalidCotTarget('Invalid ChartOfCharacteristicTypes object name.');
+    }
+    const cotDir = path.resolve(configRoot, COT_FOLDER, cotName);
+    if (!isPathInside(configRoot, cotDir)) {
+      throw invalidCotTarget('COT directory is outside the selected configuration.');
+    }
+    return { configRoot, cotName, cotDir };
+  }
+
+  if (typeof target !== 'string' || !target.trim()) {
+    throw new AgentPathError('INVALID_AGENT_PATH', 'Invalid ChartOfCharacteristicTypes path.');
+  }
+
+  const normalized = normalizeCotAddress(target);
+  const colonIndex = normalized.indexOf(':');
+  const dotPath = colonIndex >= 0 ? normalized.slice(colonIndex + 1).trim() : normalized.trim();
+  const segments = dotPath.split('.');
+  if (segments.length === 2) {
+    const [rootTag, cotName] = segments;
+    if (
+      rootTag !== 'ChartOfCharacteristicTypes' &&
+      rootTag !== MetadataType.ChartOfCharacteristicTypes
+    ) {
+      throw new AgentPathError(
+        'INVALID_AGENT_PATH',
+        `Expected ChartOfCharacteristicTypes path, got ${rootTag}.${cotName}`,
+      );
+    }
+    if (!isValidCotName(cotName)) {
+      throw invalidCotTarget('Invalid ChartOfCharacteristicTypes object name.');
+    }
+    const cotDir = path.resolve(configRoot, COT_FOLDER, cotName);
+    if (!isPathInside(configRoot, cotDir)) {
+      throw invalidCotTarget('COT directory is outside the selected configuration.');
+    }
+    return { configRoot, cotName, cotDir };
+  }
+
+  throw new AgentPathError(
+    'INVALID_AGENT_PATH',
+    `Invalid ChartOfCharacteristicTypes target: "${target}"`,
+  );
+}
+
+function isValidCotName(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.trim() === value
+    && value !== '.'
+    && value !== '..'
+    && !value.includes('\0')
+    && !value.includes('/')
+    && !value.includes('\\');
+}
+
+function invalidCotTarget(message: string): AgentPathError {
+  return new AgentPathError('INVALID_AGENT_PATH', message);
+}
+
 
 function predefinedXmlPath(cotDir: string): string {
   return path.join(cotDir, 'Ext', 'Predefined.xml');
 }
 
+async function assertConfiguredPathHasNoSymlinks(
+  configRoot: string,
+  targetPath: string,
+): Promise<{ canonicalRoot: string; canonicalTarget: string }> {
+  try {
+    const boundary = await assertPathWithinRoot(configRoot, targetPath);
+    const relativeTarget = path.relative(path.resolve(configRoot), path.resolve(targetPath));
+    const canonicalLexicalTarget = path.resolve(boundary.canonicalRoot, relativeTarget);
+    await assertNoSymlinkSegments(boundary.canonicalRoot, canonicalLexicalTarget);
+    try {
+      const stat = await fs.promises.lstat(targetPath);
+      if (stat.isSymbolicLink()) {
+        throw new PathBoundaryError('PATH_OUTSIDE_ROOT', `Target is a symbolic link: ${targetPath}`, targetPath);
+      }
+    } catch (error) {
+      if (error instanceof PathBoundaryError) {
+        throw error;
+      }
+      if (!isMissingPathError(error)) {
+        throw error;
+      }
+    }
+    return boundary;
+  } catch (error) {
+    if (error instanceof PathBoundaryError) {
+      throw invalidCotTarget('Predefined.xml path is not a regular path inside the selected configuration.');
+    }
+    throw error;
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT');
+}
+
 // ─── Read helpers ────────────────────────────────────────────────────────────
 
-async function readPredefinedXml(cotDir: string): Promise<string | null> {
-  const xmlPath = predefinedXmlPath(cotDir);
+async function readPredefinedXml(xmlPath: string): Promise<string | null> {
   try {
     return await fs.promises.readFile(xmlPath, 'utf-8');
   } catch {
@@ -95,10 +269,13 @@ function buildTypeObject(types: readonly string[]): Record<string, unknown> {
  */
 export async function listPredefinedCharacteristics(
   configRoot: string,
-  cotPath: string
+  cotTarget: CotTargetLike
 ): Promise<PredefinedCharacteristicEntry[]> {
-  const { cotDir } = resolveCotDir(configRoot, cotPath);
-  const xml = await readPredefinedXml(cotDir);
+  const { cotDir } = resolveCotTarget(configRoot, cotTarget);
+  const boundary = await assertConfiguredPathHasNoSymlinks(configRoot, predefinedXmlPath(cotDir));
+  const xmlPath = boundary.canonicalTarget;
+  const xml = await readPredefinedXml(xmlPath);
+  await assertConfiguredPathHasNoSymlinks(configRoot, predefinedXmlPath(cotDir));
   if (!xml) {
     return [];
   }
@@ -110,10 +287,10 @@ export async function listPredefinedCharacteristics(
  */
 export async function getPredefinedCharacteristicType(
   configRoot: string,
-  cotPath: string,
+  cotTarget: CotTargetLike,
   predefinedName: string
 ): Promise<string[]> {
-  const entries = await listPredefinedCharacteristics(configRoot, cotPath);
+  const entries = await listPredefinedCharacteristics(configRoot, cotTarget);
   const entry = entries.find((e) => e.name === predefinedName);
   if (!entry) {
     return [];
@@ -127,12 +304,13 @@ export async function getPredefinedCharacteristicType(
  */
 export async function setPredefinedCharacteristicType(
   configRoot: string,
-  cotPath: string,
+  cotTarget: CotTargetLike,
   predefinedName: string,
   types: readonly string[]
 ): Promise<void> {
-  const { cotDir } = resolveCotDir(configRoot, cotPath);
-  const xmlPath = predefinedXmlPath(cotDir);
+  const { cotDir } = resolveCotTarget(configRoot, cotTarget);
+  const initialBoundary = await assertConfiguredPathHasNoSymlinks(configRoot, predefinedXmlPath(cotDir));
+  const xmlPath = initialBoundary.canonicalTarget;
   const originalContent = await fs.promises.readFile(xmlPath, 'utf-8');
   requireDocumentWriteFormatProfile(originalContent);
 
@@ -177,7 +355,26 @@ export async function setPredefinedCharacteristicType(
   targetItem['Type'] = buildTypeObject(types);
 
   const updated = buildXmlString(parsed);
-  await writeUtf8FileWithBackup(xmlPath, originalContent, updated);
+  const currentBoundary = await assertConfiguredPathHasNoSymlinks(configRoot, predefinedXmlPath(cotDir));
+  if (!isSamePath(xmlPath, currentBoundary.canonicalTarget)) {
+    throw invalidCotTarget('Predefined.xml target changed while the update was being prepared.');
+  }
+  await writeUtf8FileWithBackup(xmlPath, originalContent, updated, {
+    hooks: {
+      readFile: async (filePath, encoding) => {
+        await assertConfiguredPathHasNoSymlinks(initialBoundary.canonicalRoot, filePath);
+        return fs.promises.readFile(filePath, encoding);
+      },
+      writeFile: async (filePath, content, optionsOrEncoding) => {
+        await assertConfiguredPathHasNoSymlinks(initialBoundary.canonicalRoot, filePath);
+        return fs.promises.writeFile(filePath, content, optionsOrEncoding);
+      },
+      unlink: async (filePath) => {
+        await assertConfiguredPathHasNoSymlinks(initialBoundary.canonicalRoot, filePath);
+        return fs.promises.unlink(filePath);
+      },
+    },
+  });
   Logger.info(`setPredefinedCharacteristicType: updated "${predefinedName}" in ${xmlPath}`);
 }
 
@@ -188,9 +385,9 @@ export async function setPredefinedCharacteristicType(
  */
 export async function getCharacteristicValueRegisters(
   configRoot: string,
-  cotPath: string
+  cotTarget: CotTargetLike
 ): Promise<string[]> {
-  const { cotName } = resolveCotDir(configRoot, cotPath);
+  const { cotName } = resolveCotTarget(configRoot, cotTarget);
   const irDir = path.join(configRoot, IR_FOLDER);
 
   let irEntries: string[];

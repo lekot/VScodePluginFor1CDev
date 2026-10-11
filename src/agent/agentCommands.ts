@@ -68,8 +68,10 @@ import {
     getPredefinedCharacteristicType,
     setPredefinedCharacteristicType,
     getCharacteristicValueRegisters,
+    normalizeCotAddress,
 } from './predefinedCharacteristicOperations';
 import type {
+    AgentResolutionContext,
     CotPathParams,
     PredefinedCotPathParams,
     SetPredefinedCotTypeParams,
@@ -170,7 +172,7 @@ export function registerAgentCommands(
     const resolveSession = async (
         params: ConfigurationScopedParams = {},
         capability: keyof ConfigurationIdentity['capabilities'] = 'read',
-    ) => {
+    ): Promise<AgentResolutionContext> => {
         const registry = await getConfigurationRegistry();
         if (!registry) {
             throw new WorkspaceRegistryError('CONFIGURATION_NOT_FOUND', 'Корень конфигурации не найден.');
@@ -188,7 +190,7 @@ export function registerAgentCommands(
                     `Конфигурация ${session.identity.configurationId} не поддерживает ${capability}.`,
                 );
             }
-            return session;
+            return { session };
         }
         const candidateAddress = extractCandidateAddress(params);
         if (candidateAddress) {
@@ -219,23 +221,25 @@ export function registerAgentCommands(
                     `Конфигурация ${resolved.session.identity.configurationId} не поддерживает ${capability}.`,
                 );
             }
-            return resolved.session;
+            return { session: resolved.session, resolvedAddress: resolved };
         }
-        return resolveAgentConfiguration(registry, params, capability);
+        const session = resolveAgentConfiguration(registry, params, capability);
+        return { session };
     };
 
     const runForConfiguration = async <T>(
         params: ConfigurationScopedParams,
         capability: keyof ConfigurationIdentity['capabilities'],
         mutationKind: string | undefined,
-        operation: (configRoot: string) => Promise<AgentResult<T>>,
+        operation: (configRoot: string, context: AgentResolutionContext) => Promise<AgentResult<T>>,
         cancellation?: vscode.CancellationToken,
     ): Promise<AgentResult<T>> => {
         try {
-            const session = await resolveSession(params, capability);
+            const context = await resolveSession(params, capability);
+            const session = context.session;
             if (!mutationKind) {
                 const readOutcome = await session.runRead(
-                    () => operation(session.identity.rootPath),
+                    () => operation(session.identity.rootPath, context),
                     cancellation,
                 );
                 if (readOutcome.status === 'cancelled') {
@@ -246,9 +250,13 @@ export function registerAgentCommands(
                     };
                 }
                 if (readOutcome.status === 'failed') {
+                    const err = readOutcome.error;
                     return {
                         success: false,
-                        error: readOutcome.error?.message ?? 'Ошибка чтения конфигурации.',
+                        code: err instanceof AgentPathError || err instanceof WorkspaceRegistryError
+                            ? err.code
+                            : 'FAILED',
+                        error: err?.message ?? 'Ошибка чтения конфигурации.',
                     };
                 }
                 const result = readOutcome.value;
@@ -262,8 +270,8 @@ export function registerAgentCommands(
             const outcome = await session.enqueue({
                 kind: mutationKind,
                 cancellation,
-                execute: () => operation(session.identity.rootPath),
-                commitWhen: (result) => result.success,
+                execute: () => operation(session.identity.rootPath, context),
+                commitWhen: (result: AgentResult<T>) => result.success,
             });
             if (outcome.status === 'committed' || (outcome.status === 'failed' && outcome.value)) {
                 const value = outcome.value!;
@@ -274,12 +282,18 @@ export function registerAgentCommands(
                     snapshotVersion: outcome.snapshotVersion,
                 };
             }
+            const outcomeError = 'error' in outcome ? outcome.error : undefined;
             const failureError = outcome.status === 'failed' || outcome.status === 'conflict'
-                ? outcome.error?.message ?? 'Операция конфигурации не выполнена.'
+                ? outcomeError?.message ?? 'Операция конфигурации не выполнена.'
                 : 'Операция отменена.';
+            const failureCode = outcome.status === 'conflict'
+                ? outcome.code
+                : (outcomeError instanceof AgentPathError || outcomeError instanceof WorkspaceRegistryError
+                    ? outcomeError.code
+                    : outcome.status.toUpperCase());
             return {
                 success: false,
-                code: outcome.status === 'conflict' ? outcome.code : outcome.status.toUpperCase(),
+                code: failureCode,
                 error: failureError,
                 configurationId: outcome.configurationId,
                 operationId: outcome.operationId,
@@ -288,7 +302,9 @@ export function registerAgentCommands(
         } catch (error) {
             return {
                 success: false,
-                code: error instanceof WorkspaceRegistryError ? error.code : 'CONFIGURATION_OPERATION_FAILED',
+                code: error instanceof WorkspaceRegistryError || error instanceof AgentPathError
+                    ? error.code
+                    : 'CONFIGURATION_OPERATION_FAILED',
                 error: error instanceof Error ? error.message : String(error),
             };
         }
@@ -302,7 +318,8 @@ export function registerAgentCommands(
         ) => Promise<MutationPlan<AgentResult<T>>>,
     ): Promise<AgentResult<T>> => {
         try {
-            const session = await resolveSession(params, 'write');
+            const context = await resolveSession(params, 'write');
+            const session = context.session;
             const plan = await buildPlan(session.identity.rootPath, session.identity.format);
             const outcome = await session.enqueuePlan(plan);
             if (outcome.status === 'committed') {
@@ -1155,9 +1172,13 @@ export function registerAgentCommands(
     const listPredefinedCharacteristicsCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.listPredefinedCharacteristics',
         async (params: CotPathParams) => {
-            return runForConfiguration(params, 'read', undefined, async (configRoot) => ({
+            const normalizedParams = { ...params, path: normalizeCotAddress(params.path) };
+            return runForConfiguration(normalizedParams, 'read', undefined, async (configRoot, context) => ({
                 success: true,
-                data: await listPredefinedCharacteristics(configRoot, params.path),
+                data: await listPredefinedCharacteristics(
+                    configRoot,
+                    context.resolvedAddress ?? normalizedParams.path,
+                ),
             }));
         }
     );
@@ -1165,9 +1186,14 @@ export function registerAgentCommands(
     const getPredefinedCharacteristicTypeCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.getPredefinedCharacteristicType',
         async (params: PredefinedCotPathParams) => {
-            return runForConfiguration(params, 'read', undefined, async (configRoot) => ({
+            const normalizedParams = { ...params, path: normalizeCotAddress(params.path) };
+            return runForConfiguration(normalizedParams, 'read', undefined, async (configRoot, context) => ({
                 success: true,
-                data: await getPredefinedCharacteristicType(configRoot, params.path, params.predefinedName),
+                data: await getPredefinedCharacteristicType(
+                    configRoot,
+                    context.resolvedAddress ?? normalizedParams.path,
+                    params.predefinedName,
+                ),
             }));
         }
     );
@@ -1175,8 +1201,14 @@ export function registerAgentCommands(
     const setPredefinedCharacteristicTypeCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.setPredefinedCharacteristicType',
         async (params: SetPredefinedCotTypeParams) => {
-            return runForConfiguration(params, 'write', 'agent.setPredefinedCharacteristicType', async (configRoot) => {
-                await setPredefinedCharacteristicType(configRoot, params.path, params.predefinedName, params.types);
+            const normalizedParams = { ...params, path: normalizeCotAddress(params.path) };
+            return runForConfiguration(normalizedParams, 'write', 'agent.setPredefinedCharacteristicType', async (configRoot, context) => {
+                await setPredefinedCharacteristicType(
+                    configRoot,
+                    context.resolvedAddress ?? normalizedParams.path,
+                    params.predefinedName,
+                    params.types,
+                );
                 return { success: true };
             });
         }
@@ -1185,9 +1217,13 @@ export function registerAgentCommands(
     const getCharacteristicValueRegistersCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.getCharacteristicValueRegisters',
         async (params: CotPathParams) => {
-            return runForConfiguration(params, 'read', undefined, async (configRoot) => ({
+            const normalizedParams = { ...params, path: normalizeCotAddress(params.path) };
+            return runForConfiguration(normalizedParams, 'read', undefined, async (configRoot, context) => ({
                 success: true,
-                data: await getCharacteristicValueRegisters(configRoot, params.path),
+                data: await getCharacteristicValueRegisters(
+                    configRoot,
+                    context.resolvedAddress ?? normalizedParams.path,
+                ),
             }));
         }
     );
