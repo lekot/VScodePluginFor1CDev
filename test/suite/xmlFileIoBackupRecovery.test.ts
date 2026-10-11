@@ -11,6 +11,7 @@ import {
 } from '../../src/utils/xml/xmlFileIo';
 import { XMLWriter } from '../../src/utils/XMLWriter';
 import { configurationPathKey } from '../../src/utils/configurationPathIdentity';
+import { AtomicFileStorage } from '../../src/services/configurationSession/atomicFileStorage';
 
 suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
   let tempDir: string;
@@ -342,7 +343,7 @@ suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
     assert.strictEqual(await fsp.readFile(target, 'utf-8'), '<Root>Success</Root>');
   });
 
-  test('XMLWriter integration: updateProperty preserves recoverable backup on write and rollback failure', async () => {
+  test('XMLWriter integration: updateProperty preserves the source when atomic replace fails', async () => {
     const target = path.join(tempDir, 'Catalog.xml');
     const xmlContent = `<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">
@@ -355,41 +356,30 @@ suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
 </MetaDataObject>`;
     await fsp.writeFile(target, xmlContent, 'utf-8');
 
-    originalWriteFile = fs.promises.writeFile;
-    let targetWrites = 0;
-    fs.promises.writeFile = (async (filePath: string, data: any, enc: any) => {
-      if (path.resolve(filePath) === path.resolve(target)) {
-        targetWrites++;
-        // Write corrupted content, then fail both initial write and rollback
-        await originalWriteFile!.call(fs.promises, filePath, 'corrupted xml', enc);
-        throw new Error('Injected failure during XMLWriter target update');
-      }
-      return originalWriteFile!.call(fs.promises, filePath, data, enc);
-    }) as any;
+    const originalReplace = AtomicFileStorage.prototype.replace;
+    AtomicFileStorage.prototype.replace = async () => ({
+      status: 'rolledBack',
+      code: 'WRITE_FAILED',
+      message: 'Injected failure during XMLWriter atomic replace',
+    });
 
     try {
       await assert.rejects(
         async () => {
           await XMLWriter.updateProperty(target, 'Comment', 'New Comment');
         },
-        /Injected failure during XMLWriter target update/
+        /Injected failure during XMLWriter atomic replace/
       );
 
+      assert.strictEqual(await fsp.readFile(target, 'utf-8'), xmlContent, 'Atomic failure must preserve original XML');
       const files = await fsp.readdir(tempDir);
-      const backupFiles = files.filter((f) => f.includes('.bak'));
-      assert.strictEqual(
-        backupFiles.length,
-        1,
-        `XMLWriter must leave intact backup when write & rollback fail. Found files: ${JSON.stringify(files)}`
+      assert.deepStrictEqual(
+        files.filter((file) => file.includes('.bak') || file.startsWith('.cdt-')),
+        [],
+        'Failed atomic replace must leave no backup or temporary artifact'
       );
-      const backupPath = path.join(tempDir, backupFiles[0]);
-      const content = await fsp.readFile(backupPath, 'utf-8');
-      assert.ok(content.includes('Original Comment'), 'Backup must contain original XML content');
     } finally {
-      if (originalWriteFile) {
-        fs.promises.writeFile = originalWriteFile;
-        originalWriteFile = undefined;
-      }
+      AtomicFileStorage.prototype.replace = originalReplace;
     }
   });
 });

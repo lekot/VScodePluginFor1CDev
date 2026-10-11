@@ -1,0 +1,1405 @@
+{
+  "version": 1,
+  "sites": [
+    {
+      "file": "src/agent/agentBridge.ts",
+      "owner": "AgentBridge.removeBridgeFile",
+      "method": "unlink",
+      "target": "bridgeFilePath",
+      "count": 1
+    },
+    {
+      "file": "src/agent/agentBridge.ts",
+      "owner": "AgentBridge.startInternal",
+      "method": "mkdir",
+      "target": "vscodeDir",
+      "count": 1
+    },
+    {
+      "file": "src/agent/agentBridge.ts",
+      "owner": "AgentBridge.startInternal",
+      "method": "unlink",
+      "target": "bridgeFile",
+      "count": 1
+    },
+    {
+      "file": "src/agent/agentBridge.ts",
+      "owner": "AgentBridge.writeDiscoveryFileAtomic",
+      "method": "rename",
+      "target": "temporaryPath",
+      "count": 1
+    },
+    {
+      "file": "src/agent/agentBridge.ts",
+      "owner": "AgentBridge.writeDiscoveryFileAtomic",
+      "method": "unlink",
+      "target": "temporaryPath",
+      "count": 1
+    },
+    {
+      "file": "src/agent/agentBridge.ts",
+      "owner": "AgentBridge.writeDiscoveryFileAtomic",
+      "method": "writeFile",
+      "target": "temporaryPath",
+      "count": 1
+    },
+    {
+      "file": "src/agent/commandInterfaceOperations.ts",
+      "owner": "writeModel",
+      "method": "writeFileSync",
+      "target": "ciPath",
+      "count": 1
+    },
+    {
+      "file": "src/agent/predefinedCharacteristicOperations.ts",
+      "owner": "unlink",
+      "method": "unlink",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/agent/predefinedCharacteristicOperations.ts",
+      "owner": "writeFile",
+      "method": "writeFile",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/bindings/deployService.ts",
+      "owner": "createConfigurationSnapshot",
+      "method": "mkdir",
+      "target": "path.join(destination, directory.relativePath)",
+      "count": 1
+    },
+    {
+      "file": "src/bindings/deployService.ts",
+      "owner": "createConfigurationSnapshot",
+      "method": "rm",
+      "target": "parent",
+      "count": 1
+    },
+    {
+      "file": "src/bindings/deployService.ts",
+      "owner": "createConfigurationSnapshot",
+      "method": "symlink",
+      "target": "target",
+      "count": 1
+    },
+    {
+      "file": "src/bindings/deployService.ts",
+      "owner": "DeployService.deployBinding",
+      "method": "rm",
+      "target": "parent",
+      "count": 1
+    },
+    {
+      "file": "src/commands/cfCommands.ts",
+      "owner": "<callback>",
+      "method": "rm",
+      "target": "stagingRoot",
+      "count": 1
+    },
+    {
+      "file": "src/commands/cfCommands.ts",
+      "owner": "copyDirectoryContents",
+      "method": "copyFile",
+      "target": "srcPath",
+      "count": 1
+    },
+    {
+      "file": "src/commands/cfCommands.ts",
+      "owner": "copyDirectoryContents",
+      "method": "mkdir",
+      "target": "destDir",
+      "count": 1
+    },
+    {
+      "file": "src/commands/cfCommands.ts",
+      "owner": "prepareOutputDirectory",
+      "method": "mkdir",
+      "target": "dir",
+      "count": 1
+    },
+    {
+      "file": "src/commands/editorCommands.ts",
+      "owner": "<callback>",
+      "method": "mkdir",
+      "target": "path.dirname(fp)",
+      "count": 1
+    },
+    {
+      "file": "src/commands/editorCommands.ts",
+      "owner": "<callback>",
+      "method": "writeFile",
+      "target": "fp",
+      "count": 1
+    },
+    {
+      "file": "src/commands/editorCommands.ts",
+      "owner": "<callback>",
+      "method": "writeFileSync",
+      "target": "saveUri.fsPath",
+      "count": 1
+    },
+    {
+      "file": "src/commands/utilityCommands.ts",
+      "owner": "<callback>",
+      "method": "writeFile",
+      "target": "uri.fsPath",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/atomicFileWriter.ts",
+      "owner": "copyFile",
+      "method": "copyFile",
+      "target": "sourcePath",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/atomicFileWriter.ts",
+      "owner": "mkdir",
+      "method": "mkdir",
+      "target": "directoryPath",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/atomicFileWriter.ts",
+      "owner": "open",
+      "method": "open",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/atomicFileWriter.ts",
+      "owner": "rename",
+      "method": "rename",
+      "target": "oldPath",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/atomicFileWriter.ts",
+      "owner": "rm",
+      "method": "rm",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/atomicFileWriter.ts",
+      "owner": "writeExclusive",
+      "method": "writeFile",
+      "target": "content",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/mergeExecutor.ts",
+      "owner": "applyFolderOperation",
+      "method": "mkdir",
+      "target": "path.dirname(resolved.backupPath)",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/mergeExecutor.ts",
+      "owner": "applyFolderOperation",
+      "method": "mkdir",
+      "target": "path.dirname(resolved.targetPath)",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/mergeExecutor.ts",
+      "owner": "applyFolderOperation",
+      "method": "rm",
+      "target": "resolved.targetPath",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/mergeExecutor.ts",
+      "owner": "copyFile",
+      "method": "copyFile",
+      "target": "sourcePath",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/mergeExecutor.ts",
+      "owner": "mkdir",
+      "method": "mkdir",
+      "target": "directoryPath",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/mergeExecutor.ts",
+      "owner": "open",
+      "method": "open",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/mergeExecutor.ts",
+      "owner": "rename",
+      "method": "rename",
+      "target": "oldPath",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/mergeExecutor.ts",
+      "owner": "restoreFolderOperationAfterFailure",
+      "method": "mkdir",
+      "target": "path.dirname(resolved.targetPath)",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/mergeExecutor.ts",
+      "owner": "restoreFolderOperationAfterFailure",
+      "method": "rm",
+      "target": "resolved.targetPath",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/mergeExecutor.ts",
+      "owner": "rm",
+      "method": "rm",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/mergeExecutor.ts",
+      "owner": "rollbackFolderOperation",
+      "method": "mkdir",
+      "target": "path.dirname(resolved.targetPath)",
+      "count": 1
+    },
+    {
+      "file": "src/compareMerge/merge/mergeExecutor.ts",
+      "owner": "rollbackFolderOperation",
+      "method": "rm",
+      "target": "resolved.targetPath",
+      "count": 2
+    },
+    {
+      "file": "src/configurationProject/configurationProjectService.ts",
+      "owner": "<callback>",
+      "method": "writeFile",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/configurationProject/configurationProjectService.ts",
+      "owner": "ConfigurationProjectService.createProject",
+      "method": "mkdir",
+      "target": "path.dirname(initialTarget)",
+      "count": 1
+    },
+    {
+      "file": "src/configurationProject/configurationProjectService.ts",
+      "owner": "ConfigurationProjectService.createProject",
+      "method": "mkdir",
+      "target": "staging",
+      "count": 1
+    },
+    {
+      "file": "src/configurationProject/configurationProjectService.ts",
+      "owner": "ConfigurationProjectService.createProject",
+      "method": "rename",
+      "target": "staging",
+      "count": 1
+    },
+    {
+      "file": "src/configurationProject/configurationProjectService.ts",
+      "owner": "ConfigurationProjectService.createProject",
+      "method": "rm",
+      "target": "staging",
+      "count": 1
+    },
+    {
+      "file": "src/configurationProject/configurationProjectService.ts",
+      "owner": "ConfigurationProjectService.writeScaffold",
+      "method": "mkdir",
+      "target": "languagesDirectory",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/createProject.ts",
+      "owner": "CfeProjectService.createInBaseSession",
+      "method": "mkdir",
+      "target": "path.dirname(staging)",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/createProject.ts",
+      "owner": "CfeProjectService.createInBaseSession",
+      "method": "mkdir",
+      "target": "staging",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/createProject.ts",
+      "owner": "CfeProjectService.createInBaseSession",
+      "method": "rename",
+      "target": "staging",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/createProject.ts",
+      "owner": "CfeProjectService.createInBaseSession",
+      "method": "rm",
+      "target": "staging",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/createProject.ts",
+      "owner": "removePublishedDirectory",
+      "method": "rm",
+      "target": "boundary.canonicalTarget",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/createProject.ts",
+      "owner": "writeRecoveryJournal",
+      "method": "mkdir",
+      "target": "directory",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/createProject.ts",
+      "owner": "writeRecoveryJournal",
+      "method": "writeFile",
+      "target": "journalPath",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/createProject.ts",
+      "owner": "writeScaffold",
+      "method": "mkdir",
+      "target": "path.join(root, 'Languages')",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/createProject.ts",
+      "owner": "writeScaffold",
+      "method": "mkdir",
+      "target": "path.join(root, 'Roles')",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/createProject.ts",
+      "owner": "writeXmlFile",
+      "method": "writeFile",
+      "target": "target",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/manifest.ts",
+      "owner": "CfeProjectManifestStorage.writeAtomic",
+      "method": "mkdir",
+      "target": "directory",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/manifest.ts",
+      "owner": "CfeProjectManifestStorage.writeAtomic",
+      "method": "rename",
+      "target": "temporary",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/manifest.ts",
+      "owner": "CfeProjectManifestStorage.writeAtomic",
+      "method": "rm",
+      "target": "temporary",
+      "count": 1
+    },
+    {
+      "file": "src/extensionSupport/cfeProject/manifest.ts",
+      "owner": "CfeProjectManifestStorage.writeAtomic",
+      "method": "writeFile",
+      "target": "temporary",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formEditorProvider.ts",
+      "owner": "<callback>",
+      "method": "mkdir",
+      "target": "path.dirname(destination.fsPath)",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formEditorProvider.ts",
+      "owner": "<callback>",
+      "method": "mkdir",
+      "target": "path.dirname(destinationModulePath)",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formEditorProvider.ts",
+      "owner": "<callback>",
+      "method": "writeFile",
+      "target": "destinationModulePath",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formEditorProvider.ts",
+      "owner": "delete",
+      "method": "rm",
+      "target": "backupPath",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formEditorProvider.ts",
+      "owner": "FormEditorProvider.backupCustomDocument",
+      "method": "mkdir",
+      "target": "path.dirname(backupPath)",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formEditorProvider.ts",
+      "owner": "FormEditorProvider.backupCustomDocument",
+      "method": "writeFile",
+      "target": "backupPath",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formEditorProvider.ts",
+      "owner": "restoreFileSnapshot",
+      "method": "mkdir",
+      "target": "path.dirname(filePath)",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formEditorProvider.ts",
+      "owner": "restoreFileSnapshot",
+      "method": "rm",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formEditorProvider.ts",
+      "owner": "restoreFileSnapshot",
+      "method": "writeFile",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formEventHandlerCreator.ts",
+      "owner": "createHandlerInModule",
+      "method": "mkdir",
+      "target": "dir",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formEventHandlerCreator.ts",
+      "owner": "createHandlerInModule",
+      "method": "writeFile",
+      "target": "modulePath",
+      "count": 2
+    },
+    {
+      "file": "src/formEditor/formMessageHandler.ts",
+      "owner": "<callback>",
+      "method": "rm",
+      "target": "modulePath",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formMessageHandler.ts",
+      "owner": "<callback>",
+      "method": "writeFile",
+      "target": "modulePath",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formMessageHandler.ts",
+      "owner": "rollbackPendingModuleFileTransaction",
+      "method": "rm",
+      "target": "transaction.modulePath",
+      "count": 1
+    },
+    {
+      "file": "src/formEditor/formMessageHandler.ts",
+      "owner": "rollbackPendingModuleFileTransaction",
+      "method": "writeFile",
+      "target": "transaction.modulePath",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/ibcmdConfigPathResolver.ts",
+      "owner": "dispose",
+      "method": "unlink",
+      "target": "canonical",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/ibcmdConfigPathResolver.ts",
+      "owner": "dispose",
+      "method": "unlink",
+      "target": "logical",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/ibcmdConfigPathResolver.ts",
+      "owner": "writeTempYaml",
+      "method": "writeFile",
+      "target": "tmp",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/ibcmdExportTargetDir.ts",
+      "owner": "<callback>",
+      "method": "rm",
+      "target": "path.join(dir, e.name)",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "<callback>",
+      "method": "rename",
+      "target": "from",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "<callback>",
+      "method": "rm",
+      "target": "target",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "copyConfigurationPublishEntry",
+      "method": "copyFile",
+      "target": "sourcePath",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "copyConfigurationPublishEntry",
+      "method": "mkdir",
+      "target": "destinationPath",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "copyConfigurationPublishEntry",
+      "method": "mkdir",
+      "target": "path.dirname(destinationPath)",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "copyTreeOverwrite",
+      "method": "copyFile",
+      "target": "srcPath",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "copyTreeOverwrite",
+      "method": "mkdir",
+      "target": "destPath",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "publishConfigurationTree",
+      "method": "mkdir",
+      "target": "backupRoot",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "publishConfigurationTree",
+      "method": "mkdir",
+      "target": "destination",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "publishConfigurationTree",
+      "method": "mkdir",
+      "target": "stagingRoot",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "runInfobaseConfigExportObjects",
+      "method": "mkdirSync",
+      "target": "tempExportDir",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "runInfobaseConfigExportObjects",
+      "method": "rmSync",
+      "target": "tempExportDir",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "runInfobaseConfigExportToDirectory",
+      "method": "mkdir",
+      "target": "tempExportDir",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseConfigCommands.ts",
+      "owner": "runInfobaseConfigExportToDirectory",
+      "method": "rm",
+      "target": "tempExportDir",
+      "count": 1
+    },
+    {
+      "file": "src/infobases/infobaseV8iCommands.ts",
+      "owner": "runExportInfobasesV8i",
+      "method": "writeFile",
+      "target": "uri.fsPath",
+      "count": 1
+    },
+    {
+      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
+      "owner": "<callback>",
+      "method": "link",
+      "target": "tempPath",
+      "count": 1
+    },
+    {
+      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
+      "owner": "<callback>",
+      "method": "mkdir",
+      "target": "dir",
+      "count": 1
+    },
+    {
+      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
+      "owner": "<callback>",
+      "method": "open",
+      "target": "targetPath",
+      "count": 1
+    },
+    {
+      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
+      "owner": "<callback>",
+      "method": "open",
+      "target": "tempPath",
+      "count": 1
+    },
+    {
+      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
+      "owner": "<callback>",
+      "method": "unlink",
+      "target": "targetPath",
+      "count": 1
+    },
+    {
+      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
+      "owner": "<callback>",
+      "method": "unlink",
+      "target": "tempPath",
+      "count": 1
+    },
+    {
+      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
+      "owner": "<callback>",
+      "method": "writeFile",
+      "target": "xmlContent",
+      "count": 2
+    },
+    {
+      "file": "src/services/cfConfigurationService.ts",
+      "owner": "buildCfFromXmlConfiguration",
+      "method": "mkdir",
+      "target": "path.dirname(params.outFile)",
+      "count": 1
+    },
+    {
+      "file": "src/services/cfConfigurationService.ts",
+      "owner": "cleanupTempRoot",
+      "method": "rm",
+      "target": "tempRoot",
+      "count": 1
+    },
+    {
+      "file": "src/services/cfConfigurationService.ts",
+      "owner": "decomposeCfToXmlDirectory",
+      "method": "mkdir",
+      "target": "params.outDir",
+      "count": 1
+    },
+    {
+      "file": "src/services/cfConfigurationService.ts",
+      "owner": "prepareTempConnection",
+      "method": "mkdir",
+      "target": "dbPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/cfConfigurationService.ts",
+      "owner": "prepareTempConnection",
+      "method": "mkdir",
+      "target": "offlineDataDir",
+      "count": 1
+    },
+    {
+      "file": "src/services/cfConfigurationService.ts",
+      "owner": "prepareTempConnection",
+      "method": "mkdir",
+      "target": "tempRoot",
+      "count": 1
+    },
+    {
+      "file": "src/services/configCompareService.ts",
+      "owner": "<callback>",
+      "method": "rmSync",
+      "target": "base",
+      "count": 1
+    },
+    {
+      "file": "src/services/configCompareService.ts",
+      "owner": "runCompareInfobaseConfigurations",
+      "method": "mkdirSync",
+      "target": "dirA",
+      "count": 1
+    },
+    {
+      "file": "src/services/configCompareService.ts",
+      "owner": "runCompareInfobaseConfigurations",
+      "method": "mkdirSync",
+      "target": "dirB",
+      "count": 1
+    },
+    {
+      "file": "src/services/configurationRepository/repositoryObjectsFileWriter.ts",
+      "owner": "dispose",
+      "method": "rm",
+      "target": "directory",
+      "count": 2
+    },
+    {
+      "file": "src/services/configurationRepository/repositoryObjectsFileWriter.ts",
+      "owner": "writeRepositoryConfigurationObjectsFile",
+      "method": "writeFile",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/configurationRepository/repositoryObjectsFileWriter.ts",
+      "owner": "writeRepositoryObjectsFile",
+      "method": "writeFile",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/configurationRepository/repositoryStores.ts",
+      "owner": "RepositoryBindingStore.writeFile",
+      "method": "mkdir",
+      "target": "path.dirname(this.filePath)",
+      "count": 1
+    },
+    {
+      "file": "src/services/configurationRepository/repositoryStores.ts",
+      "owner": "RepositoryBindingStore.writeFile",
+      "method": "rename",
+      "target": "tempPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/configurationRepository/repositoryStores.ts",
+      "owner": "RepositoryBindingStore.writeFile",
+      "method": "writeFile",
+      "target": "tempPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/configurationRepository/repositoryStores.ts",
+      "owner": "RepositoryStateStore.writeFile",
+      "method": "mkdir",
+      "target": "path.dirname(this.filePath)",
+      "count": 1
+    },
+    {
+      "file": "src/services/configurationRepository/repositoryStores.ts",
+      "owner": "RepositoryStateStore.writeFile",
+      "method": "rename",
+      "target": "tempPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/configurationRepository/repositoryStores.ts",
+      "owner": "RepositoryStateStore.writeFile",
+      "method": "writeFile",
+      "target": "tempPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/configurator/configuratorProcessRunner.ts",
+      "owner": "removeFileIfPresent",
+      "method": "rm",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "createForm",
+      "method": "mkdir",
+      "target": "formModuleDir",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "createForm",
+      "method": "mkdir",
+      "target": "formsPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "createForm",
+      "method": "writeFile",
+      "target": "formXmlPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "createForm",
+      "method": "writeFile",
+      "target": "modulePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "deleteElement",
+      "method": "rm",
+      "target": "elementDir",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "deleteElement",
+      "method": "rm",
+      "target": "extRoot",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "deleteElement",
+      "method": "rm",
+      "target": "fp",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "deleteElement",
+      "method": "unlink",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "deleteElement",
+      "method": "unlink",
+      "target": "fp",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "duplicateElement",
+      "method": "rm",
+      "target": "newDir",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "duplicateElement",
+      "method": "rm",
+      "target": "newFilePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "duplicateElement",
+      "method": "writeFile",
+      "target": "newFilePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "duplicateElement",
+      "method": "writeFile",
+      "target": "path.join(newDir, relativePath)",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "ensureCompanionTaskForBusinessProcess",
+      "method": "mkdir",
+      "target": "taskElementDir",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "ensureCompanionTaskForBusinessProcess",
+      "method": "mkdir",
+      "target": "tasksDir",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "ensureCompanionTaskForBusinessProcess",
+      "method": "writeFile",
+      "target": "taskFilePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "handleCreateRootObject",
+      "method": "mkdir",
+      "target": "elementDir",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "handleCreateRootObject",
+      "method": "mkdir",
+      "target": "path.dirname(moduleBslPath)",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "handleCreateRootObject",
+      "method": "mkdir",
+      "target": "typeFolderPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "handleCreateRootObject",
+      "method": "writeFile",
+      "target": "moduleBslPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "handleCreateRootObject",
+      "method": "writeFile",
+      "target": "newFilePath",
+      "count": 2
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "renameElement",
+      "method": "rename",
+      "target": "newDir",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "renameElement",
+      "method": "rename",
+      "target": "oldDir",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "renameElement",
+      "method": "rm",
+      "target": "newFilePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "renameElement",
+      "method": "unlink",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "renameElement",
+      "method": "writeFile",
+      "target": "artifact.filePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "renameElement",
+      "method": "writeFile",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "renameElement",
+      "method": "writeFile",
+      "target": "newFilePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "renameElement",
+      "method": "writeFile",
+      "target": "path.join(configRootPath, CONFIGURATION_XML)",
+      "count": 1
+    },
+    {
+      "file": "src/services/elementOperations.ts",
+      "owner": "renameElement",
+      "method": "writeFile",
+      "target": "path.join(newDir, relativePath)",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
+      "owner": "copyDirectoryWithoutLinks",
+      "method": "copyFile",
+      "target": "sourcePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
+      "owner": "copyDirectoryWithoutLinks",
+      "method": "mkdir",
+      "target": "destinationDirectory",
+      "count": 2
+    },
+    {
+      "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
+      "owner": "copyDirectoryWithoutLinks",
+      "method": "writeFile",
+      "target": "destinationPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
+      "owner": "ExternalArtifactProjectService.create",
+      "method": "mkdir",
+      "target": "path.join(stagingDirectory, name)",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
+      "owner": "ExternalArtifactProjectService.create",
+      "method": "mkdir",
+      "target": "stagingDirectory",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
+      "owner": "ExternalArtifactProjectService.create",
+      "method": "rename",
+      "target": "stagingDirectory",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
+      "owner": "ExternalArtifactProjectService.create",
+      "method": "rm",
+      "target": "stagingDirectory",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
+      "owner": "ExternalArtifactProjectService.create",
+      "method": "writeFile",
+      "target": "path.join(stagingDirectory, `${name}.xml`)",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
+      "owner": "ExternalArtifactProjectService.exportEmbedded",
+      "method": "mkdir",
+      "target": "stagingDirectory",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
+      "owner": "ExternalArtifactProjectService.exportEmbedded",
+      "method": "rename",
+      "target": "stagingDirectory",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
+      "owner": "ExternalArtifactProjectService.exportEmbedded",
+      "method": "rm",
+      "target": "stagingDirectory",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
+      "owner": "ExternalArtifactProjectService.exportEmbedded",
+      "method": "writeFile",
+      "target": "outputRootXmlPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalProcessorService.ts",
+      "owner": "link",
+      "method": "link",
+      "target": "existingPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalProcessorService.ts",
+      "owner": "mkdir",
+      "method": "mkdir",
+      "target": "directoryPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalProcessorService.ts",
+      "owner": "rename",
+      "method": "rename",
+      "target": "sourcePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalProcessorService.ts",
+      "owner": "rm",
+      "method": "rm",
+      "target": "targetPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalProcessorService.ts",
+      "owner": "unlink",
+      "method": "unlink",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/externalProcessor/externalProcessorService.ts",
+      "owner": "writeFile",
+      "method": "writeFile",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/services/ibcmd/ibcmdOfflineDataDir.ts",
+      "owner": "dispose",
+      "method": "rm",
+      "target": "canonical",
+      "count": 1
+    },
+    {
+      "file": "src/services/ibcmd/ibcmdOfflineDataDir.ts",
+      "owner": "dispose",
+      "method": "rm",
+      "target": "logical",
+      "count": 1
+    },
+    {
+      "file": "src/services/picture/commonPictureResolver.ts",
+      "owner": "resolveCommonPicture",
+      "method": "mkdir",
+      "target": "tempPicDir",
+      "count": 1
+    },
+    {
+      "file": "src/services/picture/commonPictureResolver.ts",
+      "owner": "resolveCommonPicture",
+      "method": "writeFile",
+      "target": "targetPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/registerRecorderDocumentLinker.ts",
+      "owner": "appendRegisterReferenceToRecorderDocument",
+      "method": "writeFile",
+      "target": "docPath",
+      "count": 1
+    },
+    {
+      "file": "src/services/registerRecorderDocumentLinker.ts",
+      "owner": "removeRegisterReferenceFromRecorderDocument",
+      "method": "writeFile",
+      "target": "docPath",
+      "count": 1
+    },
+    {
+      "file": "src/support/parentConfigurationsStore.ts",
+      "owner": "ParentConfigurationsStore.deleteValidatedTombstone",
+      "method": "rm",
+      "target": "tombstonePath",
+      "count": 1
+    },
+    {
+      "file": "src/support/parentConfigurationsStore.ts",
+      "owner": "ParentConfigurationsStore.ensureRecoveryRoot",
+      "method": "mkdir",
+      "target": "this.recoveryRoot",
+      "count": 1
+    },
+    {
+      "file": "src/support/parentConfigurationsStore.ts",
+      "owner": "ParentConfigurationsStore.finalizeRecoveryDirectory",
+      "method": "rename",
+      "target": "livePath",
+      "count": 1
+    },
+    {
+      "file": "src/support/parentConfigurationsStore.ts",
+      "owner": "ParentConfigurationsStore.prepareRecoveryJournal",
+      "method": "mkdir",
+      "target": "livePath",
+      "count": 1
+    },
+    {
+      "file": "src/support/parentConfigurationsStore.ts",
+      "owner": "writeNewAndSync",
+      "method": "open",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/support/parentConfigurationsStore.ts",
+      "owner": "writeNewAndSync",
+      "method": "writeFile",
+      "target": "bytes",
+      "count": 1
+    },
+    {
+      "file": "src/support/supportPayloadCache.ts",
+      "owner": "writeNewAndSync",
+      "method": "writeFile",
+      "target": "content",
+      "count": 1
+    },
+    {
+      "file": "src/support/supportRunJournal.ts",
+      "owner": "mkdir",
+      "method": "mkdir",
+      "target": "directoryPath",
+      "count": 1
+    },
+    {
+      "file": "src/support/supportRunJournal.ts",
+      "owner": "remove",
+      "method": "rm",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/support/supportRunJournal.ts",
+      "owner": "rename",
+      "method": "rename",
+      "target": "sourcePath",
+      "count": 1
+    },
+    {
+      "file": "src/support/supportRunJournal.ts",
+      "owner": "writeNewFile",
+      "method": "open",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/support/supportRunJournal.ts",
+      "owner": "writeNewFile",
+      "method": "writeFile",
+      "target": "contents",
+      "count": 1
+    },
+    {
+      "file": "src/utils/diskCache.ts",
+      "owner": "clearTreeCache",
+      "method": "unlink",
+      "target": "path.join(dir, f)",
+      "count": 1
+    },
+    {
+      "file": "src/utils/diskCache.ts",
+      "owner": "invalidateTreeCache",
+      "method": "unlink",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/utils/diskCache.ts",
+      "owner": "saveTreeToCache",
+      "method": "mkdir",
+      "target": "dir",
+      "count": 1
+    },
+    {
+      "file": "src/utils/diskCache.ts",
+      "owner": "saveTreeToCache",
+      "method": "writeFile",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/utils/referenceFinder.ts",
+      "owner": "replaceIdentityTokensInProject",
+      "method": "writeFile",
+      "target": "plan.filePath",
+      "count": 2
+    },
+    {
+      "file": "src/utils/typeContentsCache.ts",
+      "owner": "<callback>",
+      "method": "unlink",
+      "target": "path.join(dir, file)",
+      "count": 2
+    },
+    {
+      "file": "src/utils/typeContentsCache.ts",
+      "owner": "saveTypeContentsToCache",
+      "method": "mkdir",
+      "target": "dir",
+      "count": 1
+    },
+    {
+      "file": "src/utils/typeContentsCache.ts",
+      "owner": "saveTypeContentsToCache",
+      "method": "writeFile",
+      "target": "getCacheFilePath(globalStoragePath, configPath, typeName, kind, platform)",
+      "count": 1
+    },
+    {
+      "file": "src/utils/xml/predefinedDataAppender.ts",
+      "owner": "appendPredefinedDesignerItem",
+      "method": "mkdir",
+      "target": "path.dirname(filePath)",
+      "count": 1
+    },
+    {
+      "file": "src/utils/xml/predefinedDataAppender.ts",
+      "owner": "appendPredefinedDesignerItem",
+      "method": "writeFile",
+      "target": "filePath",
+      "count": 1
+    },
+    {
+      "file": "src/utils/xml/xmlFileIo.ts",
+      "owner": "<callback>",
+      "method": "unlink",
+      "target": "p",
+      "count": 1
+    },
+    {
+      "file": "src/utils/xml/xmlFileIo.ts",
+      "owner": "defaultOpen",
+      "method": "open",
+      "target": "p",
+      "count": 1
+    },
+    {
+      "file": "src/utils/xml/xmlFileIo.ts",
+      "owner": "defaultWriteFile",
+      "method": "writeFile",
+      "target": "p",
+      "count": 1
+    },
+    {
+      "file": "src/utils/xml/xmlFileIo.ts",
+      "owner": "writeUtf8FileWithBackup",
+      "method": "writeFile",
+      "target": "newContent",
+      "count": 1
+    },
+    {
+      "file": "src/utils/XMLWriter.ts",
+      "owner": "XMLWriter.createMinimalElementFile",
+      "method": "writeFile",
+      "target": "filePath",
+      "count": 1
+    }
+  ]
+}

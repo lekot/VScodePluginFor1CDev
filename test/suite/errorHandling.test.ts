@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as path from 'path';
 import * as fs from 'fs';
 import { XMLWriter } from '../../src/utils/XMLWriter';
+import { AtomicFileStorage } from '../../src/services/configurationSession/atomicFileStorage';
 
 suite('Error Handling Test Suite', () => {
   const fixturesPath = path.join(__dirname, '../../../test/fixtures');
@@ -151,24 +152,15 @@ suite('Error Handling Test Suite', () => {
 </MetaDataObject>`;
     await fs.promises.writeFile(testPath, originalXml, 'utf-8');
 
-    const originalWriteFile = fs.promises.writeFile;
-    const calls: string[] = [];
+    const originalReplace = AtomicFileStorage.prototype.replace;
     const targetBackup = `${testPath}.bak`;
 
     try {
-      (fs.promises as any).writeFile = async (
-        filePath: fs.PathLike,
-        data: string | NodeJS.ArrayBufferView,
-        options?: any
-      ) => {
-        const normalized = String(filePath);
-        calls.push(normalized);
-        if (normalized === testPath && calls.filter((p) => p === testPath).length === 1) {
-          throw new Error('Simulated disk full condition');
-        }
-        return originalWriteFile.call(fs.promises, filePath, data, options);
-      };
-
+      AtomicFileStorage.prototype.replace = async () => ({
+        status: 'rolledBack',
+        code: 'WRITE_FAILED',
+        message: 'Simulated disk full condition',
+      });
       await assert.rejects(
         async () => {
           await XMLWriter.writeProperties(testPath, { Name: 'ChangedName' });
@@ -180,9 +172,9 @@ suite('Error Handling Test Suite', () => {
 
       const afterContent = await fs.promises.readFile(testPath, 'utf-8');
       assert.strictEqual(afterContent, originalXml, 'Original XML content must be restored after failed write');
-      assert.strictEqual(fs.existsSync(targetBackup), false, 'Temporary backup artifact must be cleaned up');
+      assert.strictEqual(fs.existsSync(targetBackup), false, 'No legacy backup artifact must be created');
     } finally {
-      (fs.promises as any).writeFile = originalWriteFile;
+      AtomicFileStorage.prototype.replace = originalReplace;
       if (fs.existsSync(testPath)) {
         await fs.promises.unlink(testPath);
       }
