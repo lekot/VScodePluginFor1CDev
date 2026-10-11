@@ -75,7 +75,7 @@ suite('CFE generic CRUD guards', () => {
       parent: adoptedNode, parentFilePath: adoptedPath, properties: {}, children: [],
     };
     await assert.rejects(
-      () => saveProperties(attribute, { Name: 'Price' }, fakePropertiesContext()),
+      () => saveProperties(attribute, { Synonym: 'Цена' }, fakePropertiesContext()),
       isOwnershipError('CFE_ADOPTED_OPERATION_REQUIRED'),
     );
     const updateResult = await new AgentOperations(cfeRoot).setProperties({

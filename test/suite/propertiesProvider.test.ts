@@ -77,7 +77,6 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     };
 
     const result = validateProperties({
-      name: 'TestCatalog',
       maxLength: 100,
       autoNumbering: true,
     }, node);
@@ -99,7 +98,6 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     };
 
     const result = validateProperties({
-      name: 'TestCatalog',
       maxLength: 'not a number',
     }, node);
 
@@ -108,7 +106,7 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     assert.strictEqual(result.errors.maxLength, 'Must be a number');
   });
 
-  test('Validation should fail for empty required field', () => {
+  test('Validation rejects Name through generic property edits, including an empty value', () => {
     const node: TreeNode = {
       id: 'test',
       name: 'TestCatalog',
@@ -127,7 +125,7 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
 
     assert.strictEqual(result.valid, false);
     assert.ok(result.errors.name);
-    assert.strictEqual(result.errors.name, 'This field is required');
+    assert.match(result.errors.name, /Переименовать элемент/);
   });
 
   test('Validation allows long strings in free-text fields', () => {
@@ -144,7 +142,6 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
 
     const longString = 'a'.repeat(1001);
     const result = validateProperties({
-      name: 'TestCatalog',
       description: longString,
     }, node);
 
@@ -165,7 +162,6 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     };
 
     const result = validateProperties({
-      name: 'TestCatalog',
       autoNumbering: 'yes',
     }, node);
 
@@ -663,7 +659,7 @@ suite('PropertiesProvider Save Operation Test Suite', () => {
 
     await assert.rejects(
       async () => {
-        await saveProperties(node, { name: 'UpdatedCatalog' }, ctx);
+        await saveProperties(node, { Synonym: 'UpdatedCatalog' }, ctx);
       },
       {
         message: /Cannot save properties: no file path associated with this element/,
@@ -695,22 +691,19 @@ suite('PropertiesProvider Save Operation Test Suite', () => {
         filePath: tempXmlPath,
       };
 
-      const newProperties = {
-        Name: 'UpdatedCatalog',
-        Synonym: 'Updated Synonym',
-      };
+      const newProperties = { Synonym: 'Updated Synonym' };
 
       const ctx = makeSaveCtx(provider);
       await saveProperties(node, newProperties, ctx);
 
       // Verify node properties were updated
-      assert.strictEqual(node.properties.Name, 'UpdatedCatalog');
+      assert.strictEqual(node.properties.Name, 'TestCatalog');
       assert.strictEqual(node.properties.Synonym, 'Updated Synonym');
 
       // Verify file was actually written
       const { XMLWriter } = await import('../../src/utils/XMLWriter');
       const savedProperties = await XMLWriter.readProperties(tempXmlPath);
-      assert.strictEqual(savedProperties.Name, 'UpdatedCatalog');
+      assert.strictEqual(savedProperties.Name, 'TestCatalog');
       assert.strictEqual(savedProperties.Synonym, 'Updated Synonym');
     } finally {
       // Clean up temp file
@@ -735,7 +728,7 @@ suite('PropertiesProvider Save Operation Test Suite', () => {
 
     await assert.rejects(
       async () => {
-        await saveProperties(node, { Name: 'UpdatedCatalog' }, ctx);
+        await saveProperties(node, { Synonym: 'UpdatedCatalog' }, ctx);
       },
       {
         message: /Failed to write properties/,
@@ -833,7 +826,7 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
     assert.strictEqual(provider.isDirty(), false);
 
     // Simulate dirtyChange true
-    provider.setIsDirty(true, { Name: 'ModifiedCatalog' });
+    provider.setIsDirty(true, { Synonym: 'ModifiedCatalog' });
     assert.strictEqual(provider.isDirty(), true);
 
     // Simulate dirtyChange false
@@ -858,7 +851,7 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
     };
 
     await provider.showProperties(nodeA);
-    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'Saved Before Navigation' });
+    provider.setIsDirty(true, { Synonym: 'Saved Before Navigation' });
 
     let promptCalled = false;
     (vscode.window as any).showWarningMessage = async (msg: string, ...items: any[]) => {
@@ -896,7 +889,7 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
     };
 
     await provider.showProperties(nodeA);
-    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'Discarded Synonym' });
+    provider.setIsDirty(true, { Synonym: 'Discarded Synonym' });
 
     let promptCalled = false;
     (vscode.window as any).showWarningMessage = async (msg: string, ...items: any[]) => {
@@ -933,7 +926,7 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
     };
 
     await provider.showProperties(nodeA);
-    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'Pending' });
+    provider.setIsDirty(true, { Synonym: 'Pending' });
 
     (vscode.window as any).showWarningMessage = async () => 'Отмена';
 
@@ -953,7 +946,7 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
     };
 
     await provider.showProperties(nodeA);
-    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'Pending' });
+    provider.setIsDirty(true, { Synonym: 'Pending' });
 
     (vscode.window as any).showWarningMessage = async () => {
       assert.fail('Should not prompt when staying on same node');
@@ -980,7 +973,7 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
     };
 
     await provider.showProperties(nodeA);
-    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'Pending' });
+    provider.setIsDirty(true, { Synonym: 'Pending' });
 
     (vscode.window as any).showWarningMessage = async () => 'Отмена';
 
@@ -1007,7 +1000,7 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
     };
 
     await provider.showProperties(nodeA);
-    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'SavedViaShow' });
+    provider.setIsDirty(true, { Synonym: 'SavedViaShow' });
 
     (vscode.window as any).showWarningMessage = async () => 'Сохранить';
 
@@ -1031,7 +1024,7 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
     };
 
     await provider.showProperties(nodeA);
-    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'FormPending' });
+    provider.setIsDirty(true, { Synonym: 'FormPending' });
 
     (vscode.window as any).showWarningMessage = async () => 'Отмена';
 
@@ -1101,19 +1094,19 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
 
     // 1st edit: Synonym changed
     await handleMessage(
-      { type: 'dirtyChange', isDirty: true, properties: { Name: 'CatalogA', Synonym: 'First Edit', Comment: 'Orig' } },
+          { type: 'dirtyChange', isDirty: true, properties: { Synonym: 'First Edit', Comment: 'Orig' } },
       ctx
     );
     assert.strictEqual(provider.isDirty(), true);
-    assert.deepStrictEqual((provider as any).pendingProperties, { Name: 'CatalogA', Synonym: 'First Edit', Comment: 'Orig' });
+    assert.deepStrictEqual((provider as any).pendingProperties, { Synonym: 'First Edit', Comment: 'Orig' });
 
     // 2nd edit: Comment changed as well
     await handleMessage(
-      { type: 'dirtyChange', isDirty: true, properties: { Name: 'CatalogA', Synonym: 'First Edit', Comment: 'Second Edit' } },
+          { type: 'dirtyChange', isDirty: true, properties: { Synonym: 'First Edit', Comment: 'Second Edit' } },
       ctx
     );
     assert.strictEqual(provider.isDirty(), true);
-    assert.deepStrictEqual((provider as any).pendingProperties, { Name: 'CatalogA', Synonym: 'First Edit', Comment: 'Second Edit' });
+    assert.deepStrictEqual((provider as any).pendingProperties, { Synonym: 'First Edit', Comment: 'Second Edit' });
   });
 
   test('refreshIfCurrentNode re-reads disk content on same node when file changed externally', async () => {
@@ -1148,7 +1141,7 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
     };
 
     await provider.showProperties(nodeA);
-    provider.setIsDirty(true, { Name: 'CatalogA', Synonym: 'Unsaved Edit' });
+    provider.setIsDirty(true, { Synonym: 'Unsaved Edit' });
 
     // User chooses "Отмена" on guard prompt
     (vscode.window as any).showWarningMessage = async () => 'Отмена';
@@ -2261,6 +2254,3 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
     });
   });
 });
-
-
-

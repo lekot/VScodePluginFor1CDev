@@ -17,6 +17,7 @@ import { MESSAGES } from '../constants/messages';
 import { isContainerNode } from '../utils/treeNormalization';
 import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
 import { FORM_EVENT_CATALOG, FORM_LEVEL_EVENTS } from '../formEditor/formEventCatalog';
+import { isIdentitySensitiveMetadataProperty } from '../domain/metadataPropertyClassifier';
 
 /**
  * Maps metadata node type to the VS Code command that opens its composition editor.
@@ -434,6 +435,7 @@ export function renderPropertyInput(
   // Format Type property if it's an object (defensive fallback)
   let displayValue = value;
   const isTypeProperty = name.toLowerCase() === 'type';
+  const isIdentityProperty = isIdentitySensitiveMetadataProperty(name);
 
   if (isTypeProperty && (value === null || value === undefined)) {
     displayValue = 'Not set';
@@ -453,6 +455,21 @@ export function renderPropertyInput(
       Logger.error('Failed to parse Type XML in renderPropertyInput', error);
       displayValue = '[Invalid Type]';
     }
+  }
+
+  if (isIdentityProperty) {
+    const displayName = 'Имя';
+    const renameElementButton = currentNode && !globalReadOnly
+      && currentNode.type !== MetadataType.Configuration
+      ? `<button type="button" class="rename-element-btn" data-action="renameElement" aria-label="Переименовать элемент" title="Переименовать элемент">Переименовать</button>`
+      : '';
+    return `
+      <div class="property-row">
+        <label class="property-label">${escapeHtml(displayName)}</label>
+        <input type="text" class="property-input" data-property="${escapeHtml(name)}" value="${escapeHtml(String(displayValue ?? ''))}" disabled />
+        ${renameElementButton}
+      </div>
+    `;
   }
 
   // Source property on EventSubscription — render with edit button
@@ -541,7 +558,6 @@ export function renderPropertyInput(
   }
 
   const propertyType = detectPropertyType(displayValue);
-
   // Determine if this specific property should be read-only
   const nodeIsRoot = isRootElement(currentNode);
   const typeEditableRootTypes = ['DefinedType', 'ChartOfCharacteristicTypes', 'SessionParameter', 'FilterCriterion', 'CommonAttribute'];
@@ -820,6 +836,16 @@ export function getWebviewScript(readOnly: boolean, node?: TreeNode, sessionToke
         btn.addEventListener('click', () => {
           const nodeType = btn.dataset.nodeType;
           vscode.postMessage({ type: 'editContent', nodeType });
+        });
+      });
+
+      document.querySelectorAll('.rename-element-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          vscode.postMessage({
+            type: 'renameElement',
+            nodeId: ${escapedNodeId},
+            sessionToken: ${escapedToken}
+          });
         });
       });
 
@@ -1174,7 +1200,15 @@ export function getWebviewContent(
           background: var(--vscode-button-secondaryBackground);
           color: var(--vscode-button-secondaryForeground);
         }
+        .rename-element-btn {
+          padding: 4px 8px;
+          background: var(--vscode-button-secondaryBackground);
+          color: var(--vscode-button-secondaryForeground);
+        }
         .edit-type-btn:hover, .edit-content-btn:hover, .goto-handler-btn:hover {
+          background: var(--vscode-button-secondaryHoverBackground);
+        }
+        .rename-element-btn:hover {
           background: var(--vscode-button-secondaryHoverBackground);
         }
         .edit-type-icon {

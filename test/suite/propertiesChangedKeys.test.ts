@@ -237,10 +237,7 @@ suite('propertiesProvider changedKeys logic', () => {
       };
 
       const newTypeXml = '<Type><v8:Type>xs:decimal</v8:Type></Type>';
-      const newProperties = {
-        ...node.properties,
-        Type: newTypeXml,
-      };
+      const newProperties = { Type: newTypeXml };
 
       await saveProperties(node, newProperties, mockMsgCtx);
 
@@ -312,7 +309,7 @@ suite('propertiesProvider changedKeys logic', () => {
           nestedPath: item.nestedPath,
         };
 
-        await saveProperties(node, { ...node.properties, [item.propertyName]: item.newValue }, mockMsgCtx);
+        await saveProperties(node, { [item.propertyName]: item.newValue }, mockMsgCtx);
 
         const xml = fs.readFileSync(targetPath, 'utf8');
         assert.deepStrictEqual(
@@ -351,9 +348,8 @@ suite('propertiesProvider changedKeys logic', () => {
         parentFilePath: tempPath,
       };
 
-      // Simulate webview sending all properties with Type as display string
+      // Name is read-only and omitted from the generic save payload; Type is display-only here.
       const newProperties = {
-        Name: 'Password',
         Type: 'string(10)',
         PasswordMode: true,
       };

@@ -1,6 +1,9 @@
-import { validateElementName } from '../utils/elementNameValidator';
 import type { TreeNode } from '../models/treeNode';
 import type { ValidationResult } from './propertiesWebviewTypes';
+import {
+  getIdentitySensitiveMetadataPropertyNames,
+  IDENTITY_PROPERTY_EDIT_ERROR,
+} from '../domain/metadataPropertyClassifier';
 
 /**
  * Validate property values for a given node.
@@ -16,24 +19,16 @@ export function validateProperties(
     return { valid: false, errors: { _general: 'No element selected' } };
   }
 
-  // Validate element name if present (Name / name / Имя)
-  const nameKeys = ['Name', 'name', 'Имя'];
-  for (const key of nameKeys) {
-    if (key in properties) {
-      const raw = properties[key];
-      const nameStr = typeof raw === 'string' ? raw : raw != null ? String(raw) : '';
-      const siblingNames = (currentNode.parent?.children ?? [])
-        .map((c) => c.name)
-        .filter((n) => n !== currentNode.name);
-      const nameError = validateElementName(nameStr, siblingNames);
-      if (nameError) {
-        errors[key] = nameError;
-      }
-      break;
-    }
+  const identityProperties = getIdentitySensitiveMetadataPropertyNames(properties);
+  for (const propertyName of identityProperties) {
+    errors[propertyName] = IDENTITY_PROPERTY_EDIT_ERROR;
   }
 
   for (const [name, value] of Object.entries(properties)) {
+    if (identityProperties.includes(name)) {
+      continue;
+    }
+
     // Get expected type from original properties
     const expectedType = getExpectedType(name, currentNode);
 
@@ -59,13 +54,6 @@ export function validateProperties(
       continue;
     }
 
-    // Required field validation
-    if (isRequiredProperty(name)) {
-      if (value === '' || value === null || value === undefined) {
-        errors[name] = 'This field is required';
-        continue;
-      }
-    }
   }
 
   return {
@@ -83,13 +71,4 @@ function getExpectedType(propertyName: string, currentNode: TreeNode | undefined
   }
   const originalValue = (currentNode.properties as Record<string, unknown>)[propertyName];
   return typeof originalValue;
-}
-
-/**
- * Check if a property is required
- */
-function isRequiredProperty(propertyName: string): boolean {
-  // Common required properties in 1C metadata
-  const requiredProperties = ['name', 'Name', 'Имя'];
-  return requiredProperties.includes(propertyName);
 }
