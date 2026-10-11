@@ -103,6 +103,7 @@ export const coreSuiteFiles: string[] = [
   'suite/lazyWorkspaceOrchestrator.test.js',
   'suite/configCompareService.test.js',
   'suite/cfCommands.test.js',
+  'suite/roleRightsLossless.test.js',
   'suite/roleXmlParser.test.js',
   'suite/roleXmlSerializer.test.js',
   'suite/rightsValidator.test.js',

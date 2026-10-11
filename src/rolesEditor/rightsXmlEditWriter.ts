@@ -7,28 +7,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { XMLParser, XMLBuilder, XMLValidator } from 'fast-xml-parser';
 import { Logger } from '../utils/logger';
-import type { RightsMap, ObjectRights } from './models/roleModel';
-import { ALL_RIGHT_TYPES, type RightType } from './models/roleModel';
+import { getRoleRightByKey } from './roleRightsRegistry';
 import { requireDocumentWriteFormatProfile, requireWriteFormatProfile } from '../utils/format/formatRank';
-
-/** Mapping from ObjectRights property names to EDT Rights.xml right <name> values */
-const RIGHTS_TO_XML_NAME: Record<keyof ObjectRights, string> = {
-  read: 'Read',
-  insert: 'Insert',
-  update: 'Update',
-  delete: 'Delete',
-  view: 'View',
-  edit: 'Edit',
-  interactiveInsert: 'InteractiveInsert',
-  interactiveDelete: 'InteractiveDelete',
-  interactiveClear: 'InteractiveClear',
-  interactiveDeleteMarked: 'InteractiveDeleteMarked',
-  interactiveUndeleteMarked: 'InteractiveUndeleteMarked',
-  interactiveDeletePredefinedData: 'InteractiveDeletePredefinedData',
-  interactiveSetDeletionMark: 'InteractiveSetDeletionMark',
-  interactiveClearDeletionMark: 'InteractiveClearDeletionMark',
-  interactiveDeleteMarkedPredefinedData: 'InteractiveDeleteMarkedPredefinedData'
-};
 
 const RIGHTS_XML_PARSER_OPTIONS = {
   ignoreAttributes: false,
@@ -464,14 +444,15 @@ export interface MergeRightsOptions {
  */
 export function mergeRightsIntoDom(
   dom: RightsDom,
-  rights: RightsMap,
+  rights: Readonly<Record<string, Readonly<Record<string, boolean>>>>,
   options?: MergeRightsOptions
 ): void {
   const namedRights: Record<string, Record<string, boolean>> = {};
   for (const [objectFullName, objectRights] of Object.entries(rights)) {
     const values: Record<string, boolean> = {};
-    for (const rightType of ALL_RIGHT_TYPES) {
-      values[RIGHTS_TO_XML_NAME[rightType as RightType]] = objectRights[rightType as RightType];
+    for (const [key, value] of Object.entries(objectRights)) {
+      const descriptor = getRoleRightByKey(key);
+      if (descriptor) {values[descriptor.xmlName] = value;}
     }
     namedRights[objectFullName] = values;
   }

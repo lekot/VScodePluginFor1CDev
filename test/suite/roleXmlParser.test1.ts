@@ -201,9 +201,7 @@ suite('RoleXmlParser', () => {
         Edit: 'false',
         InteractiveInsert: 'true',
         InteractiveDelete: 'false',
-        InteractiveClear: 'true',
         InteractiveDeleteMarked: 'false',
-        InteractiveUndeleteMarked: 'true',
         InteractiveDeletePredefinedData: 'false',
         InteractiveSetDeletionMark: 'true',
         InteractiveClearDeletionMark: 'false',
@@ -220,9 +218,7 @@ suite('RoleXmlParser', () => {
       assert.strictEqual(rights.edit, false);
       assert.strictEqual(rights.interactiveInsert, true);
       assert.strictEqual(rights.interactiveDelete, false);
-      assert.strictEqual(rights.interactiveClear, true);
       assert.strictEqual(rights.interactiveDeleteMarked, false);
-      assert.strictEqual(rights.interactiveUndeleteMarked, true);
       assert.strictEqual(rights.interactiveDeletePredefinedData, false);
       assert.strictEqual(rights.interactiveSetDeletionMark, true);
       assert.strictEqual(rights.interactiveClearDeletionMark, false);

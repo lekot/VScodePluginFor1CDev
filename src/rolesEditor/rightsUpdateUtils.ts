@@ -8,9 +8,9 @@ import {
   RightType,
   createEmptyObjectRights,
   allRightsFalse,
-  RIGHTS_REQUIRING_READ,
-  INTERACTIVE_RIGHTS
+  RIGHTS_REQUIRING_READ
 } from './models/roleModel';
+import { ROLE_RIGHTS_REGISTRY, getRoleRightByKey } from './roleRightsRegistry';
 
 /**
  * Result of a rights update operation
@@ -20,44 +20,6 @@ export interface UpdateRightResult {
   errors: string[];
   updatedRights: ObjectRights | null;
 }
-
-/**
- * Mapping of interactive rights to their base rights.
- * DeletionMark rights (set/clear) are narrower than Delete and do not require it.
- */
-const INTERACTIVE_TO_BASE_RIGHT: Record<string, RightType> = {
-  interactiveInsert: 'insert',
-  interactiveDelete: 'delete',
-  interactiveClear: 'delete',
-  interactiveDeleteMarked: 'delete',
-  interactiveUndeleteMarked: 'delete',
-  interactiveDeletePredefinedData: 'delete',
-  interactiveDeleteMarkedPredefinedData: 'delete'
-};
-
-/**
- * Interactive rights that do NOT auto-enable any base right.
- * These are narrower permissions that can work independently.
- */
-const DELETION_MARK_RIGHTS = new Set<RightType>([
-  'interactiveSetDeletionMark',
-  'interactiveClearDeletionMark'
-]);
-
-/**
- * Mapping of base rights to their dependent interactive rights
- */
-const BASE_TO_INTERACTIVE_RIGHTS: Record<string, RightType[]> = {
-  insert: ['interactiveInsert'],
-  delete: [
-    'interactiveDelete',
-    'interactiveClear',
-    'interactiveDeleteMarked',
-    'interactiveUndeleteMarked',
-    'interactiveDeletePredefinedData',
-    'interactiveDeleteMarkedPredefinedData'
-  ]
-};
 
 /**
  * Update a single right for an object with automatic dependency management
@@ -109,12 +71,23 @@ export function updateRight(
     };
   }
 
+  const metadataType = objectName.slice(0, objectName.indexOf('.'));
+  const descriptor = getRoleRightByKey(rightType);
+  if (!descriptor || !descriptor.applicableTo.includes(metadataType)) {
+    return {
+      success: false,
+      errors: [`${rightType} is not applicable to ${metadataType || 'this object'}`],
+      updatedRights: null,
+    };
+  }
+
   // Step 1: Get or create object rights
   if (!roleModel.rights[objectName]) {
     roleModel.rights[objectName] = createEmptyObjectRights();
   }
 
   const objectRights = roleModel.rights[objectName];
+  const beforeUpdate = { ...objectRights };
 
   // Step 2: Update the specified right
   objectRights[rightType] = value;
@@ -129,44 +102,33 @@ export function updateRight(
     }
 
     // Rule: Interactive rights require their base rights
-    if (INTERACTIVE_RIGHTS.includes(rightType) && !DELETION_MARK_RIGHTS.has(rightType)) {
-      const baseRight = INTERACTIVE_TO_BASE_RIGHT[rightType];
-      if (baseRight) {
-        objectRights[baseRight] = true;
-        
-        // If the base right requires Read, enable Read as well
-        if (RIGHTS_REQUIRING_READ.includes(baseRight)) {
-          objectRights.read = true;
-        }
+    if (descriptor.interactiveBase) {
+      const baseRight = descriptor.interactiveBase as RightType;
+      objectRights[baseRight] = true;
+
+      // If the base right requires Read, enable Read as well
+      if (RIGHTS_REQUIRING_READ.includes(baseRight)) {
+        objectRights.read = true;
       }
     }
   } else {
     // Disabling a right may require disabling dependents
     
     // Rule: Disabling Read disables Update and Delete
-    if (rightType === 'read') {
-      objectRights.update = false;
-      objectRights.delete = false;
-      
-      // Also disable all interactive rights that depend on delete
-      const deleteInteractiveRights = BASE_TO_INTERACTIVE_RIGHTS['delete'] || [];
-      deleteInteractiveRights.forEach(interactiveRight => {
-        objectRights[interactiveRight] = false;
-      });
-
-      // Match webview applyDependencyRules: these are not in BASE_TO_INTERACTIVE_RIGHTS['delete']
-      objectRights.interactiveSetDeletionMark = false;
-      objectRights.interactiveClearDeletionMark = false;
-    }
-
-    // Rule: Disabling base rights disables their interactive rights
-    if (rightType === 'insert' || rightType === 'delete') {
-      const dependentInteractiveRights = BASE_TO_INTERACTIVE_RIGHTS[rightType] || [];
-      dependentInteractiveRights.forEach(interactiveRight => {
-        objectRights[interactiveRight] = false;
-      });
+    for (const dependent of ROLE_RIGHTS_REGISTRY) {
+      if (dependent.clearedBy.includes(rightType)) {
+        objectRights[dependent.key] = false;
+      }
     }
   }
+
+  const changedValues: Record<string, boolean> = { [rightType]: value };
+  for (const [key, nextValue] of Object.entries(objectRights)) {
+    if (beforeUpdate[key] !== nextValue) {changedValues[key] = nextValue;}
+  }
+  const roleChanges = (roleModel.changedRights ??= {});
+  const objectChanges = (roleChanges[objectName] ??= {});
+  Object.assign(objectChanges, changedValues);
 
   // Step 4: Remove object if all rights are false
   if (allRightsFalse(objectRights)) {
@@ -193,7 +155,7 @@ export function updateRight(
  * @returns The base right type, or null if not an interactive right
  */
 export function getBaseRight(interactiveRight: RightType): RightType | null {
-  return INTERACTIVE_TO_BASE_RIGHT[interactiveRight] || null;
+  return getRoleRightByKey(interactiveRight)?.interactiveBase as RightType | undefined ?? null;
 }
 
 /**
@@ -203,7 +165,9 @@ export function getBaseRight(interactiveRight: RightType): RightType | null {
  * @returns Array of dependent interactive rights
  */
 export function getInteractiveRights(baseRight: RightType): RightType[] {
-  return BASE_TO_INTERACTIVE_RIGHTS[baseRight] || [];
+  return ROLE_RIGHTS_REGISTRY
+    .filter((right) => right.interactiveBase === baseRight)
+    .map((right) => right.key);
 }
 
 /**
@@ -213,7 +177,7 @@ export function getInteractiveRights(baseRight: RightType): RightType[] {
  * @returns True if the right is an interactive right
  */
 export function isInteractiveRight(rightType: RightType): boolean {
-  return INTERACTIVE_RIGHTS.includes(rightType);
+  return getRoleRightByKey(rightType)?.interactiveBase !== undefined;
 }
 
 /**

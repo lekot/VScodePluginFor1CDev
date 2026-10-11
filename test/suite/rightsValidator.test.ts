@@ -419,7 +419,6 @@ suite('RightsValidator Tests', () => {
         delete: true,
         interactiveInsert: true,
         interactiveDelete: true,
-        interactiveClear: true,
         interactiveSetDeletionMark: true
       };
 
@@ -436,9 +435,7 @@ suite('RightsValidator Tests', () => {
       const rights: ObjectRights = {
         ...createEmptyObjectRights(),
         interactiveDelete: true,
-        interactiveClear: true,
         interactiveDeleteMarked: true,
-        interactiveUndeleteMarked: true,
         interactiveDeletePredefinedData: true,
         interactiveSetDeletionMark: true,
         interactiveClearDeletionMark: true,
@@ -449,8 +446,8 @@ suite('RightsValidator Tests', () => {
       // Act
       const errors = validator.validateRightCombination('Document.Order', rights);
 
-      // Assert — 6 errors (those that require base Delete; SetDeletionMark/ClearDeletionMark do not)
-      assert.strictEqual(errors.length, 6);
+      // Assert — all four canonical rights that require base Delete are checked.
+      assert.strictEqual(errors.length, 4);
       assert.ok(errors.every(e => e.includes('Delete')));
     });
   });

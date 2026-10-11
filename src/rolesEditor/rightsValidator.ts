@@ -10,6 +10,7 @@ import {
   RIGHTS_REQUIRING_READ,
   INTERACTIVE_RIGHTS
 } from './models';
+import { getRoleRightByKey } from './roleRightsRegistry';
 
 /**
  * Result of a validation operation
@@ -129,19 +130,7 @@ export class RightsValidator {
    * @returns The corresponding base right, or null if not applicable
    */
   private getBaseRightForInteractive(interactiveRight: RightType): RightType | null {
-    // Map interactive rights to their base rights.
-    // SetDeletionMark/ClearDeletionMark are narrower than Delete — no base right required.
-    const mapping: { [key: string]: RightType } = {
-      'interactiveInsert': 'insert',
-      'interactiveDelete': 'delete',
-      'interactiveClear': 'delete',
-      'interactiveDeleteMarked': 'delete',
-      'interactiveUndeleteMarked': 'delete',
-      'interactiveDeletePredefinedData': 'delete',
-      'interactiveDeleteMarkedPredefinedData': 'delete'
-    };
-
-    return mapping[interactiveRight] || null;
+    return getRoleRightByKey(interactiveRight)?.interactiveBase as RightType | undefined ?? null;
   }
 
   /**

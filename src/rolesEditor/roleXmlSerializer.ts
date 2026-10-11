@@ -12,6 +12,8 @@ import {
   ObjectRights,
   allRightsFalse
 } from './models/roleModel';
+import { ROLE_RIGHTS_REGISTRY } from './roleRightsRegistry';
+import { mergeDesignerRoleRightsXml } from './designerRoleRightsMerger';
 
 /**
  * XML building options for Role.xml files
@@ -25,28 +27,6 @@ const ROLE_XML_OPTIONS = {
   indentBy: '\t',
   suppressEmptyNode: false,
   suppressBooleanAttributes: false,
-};
-
-/**
- * Mapping from ObjectRights property names to XML element names
- * Inverse of the parser's XML_TO_RIGHTS_MAP
- */
-const RIGHTS_TO_XML_MAP: Record<keyof ObjectRights, string> = {
-  'read': 'Read',
-  'insert': 'Insert',
-  'update': 'Update',
-  'delete': 'Delete',
-  'view': 'View',
-  'edit': 'Edit',
-  'interactiveInsert': 'InteractiveInsert',
-  'interactiveDelete': 'InteractiveDelete',
-  'interactiveClear': 'InteractiveClear',
-  'interactiveDeleteMarked': 'InteractiveDeleteMarked',
-  'interactiveUndeleteMarked': 'InteractiveUndeleteMarked',
-  'interactiveDeletePredefinedData': 'InteractiveDeletePredefinedData',
-  'interactiveSetDeletionMark': 'InteractiveSetDeletionMark',
-  'interactiveClearDeletionMark': 'InteractiveClearDeletionMark',
-  'interactiveDeleteMarkedPredefinedData': 'InteractiveDeleteMarkedPredefinedData'
 };
 
 /**
@@ -86,27 +66,13 @@ export class RoleXmlSerializer {
   static serializeToXml(roleModel: RoleModel, targetVersion?: string): string {
     try {
       const profile = requireWriteFormatProfile(targetVersion);
-      // Build XML structure
-      const xmlStructure = this.buildXmlStructure(roleModel, profile.version);
-
-      // Generate XML string
-      let xmlString = this.builder.build(xmlStructure) as string;
-
-      // Add XML declaration if not present
-      if (!xmlString.startsWith('<?xml')) {
-        xmlString = '<?xml version="1.0" encoding="UTF-8"?>\n' + xmlString;
+      if (roleModel.metadata.format === 'Designer') {
+        if (roleModel.sourceXml === undefined) {
+          throw new Error('Existing Designer role save requires the original Role.xml source. Use serializeNewRoleToXml only for a new role.');
+        }
+        return this.mergeExistingDesignerRoleXml(roleModel, profile.version);
       }
-
-      // Format XML to match 1C conventions
-      xmlString = this.formatXml(xmlString);
-
-      xmlString = insertRestrictionTemplatesBeforeClosingRights(
-        xmlString,
-        roleModel.restrictionTemplatesText ?? ''
-      );
-
-      Logger.debug(`Serialized Role.xml: ${roleModel.name}, objects: ${Object.keys(roleModel.rights).length}`);
-      return xmlString;
+      return this.serializeReconstructedRoleXml(roleModel, profile.version);
     } catch (err) {
       if (err instanceof Error && err.name === 'UnsupportedMetadataFormatError') {
         throw err;
@@ -115,6 +81,42 @@ export class RoleXmlSerializer {
       Logger.error(`Failed to serialize Role.xml: ${roleModel.name}`, err);
       throw new Error(`Failed to serialize Role.xml: ${message}`);
     }
+  }
+
+  /** Reconstruct a complete new Designer role. Existing files must use serializeToXml with sourceXml. */
+  static serializeNewRoleToXml(roleModel: RoleModel, targetVersion?: string): string {
+    if (roleModel.metadata.format !== 'Designer' || roleModel.sourceXml !== undefined) {
+      throw new Error('serializeNewRoleToXml accepts only a new Designer role without source XML.');
+    }
+    const profile = requireWriteFormatProfile(targetVersion);
+    return this.serializeReconstructedRoleXml(roleModel, profile.version);
+  }
+
+  private static serializeReconstructedRoleXml(roleModel: RoleModel, targetVersion?: string): string {
+    const profile = requireWriteFormatProfile(targetVersion);
+    const xmlStructure = this.buildXmlStructure(roleModel, profile.version);
+    let xmlString = this.builder.build(xmlStructure) as string;
+
+    if (!xmlString.startsWith('<?xml')) {
+      xmlString = '<?xml version="1.0" encoding="UTF-8"?>\n' + xmlString;
+    }
+    xmlString = this.formatXml(xmlString);
+    xmlString = insertRestrictionTemplatesBeforeClosingRights(
+      xmlString,
+      roleModel.restrictionTemplatesText ?? ''
+    );
+
+    Logger.debug(`Serialized Role.xml: ${roleModel.name}, objects: ${Object.keys(roleModel.rights).length}`);
+    return xmlString;
+  }
+
+  /** Merge changed rights into the original Designer document. Existing-file saves must use this path. */
+  static mergeExistingDesignerRoleXml(roleModel: RoleModel, targetVersion?: string): string {
+    requireWriteFormatProfile(targetVersion);
+    if (roleModel.metadata.format !== 'Designer' || roleModel.sourceXml === undefined) {
+      throw new Error('Existing Designer role save requires the original Role.xml source.');
+    }
+    return mergeDesignerRoleRightsXml(roleModel.sourceXml, roleModel.changedRights ?? {});
   }
 
   /**
@@ -205,18 +207,9 @@ export class RoleXmlSerializer {
 
     // Add rights in a consistent order
     // Only include rights that are set to true
-    const rightKeys: Array<keyof ObjectRights> = [
-      'read', 'insert', 'update', 'delete', 'view', 'edit',
-      'interactiveInsert', 'interactiveDelete', 'interactiveClear',
-      'interactiveDeleteMarked', 'interactiveUndeleteMarked',
-      'interactiveDeletePredefinedData', 'interactiveSetDeletionMark',
-      'interactiveClearDeletionMark', 'interactiveDeleteMarkedPredefinedData'
-    ];
-
-    for (const rightKey of rightKeys) {
-      if (rights[rightKey]) {
-        const xmlElementName = RIGHTS_TO_XML_MAP[rightKey];
-        node[xmlElementName] = 'true';
+    for (const descriptor of ROLE_RIGHTS_REGISTRY) {
+      if (rights[descriptor.key]) {
+        node[descriptor.xmlName] = 'true';
       }
     }
 
