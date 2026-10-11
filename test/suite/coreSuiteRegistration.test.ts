@@ -43,6 +43,7 @@ const mustRegisterInCoreCi: readonly string[] = [
   'suite/typeEditorProvider.test.js',
   'suite/configurationPathIdentity.test.js',
   'suite/configurationMutationGateway.test.js',
+  'suite/configurationContextResolver.test.js',
 ];
 
 
