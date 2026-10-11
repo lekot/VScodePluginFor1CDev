@@ -1,4 +1,5 @@
 import { RoleModel, ObjectRights } from './models/roleModel';
+import { UI_ROLE_RIGHTS } from './roleRightsRegistry';
 import { MetadataObject } from './models/metadataObject';
 import { FilterState } from './models/filterState';
 import { applyFilter } from './filterUtils';
@@ -7,41 +8,7 @@ import { applyFilter } from './filterUtils';
  * Renders the cross-table matrix HTML for the roles rights editor
  */
 export class CrossTableRenderer {
-  private static readonly RIGHT_TYPES: Array<keyof ObjectRights> = [
-    'read',
-    'insert',
-    'update',
-    'delete',
-    'view',
-    'edit',
-    'interactiveInsert',
-    'interactiveDelete',
-    'interactiveClear',
-    'interactiveDeleteMarked',
-    'interactiveUndeleteMarked',
-    'interactiveDeletePredefinedData',
-    'interactiveSetDeletionMark',
-    'interactiveClearDeletionMark',
-    'interactiveDeleteMarkedPredefinedData',
-  ];
-
-  private static readonly RIGHT_LABELS: Record<keyof ObjectRights, string> = {
-    read: 'Read',
-    insert: 'Insert',
-    update: 'Update',
-    delete: 'Delete',
-    view: 'View',
-    edit: 'Edit',
-    interactiveInsert: 'Int. Insert',
-    interactiveDelete: 'Int. Delete',
-    interactiveClear: 'Int. Clear',
-    interactiveDeleteMarked: 'Int. Del. Marked',
-    interactiveUndeleteMarked: 'Int. Undel. Marked',
-    interactiveDeletePredefinedData: 'Int. Del. Predef.',
-    interactiveSetDeletionMark: 'Int. Set Del. Mark',
-    interactiveClearDeletionMark: 'Int. Clear Del. Mark',
-    interactiveDeleteMarkedPredefinedData: 'Int. Del. Marked Predef.',
-  };
+  private static readonly RIGHT_TYPES = UI_ROLE_RIGHTS;
 
   /**
    * Render the complete cross-table matrix HTML
@@ -75,8 +42,8 @@ export class CrossTableRenderer {
     let html = '<thead><tr>';
     html += '<th class="object-column">Object</th>';
     
-    for (const rightType of this.RIGHT_TYPES) {
-      const label = this.RIGHT_LABELS[rightType];
+    for (const right of this.RIGHT_TYPES) {
+      const label = right.ui!.label;
       html += `<th class="right-column" title="${this.escapeHtml(label)}">${this.escapeHtml(label)}</th>`;
     }
     
@@ -91,13 +58,15 @@ export class CrossTableRenderer {
     let html = '<tr>';
     html += `<td class="object-name" title="${this.escapeHtml(obj.fullName)}">${this.escapeHtml(obj.displayName)}</td>`;
     
-    for (const rightType of this.RIGHT_TYPES) {
-      const checked = rights && rights[rightType] ? 'checked' : '';
+    const metadataType = obj.fullName.split('.')[0]!;
+    for (const right of this.RIGHT_TYPES) {
+      const checked = rights && rights[right.key] ? 'checked' : '';
       const objectName = this.escapeAttr(obj.fullName);
-      const rightName = this.escapeAttr(rightType);
+      const rightName = this.escapeAttr(right.key);
+      const disabled = right.applicableTo.includes(metadataType) ? '' : 'disabled';
       
       html += `<td class="right-cell">`;
-      html += `<input type="checkbox" ${checked} data-object="${objectName}" data-right="${rightName}" class="right-checkbox">`;
+      html += `<input type="checkbox" ${checked} ${disabled} data-object="${objectName}" data-right="${rightName}" class="right-checkbox">`;
       html += `</td>`;
     }
     

@@ -523,6 +523,9 @@
 
                     case 'objectsLoaded':
                         allObjects = data.objects || [];
+                        if (Array.isArray(data.uiRights)) {
+                            roleData.uiRights = data.uiRights;
+                        }
                         tableInitialLoading = false;
                         saveDisabledByHost = data.saveDisabled === true;
                         setLoadingOverlay(false);
@@ -590,25 +593,17 @@
                 typeFilter.value = filterState.typeFilter || '';
 
                 // Build header row with right types
-                const rightTypes = [
-                    'Read', 'Insert', 'Update', 'Delete',
-                    'View', 'Edit',
-                    'InteractiveInsert', 'InteractiveDelete',
-                    'InteractiveClear', 'InteractiveDeleteMarked',
-                    'InteractiveUndeleteMarked', 'InteractiveDeletePredefinedData',
-                    'InteractiveSetDeletionMark', 'InteractiveClearDeletionMark',
-                    'InteractiveDeleteMarkedPredefinedData'
-                ];
+                const rightTypes = roleData && Array.isArray(roleData.uiRights) ? roleData.uiRights : [];
 
                 const headerRow = document.getElementById('headerRow');
                 while (headerRow.cells.length > 1) {
                     headerRow.deleteCell(headerRow.cells.length - 1);
                 }
-                rightTypes.forEach(rightType => {
+                rightTypes.forEach(right => {
                     const th = document.createElement('th');
                     th.className = 'right-column';
-                    th.textContent = rightType;
-                    th.title = rightType;
+                    th.textContent = right.label;
+                    th.title = right.xmlName;
                     headerRow.appendChild(th);
                 });
             }
@@ -627,14 +622,16 @@
                 tr.appendChild(tdName);
 
                 const objectRights = roleData.rights[obj.fullName] || {};
-                rightTypes.forEach(function(rightType) {
+                const metadataType = (obj.fullName || '').split('.')[0];
+                rightTypes.forEach(function(right) {
                     const td = document.createElement('td');
                     td.className = 'checkbox-cell';
                     const checkbox = document.createElement('input');
                     checkbox.type = 'checkbox';
-                    checkbox.checked = objectRights[rightType] || false;
+                    checkbox.checked = objectRights[right.key] || false;
+                    checkbox.disabled = !right.applicableTo.includes(metadataType);
                     checkbox.dataset.object = obj.fullName;
-                    checkbox.dataset.right = rightType;
+                    checkbox.dataset.right = right.key;
                     checkbox.addEventListener('change', handleCheckboxChange);
                     td.appendChild(checkbox);
                     tr.appendChild(td);
@@ -662,15 +659,7 @@
 
                 emptyState.style.display = 'none';
 
-                const rightTypes = [
-                    'read', 'insert', 'update', 'delete',
-                    'view', 'edit',
-                    'interactiveInsert', 'interactiveDelete',
-                    'interactiveClear', 'interactiveDeleteMarked',
-                    'interactiveUndeleteMarked', 'interactiveDeletePredefinedData',
-                    'interactiveSetDeletionMark', 'interactiveClearDeletionMark',
-                    'interactiveDeleteMarkedPredefinedData'
-                ];
+                const rightTypes = roleData && Array.isArray(roleData.uiRights) ? roleData.uiRights : [];
 
                 if (filteredObjects.length <= TABLE_RENDER_CHUNK) {
                     for (let i = 0; i < filteredObjects.length; i++) {
@@ -801,66 +790,23 @@
 
             function applyDependencyRules(objectName, rightType, value) {
                 const rights = roleData.rights[objectName];
+                const definitions = Array.isArray(roleData.uiRights) ? roleData.uiRights : [];
 
                 if (value) {
-                    // Enabling a right - enable dependencies
-                    if (rightType === 'update' || rightType === 'delete') {
-                        rights.read = true;
+                    const visited = new Set();
+                    function enableDependencies(key) {
+                        if (visited.has(key)) return;
+                        visited.add(key);
+                        const definition = definitions.find(candidate => candidate.key === key);
+                        (definition ? definition.dependencies : []).forEach(dependency => {
+                            rights[dependency] = true;
+                            enableDependencies(dependency);
+                        });
                     }
-                    
-                    if (rightType.startsWith('interactive')) {
-                        // Map interactive rights to base rights
-                        const baseRightMap = {
-                            'interactiveInsert': 'insert',
-                            'interactiveDelete': 'delete',
-                            'interactiveClear': 'delete',
-                            'interactiveDeleteMarked': 'delete',
-                            'interactiveUndeleteMarked': 'delete',
-                            'interactiveDeletePredefinedData': 'delete',
-                            'interactiveSetDeletionMark': 'delete',
-                            'interactiveClearDeletionMark': 'delete',
-                            'interactiveDeleteMarkedPredefinedData': 'delete'
-                        };
-                        
-                        const baseRight = baseRightMap[rightType];
-                        if (baseRight) {
-                            rights[baseRight] = true;
-                            // If base right requires read, enable it too
-                            if (baseRight === 'update' || baseRight === 'delete') {
-                                rights.read = true;
-                            }
-                        }
-                    }
+                    enableDependencies(rightType);
                 } else {
-                    // Disabling a right - disable dependents
-                    if (rightType === 'read') {
-                        rights.update = false;
-                        rights.delete = false;
-                        // Disable all interactive rights that depend on update/delete
-                        rights.interactiveDelete = false;
-                        rights.interactiveClear = false;
-                        rights.interactiveDeleteMarked = false;
-                        rights.interactiveUndeleteMarked = false;
-                        rights.interactiveDeletePredefinedData = false;
-                        rights.interactiveSetDeletionMark = false;
-                        rights.interactiveClearDeletionMark = false;
-                        rights.interactiveDeleteMarkedPredefinedData = false;
-                    }
-                    
-                    if (rightType === 'insert') {
-                        rights.interactiveInsert = false;
-                    }
-                    
-                    if (rightType === 'delete') {
-                        rights.interactiveDelete = false;
-                        rights.interactiveClear = false;
-                        rights.interactiveDeleteMarked = false;
-                        rights.interactiveUndeleteMarked = false;
-                        rights.interactiveDeletePredefinedData = false;
-                        rights.interactiveSetDeletionMark = false;
-                        rights.interactiveClearDeletionMark = false;
-                        rights.interactiveDeleteMarkedPredefinedData = false;
-                    }
+                    definitions.filter(definition => definition.clearedBy.includes(rightType))
+                        .forEach(definition => { rights[definition.key] = false; });
                 }
             }
 

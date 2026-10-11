@@ -7,7 +7,7 @@ import { randomUUID } from 'crypto';
 import { XMLValidator } from 'fast-xml-parser';
 import { RoleModel } from './models/roleModel';
 import type { MetadataObject } from './models/metadataObject';
-import { WebviewMessage, type ExtensionToWebviewMessage } from './models/webviewMessage';
+import { WebviewMessage, type ExtensionToWebviewMessage, type UiRoleRightProjection } from './models/webviewMessage';
 import { RoleXmlParser } from './roleXmlParser';
 import { RoleXmlSerializer } from './roleXmlSerializer';
 import { RightsValidator } from './rightsValidator';
@@ -30,6 +30,19 @@ import {
   requireProjectWriteFormatProfile,
 } from '../utils/format/formatRank';
 import { CONFIGURATION_XML } from '../constants/fileNames';
+import { UI_ROLE_RIGHTS } from './roleRightsRegistry';
+
+function getUiRoleRightProjection(): UiRoleRightProjection[] {
+  return UI_ROLE_RIGHTS.map((right) => ({
+    key: right.key,
+    xmlName: right.xmlName,
+    label: right.ui!.label,
+    applicableTo: right.applicableTo,
+    dependencies: right.dependencies,
+    clearedBy: right.clearedBy,
+    interactiveBase: right.interactiveBase,
+  }));
+}
 
 /**
  * Walk up directory tree from target path to locate folder containing Configuration.xml.
@@ -72,6 +85,9 @@ export function cloneRoleModel(model: RoleModel): RoleModel {
       lastModified: new Date(model.metadata.lastModified.getTime()),
     },
     restrictionTemplatesText: model.restrictionTemplatesText,
+    sourceXml: model.sourceXml,
+    changedRights: Object.fromEntries(Object.entries(model.changedRights ?? {})
+      .map(([objectName, rights]) => [objectName, { ...rights }])),
   };
 }
 
@@ -204,6 +220,7 @@ export class RolesRightsEditorProvider {
           command: 'objectsLoaded',
           data: {
             objects: [] as MetadataObject[],
+            uiRights: getUiRoleRightProjection(),
             error:
               'No configuration path is available. The metadata table is empty and saving rights to disk is disabled.',
             saveDisabled: true,
@@ -228,7 +245,7 @@ export class RolesRightsEditorProvider {
         Logger.info(`Loaded ${this.allObjects.length} metadata objects`);
         this.sendMessageToWebview({
           command: 'objectsLoaded',
-          data: { objects: this.allObjects },
+          data: { objects: this.allObjects, uiRights: getUiRoleRightProjection() },
         });
       } catch (loadErr) {
         if (loadGeneration !== this.objectsLoadGeneration) {
@@ -239,7 +256,7 @@ export class RolesRightsEditorProvider {
         const message = loadErr instanceof Error ? loadErr.message : String(loadErr);
         this.sendMessageToWebview({
           command: 'objectsLoaded',
-          data: { objects: [] as MetadataObject[], error: message },
+          data: { objects: [] as MetadataObject[], uiRights: getUiRoleRightProjection(), error: message },
         });
       }
     } catch (error) {
@@ -310,6 +327,7 @@ export class RolesRightsEditorProvider {
         name: this.currentRoleModel.name,
         rights: this.currentRoleModel.rights,
         restrictionTemplatesText: this.currentRoleModel.restrictionTemplatesText ?? '',
+        uiRights: getUiRoleRightProjection(),
       })
     );
 
@@ -610,7 +628,7 @@ export class RolesRightsEditorProvider {
           if (snapshotExpectedHash && originalHash !== snapshotExpectedHash) {
             throw new Error(`Конфликт сохранения: файл роли "${targetPath}" был изменен другим процессом.`);
           }
-          xmlContent = RoleXmlSerializer.serializeToXml(snapshotRoleModel, targetVersion);
+          xmlContent = RoleXmlSerializer.mergeExistingDesignerRoleXml(snapshotRoleModel, targetVersion);
           Logger.debug('Serialized (Case B)');
         } else {
           Logger.debug('Loading Rights.xml...');
@@ -646,7 +664,7 @@ export class RolesRightsEditorProvider {
           const compactWrite = vscode.workspace
             .getConfiguration('1cMetadataTree')
             .get<boolean>('rightsEditor.compactRightsWrite', true);
-          mergeRightsIntoDom(dom, snapshotRoleModel.rights, { compactWrite });
+          mergeRightsIntoDom(dom, snapshotRoleModel.changedRights ?? {}, { compactWrite });
           Logger.debug('Serializing DOM to XML...');
           xmlContent = serializeRightsDomToXml(dom, targetVersion);
           xmlContent = insertRestrictionTemplatesBeforeClosingRights(

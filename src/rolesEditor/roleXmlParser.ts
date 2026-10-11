@@ -16,6 +16,7 @@ import {
   ConfigFormat,
   createEmptyObjectRights
 } from './models/roleModel';
+import { getRoleRightByXmlName } from './roleRightsRegistry';
 
 /**
  * XML parsing options for Role.xml files
@@ -28,28 +29,6 @@ const ROLE_XML_OPTIONS = {
   trimValues: true,
   ignoreNameSpace: false,
   removeNSPrefix: false,
-};
-
-/**
- * Mapping from XML element names to ObjectRights property names
- * 1C uses these element names in Role.xml
- */
-const XML_TO_RIGHTS_MAP: Record<string, keyof ObjectRights> = {
-  'Read': 'read',
-  'Insert': 'insert',
-  'Update': 'update',
-  'Delete': 'delete',
-  'View': 'view',
-  'Edit': 'edit',
-  'InteractiveInsert': 'interactiveInsert',
-  'InteractiveDelete': 'interactiveDelete',
-  'InteractiveClear': 'interactiveClear',
-  'InteractiveDeleteMarked': 'interactiveDeleteMarked',
-  'InteractiveUndeleteMarked': 'interactiveUndeleteMarked',
-  'InteractiveDeletePredefinedData': 'interactiveDeletePredefinedData',
-  'InteractiveSetDeletionMark': 'interactiveSetDeletionMark',
-  'InteractiveClearDeletionMark': 'interactiveClearDeletionMark',
-  'InteractiveDeleteMarkedPredefinedData': 'interactiveDeleteMarkedPredefinedData'
 };
 
 /**
@@ -214,7 +193,9 @@ export class RoleXmlParser {
       filePath,
       rights,
       metadata,
-      restrictionTemplatesText: restrictionTemplatesText || undefined
+      restrictionTemplatesText: restrictionTemplatesText || undefined,
+      sourceXml: format === ConfigFormat.Designer ? xmlContent : undefined,
+      changedRights: {},
     };
 
     const rightsCount = Object.keys(rights).length;
@@ -339,11 +320,11 @@ export class RoleXmlParser {
 
       // Use local name so "v8:Read" -> "Read" when XML has namespace
       const localKey = key.includes(':') ? key.split(':').pop()! : key;
-      const rightKey = XML_TO_RIGHTS_MAP[key] ?? XML_TO_RIGHTS_MAP[localKey];
-      if (rightKey) {
+      const right = getRoleRightByXmlName(key) ?? getRoleRightByXmlName(localKey);
+      if (right) {
         // Parse boolean value
         // In 1C XML, rights are typically represented as 'true'/'false' strings or boolean values
-        rights[rightKey] = this.parseBoolean(value);
+        rights[right.key] = this.parseBoolean(value);
       }
     }
 
@@ -691,9 +672,9 @@ export class RoleXmlParser {
       const rightValue = this.parseBoolean(valueElement);
       
       // Map XML right name to ObjectRights property
-      const rightKey = XML_TO_RIGHTS_MAP[rightName];
-      if (rightKey) {
-        rights[rightKey] = rightValue;
+      const right = getRoleRightByXmlName(rightName);
+      if (right) {
+        rights[right.key] = rightValue;
       }
     }
     

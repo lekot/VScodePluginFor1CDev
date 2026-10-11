@@ -21,125 +21,16 @@ import {
   mergeNamedRightsIntoDom,
   serializeRightsDomToXml,
 } from '../rolesEditor/rightsXmlEditWriter';
+import {
+  getRoleRightPreset,
+  getRoleRightsForType,
+} from '../rolesEditor/roleRightsRegistry';
 import { requireDocumentWriteFormatProfile } from '../utils/format/formatRank';
 import type {
   AgentResult,
   AgentSetRoleRightsParams,
   AgentSetRoleRightsResult,
 } from './types';
-
-const COMMON_OBJECT_RIGHTS = [
-  'Read', 'Insert', 'Update', 'Delete', 'View', 'Edit', 'InputByString',
-  'InteractiveInsert', 'InteractiveSetDeletionMark', 'InteractiveClearDeletionMark',
-  'InteractiveDelete', 'InteractiveDeleteMarked', 'InteractiveDeletePredefinedData',
-  'InteractiveSetDeletionMarkPredefinedData', 'InteractiveClearDeletionMarkPredefinedData',
-  'InteractiveDeleteMarkedPredefinedData', 'ReadDataHistory', 'ViewDataHistory',
-  'UpdateDataHistory', 'UpdateDataHistoryOfMissingData', 'ReadDataHistoryOfMissingData',
-  'UpdateDataHistorySettings', 'UpdateDataHistoryVersionComment',
-  'EditDataHistoryVersionComment', 'SwitchToDataHistoryVersion',
-] as const;
-
-const DOCUMENT_RIGHTS = [
-  ...COMMON_OBJECT_RIGHTS.filter((right) => !right.endsWith('PredefinedData')),
-  'Posting', 'UndoPosting', 'InteractivePosting', 'InteractivePostingRegular',
-  'InteractiveUndoPosting', 'InteractiveChangeOfPosted',
-] as const;
-
-const ROOT_RIGHTS_BY_TYPE: Readonly<Record<string, readonly string[]>> = {
-  Configuration: [
-    'Administration', 'DataAdministration', 'UpdateDataBaseConfiguration',
-    'ConfigurationExtensionsAdministration', 'ActiveUsers', 'EventLog', 'ExclusiveMode',
-    'ThinClient', 'ThickClient', 'WebClient', 'MobileClient', 'ExternalConnection',
-    'Automation', 'Output', 'SaveUserData', 'TechnicalSpecialistMode',
-    'InteractiveOpenExtDataProcessors', 'InteractiveOpenExtReports', 'AnalyticsSystemClient',
-    'CollaborationSystemInfoBaseRegistration', 'MainWindowModeNormal',
-    'MainWindowModeWorkplace', 'MainWindowModeEmbeddedWorkplace',
-    'MainWindowModeFullscreenWorkplace', 'MainWindowModeKiosk',
-  ],
-  Catalog: COMMON_OBJECT_RIGHTS,
-  Document: DOCUMENT_RIGHTS,
-  InformationRegister: [
-    'Read', 'Update', 'View', 'Edit', 'TotalsControl', 'ReadDataHistory', 'ViewDataHistory',
-    'UpdateDataHistory', 'UpdateDataHistoryOfMissingData', 'ReadDataHistoryOfMissingData',
-    'UpdateDataHistorySettings', 'UpdateDataHistoryVersionComment',
-    'EditDataHistoryVersionComment', 'SwitchToDataHistoryVersion',
-  ],
-  AccumulationRegister: ['Read', 'Update', 'View', 'Edit', 'TotalsControl'],
-  AccountingRegister: ['Read', 'Update', 'View', 'Edit', 'TotalsControl'],
-  CalculationRegister: ['Read', 'View'],
-  Constant: [
-    'Read', 'Update', 'View', 'Edit', 'ReadDataHistory', 'ViewDataHistory', 'UpdateDataHistory',
-    'UpdateDataHistorySettings', 'UpdateDataHistoryVersionComment', 'EditDataHistoryVersionComment',
-    'SwitchToDataHistoryVersion',
-  ],
-  ChartOfAccounts: [
-    'Read', 'Insert', 'Update', 'Delete', 'View', 'Edit', 'InputByString', 'InteractiveInsert',
-    'InteractiveSetDeletionMark', 'InteractiveClearDeletionMark', 'InteractiveDelete',
-    'InteractiveDeletePredefinedData', 'InteractiveSetDeletionMarkPredefinedData',
-    'InteractiveClearDeletionMarkPredefinedData', 'InteractiveDeleteMarkedPredefinedData',
-    'ReadDataHistory', 'ReadDataHistoryOfMissingData', 'UpdateDataHistory',
-    'UpdateDataHistoryOfMissingData', 'UpdateDataHistorySettings',
-    'UpdateDataHistoryVersionComment',
-  ],
-  ChartOfCharacteristicTypes: [
-    'Read', 'Insert', 'Update', 'Delete', 'View', 'Edit', 'InputByString', 'InteractiveInsert',
-    'InteractiveSetDeletionMark', 'InteractiveClearDeletionMark', 'InteractiveDelete',
-    'InteractiveDeletePredefinedData', 'InteractiveSetDeletionMarkPredefinedData',
-    'InteractiveClearDeletionMarkPredefinedData', 'InteractiveDeleteMarkedPredefinedData',
-    'ReadDataHistory', 'ReadDataHistoryOfMissingData', 'UpdateDataHistory',
-    'UpdateDataHistoryOfMissingData', 'UpdateDataHistorySettings',
-    'UpdateDataHistoryVersionComment', 'InteractiveDeleteMarked', 'EditDataHistoryVersionComment',
-    'SwitchToDataHistoryVersion', 'ViewDataHistory',
-  ],
-  ChartOfCalculationTypes: [
-    'Read', 'Insert', 'Update', 'Delete', 'View', 'Edit', 'InputByString', 'InteractiveInsert',
-    'InteractiveSetDeletionMark', 'InteractiveClearDeletionMark', 'InteractiveDelete',
-    'InteractiveDeletePredefinedData', 'InteractiveSetDeletionMarkPredefinedData',
-    'InteractiveClearDeletionMarkPredefinedData', 'InteractiveDeleteMarkedPredefinedData',
-  ],
-  ExchangePlan: [
-    'Read', 'Insert', 'Update', 'Delete', 'View', 'Edit', 'InputByString', 'InteractiveInsert',
-    'InteractiveSetDeletionMark', 'InteractiveClearDeletionMark', 'InteractiveDelete',
-    'InteractiveDeleteMarked', 'ReadDataHistory', 'ViewDataHistory', 'UpdateDataHistory',
-    'ReadDataHistoryOfMissingData', 'UpdateDataHistoryOfMissingData', 'UpdateDataHistorySettings',
-    'UpdateDataHistoryVersionComment', 'EditDataHistoryVersionComment', 'SwitchToDataHistoryVersion',
-  ],
-  BusinessProcess: [
-    'Read', 'Insert', 'Update', 'Delete', 'View', 'Edit', 'InputByString', 'Start',
-    'InteractiveInsert', 'InteractiveSetDeletionMark', 'InteractiveClearDeletionMark',
-    'InteractiveDelete', 'InteractiveActivate', 'InteractiveStart',
-  ],
-  Task: [
-    'Read', 'Insert', 'Update', 'Delete', 'View', 'Edit', 'InputByString', 'Execute',
-    'InteractiveInsert', 'InteractiveSetDeletionMark', 'InteractiveClearDeletionMark',
-    'InteractiveDelete', 'InteractiveActivate', 'InteractiveExecute',
-  ],
-  DataProcessor: ['Use', 'View'],
-  Report: ['Use', 'View'],
-  CommonForm: ['View'],
-  CommonCommand: ['View'],
-  Subsystem: ['View'],
-  FilterCriterion: ['View'],
-  DocumentJournal: ['Read', 'View'],
-  Sequence: ['Read', 'Update'],
-  WebService: ['Use'],
-  HTTPService: ['Use'],
-  IntegrationService: ['Use'],
-  SessionParameter: ['Get', 'Set'],
-  CommonAttribute: ['View', 'Edit'],
-  ExternalDataSource: [
-    'Use', 'Administration', 'StandardAuthenticationChange',
-    'SessionStandardAuthenticationChange', 'SessionOSAuthenticationChange',
-  ],
-};
-
-const INTERACTIVE_DELETE_RIGHTS = new Set([
-  'InteractiveSetDeletionMark', 'InteractiveClearDeletionMark', 'InteractiveDelete',
-  'InteractiveDeleteMarked', 'InteractiveDeletePredefinedData',
-  'InteractiveSetDeletionMarkPredefinedData', 'InteractiveClearDeletionMarkPredefinedData',
-  'InteractiveDeleteMarkedPredefinedData',
-]);
-const POST_RIGHTS = ['Posting', 'UndoPosting', 'InteractivePosting', 'InteractiveUndoPosting'] as const;
 
 export type RoleRightsErrorCode =
   | 'INVALID_ROLE_RIGHTS_DSL'
@@ -170,8 +61,8 @@ function fail(code: RoleRightsErrorCode, message: string): never {
 }
 
 function selectedRights(type: string, definition: string): Set<string> {
-  const allowed = ROOT_RIGHTS_BY_TYPE[type];
-  if (!allowed) {
+  const allowed = getRoleRightsForType(type).map((right) => right.xmlName);
+  if (allowed.length === 0) {
     return fail('INVALID_ROLE_RIGHTS_OBJECT', `Тип объекта «${type}» не поддерживает права ролей.`);
   }
   const known = new Set(allowed);
@@ -181,29 +72,16 @@ function selectedRights(type: string, definition: string): Set<string> {
       return fail('INVALID_ROLE_RIGHTS_DSL', 'Пресет должен быть единственным значением после двоеточия.');
     }
     if (value === '@view') {
-      const selected = new Set(['Read', 'View', 'InputByString'].filter((right) => known.has(right)));
-      if (known.has('Use')) {selected.add('Use');}
-      return selected;
+      return new Set(getRoleRightPreset(type, 'view'));
     }
     if (value === '@edit') {
-      const selected = selectedRights(type, '@view');
-      for (const right of [
-        'Read', 'Insert', 'Update', 'Delete', 'View', 'Edit', 'InteractiveInsert', 'InputByString',
-      ]) {
-        if (known.has(right)) {selected.add(right);}
-      }
-      for (const right of INTERACTIVE_DELETE_RIGHTS) {
-        if (known.has(right)) {selected.add(right);}
-      }
-      return selected;
+      return new Set(getRoleRightPreset(type, 'edit'));
     }
     if (value === '@post') {
       if (type !== 'Document') {
         return fail('UNSUPPORTED_ROLE_PRESET', 'Пресет @post применим только к объектам типа Document.');
       }
-      const selected = selectedRights(type, '@edit');
-      for (const right of POST_RIGHTS) {selected.add(right);}
-      return selected;
+      return new Set(getRoleRightPreset(type, 'post'));
     }
     if (value === '@admin') {
       return new Set(allowed);
@@ -251,7 +129,8 @@ export function compileRoleRightsDsl(entries: readonly string[]): ParsedRoleRigh
       return fail('INVALID_ROLE_RIGHTS_DSL', `Ожидается объект верхнего уровня «Тип.Имя»: ${objectPath}`);
     }
     const [type, name] = segments as [string, string];
-    if (!ROOT_RIGHTS_BY_TYPE[type]) {
+    const allowedRights = getRoleRightsForType(type);
+    if (allowedRights.length === 0) {
       return fail('INVALID_ROLE_RIGHTS_OBJECT', `Тип объекта «${type}» не поддерживает права ролей.`);
     }
     if (validateElementName(name, [])) {
@@ -264,8 +143,8 @@ export function compileRoleRightsDsl(entries: readonly string[]): ParsedRoleRigh
     seenObjects.add(identity);
     const selected = selectedRights(type, definition);
     const rights: Record<string, boolean> = {};
-    for (const right of ROOT_RIGHTS_BY_TYPE[type]!) {
-      rights[right] = selected.has(right);
+    for (const right of allowedRights) {
+      rights[right.xmlName] = selected.has(right.xmlName);
     }
     return { type, name, objectName: `${type}.${name}`, rights };
   });

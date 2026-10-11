@@ -178,7 +178,7 @@ suite('Rights Update Utils Test Suite', () => {
       testRoleModel.rights['Catalog.Products'].read = true;
       testRoleModel.rights['Catalog.Products'].delete = true;
       testRoleModel.rights['Catalog.Products'].interactiveDelete = true;
-      testRoleModel.rights['Catalog.Products'].interactiveClear = true;
+      testRoleModel.rights['Catalog.Products'].interactiveDeleteMarkedPredefinedData = true;
       testRoleModel.rights['Catalog.Products'].insert = true; // Keep another right to prevent removal
       
       const result = updateRight(testRoleModel, 'Catalog.Products', 'read', false);
@@ -187,7 +187,7 @@ suite('Rights Update Utils Test Suite', () => {
       assert.ok(testRoleModel.rights['Catalog.Products'], 'Object should still exist');
       assert.strictEqual(testRoleModel.rights['Catalog.Products'].delete, false);
       assert.strictEqual(testRoleModel.rights['Catalog.Products'].interactiveDelete, false);
-      assert.strictEqual(testRoleModel.rights['Catalog.Products'].interactiveClear, false);
+      assert.strictEqual(testRoleModel.rights['Catalog.Products'].interactiveDeleteMarkedPredefinedData, false);
       assert.strictEqual(testRoleModel.rights['Catalog.Products'].insert, true, 'Insert should be preserved');
     });
 
@@ -272,7 +272,7 @@ suite('Rights Update Utils Test Suite', () => {
       assert.strictEqual(getBaseRight('interactiveInsert'), 'insert');
       assert.strictEqual(getBaseRight('interactiveDelete'), 'delete');
       assert.strictEqual(getBaseRight('interactiveDeleteMarked'), 'delete');
-      assert.strictEqual(getBaseRight('interactiveClear'), 'delete');
+      assert.strictEqual(getBaseRight('interactiveClear'), null, 'legacy UI-only names are not canonical rights');
     });
 
     test('getBaseRight() should return null for non-interactive rights', () => {
@@ -288,7 +288,8 @@ suite('Rights Update Utils Test Suite', () => {
       const deleteInteractive = getInteractiveRights('delete');
       assert.ok(deleteInteractive.includes('interactiveDelete'));
       assert.ok(deleteInteractive.includes('interactiveDeleteMarked'));
-      assert.ok(deleteInteractive.includes('interactiveClear'));
+      assert.ok(deleteInteractive.includes('interactiveDeleteMarkedPredefinedData'));
+      assert.ok(!deleteInteractive.includes('interactiveClear'));
       // DeletionMark rights are narrower — not dependent on delete base right
       assert.ok(!deleteInteractive.includes('interactiveSetDeletionMark'));
       assert.ok(!deleteInteractive.includes('interactiveClearDeletionMark'));

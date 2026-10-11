@@ -6,6 +6,16 @@ import { MetadataType } from '../../models/treeNode';
 import { RightType } from './roleModel';
 import type { MetadataObject } from './metadataObject';
 
+export interface UiRoleRightProjection {
+  key: string;
+  xmlName: string;
+  label: string;
+  applicableTo: readonly string[];
+  dependencies: readonly string[];
+  clearedBy: readonly string[];
+  interactiveBase?: string;
+}
+
 /**
  * Command types for webview messages
  */
@@ -115,6 +125,7 @@ export type ExtensionToWebviewMessage =
       command: 'objectsLoaded';
       data: {
         objects: MetadataObject[];
+        uiRights?: UiRoleRightProjection[];
         error?: string;
         /** When true, metadata/config is unavailable — Save must not write (see provider). */
         saveDisabled?: boolean;
