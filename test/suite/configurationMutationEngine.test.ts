@@ -7,12 +7,13 @@ import {
   type MutationReceipt,
   type SingleFileTransform,
 } from '../../src/services/configurationSession/ConfigurationMutationEngine';
-import { hashContent } from '../../src/services/configurationSession/atomicFileStorage';
+import { hashContent, type AtomicFileSystem } from '../../src/services/configurationSession/atomicFileStorage';
 import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import type { ConfigurationContext, ConfigurationId } from '../../src/services/configurationSession/types';
 import { ConfigurationContextResolver } from '../../src/services/configurationSession/ConfigurationContextResolver';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
+import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
 import { mutateCompositionFile } from '../../src/services/compositionFileMutation';
 
 function createSampleConfigurationXml(name: string = 'TestConfig'): string {
@@ -29,6 +30,17 @@ function createSampleConfigurationXml(name: string = 'TestConfig'): string {
 suite('ConfigurationMutationEngine (#242)', () => {
   let tmpDir: string;
   let configPath: string;
+  let disposeMutationGateway: (() => void) | undefined;
+
+  suiteSetup(() => {
+    disposeMutationGateway = configureConfigurationMutationGateway(
+      async (_resourcePath, _kind, operation) => operation(),
+    ).dispose;
+  });
+
+  suiteTeardown(() => {
+    disposeMutationGateway?.();
+  });
 
   setup(async () => {
     tmpDir = await createTempDir('1cviewer-mutation-engine-');
@@ -124,6 +136,45 @@ suite('ConfigurationMutationEngine (#242)', () => {
       assert.strictEqual(diskContent, '<Content><Item>Catalog.Goods</Item></Content>');
     });
 
+    test('removes a partially written create target when publication fails', async () => {
+      const targetFile = path.join(tmpDir, 'Faulted', 'Content.xml');
+      let injectedFailure = false;
+      const faultingFileSystem: AtomicFileSystem = {
+        readFile: (filePath) => fsp.readFile(filePath),
+        open: async (filePath, flags) => {
+          const handle = await fsp.open(filePath, flags);
+          return {
+            writeFile: async (data) => {
+              injectedFailure = true;
+              await handle.writeFile(Buffer.from(data).subarray(0, 4));
+              throw new Error('injected partial create write failure');
+            },
+            sync: () => handle.sync(),
+            close: () => handle.close(),
+          };
+        },
+        link: (existingPath, newPath) => fsp.link(existingPath, newPath),
+        rename: (oldPath, newPath) => fsp.rename(oldPath, newPath),
+        rm: (filePath, options) => fsp.rm(filePath, options),
+      };
+
+      const engine = new ConfigurationMutationEngine({
+        fileSystem: faultingFileSystem,
+        runMutation: async (_resourcePath, _kind, operation) => operation(),
+      });
+      const receipt = await engine.transformFile(
+        targetFile,
+        { kind: 'test.create-fault', resourcePath: targetFile },
+        async () => ({ content: '<complete-content/>', result: 'created' }),
+      );
+
+      assert.strictEqual(injectedFailure, true, 'Fault injection must interrupt the temp-file write');
+      assert.strictEqual(receipt.status, 'rolledBack');
+      assert.strictEqual(receipt.code, 'WRITE_FAILED');
+      await assert.rejects(fsp.readFile(targetFile), { code: 'ENOENT' });
+      assert.deepStrictEqual(await fsp.readdir(path.dirname(targetFile)), []);
+    });
+
     test('rejects stale revision with conflict and does not modify disk', async () => {
       const targetFile = path.join(tmpDir, 'Subsystem.xml');
       const xml = '<Subsystem><Name>Initial</Name></Subsystem>';
@@ -213,6 +264,70 @@ suite('ConfigurationMutationEngine (#242)', () => {
 
       assert.strictEqual(receipt.status, 'conflict');
       assert.strictEqual(receipt.code, 'CONFIGURATION_ID_MISMATCH');
+    });
+
+    test('fails closed across mutation APIs when context resolution fails', async () => {
+      const targetFile = path.join(tmpDir, 'Subsystem.xml');
+      const originalContent = '<root><value>unchanged</value></root>';
+      await fsp.writeFile(targetFile, originalContent, 'utf-8');
+
+      const contextResolver = new ConfigurationContextResolver(new WorkspaceRegistry());
+      let transformCalls = 0;
+      let mutationRunnerCalls = 0;
+      let planBuilderCalls = 0;
+      let planRunnerCalls = 0;
+      let externalRunnerCalls = 0;
+      const engine = new ConfigurationMutationEngine({
+        contextResolver,
+        runMutation: async (_resourcePath, _kind, operation) => {
+          mutationRunnerCalls++;
+          return operation();
+        },
+        runPlan: async (_resourcePath, plan) => {
+          planRunnerCalls++;
+          return plan.result;
+        },
+      });
+
+      const transformReceipt = await engine.transformFile(
+        targetFile,
+        {
+          kind: 'test.resolver-failure.write',
+          resourcePath: targetFile,
+          expectedConfigurationId: 'cfg-expected' as ConfigurationId,
+        },
+        async () => {
+          transformCalls++;
+          return { content: '<root><value>changed</value></root>', result: 'changed' };
+        },
+      );
+      const planReceipt = await engine.executePlan(
+        tmpDir,
+        { kind: 'test.resolver-failure.plan', expectedConfigurationId: 'cfg-expected' as ConfigurationId },
+        () => {
+          planBuilderCalls++;
+          return { kind: 'test.resolver-failure.plan', steps: [], result: 'planned' };
+        },
+      );
+      const externalReceipt = await engine.executeExternal(
+        tmpDir,
+        { kind: 'test.resolver-failure.process', expectedConfigurationId: 'cfg-expected' as ConfigurationId },
+        async () => {
+          externalRunnerCalls++;
+          return 'ran';
+        },
+      );
+
+      for (const receipt of [transformReceipt, planReceipt, externalReceipt]) {
+        assert.strictEqual(receipt.status, 'conflict');
+        assert.strictEqual(receipt.code, 'CONFIGURATION_CONTEXT_UNAVAILABLE');
+      }
+      assert.strictEqual(transformCalls, 0);
+      assert.strictEqual(mutationRunnerCalls, 0);
+      assert.strictEqual(planBuilderCalls, 0);
+      assert.strictEqual(planRunnerCalls, 0);
+      assert.strictEqual(externalRunnerCalls, 0);
+      assert.strictEqual(await fsp.readFile(targetFile, 'utf-8'), originalContent);
     });
 
     test('rejects write on read-only configuration session', async () => {

@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { AtomicFileStorage, hashContent } from './atomicFileStorage';
+import { AtomicFileStorage, hashContent, type AtomicFileSystem } from './atomicFileStorage';
 import { assertPathWithinRoot, PathBoundaryError } from './pathBoundary';
 import {
   runConfigurationMutation,
@@ -79,6 +79,7 @@ export interface ConfigurationMutationEngineDeps {
   readonly contextResolver?: ConfigurationContextResolver;
   readonly runMutation?: MutationRunner;
   readonly runPlan?: PlanRunner;
+  readonly fileSystem?: AtomicFileSystem;
 }
 
 const fileMutationTails = new Map<string, Promise<void>>();
@@ -178,6 +179,7 @@ interface ResolvedTargetContext {
   readonly rootPath: string;
   readonly configurationId?: ConfigurationId;
   readonly capabilities?: ConfigurationCapabilities;
+  readonly resolutionError?: string;
 }
 
 /**
@@ -211,9 +213,9 @@ export class ConfigurationMutationEngine {
       };
     }
 
-    const candidate = fallbackResourcePath || (typeof target === 'string' ? target : undefined);
+    const candidate = fallbackResourcePath ?? target;
 
-    if (this.deps.contextResolver && candidate) {
+    if (this.deps.contextResolver) {
       try {
         const resolved = await this.deps.contextResolver.resolveFromResource(candidate);
         return {
@@ -221,12 +223,16 @@ export class ConfigurationMutationEngine {
           configurationId: resolved.configurationId,
           capabilities: resolved.capabilities,
         };
-      } catch {
-        // Fall back to filesystem walk if not in registry
+      } catch (error) {
+        return {
+          rootPath: fallbackResourcePath ?? (typeof target === 'string' ? target : process.cwd()),
+          resolutionError: error instanceof Error ? error.message : String(error),
+        };
       }
     }
 
-    const rootPath = candidate ? await findRootPathForFile(candidate) : process.cwd();
+    const fallbackPath = fallbackResourcePath ?? (typeof target === 'string' ? target : undefined);
+    const rootPath = fallbackPath ? await findRootPathForFile(fallbackPath) : process.cwd();
     return { rootPath };
   }
 
@@ -252,6 +258,17 @@ export class ConfigurationMutationEngine {
 
     const canonicalTarget = path.resolve(rawPath);
     const resolved = await this.resolveTarget(target, canonicalTarget);
+
+    if (resolved.resolutionError) {
+      return {
+        status: 'conflict',
+        code: 'CONFIGURATION_CONTEXT_UNAVAILABLE',
+        message: `Не удалось определить конфигурацию для изменения: ${resolved.resolutionError}`,
+        kind: intent.kind,
+        resourcePath: canonicalTarget,
+        session: intent.session,
+      };
+    }
 
     if (resolved.capabilities && !resolved.capabilities.write) {
       return {
@@ -379,7 +396,7 @@ export class ConfigurationMutationEngine {
       };
     }
 
-    const storage = new AtomicFileStorage(rootPath);
+    const storage = new AtomicFileStorage(rootPath, this.deps.fileSystem);
 
     if (exists) {
       const outcome = await storage.replace(canonicalTarget, change.content, currentHash!);
@@ -432,58 +449,32 @@ export class ConfigurationMutationEngine {
     }
 
     // Missing file creation
-    await fs.promises.mkdir(path.dirname(canonicalTarget), { recursive: true });
-    try {
-      await fs.promises.writeFile(canonicalTarget, change.content, { encoding: 'utf-8', flag: 'wx' });
+    const createOutcome = await storage.createIfAbsent(canonicalTarget, change.content);
+    if (createOutcome.status === 'committed') {
       return {
         status: 'committed',
         result: change.result,
         oldRevision: undefined,
-        newRevision: hashContent(change.content),
+        newRevision: createOutcome.newHash,
         kind: intent.kind,
         resourcePath: canonicalTarget,
         configurationId,
         session: intent.session,
       };
-    } catch (err: unknown) {
-      if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'EEXIST') {
-        // Parallel creator race: re-read freshly created file and retry transform once
-        const freshContent = await fs.promises.readFile(canonicalTarget, 'utf-8');
-        const freshHash = hashContent(freshContent);
-        let retryChange: SingleFileMutationChange<T>;
-        try {
-          retryChange = await transform({ exists: true, content: freshContent, revision: freshHash });
-        } catch (err2: unknown) {
-          const msg = err2 instanceof Error ? err2.message : String(err2);
-          return {
-            status: 'rolledBack',
-            code: 'TRANSFORM_FAILED',
-            message: msg,
-            oldRevision: freshHash,
-            kind: intent.kind,
-            resourcePath: canonicalTarget,
-            configurationId,
-            session: intent.session,
-          };
-        }
-
-        const retryOutcome = await storage.replace(canonicalTarget, retryChange.content, freshHash);
-        if (retryOutcome.status === 'committed') {
-          return {
-            status: 'committed',
-            result: retryChange.result,
-            oldRevision: freshHash,
-            newRevision: retryOutcome.newHash,
-            kind: intent.kind,
-            resourcePath: canonicalTarget,
-            configurationId,
-            session: intent.session,
-          };
-        }
+    }
+    if (createOutcome.status === 'conflict' && createOutcome.code === 'TARGET_ALREADY_EXISTS') {
+      // Parallel creator race: re-read freshly created file and retry transform once
+      const freshContent = await fs.promises.readFile(canonicalTarget, 'utf-8');
+      const freshHash = hashContent(freshContent);
+      let retryChange: SingleFileMutationChange<T>;
+      try {
+        retryChange = await transform({ exists: true, content: freshContent, revision: freshHash });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
         return {
-          status: 'conflict',
-          code: 'CONCURRENT_CREATE_COLLISION',
-          message: `Конфликт создания файла с параллельным процессом: ${canonicalTarget}. ${retryOutcome.message}`,
+          status: 'rolledBack',
+          code: 'TRANSFORM_FAILED',
+          message: msg,
           oldRevision: freshHash,
           kind: intent.kind,
           resourcePath: canonicalTarget,
@@ -492,17 +483,62 @@ export class ConfigurationMutationEngine {
         };
       }
 
-      const msg = err instanceof Error ? err.message : String(err);
+      const retryOutcome = await storage.replace(canonicalTarget, retryChange.content, freshHash);
+      if (retryOutcome.status === 'committed') {
+        return {
+          status: 'committed',
+          result: retryChange.result,
+          oldRevision: freshHash,
+          newRevision: retryOutcome.newHash,
+          kind: intent.kind,
+          resourcePath: canonicalTarget,
+          configurationId,
+          session: intent.session,
+        };
+      }
       return {
-        status: 'rolledBack',
-        code: 'WRITE_FAILED',
-        message: msg,
+        status: 'conflict',
+        code: 'CONCURRENT_CREATE_COLLISION',
+        message: `Конфликт создания файла с параллельным процессом: ${canonicalTarget}. ${retryOutcome.message}`,
+        oldRevision: freshHash,
         kind: intent.kind,
         resourcePath: canonicalTarget,
         configurationId,
         session: intent.session,
       };
     }
+
+    if (createOutcome.status === 'conflict') {
+      return {
+        status: 'conflict',
+        code: createOutcome.code,
+        message: createOutcome.message,
+        kind: intent.kind,
+        resourcePath: canonicalTarget,
+        configurationId,
+        session: intent.session,
+      };
+    }
+    if (createOutcome.status === 'recoveryRequired') {
+      return {
+        status: 'recoveryRequired',
+        code: createOutcome.code,
+        message: createOutcome.message,
+        kind: intent.kind,
+        resourcePath: canonicalTarget,
+        configurationId,
+        session: intent.session,
+      };
+    }
+    return {
+      status: 'rolledBack',
+      code: createOutcome.code,
+      message: createOutcome.message,
+      kind: intent.kind,
+      resourcePath: canonicalTarget,
+      configurationId,
+      session: intent.session,
+    };
   }
 
   /**
@@ -514,6 +550,17 @@ export class ConfigurationMutationEngine {
     builder: (snapshot: { rootPath: string; configurationId?: ConfigurationId }) => Promise<MutationPlan<T>> | MutationPlan<T>,
   ): Promise<MutationReceipt<T>> {
     const resolved = await this.resolveTarget(target);
+
+    if (resolved.resolutionError) {
+      return {
+        status: 'conflict',
+        code: 'CONFIGURATION_CONTEXT_UNAVAILABLE',
+        message: `Не удалось определить конфигурацию для изменения: ${resolved.resolutionError}`,
+        kind: intent.kind,
+        resourcePath: resolved.rootPath,
+        session: intent.session,
+      };
+    }
 
     if (resolved.capabilities && !resolved.capabilities.write) {
       return {
@@ -611,6 +658,17 @@ export class ConfigurationMutationEngine {
     runner: (context: ExternalProcessContext) => Promise<T>,
   ): Promise<MutationReceipt<T>> {
     const resolved = await this.resolveTarget(target);
+
+    if (resolved.resolutionError) {
+      return {
+        status: 'conflict',
+        code: 'CONFIGURATION_CONTEXT_UNAVAILABLE',
+        message: `Не удалось определить конфигурацию для изменения: ${resolved.resolutionError}`,
+        kind: intent.kind,
+        resourcePath: resolved.rootPath,
+        session: intent.session,
+      };
+    }
 
     if (resolved.capabilities && !resolved.capabilities.process) {
       return {
