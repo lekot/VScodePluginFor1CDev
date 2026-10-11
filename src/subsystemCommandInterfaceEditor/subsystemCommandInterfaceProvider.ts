@@ -3,9 +3,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { TreeNode } from '../models/treeNode';
 import { parseCommandInterface, serializeCommandInterface } from '../parsers/commandInterfaceParser';
-import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
-import { AtomicFileStorage, hashContent } from '../services/configurationSession/atomicFileStorage';
-import { findConfigurationRootForPath } from '../rolesEditor/rolesRightsEditorProvider';
+import { getConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
+import { hashContent } from '../services/configurationSession/atomicFileStorage';
 import type { CommandInterfaceModel, CommandVisibilityEntry } from '../types/commandInterface';
 import { MESSAGES } from '../constants/messages';
 import { Logger } from '../utils/logger';
@@ -168,34 +167,39 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
       groupsOrder: [...this.currentModel.groupsOrder],
     };
     try {
-      await runConfigurationMutation(targetFilePath, 'subsystemCommandInterface.save', async () => {
-        const raw = await fs.promises.readFile(targetFilePath, 'utf8');
-        const originalHash = hashContent(raw);
-        if (snapshotExpectedHash && originalHash !== snapshotExpectedHash) {
+      const mutationEngine = getConfigurationMutationEngine();
+      const receipt = await mutationEngine.transformFile(
+        targetFilePath,
+        {
+          kind: 'subsystemCommandInterface.save',
+          resourcePath: targetFilePath,
+          expectedRevision: snapshotExpectedHash,
+          session: { id: targetFilePath, generation: targetGeneration },
+        },
+        async () => {
+          const updatedModel: CommandInterfaceModel = {
+            ...snapshotModel,
+            visibility: newVisibility,
+          };
+          const xml = serializeCommandInterface(updatedModel);
+          return { content: xml, result: updatedModel };
+        },
+      );
+
+      if (receipt.status === 'conflict') {
+        if (receipt.code === 'STALE_TARGET_REVISION') {
           throw new Error('Конфликт сохранения: файл интерфейса подсистемы был изменен другим процессом.');
         }
+        throw new Error(`Конфликт сохранения интерфейса подсистемы: ${receipt.message}`);
+      }
+      if (receipt.status !== 'committed') {
+        throw new Error(`Ошибка записи CommandInterface.xml: ${receipt.message}`);
+      }
 
-        const updatedModel: CommandInterfaceModel = {
-          ...snapshotModel,
-          visibility: newVisibility,
-        };
-        const xml = serializeCommandInterface(updatedModel);
-
-        const rootPath = findConfigurationRootForPath(targetFilePath) ?? path.dirname(targetFilePath);
-        const storage = new AtomicFileStorage(rootPath);
-        const outcome = await storage.replace(targetFilePath, xml, originalHash);
-        if (outcome.status === 'conflict') {
-          throw new Error(`Конфликт сохранения интерфейса подсистемы: ${outcome.message}`);
-        }
-        if (outcome.status !== 'committed') {
-          throw new Error(`Ошибка записи CommandInterface.xml: ${outcome.message}`);
-        }
-
-        if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
-          this.sessionExpectedHash = outcome.newHash;
-          this.currentModel = updatedModel;
-        }
-      });
+      if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
+        this.sessionExpectedHash = receipt.newRevision;
+        this.currentModel = receipt.result;
+      }
 
       if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
         this.postMessage({

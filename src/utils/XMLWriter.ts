@@ -1,5 +1,10 @@
 import * as fs from 'fs';
 import { Logger } from './logger';
+import {
+  getConfigurationMutationEngine,
+  type SingleFileMutationChange,
+  type SingleFileMutationState,
+} from '../services/configurationSession/ConfigurationMutationEngine';
 import { xmlParser } from './xml/xmlCore';
 import { XmlReadError, XmlParseError, XmlWriteError } from './xml/xmlErrors';
 import { buildXmlString, writeUtf8FileWithBackup } from './xml/xmlFileIo';
@@ -214,39 +219,16 @@ export class XMLWriter {
     filePath: string,
     properties: Record<string, unknown>
   ): Promise<void> {
-    let xmlContent: string;
-    try {
-      xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-    } catch (readError) {
-      const msg = readError instanceof Error ? readError.message : String(readError);
-      Logger.error(`Failed to read file for writing: ${filePath}`, readError);
-      throw new XmlReadError(`Unable to read file for updating: ${filePath}. ${msg}`);
-    }
-    requireDocumentWriteFormatProfile(xmlContent);
-
-    let parsed: unknown;
-    try {
-      parsed = xmlParser.parse(xmlContent);
-    } catch (parseError) {
-      const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
-      Logger.error(`XML parsing failed for ${filePath}`, parseError);
-      throw new XmlParseError(
-        `Invalid XML structure in file: ${filePath}. Cannot update properties in a corrupted XML file. ${errorMsg}`
-      );
-    }
-
-    const updated = updateRootPropertiesInStructure(parsed, properties);
-
-    let xmlString: string;
-    try {
-      xmlString = buildXmlString(updated);
-    } catch (buildError) {
-      const msg = buildError instanceof Error ? buildError.message : String(buildError);
-      Logger.error(`Failed to build XML for ${filePath}`, buildError);
-      throw new XmlWriteError(`Failed to generate XML content for: ${filePath}. ${msg}`);
-    }
-
-    await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
+    await this.transformFileWithEngine(filePath, 'properties.save', (state) => {
+      if (!state.exists) {
+        throw new XmlReadError(`Unable to read file for updating: ${filePath}. File not found.`);
+      }
+      requireDocumentWriteFormatProfile(state.content);
+      return {
+        content: this.buildUpdatedPropertiesXml(state.content, properties),
+        result: undefined,
+      };
+    });
     Logger.info(`Successfully wrote properties to ${filePath}`);
   }
 
@@ -469,6 +451,61 @@ export class XMLWriter {
     }
     await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
     Logger.info(logMessage);
+  }
+
+  private static async transformFileWithEngine<T>(
+    filePath: string,
+    kind: string,
+    transform: (state: SingleFileMutationState) => SingleFileMutationChange<T> | Promise<SingleFileMutationChange<T>>
+  ): Promise<T> {
+    let transformStarted = false;
+    let transformFailureCaptured = false;
+    let transformFailure: unknown;
+    let receipt;
+
+    try {
+      receipt = await getConfigurationMutationEngine().transformFile(
+        filePath,
+        { kind, resourcePath: filePath },
+        async (state) => {
+          transformStarted = true;
+          try {
+            return await transform(state);
+          } catch (error) {
+            transformFailureCaptured = true;
+            transformFailure = error;
+            throw error;
+          }
+        },
+      );
+    } catch (error) {
+      if (transformFailureCaptured) {
+        throw transformFailure;
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      if (!transformStarted) {
+        Logger.error(`Failed to read file for writing: ${filePath}`, error);
+        throw new XmlReadError(`Unable to read file for updating: ${filePath}. ${detail}`);
+      }
+      throw new XmlWriteError(`Unable to write file: ${filePath}. ${detail}`);
+    }
+
+    if (transformFailureCaptured) {
+      throw transformFailure;
+    }
+    if (receipt.status !== 'committed') {
+      const message = receipt.message ?? `Mutation failed with status '${receipt.status}'.`;
+      if (receipt.code === 'STALE_TARGET_REVISION') {
+        throw new XmlWriteError(`Concurrent modification detected: ${filePath}. ${message}`);
+      }
+      if (receipt.code === 'WRITE_FAILED') {
+        throw new XmlWriteError(
+          `Unable to write to file. Check file permissions and disk space. ${message}`
+        );
+      }
+      throw new XmlWriteError(message);
+    }
+    return receipt.result as T;
   }
 
   /**
@@ -742,33 +779,30 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
     changedKeys?: string[],
     options?: WriteNestedElementOptions
   ): Promise<void> {
-    let xmlContent: string;
-    try {
-      xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-    } catch (readError) {
-      const msg = readError instanceof Error ? readError.message : String(readError);
-      Logger.error(`Failed to read file for writing: ${filePath}`, readError);
-      throw new XmlReadError(`Unable to read file for updating: ${filePath}. ${msg}`);
-    }
-    requireDocumentWriteFormatProfile(xmlContent);
+    await this.transformFileWithEngine(filePath, 'properties.saveNested', (state) => {
+      if (!state.exists) {
+        throw new XmlReadError(`Unable to read file for updating: ${filePath}. File not found.`);
+      }
+      requireDocumentWriteFormatProfile(state.content);
 
-    let xmlString: string;
-    try {
-      xmlString = buildUpdatedNestedXmlImpl(
-        xmlContent,
-        elementType,
-        elementName,
-        properties,
-        changedKeys,
-        options
-      );
-    } catch (buildError) {
-      const msg = buildError instanceof Error ? buildError.message : String(buildError);
-      Logger.error(`Failed to build XML for ${filePath}`, buildError);
-      throw new XmlWriteError(`Failed to generate XML content for: ${filePath}. ${msg}`);
-    }
+      let xmlString: string;
+      try {
+        xmlString = buildUpdatedNestedXmlImpl(
+          state.content,
+          elementType,
+          elementName,
+          properties,
+          changedKeys,
+          options
+        );
+      } catch (buildError) {
+        const msg = buildError instanceof Error ? buildError.message : String(buildError);
+        Logger.error(`Failed to build XML for ${filePath}`, buildError);
+        throw new XmlWriteError(`Failed to generate XML content for: ${filePath}. ${msg}`);
+      }
 
-    await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
+      return { content: xmlString, result: undefined };
+    });
     Logger.info(`Successfully wrote properties for ${elementType} '${elementName}' to ${filePath}`);
   }
 
