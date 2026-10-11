@@ -7,3 +7,4 @@ export * from './types';
 export * from './WorkspaceRegistry';
 export * from './WorkspaceRegistryCoordinator';
 export * from './ConfigurationContextResolver';
+export * from './ConfigurationMutationEngine';

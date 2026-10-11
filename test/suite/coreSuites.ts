@@ -179,6 +179,7 @@ export const coreSuiteFiles: string[] = [
   'suite/cfeBorrowAdapters.test.js',
   'suite/cfeInterceptor.test.js',
   'suite/cfeForm.test.js',
+  'suite/configurationMutationEngine.test.js',
   'suite/atomicFileStorage.test.js',
   'suite/mutationPlan.test.js',
   'suite/bslModuleParser.test.js',

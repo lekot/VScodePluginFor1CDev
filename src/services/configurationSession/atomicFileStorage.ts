@@ -5,7 +5,7 @@ import { assertNoSymlinkSegments, assertPathWithinRoot, PathBoundaryError } from
 
 export type StorageOutcome =
   | { status: 'committed'; targetPath: string; newHash: string }
-  | { status: 'conflict'; code: 'STALE_TARGET_HASH' | 'TARGET_OUTSIDE_ROOT'; message: string }
+  | { status: 'conflict'; code: 'STALE_TARGET_HASH' | 'TARGET_OUTSIDE_ROOT' | 'TARGET_ALREADY_EXISTS'; message: string }
   | { status: 'rolledBack'; code: 'WRITE_FAILED'; message: string }
   | { status: 'recoveryRequired'; code: 'POST_WRITE_VALIDATION_FAILED'; message: string };
 
@@ -18,6 +18,7 @@ export interface AtomicFileHandle {
 export interface AtomicFileSystem {
   readFile(filePath: string): Promise<Buffer>;
   open(filePath: string, flags: 'wx'): Promise<AtomicFileHandle>;
+  link(existingPath: string, newPath: string): Promise<void>;
   rename(oldPath: string, newPath: string): Promise<void>;
   rm(filePath: string, options: { force: true }): Promise<void>;
 }
@@ -28,6 +29,9 @@ const nodeFileSystem: AtomicFileSystem = {
   },
   open(filePath, flags) {
     return fs.open(filePath, flags);
+  },
+  link(existingPath, newPath) {
+    return fs.link(existingPath, newPath);
   },
   rename(oldPath, newPath) {
     return fs.rename(oldPath, newPath);
@@ -44,6 +48,126 @@ export class AtomicFileStorage {
     readonly rootPath: string,
     private readonly fileSystem: AtomicFileSystem = nodeFileSystem,
   ) {}
+
+  /**
+   * Publishes a fully written file only if the target is still absent.
+   * A same-directory hard link is the atomic no-replace publication step.
+   */
+  async createIfAbsent(
+    targetPath: string,
+    content: string | Uint8Array,
+  ): Promise<StorageOutcome> {
+    let canonicalTarget: string;
+    let canonicalRoot: string;
+    try {
+      ({ canonicalRoot, canonicalTarget } = await assertPathWithinRoot(this.rootPath, targetPath));
+    } catch (error) {
+      if (error instanceof PathBoundaryError) {
+        return { status: 'conflict', code: 'TARGET_OUTSIDE_ROOT', message: error.message };
+      }
+      throw error;
+    }
+
+    const bytes = typeof content === 'string' ? Buffer.from(content, 'utf8') : Buffer.from(content);
+    const expectedNewHash = hashContent(bytes);
+    const tempPath = path.join(path.dirname(canonicalTarget), `.cdt-${randomUUID()}.tmp`);
+    let handle: AtomicFileHandle | undefined;
+    let published = false;
+    let publicationAttempted = false;
+    try {
+      await fs.mkdir(path.dirname(canonicalTarget), { recursive: true });
+      const initialRevalidation = await assertPathWithinRoot(this.rootPath, targetPath);
+      if (initialRevalidation.canonicalTarget !== canonicalTarget) {
+        throw new PathBoundaryError(
+          'PATH_OUTSIDE_ROOT',
+          `Target namespace changed during atomic create: ${targetPath}`,
+          targetPath,
+        );
+      }
+      await assertNoSymlinkSegments(canonicalRoot, canonicalTarget);
+      handle = await this.fileSystem.open(tempPath, 'wx');
+      await handle.writeFile(bytes);
+      await handle.sync();
+      await handle.close();
+      handle = undefined;
+
+      const revalidated = await assertPathWithinRoot(this.rootPath, targetPath);
+      if (revalidated.canonicalTarget !== canonicalTarget) {
+        throw new PathBoundaryError(
+          'PATH_OUTSIDE_ROOT',
+          `Target namespace changed during atomic create: ${targetPath}`,
+          targetPath,
+        );
+      }
+      await assertNoSymlinkSegments(canonicalRoot, canonicalTarget);
+
+      try {
+        publicationAttempted = true;
+        await this.fileSystem.link(tempPath, canonicalTarget);
+        published = true;
+      } catch (error) {
+        if (isAlreadyExistsError(error)) {
+          const racedTarget = await assertPathWithinRoot(this.rootPath, targetPath);
+          if (racedTarget.canonicalTarget !== canonicalTarget) {
+            throw new PathBoundaryError(
+              'PATH_OUTSIDE_ROOT',
+              `Target namespace changed during atomic create: ${targetPath}`,
+              targetPath,
+            );
+          }
+          await assertNoSymlinkSegments(canonicalRoot, canonicalTarget);
+          return {
+            status: 'conflict',
+            code: 'TARGET_ALREADY_EXISTS',
+            message: `Target already exists: ${canonicalTarget}`,
+          };
+        }
+        throw error;
+      }
+
+      const actualHash = hashContent(await this.fileSystem.readFile(canonicalTarget));
+      if (actualHash !== expectedNewHash) {
+        return {
+          status: 'recoveryRequired',
+          code: 'POST_WRITE_VALIDATION_FAILED',
+          message: 'Хэш созданного файла не совпадает с ожидаемым.',
+        };
+      }
+      return { status: 'committed', targetPath: canonicalTarget, newHash: actualHash };
+    } catch (error) {
+      if (error instanceof PathBoundaryError) {
+        return { status: 'conflict', code: 'TARGET_OUTSIDE_ROOT', message: error.message };
+      }
+      if (publicationAttempted) {
+        try {
+          const actualHash = hashContent(await this.fileSystem.readFile(canonicalTarget));
+          if (actualHash === expectedNewHash) {
+            return { status: 'committed', targetPath: canonicalTarget, newHash: actualHash };
+          }
+          if (!published) {
+            return {
+              status: 'conflict',
+              code: 'TARGET_ALREADY_EXISTS',
+              message: `Target already exists: ${canonicalTarget}`,
+            };
+          }
+        } catch (readError) {
+          if (!published && isNotFoundError(readError)) {
+            return { status: 'rolledBack', code: 'WRITE_FAILED', message: errorMessage(error) };
+          }
+        }
+        return {
+          status: 'recoveryRequired',
+          code: 'POST_WRITE_VALIDATION_FAILED',
+          message: `Не удалось подтвердить состояние созданного файла. ${errorMessage(error)}`,
+        };
+      }
+      return { status: 'rolledBack', code: 'WRITE_FAILED', message: errorMessage(error) };
+    } finally {
+      await handle?.close().catch(() => undefined);
+      await this.fileSystem.rm(tempPath, { force: true }).catch(() => undefined);
+    }
+  }
 
   async replace(
     targetPath: string,
@@ -194,4 +318,22 @@ export function hashContent(content: string | Uint8Array): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return Boolean(
+    error
+    && typeof error === 'object'
+    && 'code' in error
+    && (error as { code?: unknown }).code === 'EEXIST',
+  );
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return Boolean(
+    error
+    && typeof error === 'object'
+    && 'code' in error
+    && (error as { code?: unknown }).code === 'ENOENT',
+  );
 }

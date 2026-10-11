@@ -25,6 +25,8 @@ import { DebugSessionRegistry } from '../agent/debugSessionRegistry';
 import { activateAgentBridge } from '../agent/agentBridgeActivation';
 import {
   ConfigurationContextResolver,
+  ConfigurationMutationEngine,
+  setConfigurationMutationEngine,
   WorkspaceRegistry,
   WorkspaceRegistryCoordinator,
 } from '../services/configurationSession';
@@ -126,6 +128,13 @@ export async function registerAllCommands({
   context.subscriptions.push(
     configureConfigurationMutationGateway(runConfigurationMutation, runConfigurationPlan),
   );
+  const mutationEngine = new ConfigurationMutationEngine({
+    contextResolver,
+    runMutation: runConfigurationMutation,
+    runPlan: runConfigurationPlan,
+  });
+  state.configurationMutationEngine = mutationEngine;
+  setConfigurationMutationEngine(mutationEngine);
   registerFilterCriterionCommands(context, state, runConfigurationPlan, lifecycle.invalidateCacheAndReload);
   registerCfeProjectCommands({
     context,

@@ -34,12 +34,66 @@ suite('AtomicFileStorage', () => {
     assert.strictEqual(await fsp.readFile(target, 'utf8'), 'new');
   });
 
+  test('create-if-absent never replaces an existing target', async () => {
+    const target = path.join(tempDir, 'Configuration.xml');
+    await fsp.writeFile(target, 'existing', 'utf8');
+
+    const outcome = await new AtomicFileStorage(tempDir).createIfAbsent(target, 'replacement');
+
+    assert.strictEqual(outcome.status, 'conflict');
+    assert.strictEqual(outcome.code, 'TARGET_ALREADY_EXISTS');
+    assert.strictEqual(await fsp.readFile(target, 'utf8'), 'existing');
+    assert.deepStrictEqual((await fsp.readdir(tempDir)).filter((name) => name.startsWith('.cdt-')), []);
+  });
+
+  test('classifies a create link that publishes then reports failure', async () => {
+    const target = path.join(tempDir, 'Configuration.xml');
+    const ambiguousFileSystem: AtomicFileSystem = {
+      readFile: (filePath) => fsp.readFile(filePath),
+      open: (filePath, flags) => fsp.open(filePath, flags),
+      link: async (existingPath, newPath) => {
+        await fsp.link(existingPath, newPath);
+        throw new Error('injected create acknowledgement loss');
+      },
+      rename: (oldPath, newPath) => fsp.rename(oldPath, newPath),
+      rm: (filePath, options) => fsp.rm(filePath, options),
+    };
+
+    const outcome = await new AtomicFileStorage(tempDir, ambiguousFileSystem)
+      .createIfAbsent(target, 'created');
+
+    assert.strictEqual(outcome.status, 'committed');
+    assert.strictEqual(await fsp.readFile(target, 'utf8'), 'created');
+    assert.deepStrictEqual((await fsp.readdir(tempDir)).filter((name) => name.startsWith('.cdt-')), []);
+  });
+
+  test('rolls back a create publication failure before the target appears', async () => {
+    const target = path.join(tempDir, 'Configuration.xml');
+    const failingFileSystem: AtomicFileSystem = {
+      readFile: (filePath) => fsp.readFile(filePath),
+      open: (filePath, flags) => fsp.open(filePath, flags),
+      link: async () => { throw Object.assign(new Error('injected link denial'), { code: 'EACCES' }); },
+      rename: (oldPath, newPath) => fsp.rename(oldPath, newPath),
+      rm: (filePath, options) => fsp.rm(filePath, options),
+    };
+
+    const outcome = await new AtomicFileStorage(tempDir, failingFileSystem)
+      .createIfAbsent(target, 'new content');
+
+    assert.strictEqual(outcome.status, 'rolledBack');
+    assert.strictEqual(outcome.code, 'WRITE_FAILED');
+    assert.ok(outcome.message.includes('injected link denial'));
+    await assert.rejects(fsp.readFile(target), { code: 'ENOENT' });
+    assert.deepStrictEqual((await fsp.readdir(tempDir)).filter((name) => name.startsWith('.cdt-')), []);
+  });
+
   test('keeps the original file and removes temp when rename fails', async () => {
     const target = path.join(tempDir, 'Configuration.xml');
     await fsp.writeFile(target, 'old', 'utf8');
     const failingFileSystem: AtomicFileSystem = {
       readFile: (filePath) => fsp.readFile(filePath),
       open: (filePath, flags) => fsp.open(filePath, flags),
+      link: (existingPath, newPath) => fsp.link(existingPath, newPath),
       rename: async () => { throw new Error('injected rename failure'); },
       rm: (filePath, options) => fsp.rm(filePath, options),
     };
@@ -58,6 +112,7 @@ suite('AtomicFileStorage', () => {
     const ambiguousFileSystem: AtomicFileSystem = {
       readFile: (filePath) => fsp.readFile(filePath),
       open: (filePath, flags) => fsp.open(filePath, flags),
+      link: (existingPath, newPath) => fsp.link(existingPath, newPath),
       rename: async (source, destination) => {
         await fsp.rename(source, destination);
         throw new Error('injected acknowledgement loss');
@@ -105,7 +160,12 @@ suite('AtomicFileStorage', () => {
         hashContent('outside'),
       );
       assert.strictEqual(outcome.status, 'conflict');
+
+      const createOutcome = await new AtomicFileStorage(tempDir)
+        .createIfAbsent(path.join(link, 'NewConfiguration.xml'), 'must not escape');
+      assert.strictEqual(createOutcome.status, 'conflict');
       assert.strictEqual(await fsp.readFile(outsideTarget, 'utf8'), 'outside');
+      await assert.rejects(fsp.readFile(path.join(outside, 'NewConfiguration.xml')), { code: 'ENOENT' });
     } finally {
       await fsp.rm(outside, { recursive: true, force: true });
     }
