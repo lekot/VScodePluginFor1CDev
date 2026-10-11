@@ -9,8 +9,13 @@ import {
 } from '../../src/services/configurationSession/ConfigurationMutationEngine';
 import { hashContent, type AtomicFileSystem } from '../../src/services/configurationSession/atomicFileStorage';
 import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
+import { MutationPlanError } from '../../src/services/configurationSession/mutationPlan';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
-import type { ConfigurationContext, ConfigurationId } from '../../src/services/configurationSession/types';
+import type {
+  ConfigurationCapabilities,
+  ConfigurationContext,
+  ConfigurationId,
+} from '../../src/services/configurationSession/types';
 import { ConfigurationContextResolver } from '../../src/services/configurationSession/ConfigurationContextResolver';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
 import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
@@ -25,6 +30,46 @@ function createSampleConfigurationXml(name: string = 'TestConfig'): string {
     </Properties>
   </Configuration>
 </MetaDataObject>`;
+}
+
+function createAtomicFileSystem(overrides: Partial<AtomicFileSystem> = {}): AtomicFileSystem {
+  return {
+    readFile: (filePath) => fsp.readFile(filePath),
+    open: (filePath, flags) => fsp.open(filePath, flags),
+    link: (existingPath, newPath) => fsp.link(existingPath, newPath),
+    rename: (oldPath, newPath) => fsp.rename(oldPath, newPath),
+    rm: (filePath, options) => fsp.rm(filePath, options),
+    ...overrides,
+  };
+}
+
+function createConfigurationContext(
+  rootPath: string,
+  configPath: string,
+  configurationId: string,
+  capabilities: ConfigurationCapabilities,
+): ConfigurationContext {
+  const rootUri = `file:///${rootPath.replace(/\\/g, '/')}`;
+  const session = new ConfigurationSession({
+    configurationId: configurationId as ConfigurationId,
+    rootPath,
+    rootUri,
+    descriptorUri: `file:///${configPath.replace(/\\/g, '/')}`,
+    workspaceFolderUris: [rootUri],
+    format: ConfigFormat.Designer,
+    capabilities,
+  });
+  return {
+    configurationId: session.identity.configurationId,
+    rootPath: session.identity.rootPath,
+    rootUri: session.identity.rootUri,
+    workspaceFolderUri: session.identity.rootUri,
+    format: session.identity.format,
+    capabilities: session.identity.capabilities,
+    descriptorUri: session.identity.descriptorUri,
+    descriptorUuid: session.identity.descriptorUuid,
+    session,
+  };
 }
 
 suite('ConfigurationMutationEngine (#242)', () => {
@@ -173,6 +218,173 @@ suite('ConfigurationMutationEngine (#242)', () => {
       assert.strictEqual(receipt.code, 'WRITE_FAILED');
       await assert.rejects(fsp.readFile(targetFile), { code: 'ENOENT' });
       assert.deepStrictEqual(await fsp.readdir(path.dirname(targetFile)), []);
+    });
+
+    test('maps an atomic compare-and-swap race to a conflict receipt', async () => {
+      const targetFile = path.join(tmpDir, 'Conflict', 'Subsystem.xml');
+      const original = '<Subsystem>original</Subsystem>';
+      await fsp.mkdir(path.dirname(targetFile), { recursive: true });
+      await fsp.writeFile(targetFile, original, 'utf-8');
+
+      const engine = new ConfigurationMutationEngine({
+        fileSystem: createAtomicFileSystem({
+          readFile: async () => Buffer.from('<Subsystem>changed by another writer</Subsystem>'),
+        }),
+      });
+      const receipt = await engine.transformFile(
+        targetFile,
+        { kind: 'test.replace-conflict', resourcePath: targetFile },
+        async () => ({ content: '<Subsystem>ours</Subsystem>', result: 'changed' }),
+      );
+
+      assert.strictEqual(receipt.status, 'conflict');
+      assert.strictEqual(receipt.code, 'STALE_TARGET_HASH');
+      assert.strictEqual(await fsp.readFile(targetFile, 'utf-8'), original);
+    });
+
+    test('reports recoveryRequired when post-write bytes fail hash validation', async () => {
+      const targetFile = path.join(tmpDir, 'Recovery', 'Subsystem.xml');
+      const original = '<Subsystem>original</Subsystem>';
+      const updated = '<Subsystem>updated</Subsystem>';
+      await fsp.mkdir(path.dirname(targetFile), { recursive: true });
+      await fsp.writeFile(targetFile, original, 'utf-8');
+      let readCount = 0;
+
+      const engine = new ConfigurationMutationEngine({
+        fileSystem: createAtomicFileSystem({
+          readFile: async (filePath) => {
+            readCount++;
+            if (readCount === 3) {
+              return Buffer.from('<Subsystem>unverifiable</Subsystem>');
+            }
+            return fsp.readFile(filePath);
+          },
+        }),
+      });
+      const receipt = await engine.transformFile(
+        targetFile,
+        { kind: 'test.replace-recovery', resourcePath: targetFile },
+        async () => ({ content: updated, result: 'changed' }),
+      );
+
+      assert.strictEqual(receipt.status, 'recoveryRequired');
+      assert.strictEqual(receipt.code, 'POST_WRITE_VALIDATION_FAILED');
+      assert.strictEqual(readCount, 3);
+      assert.strictEqual(await fsp.readFile(targetFile, 'utf-8'), updated);
+    });
+
+    test('maps a failed atomic replace with original bytes intact to rolledBack', async () => {
+      const targetFile = path.join(tmpDir, 'Rollback', 'Subsystem.xml');
+      const original = '<Subsystem>original</Subsystem>';
+      await fsp.mkdir(path.dirname(targetFile), { recursive: true });
+      await fsp.writeFile(targetFile, original, 'utf-8');
+
+      const engine = new ConfigurationMutationEngine({
+        fileSystem: createAtomicFileSystem({
+          open: async () => { throw new Error('injected temp open failure'); },
+        }),
+      });
+      const receipt = await engine.transformFile(
+        targetFile,
+        { kind: 'test.replace-rollback', resourcePath: targetFile },
+        async () => ({ content: '<Subsystem>ours</Subsystem>', result: 'changed' }),
+      );
+
+      assert.strictEqual(receipt.status, 'rolledBack');
+      assert.strictEqual(receipt.code, 'WRITE_FAILED');
+      assert.ok(receipt.message?.includes('injected temp open failure'));
+      assert.strictEqual(await fsp.readFile(targetFile, 'utf-8'), original);
+    });
+
+    test('retries transform once after a parallel creator publishes the missing target', async () => {
+      const targetFile = path.join(tmpDir, 'Race', 'Content.xml');
+      let publishedByOtherWriter = false;
+      let transformCalls = 0;
+      const fileSystem = createAtomicFileSystem({
+        link: async (tempPath, destination) => {
+          if (!publishedByOtherWriter) {
+            publishedByOtherWriter = true;
+            await fsp.writeFile(destination, 'parallel writer', 'utf-8');
+            throw Object.assign(new Error('target was created concurrently'), { code: 'EEXIST' });
+          }
+          return fsp.link(tempPath, destination);
+        },
+      });
+      const engine = new ConfigurationMutationEngine({ fileSystem });
+
+      const receipt = await engine.transformFile(
+        targetFile,
+        { kind: 'test.create-race', resourcePath: targetFile },
+        async ({ exists, content }) => {
+          transformCalls++;
+          return {
+            content: exists ? `${content} + ours` : 'initial create',
+            result: exists ? 'retried' : 'first attempt',
+          };
+        },
+      );
+
+      assert.strictEqual(receipt.status, 'committed');
+      assert.strictEqual(receipt.result, 'retried');
+      assert.strictEqual(transformCalls, 2);
+      assert.strictEqual(await fsp.readFile(targetFile, 'utf-8'), 'parallel writer + ours');
+    });
+
+    test('keeps the parallel creator file when the retry transform fails', async () => {
+      const targetFile = path.join(tmpDir, 'FailedRace', 'Content.xml');
+      let publishedByOtherWriter = false;
+      let transformCalls = 0;
+      const fileSystem = createAtomicFileSystem({
+        link: async (_tempPath, destination) => {
+          if (!publishedByOtherWriter) {
+            publishedByOtherWriter = true;
+            await fsp.writeFile(destination, 'parallel writer', 'utf-8');
+            throw Object.assign(new Error('target was created concurrently'), { code: 'EEXIST' });
+          }
+          throw new Error('unexpected second create publication');
+        },
+      });
+      const engine = new ConfigurationMutationEngine({ fileSystem });
+
+      const receipt = await engine.transformFile(
+        targetFile,
+        { kind: 'test.create-race-transform-failure', resourcePath: targetFile },
+        async ({ exists }) => {
+          transformCalls++;
+          if (exists) {
+            throw new Error('retry transform rejected concurrent state');
+          }
+          return { content: 'initial create', result: 'first attempt' };
+        },
+      );
+
+      assert.strictEqual(receipt.status, 'rolledBack');
+      assert.strictEqual(receipt.code, 'TRANSFORM_FAILED');
+      assert.strictEqual(transformCalls, 2);
+      assert.strictEqual(await fsp.readFile(targetFile, 'utf-8'), 'parallel writer');
+    });
+
+    test('maps post-create hash mismatch to recoveryRequired without deleting the published file', async () => {
+      const targetFile = path.join(tmpDir, 'CreateRecovery', 'Content.xml');
+      let postCreateReadCount = 0;
+      const fileSystem = createAtomicFileSystem({
+        readFile: async () => {
+          postCreateReadCount++;
+          return Buffer.from('unverifiable post-create bytes');
+        },
+      });
+      const engine = new ConfigurationMutationEngine({ fileSystem });
+
+      const receipt = await engine.transformFile(
+        targetFile,
+        { kind: 'test.create-recovery', resourcePath: targetFile },
+        async () => ({ content: '<complete-content/>', result: 'created' }),
+      );
+
+      assert.strictEqual(receipt.status, 'recoveryRequired');
+      assert.strictEqual(receipt.code, 'POST_WRITE_VALIDATION_FAILED');
+      assert.strictEqual(postCreateReadCount, 1);
+      assert.strictEqual(await fsp.readFile(targetFile, 'utf-8'), '<complete-content/>');
     });
 
     test('rejects stale revision with conflict and does not modify disk', async () => {
@@ -455,6 +667,105 @@ suite('ConfigurationMutationEngine (#242)', () => {
       assert.strictEqual(await fsp.readFile(file1, 'utf-8'), '<File1Updated/>');
       assert.strictEqual(await fsp.readFile(file2, 'utf-8'), '<File2Created/>');
     });
+
+    test('maps plan conflicts, recovery requirements, and unexpected failures to stable receipts', async () => {
+      const failures: Array<{
+        error: unknown;
+        status: MutationReceipt['status'];
+        code: string;
+        message: string;
+      }> = [
+        {
+          error: new MutationPlanError('PLAN_CONFLICT', 'pre-state changed'),
+          status: 'conflict',
+          code: 'PLAN_CONFLICT',
+          message: 'pre-state changed',
+        },
+        {
+          error: new MutationPlanError('RECOVERY_REQUIRED', 'rollback is incomplete'),
+          status: 'recoveryRequired',
+          code: 'RECOVERY_REQUIRED',
+          message: 'rollback is incomplete',
+        },
+        {
+          error: new MutationPlanError('PLAN_FAILED', 'write was rolled back'),
+          status: 'rolledBack',
+          code: 'PLAN_FAILED',
+          message: 'write was rolled back',
+        },
+        {
+          error: 'unexpected non-Error failure',
+          status: 'rolledBack',
+          code: 'PLAN_FAILED',
+          message: 'unexpected non-Error failure',
+        },
+      ];
+
+      for (const failure of failures) {
+        const engine = new ConfigurationMutationEngine({
+          runPlan: async () => { throw failure.error; },
+        });
+        const receipt = await engine.executePlan(
+          tmpDir,
+          { kind: 'test.plan-failure' },
+          () => ({ kind: 'test.plan-failure', steps: [], result: 'unused' }),
+        );
+
+        assert.strictEqual(receipt.status, failure.status);
+        assert.strictEqual(receipt.code, failure.code);
+        assert.strictEqual(receipt.message, failure.message);
+      }
+    });
+
+    test('fails closed on read-only context and stale expected configuration identity', async () => {
+      const readOnlyContext = createConfigurationContext(
+        tmpDir,
+        configPath,
+        'read-only-configuration',
+        { read: true, write: false, process: false },
+      );
+      const writableContext = createConfigurationContext(
+        tmpDir,
+        configPath,
+        'current-configuration',
+        { read: true, write: true, process: true },
+      );
+      let builderCalls = 0;
+      let planRunnerCalls = 0;
+      const engine = new ConfigurationMutationEngine({
+        runPlan: async (_root, plan) => {
+          planRunnerCalls++;
+          return plan.result;
+        },
+      });
+      const buildPlan = () => {
+        builderCalls++;
+        return { kind: 'test.plan-gate', steps: [], result: 'unused' };
+      };
+
+      const readOnlyReceipt = await engine.executePlan(
+        readOnlyContext,
+        { kind: 'test.plan-read-only' },
+        buildPlan,
+      );
+      const staleIdentityReceipt = await engine.executePlan(
+        writableContext,
+        {
+          kind: 'test.plan-stale-identity',
+          expectedConfigurationId: 'previous-configuration' as ConfigurationId,
+        },
+        buildPlan,
+      );
+
+      for (const receipt of [readOnlyReceipt, staleIdentityReceipt]) {
+        assert.strictEqual(receipt.status, 'conflict');
+        assert.strictEqual(receipt.code, receipt === readOnlyReceipt
+          ? 'CONFIGURATION_CAPABILITY_UNSUPPORTED'
+          : 'CONFIGURATION_ID_MISMATCH');
+      }
+      assert.strictEqual(builderCalls, 0);
+      assert.strictEqual(planRunnerCalls, 0);
+    });
   });
 
   suite('External process execution (executeExternal)', () => {
@@ -475,6 +786,55 @@ suite('ConfigurationMutationEngine (#242)', () => {
       assert.deepStrictEqual(receipt.result, { exitCode: 0 });
     });
 
+    test('rejects an external operation when process capability is unavailable', async () => {
+      const context = createConfigurationContext(
+        tmpDir,
+        configPath,
+        'read-only-configuration',
+        { read: true, write: false, process: false },
+      );
+      let runnerCalls = 0;
+      const receipt = await new ConfigurationMutationEngine().executeExternal(
+        context,
+        { kind: 'ibcmd.not-supported' },
+        async () => {
+          runnerCalls++;
+          return 'must not run';
+        },
+      );
+
+      assert.strictEqual(receipt.status, 'conflict');
+      assert.strictEqual(receipt.code, 'CONFIGURATION_CAPABILITY_UNSUPPORTED');
+      assert.strictEqual(runnerCalls, 0);
+    });
+
+    test('rejects an external operation when its expected configuration identity is stale', async () => {
+      const context = createConfigurationContext(
+        tmpDir,
+        configPath,
+        'actual-configuration',
+        { read: true, write: true, process: true },
+      );
+      let runnerCalls = 0;
+      const engine = new ConfigurationMutationEngine();
+
+      const receipt = await engine.executeExternal(
+        context,
+        {
+          kind: 'ibcmd.stale-configuration',
+          expectedConfigurationId: 'expected-configuration' as ConfigurationId,
+        },
+        async () => {
+          runnerCalls++;
+          return 'must not run';
+        },
+      );
+
+      assert.strictEqual(receipt.status, 'conflict');
+      assert.strictEqual(receipt.code, 'CONFIGURATION_ID_MISMATCH');
+      assert.strictEqual(runnerCalls, 0);
+    });
+
     test('returns rolledBack when runner reports failure or cancellation', async () => {
       const engine = new ConfigurationMutationEngine();
 
@@ -489,6 +849,37 @@ suite('ConfigurationMutationEngine (#242)', () => {
       assert.strictEqual(receipt.status, 'rolledBack');
       assert.strictEqual(receipt.code, 'PROCESS_FAILED');
       assert.ok(receipt.message?.includes('exit code 1'));
+    });
+
+    test('classifies cancellation and non-Error process failures consistently', async () => {
+      const failures: Array<{ error: unknown; code: string; message: string }> = [
+        {
+          error: Object.assign(new Error('process interrupted'), { name: 'AbortError' }),
+          code: 'CANCELLED',
+          message: 'process interrupted',
+        },
+        {
+          error: new Error('operation cancelled by the user'),
+          code: 'CANCELLED',
+          message: 'operation cancelled by the user',
+        },
+        {
+          error: 'native spawn failure',
+          code: 'PROCESS_FAILED',
+          message: 'native spawn failure',
+        },
+      ];
+
+      for (const failure of failures) {
+        const receipt = await new ConfigurationMutationEngine().executeExternal(
+          tmpDir,
+          { kind: 'ibcmd.failure-mapping' },
+          async () => { throw failure.error; },
+        );
+        assert.strictEqual(receipt.status, 'rolledBack');
+        assert.strictEqual(receipt.code, failure.code);
+        assert.strictEqual(receipt.message, failure.message);
+      }
     });
   });
 

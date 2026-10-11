@@ -682,6 +682,22 @@ export class ConfigurationMutationEngine {
       };
     }
 
+    if (
+      intent.expectedConfigurationId &&
+      resolved.configurationId &&
+      intent.expectedConfigurationId !== resolved.configurationId
+    ) {
+      return {
+        status: 'conflict',
+        code: 'CONFIGURATION_ID_MISMATCH',
+        message: 'Идентификатор конфигурации не совпадает с ожидаемым.',
+        kind: intent.kind,
+        resourcePath: resolved.rootPath,
+        configurationId: resolved.configurationId,
+        session: intent.session,
+      };
+    }
+
     try {
       const result = await runExclusiveConfigurationOperation(
         resolved.rootPath,
