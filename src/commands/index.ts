@@ -23,7 +23,11 @@ import { registerConfigurationProjectCommands } from '../configurationProject/co
 import { registerAgentCommands } from '../agent/agentCommands';
 import { DebugSessionRegistry } from '../agent/debugSessionRegistry';
 import { activateAgentBridge } from '../agent/agentBridgeActivation';
-import { WorkspaceRegistry, WorkspaceRegistryCoordinator } from '../services/configurationSession';
+import {
+  ConfigurationContextResolver,
+  WorkspaceRegistry,
+  WorkspaceRegistryCoordinator,
+} from '../services/configurationSession';
 import { configureConfigurationMutationGateway } from '../services/configurationSession/configurationMutationGateway';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import { sharedInfobaseConfigurationOperationQueue } from '../infobases/infobaseConfigurationOperationQueue';
@@ -84,6 +88,11 @@ export async function registerAllCommands({
     getWorkspaceFolderForPath: (filePath) =>
       vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
   });
+  const contextResolver = new ConfigurationContextResolver(registryCoordinator, {
+    getWorkspaceFolderForPath: (filePath) =>
+      vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
+  });
+  state.configurationContextResolver = contextResolver;
   const getConfigurationRegistry = async (): Promise<WorkspaceRegistry> => {
     return registryCoordinator.getRegistry();
   };

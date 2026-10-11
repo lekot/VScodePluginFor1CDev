@@ -26,6 +26,7 @@ import type { SupportRootRegistrationLifecycle } from '../support/supportRootReg
 import type { ConfigurationRepositoryService } from '../services/configurationRepository/configurationRepositoryService';
 import type { RepositoryStateProjection } from '../services/configurationRepository/repositoryTreeDecorations';
 import type { WorkspaceRegistry } from '../services/configurationSession/WorkspaceRegistry';
+import type { ConfigurationContextResolver } from '../services/configurationSession/ConfigurationContextResolver';
 import { Logger } from '../utils/logger';
 
 /**
@@ -65,11 +66,13 @@ export class ExtensionState {
   private _configurationRepositoryService: ConfigurationRepositoryService | null = null;
   private _configurationRepositoryProjection: RepositoryStateProjection | null = null;
   private _workspaceRegistry: WorkspaceRegistry | null = null;
+  private _configurationContextResolver: ConfigurationContextResolver | null = null;
   private _isDisposed = false;
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
   get workspaceRegistry(): WorkspaceRegistry | null { return this._workspaceRegistry; }
+  get configurationContextResolver(): ConfigurationContextResolver | null { return this._configurationContextResolver; }
   get treeDataProvider(): MetadataTreeDataProvider | null { return this._treeDataProvider; }
   get treeView(): vscode.TreeView<TreeNode> | null { return this._treeView; }
   get propertiesProvider(): PropertiesProvider | null { return this._propertiesProvider; }
@@ -140,6 +143,7 @@ export class ExtensionState {
   set configurationRepositoryService(v: ConfigurationRepositoryService | null) { this._configurationRepositoryService = v; }
   set configurationRepositoryProjection(v: RepositoryStateProjection | null) { this._configurationRepositoryProjection = v; }
   set workspaceRegistry(v: WorkspaceRegistry | null) { this._workspaceRegistry = v; }
+  set configurationContextResolver(v: ConfigurationContextResolver | null) { this._configurationContextResolver = v; }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
