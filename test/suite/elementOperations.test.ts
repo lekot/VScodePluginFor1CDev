@@ -264,6 +264,7 @@ suite('elementOperations', () => {
 
       await createElement(rolesTypeNode, 'EdtRole');
       assert.ok(fileExists(path.join(srcRoles, 'EdtRole.xml')));
+      assert.ok(!fileExists(path.join(dir, 'Roles', 'EdtRole.xml')), 'EDT creation must not write to the Designer root folder');
       const updatedCfg = await readFileContent(configXmlPath);
       assert.ok(updatedCfg.includes('EdtRole'));
     } finally {

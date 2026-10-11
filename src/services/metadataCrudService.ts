@@ -6,11 +6,23 @@ import {
   getMetadataTypeDescriptorByType,
 } from '../constants/metadataTypeDescriptors';
 import { rulesRegistry, metadataConverter } from '../rules';
-import { buildRootObjectConfigurationContent } from './configurationXmlUpdater';
+import {
+  buildRootObjectConfigurationContent,
+  isRootObjectRegisteredInConfiguration,
+} from './configurationXmlUpdater';
 import { getDesignerTemplateXml } from './designerTemplateRepository';
 import { substituteDesignerTemplate } from './designerTemplateSubstitutor';
-import { generatePredefinedAccountsXml } from './chartOfAccountsWizardService';
-import { planCreateFilterCriterion } from './filterCriterionWizardService';
+import {
+  generateChartOfAccountsXml,
+  generatePredefinedAccountsXml,
+  type ChartOfAccountsWizardParams,
+} from './chartOfAccountsWizardService';
+import {
+  generateFilterCriterionXml,
+  validateContentItemCompatibility,
+  type FilterCriterionWizardParams,
+} from './filterCriterionWizardService';
+import { appendRegisterReferenceToRecorderDocumentXml } from './registerRecorderDocumentLinker';
 import { hashContent } from './configurationSession/atomicFileStorage';
 import { assertPathWithinRoot } from './configurationSession/pathBoundary';
 import type { MutationPlan, MutationStep } from './configurationSession/mutationPlan';
@@ -22,6 +34,7 @@ import { requireProjectWriteFormatProfile } from '../utils/format/formatRank';
 import { generateSimpleUuid } from '../utils/xml/xmlHelpers';
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
+import { XmlParser } from '../parsers/xmlParser';
 
 /** Minimal root-path context for this foundation step; resolved configuration targets remain a follow-up. */
 export interface MetadataCrudContext {
@@ -33,7 +46,13 @@ export interface CreateMetadataObjectRequest {
   readonly name: string;
   readonly synonym?: string;
   readonly properties?: Record<string, unknown>;
+  readonly chartOfAccounts?: Omit<ChartOfAccountsWizardParams, 'name'>;
+  readonly filterCriterion?: Omit<FilterCriterionWizardParams, 'name'>;
+  readonly recorderDocument?: string;
 }
+
+export type ChartOfAccountsCreateOptions = Omit<ChartOfAccountsWizardParams, 'name'>;
+export type FilterCriterionCreateOptions = Omit<FilterCriterionWizardParams, 'name'>;
 
 export interface DeleteMetadataObjectRequest {
   readonly type: MetadataType;
@@ -96,43 +115,71 @@ export async function planCreateMetadataObject(
     throw new Error(`Object directory already exists: ${elementDir}`);
   }
 
-  if (request.type === MetadataType.FilterCriterion) {
-    const properties = request.properties;
-    const types = properties?.['Type'] !== undefined
-      ? (Array.isArray(properties['Type']) ? properties['Type'].map(String) : [String(properties['Type'])])
-      : [];
-    const rawContent = properties?.['Content'] !== undefined
-      ? (Array.isArray(properties['Content']) ? properties['Content'].map(String) : [String(properties['Content'])])
-      : [];
-    const content = rawContent.map((item) => item.trim()).filter((item) => item.length > 0);
-    if (content.length === 0) {
-      throw new Error('FilterCriterion requires non-empty "Content" property with at least one metadata item reference.');
-    }
-    const plan = await planCreateFilterCriterion(context.configurationRootPath, {
-      name,
-      synonym: request.synonym ?? name,
-      comment: typeof properties?.['Comment'] === 'string' ? properties['Comment'] : undefined,
-      types,
-      content,
-      useStandardCommands: typeof properties?.['UseStandardCommands'] === 'boolean'
-        ? properties['UseStandardCommands']
-        : false,
-    });
-    return planned(plan);
-  }
-
-  const rules = TEMPLATE_ONLY_TYPES.has(request.type) ? undefined : rulesRegistry.get(rootTag);
-  const templateXml = rules ? null : await getDesignerTemplateXml(rootTag);
-  if (!rules && templateXml === null) {
-    throw new Error(`Type "${rootTag}" is not supported.`);
+  const recorderDocument = resolveRecorderDocument(request.recorderDocument);
+  if (recorderDocument && request.type !== MetadataType.DocumentJournal && request.type !== MetadataType.AccumulationRegister) {
+    throw new Error('recorderDocument is supported only when creating a DocumentJournal or AccumulationRegister.');
   }
 
   const configurationPath = path.join(context.configurationRootPath, CONFIGURATION_XML);
   const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
   const targetVersion = requireProjectWriteFormatProfile(configurationContent).version;
+  const filterCriterion = request.type === MetadataType.FilterCriterion
+    ? resolveFilterCriterionOptions(request, name)
+    : undefined;
+  if (filterCriterion) {
+    for (const contentRef of filterCriterion.content) {
+      await validateContentItemCompatibility(context.configurationRootPath, filterCriterion.types, contentRef);
+    }
+  }
+
+  let recorderDocumentContent: string | undefined;
+  let recorderDocumentOriginalContent: string | undefined;
+  let recorderDocumentPath: string | undefined;
+  let recorderDocumentExpected: Awaited<ReturnType<typeof readMutationExpectation>> | undefined;
+  if (recorderDocument && request.type === MetadataType.DocumentJournal) {
+    await resolveRegisteredRecorderDocument(context.configurationRootPath, recorderDocument);
+  } else if (recorderDocument && request.type === MetadataType.AccumulationRegister) {
+    const recorder = await resolveRegisteredRecorderDocument(context.configurationRootPath, recorderDocument);
+    recorderDocumentPath = recorder.filePath;
+    recorderDocumentExpected = recorder.expected;
+    recorderDocumentOriginalContent = recorder.content;
+    await assertCfeGenericMutationAllowed(recorderDocumentPath, 'update');
+    recorderDocumentContent = appendRegisterReferenceToRecorderDocumentXml(
+      recorder.content,
+      'AccumulationRegister',
+      name,
+    );
+  }
+
+  const hasChartOfAccountsWizard = request.type === MetadataType.ChartOfAccounts && request.chartOfAccounts !== undefined;
+  const hasFilterCriterionWizard = filterCriterion !== undefined;
+  const rules = TEMPLATE_ONLY_TYPES.has(request.type)
+    || hasChartOfAccountsWizard
+    || hasFilterCriterionWizard
+    || (request.type === MetadataType.DocumentJournal && recorderDocument !== undefined)
+    ? undefined
+    : rulesRegistry.get(rootTag);
+  const specializedGenerator = hasChartOfAccountsWizard || hasFilterCriterionWizard;
+  const templateXml = rules || specializedGenerator ? null : await getDesignerTemplateXml(rootTag);
+  if (!rules && !specializedGenerator && templateXml === null) {
+    throw new Error(`Type "${rootTag}" is not supported.`);
+  }
+
   const uuid = generateSimpleUuid();
   let content: string;
-  if (rules) {
+  if (filterCriterion) {
+    content = generateFilterCriterionXml({
+      ...filterCriterion,
+      name,
+      synonym: filterCriterion.synonym ?? request.synonym ?? name,
+    }, targetVersion);
+  } else if (hasChartOfAccountsWizard) {
+    content = generateChartOfAccountsXml({
+      ...request.chartOfAccounts,
+      name,
+      synonym: request.chartOfAccounts.synonym ?? request.synonym ?? name,
+    }, targetVersion);
+  } else if (rules) {
     let intermediate = metadataConverter.createDefaultIR(rules, { name, uuid });
     const overrides: Record<string, unknown> = {};
     if (request.synonym !== undefined) {
@@ -152,17 +199,15 @@ export async function planCreateMetadataObject(
       Synonym_ru: request.synonym ?? name,
       uuidDim: generateSimpleUuid(),
       uuidResource: generateSimpleUuid(),
+      ...(request.type === MetadataType.DocumentJournal && recorderDocument
+        ? { RecorderDocumentRef: `Document.${recorderDocument}` }
+        : {}),
     });
   }
   content = normalizeMetaDataObjectRoot(
     injectInternalInfoIntoMetadataXml(content, rootTag, name),
     targetVersion,
   );
-  const nextConfigurationContent = buildRootObjectConfigurationContent(configurationContent, {
-    type: 'add',
-    rootTag,
-    objectName: name,
-  });
 
   const steps: MutationStep[] = [
     { type: 'ensureDirectory', targetPath: folderPath },
@@ -172,10 +217,68 @@ export async function planCreateMetadataObject(
   if (request.type === MetadataType.ChartOfAccounts) {
     const extDir = path.join(elementDir, 'Ext');
     const predefinedPath = path.join(extDir, 'Predefined.xml');
-    const predefinedContent = generatePredefinedAccountsXml({ name }, targetVersion);
+    const predefinedContent = generatePredefinedAccountsXml({
+      ...request.chartOfAccounts,
+      name,
+    }, targetVersion);
     const predefinedExpected = await readMutationExpectation(predefinedPath);
+    await assertPathWithinRoot(context.configurationRootPath, extDir);
+    await assertPathWithinRoot(context.configurationRootPath, predefinedPath);
     steps.push({ type: 'ensureDirectory', targetPath: extDir });
     steps.push({ type: 'writeFile', targetPath: predefinedPath, content: predefinedContent, encoding: 'utf8', expected: predefinedExpected });
+  }
+
+  if (request.type === MetadataType.CommonModule) {
+    const extPath = path.join(elementDir, 'Ext');
+    const moduleDirectory = path.join(extPath, 'Module');
+    const modulePath = path.join(moduleDirectory, 'Module.bsl');
+    await assertPathWithinRoot(context.configurationRootPath, extPath);
+    await assertPathWithinRoot(context.configurationRootPath, moduleDirectory);
+    await assertPathWithinRoot(context.configurationRootPath, modulePath);
+    steps.push({ type: 'ensureDirectory', targetPath: extPath });
+    steps.push({ type: 'ensureDirectory', targetPath: moduleDirectory });
+    steps.push({
+      type: 'writeFile',
+      targetPath: modulePath,
+      content: '',
+      encoding: 'utf8',
+      expected: await readMutationExpectation(modulePath),
+    });
+  }
+
+  const companionTask = request.type === MetadataType.BusinessProcess
+    ? await planBusinessProcessTask(context.configurationRootPath, name, targetVersion)
+    : undefined;
+  if (companionTask) {
+    steps.push(...companionTask.steps);
+  }
+
+  if (
+    recorderDocumentPath
+    && recorderDocumentContent !== undefined
+    && recorderDocumentContent !== recorderDocumentOriginalContent
+    && recorderDocumentExpected?.state === 'file'
+  ) {
+    steps.push({
+      type: 'writeFile',
+      targetPath: recorderDocumentPath,
+      content: recorderDocumentContent,
+      encoding: 'utf8',
+      expected: recorderDocumentExpected,
+    });
+  }
+
+  let nextConfigurationContent = buildRootObjectConfigurationContent(configurationContent, {
+    type: 'add',
+    rootTag,
+    objectName: name,
+  });
+  if (companionTask?.registerInConfiguration) {
+    nextConfigurationContent = buildRootObjectConfigurationContent(nextConfigurationContent, {
+      type: 'add',
+      rootTag: companionTask.rootTag,
+      objectName: companionTask.name,
+    });
   }
   steps.push({
     type: 'writeFile',
@@ -190,6 +293,158 @@ export async function planCreateMetadataObject(
     steps,
     result: { filePath },
   });
+}
+
+function resolveRecorderDocument(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new Error('recorderDocument must be a string when provided.');
+  }
+  const name = value.trim();
+  if (name.length === 0) {
+    return undefined;
+  }
+  const validation = validateElementName(name, []);
+  if (validation) {
+    throw new Error(`Invalid recorder document name "${name}": ${validation}`);
+  }
+  return name;
+}
+
+function resolveFilterCriterionOptions(
+  request: CreateMetadataObjectRequest,
+  name: string,
+): Omit<FilterCriterionWizardParams, 'name'> {
+  const properties = request.properties ?? {};
+  const typed = request.filterCriterion;
+  const propertyStrings = (value: unknown): string[] => {
+    if (value === undefined) {
+      return [];
+    }
+    return (Array.isArray(value) ? value : [value]).map(String);
+  };
+  const content = (typed?.content ?? propertyStrings(properties['Content']))
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  if (content.length === 0) {
+    throw new Error('FilterCriterion requires non-empty "Content" property with at least one metadata item reference.');
+  }
+  return {
+    synonym: typed?.synonym ?? request.synonym ?? name,
+    comment: typed?.comment ?? (typeof properties['Comment'] === 'string' ? properties['Comment'] : undefined),
+    types: typed?.types ?? propertyStrings(properties['Type']),
+    content,
+    useStandardCommands: typed?.useStandardCommands
+      ?? (typeof properties['UseStandardCommands'] === 'boolean' ? properties['UseStandardCommands'] : false),
+  };
+}
+
+async function resolveRegisteredRecorderDocument(
+  configurationRootPath: string,
+  recorderDocumentName: string,
+): Promise<{
+  readonly filePath: string;
+  readonly content: string;
+  readonly expected: Awaited<ReturnType<typeof readMutationExpectation>>;
+}> {
+  const filePath = path.join(configurationRootPath, 'Documents', `${recorderDocumentName}.xml`);
+  await assertPathWithinRoot(configurationRootPath, filePath);
+  const expected = await readMutationExpectation(filePath);
+  if (expected.state !== 'file') {
+    throw new Error(`Recorder document is missing: ${filePath}`);
+  }
+  if (!await isRootObjectRegisteredInConfiguration(configurationRootPath, 'Document', recorderDocumentName)) {
+    throw new Error(`Recorder document Document.${recorderDocumentName} is not registered in Configuration.xml.`);
+  }
+  const content = await fs.promises.readFile(filePath, 'utf8');
+  if (expected.hash !== hashContent(content)) {
+    throw new Error(`Recorder document changed while planning: ${filePath}`);
+  }
+  const parsed = XmlParser.parseString(content);
+  const root = parsed['MetaDataObject'] as Record<string, unknown> | undefined;
+  const document = root?.['Document'] as Record<string, unknown> | undefined;
+  const properties = document?.['Properties'] as Record<string, unknown> | undefined;
+  if (properties?.['Name'] !== recorderDocumentName) {
+    throw new Error(`Recorder document identity does not match Document.${recorderDocumentName}.`);
+  }
+  return { filePath, content, expected };
+}
+
+async function planBusinessProcessTask(
+  configurationRootPath: string,
+  name: string,
+  targetVersion: string,
+): Promise<{
+  readonly name: string;
+  readonly rootTag: string;
+  readonly registerInConfiguration: boolean;
+  readonly steps: readonly MutationStep[];
+} | undefined> {
+  const taskDescriptor = getMetadataTypeDescriptorByType(MetadataType.Task);
+  if (!taskDescriptor) {
+    throw new Error('Task metadata descriptor is unavailable for BusinessProcess creation.');
+  }
+  const folderPath = path.join(configurationRootPath, taskDescriptor.designerFolder);
+  const taskFilePath = path.join(folderPath, `${name}.xml`);
+  const taskDirectoryPath = path.join(folderPath, name);
+  await assertPathWithinRoot(configurationRootPath, folderPath);
+  await assertPathWithinRoot(configurationRootPath, taskFilePath);
+  await assertPathWithinRoot(configurationRootPath, taskDirectoryPath);
+
+  const taskExpected = await readMutationExpectation(taskFilePath);
+  const registered = await isRootObjectRegisteredInConfiguration(
+    configurationRootPath,
+    taskDescriptor.designerRootTag,
+    name,
+  );
+  if (taskExpected.state === 'missing' || !registered) {
+    await assertCfeGenericCreateAllowed(taskFilePath, name, { isRootObjectCreate: true });
+  }
+  if (taskExpected.state === 'directory') {
+    throw new Error(`Companion Task path is a directory, expected a descriptor file: ${taskFilePath}`);
+  }
+  let steps: MutationStep[] = [];
+  if (taskExpected.state === 'missing') {
+    const templateXml = await getDesignerTemplateXml(taskDescriptor.designerRootTag);
+    if (templateXml === null) {
+      throw new Error(`Type "${taskDescriptor.designerRootTag}" is not supported; cannot create the BusinessProcess companion Task.`);
+    }
+    let taskContent = substituteDesignerTemplate(templateXml, {
+      uuid: generateSimpleUuid(),
+      Name: name,
+      Synonym_ru: name,
+    });
+    taskContent = normalizeMetaDataObjectRoot(
+      injectInternalInfoIntoMetadataXml(taskContent, taskDescriptor.designerRootTag, name),
+      targetVersion,
+    );
+    steps = [
+      { type: 'ensureDirectory', targetPath: folderPath },
+      { type: 'writeFile', targetPath: taskFilePath, content: taskContent, encoding: 'utf8', expected: taskExpected },
+      { type: 'ensureDirectory', targetPath: taskDirectoryPath },
+    ];
+  } else {
+    const taskContent = await fs.promises.readFile(taskFilePath, 'utf8');
+    const parsed = XmlParser.parseString(taskContent);
+    const root = parsed['MetaDataObject'] as Record<string, unknown> | undefined;
+    const task = root?.['Task'] as Record<string, unknown> | undefined;
+    const properties = task?.['Properties'] as Record<string, unknown> | undefined;
+    if (properties?.['Name'] !== name) {
+      throw new Error(`Companion Task identity does not match Task.${name}.`);
+    }
+    if (taskExpected.hash !== hashContent(taskContent)) {
+      throw new Error(`Companion Task changed while planning: ${taskFilePath}`);
+    }
+  }
+
+  return {
+    name,
+    rootTag: taskDescriptor.designerRootTag,
+    registerInConfiguration: !registered,
+    steps,
+  };
 }
 
 export async function planDeleteMetadataObject(

@@ -5,6 +5,30 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Pure mutation contributor used by root-create planners before engine execution. */
+export function appendRegisterReferenceToRecorderDocumentXml(
+  xml: string,
+  registerKind: 'AccumulationRegister' | 'InformationRegister',
+  registerName: string,
+): string {
+  const ref = `${registerKind}.${registerName}`;
+  const itemPattern = new RegExp(
+    `<xr:Item\\b[^>]*>\\s*${escapeRegex(ref)}\\s*</xr:Item>`,
+  );
+  if (itemPattern.test(xml)) {
+    return xml;
+  }
+
+  const itemLine = `\t\t\t<xr:Item xsi:type="xr:MDObjectRef">${ref}</xr:Item>`;
+  if (/<RegisterRecords\s*\/>/.test(xml)) {
+    return xml.replace(/<RegisterRecords\s*\/>/, `<RegisterRecords>\n${itemLine}\n\t\t</RegisterRecords>`);
+  }
+  if (xml.includes('</RegisterRecords>')) {
+    return xml.replace('</RegisterRecords>', `${itemLine}\n\t\t</RegisterRecords>`);
+  }
+  throw new Error('Recorder document has no RegisterRecords section to update.');
+}
+
 /** Имя документа-регистратора: явный аргумент или `process.env.IBCMD_RECORDER_DOCUMENT`. */
 function resolveRecorderDocumentName(explicit?: string): string {
   const x = explicit?.trim();

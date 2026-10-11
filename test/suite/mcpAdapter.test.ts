@@ -298,6 +298,36 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
     }).success, false);
   });
 
+  test('create_object accepts detailed ChartOfAccounts, FilterCriterion, and recorder inputs', () => {
+    const create = MCP_OPERATION_CATALOG.find(({ name }) => name === 'cdt_create_object')!;
+    assert.strictEqual(create.inputSchema.safeParse({
+      type: 'ChartOfAccounts',
+      name: 'Ledger',
+      chartOfAccounts: {
+        codeMask: '@@.@@',
+        codeLength: 5,
+        extDimensionTypes: 'ChartOfCharacteristicTypes.Analytics',
+        maxExtDimensionCount: 4,
+        accountingFlags: [{ name: 'Currency', synonym: 'Валютный учет' }],
+        predefinedAccounts: [{ name: 'Main', code: '000', description: 'Основной счет' }],
+      },
+    }).success, true);
+    assert.strictEqual(create.inputSchema.safeParse({
+      type: 'FilterCriterion',
+      name: 'ByCode',
+      filterCriterion: {
+        types: ['xs:string'],
+        content: ['Catalog.Items.Attribute.Code'],
+        useStandardCommands: true,
+      },
+    }).success, true);
+    assert.strictEqual(create.inputSchema.safeParse({
+      type: 'AccumulationRegister',
+      name: 'Inventory',
+      recorderDocument: 'Recorder',
+    }).success, true);
+  });
+
   test('syntax help rejects conflicting get selectors before Agent dispatch', async () => {
     let dispatched = false;
     const tools = captureRegisteredTools(async () => {

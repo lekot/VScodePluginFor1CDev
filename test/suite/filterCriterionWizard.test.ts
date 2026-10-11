@@ -192,6 +192,7 @@ suite('FilterCriterionWizard UI Flow', () => {
 
     let planExecuted = false;
     let cacheReloaded = false;
+    let capturedPlan: any;
 
     const target: TreeNode = {
       id: 'FilterCriteria',
@@ -206,6 +207,7 @@ suite('FilterCriterionWizard UI Flow', () => {
       target,
       runConfigurationPlan: async (_configPath, plan) => {
         planExecuted = true;
+        capturedPlan = plan;
         for (const step of plan.steps) {
           if (step.type === 'ensureDirectory') {
             await fs.promises.mkdir(step.targetPath, { recursive: true });
@@ -222,6 +224,12 @@ suite('FilterCriterionWizard UI Flow', () => {
 
     assert.strictEqual(executed, true, 'wizard must return true upon successful creation');
     assert.strictEqual(planExecuted, true, 'configuration plan must be executed');
+    assert.strictEqual(capturedPlan.kind, 'metadata.create', 'wizard must use the shared metadata create planner');
+    assert.strictEqual(
+      capturedPlan.steps.filter((step: any) => step.type === 'writeFile' && step.targetPath === path.join(tmpDir, 'Configuration.xml')).length,
+      1,
+      'the shared plan must write Configuration.xml once',
+    );
     assert.ok(fs.existsSync(path.join(tmpDir, 'FilterCriteria', 'ПоКонтрагенту.xml')), 'xml file must exist');
     assert.ok(fs.existsSync(path.join(tmpDir, 'FilterCriteria', 'ПоКонтрагенту')), 'dir must exist');
   });

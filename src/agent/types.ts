@@ -12,6 +12,10 @@ import type {
     RepositoryTarget,
 } from '../services/configurationRepository/types';
 import type { MetadataObjectPathSegment } from '../types/metadataObjectPath';
+import type {
+    ChartOfAccountsCreateOptions,
+    FilterCriterionCreateOptions,
+} from '../services/metadataCrudService';
 
 export interface MutationResultData {
     filePath?: string;
@@ -207,6 +211,9 @@ export interface CreateObjectParams extends MutationScopedParams {
     name: string;
     synonym?: string;
     properties?: Record<string, unknown>;
+    chartOfAccounts?: ChartOfAccountsCreateOptions;
+    filterCriterion?: FilterCriterionCreateOptions;
+    recorderDocument?: string;
 }
 
 export interface GetYamlParams extends ConfigurationScopedParams {
@@ -415,4 +422,3 @@ export interface ResolveSourceAddressData {
     };
     treeNode?: AgentTreeNodeSummary;
 }
-

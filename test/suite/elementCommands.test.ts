@@ -206,4 +206,94 @@ suite('elementCommands', () => {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
+
+  test('root create command preserves an EDT src/Roles target through the UI adapter', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), '1c-edt-role-command-'));
+    fs.writeFileSync(
+      path.join(tempRoot, 'Configuration.xml'),
+      '<?xml version="1.0" encoding="UTF-8"?><MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses"><Configuration uuid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"><Properties><Name>EdtCfg</Name></Properties><ChildObjects/></Configuration></MetaDataObject>',
+      'utf8',
+    );
+    const srcRoles = path.join(tempRoot, 'src', 'Roles');
+    fs.mkdirSync(srcRoles, { recursive: true });
+
+    const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+    patchedCommands.registerCommand = (id: string, handler: (...args: unknown[]) => Promise<unknown>) => {
+      handlers.set(id, handler);
+      return { dispose: () => undefined };
+    };
+
+    const originalShowInputBox = vscode.window.showInputBox;
+    const originalShowInformationMessage = vscode.window.showInformationMessage;
+    const originalShowErrorMessage = vscode.window.showErrorMessage;
+    const patchedWindow = vscode.window as unknown as {
+      showInputBox: (...args: unknown[]) => Promise<string | undefined>;
+      showInformationMessage: (...args: unknown[]) => Promise<unknown>;
+      showErrorMessage: (...args: unknown[]) => Promise<unknown>;
+    };
+    patchedWindow.showInputBox = async () => 'EdtRole';
+    patchedWindow.showInformationMessage = async () => undefined;
+    patchedWindow.showErrorMessage = async () => undefined;
+
+    let mutationCalls = 0;
+    let planCalls = 0;
+    const configurationNode: TreeNode = {
+      id: 'Configuration',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+    };
+    const commonNode: TreeNode = {
+      id: 'Common',
+      name: 'Общие',
+      type: MetadataType.Unknown,
+      parent: configurationNode,
+      properties: {},
+    };
+    const rolesFolder: TreeNode = {
+      id: 'Roles',
+      name: 'Роли',
+      type: MetadataType.Role,
+      filePath: srcRoles,
+      parent: commonNode,
+      properties: {},
+    };
+
+    try {
+      registerElementCommands({
+        state: {
+          treeDataProvider: {
+            getConfigPathForNode: () => tempRoot,
+            getConfigPath: () => tempRoot,
+          },
+        } as unknown as ExtensionState,
+        loadMetadataTree: async () => undefined,
+        invalidateCacheAndReload: async () => undefined,
+        scheduleDeleteReconcile: () => undefined,
+        runConfigurationMutation: async (_configPath, _kind, operation) => {
+          mutationCalls++;
+          return operation();
+        },
+        runConfigurationPlan: async <T>(configPath: string, plan: import('../../src/services/configurationSession/mutationPlan').MutationPlan<T>) => {
+          planCalls++;
+          return new MutationPlanExecutor(configPath).execute(plan);
+        },
+      });
+
+      const createHandler = handlers.get('1c-metadata-tree.createElement');
+      assert.ok(createHandler);
+      await createHandler(rolesFolder);
+
+      assert.strictEqual(mutationCalls, 1, 'EDT folder creation should use the existing UI mutation adapter');
+      assert.strictEqual(planCalls, 0, 'EDT folder creation must not use the Designer-only metadata planner');
+      assert.ok(fs.existsSync(path.join(srcRoles, 'EdtRole.xml')));
+      assert.ok(!fs.existsSync(path.join(tempRoot, 'Roles', 'EdtRole.xml')));
+      assert.match(fs.readFileSync(path.join(tempRoot, 'Configuration.xml'), 'utf8'), /<Role>EdtRole<\/Role>/);
+    } finally {
+      patchedWindow.showInputBox = originalShowInputBox as unknown as (...args: unknown[]) => Promise<string | undefined>;
+      patchedWindow.showInformationMessage = originalShowInformationMessage as unknown as (...args: unknown[]) => Promise<unknown>;
+      patchedWindow.showErrorMessage = originalShowErrorMessage as unknown as (...args: unknown[]) => Promise<unknown>;
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
 });

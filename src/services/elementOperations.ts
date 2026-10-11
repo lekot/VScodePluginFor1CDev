@@ -15,7 +15,9 @@ import {
   planIdentityTokenReplacements,
   replaceIdentityTokensInProject,
 } from '../utils/referenceFinder';
-import { getDesignerTemplateXml } from './designerTemplateRepository';
+import {
+  getDesignerTemplateXml,
+} from './designerTemplateRepository';
 import { substituteDesignerTemplate } from './designerTemplateSubstitutor';
 import {
   appendRegisterReferenceToRecorderDocument,
@@ -45,8 +47,6 @@ import {
 } from '../extensionSupport/cfeProject/mutationPolicy';
 import { CONFIGURATION_XML, FORM_XML } from '../constants/fileNames';
 import { isSamePath } from '../utils/configurationPathIdentity';
-import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
-import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import {
   appendPredefinedDesignerItem,
   removePredefinedDesignerItem,
@@ -59,7 +59,11 @@ import {
   requireProjectWriteFormatProfile,
   UnsupportedMetadataFormatError,
 } from '../utils/format/formatRank';
+import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
+import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import { rulesRegistry, metadataConverter } from '../rules';
+import { planCreateMetadataObject } from './metadataCrudService';
+import { runConfigurationPlan } from './configurationSession/configurationMutationGateway';
 
 async function resolveProjectFormatVersion(configRootPath: string): Promise<string> {
   try {
@@ -159,44 +163,6 @@ async function findConfigurationRootDir(typeFolderPath: string): Promise<string>
   return path.dirname(typeFolderPath);
 }
 
-/**
- * BusinessProcess.Properties.Task must reference an existing Task metadata object.
- * Template uses `Task.{Name}` with the same name as the business process; create the task first if missing.
- */
-async function ensureCompanionTaskForBusinessProcess(
-  configRootPath: string,
-  businessProcessesFolderPath: string,
-  taskName: string,
-  targetVersion: string
-): Promise<void> {
-  const tasksDir = path.join(path.dirname(businessProcessesFolderPath), 'Tasks');
-  await fs.promises.mkdir(tasksDir, { recursive: true });
-  const taskFilePath = path.join(tasksDir, `${taskName}.xml`);
-  try {
-    await fs.promises.access(taskFilePath);
-    return;
-  } catch {
-    // file does not exist, continue
-  }
-  const templateXml = await getDesignerTemplateXml('Task');
-  if (templateXml !== null) {
-    const uuid = XMLWriter.generateSimpleUuid();
-    let content = substituteDesignerTemplate(templateXml, {
-      uuid,
-      Name: taskName,
-      Synonym_ru: taskName,
-    });
-    content = injectInternalInfoIntoMetadataXml(content, 'Task', taskName);
-    content = normalizeMetaDataObjectRoot(content, targetVersion);
-    await fs.promises.writeFile(taskFilePath, content, 'utf-8');
-  } else {
-    await XMLWriter.createMinimalElementFile(taskFilePath, 'Task', taskName, targetVersion);
-  }
-  const taskElementDir = path.join(tasksDir, taskName);
-  await fs.promises.mkdir(taskElementDir, { recursive: true });
-  await addRootObjectToConfiguration(configRootPath, 'Task', taskName);
-}
-
 // ---------------------------------------------------------------------------
 // createElement validation helpers
 // ---------------------------------------------------------------------------
@@ -230,121 +196,134 @@ async function handleCreateForm(parentNode: TreeNode, name: string): Promise<voi
 
 /** Branch: parentNode is a type folder (e.g. Catalogs) — create a root metadata object file. */
 async function handleCreateRootObject(parentNode: TreeNode, name: string): Promise<void> {
-  assertMetadataCrudSupported(parentNode.type, 'create');
   const typeFolderPath = parentNode.filePath;
   if (!typeFolderPath) {
     throw new Error(`Папка типа не найдена: ${typeFolderPath}`);
   }
 
-  // Guard against path traversal: typeFolderPath must be inside configuration root.
-  const configRootForCheck = await findConfigurationRootDir(typeFolderPath);
-  const resolvedTypeFolder = path.resolve(typeFolderPath);
-  const resolvedConfigRoot = path.resolve(configRootForCheck);
-  if (!resolvedTypeFolder.startsWith(resolvedConfigRoot + path.sep) && resolvedTypeFolder !== resolvedConfigRoot) {
-    throw new Error(`Небезопасный путь: папка типа за пределами корня конфигурации: ${typeFolderPath}`);
+  const configRootPath = await findConfigurationRootDir(typeFolderPath);
+  await assertPathWithinRoot(configRootPath, typeFolderPath);
+  if (isEdtSourceTypeFolder(configRootPath, typeFolderPath)) {
+    await handleCreateEdtRootObject(parentNode, typeFolderPath, configRootPath, name);
+    return;
   }
+  const recorderDocument = parentNode.type === MetadataType.DocumentJournal
+      || parentNode.type === MetadataType.AccumulationRegister
+    ? process.env.IBCMD_RECORDER_DOCUMENT?.trim() || undefined
+    : undefined;
+  const planned = await planCreateMetadataObject(
+    { configurationRootPath: configRootPath },
+    { type: parentNode.type, name, recorderDocument },
+  );
+  await runConfigurationPlan(configRootPath, planned.plan);
+}
 
-  // This must precede an on-demand mkdir: unsupported projects are
-  // guaranteed to remain untouched.
-  const configRootPath = configRootForCheck;
-  const targetVersion = await resolveProjectFormatVersion(configRootPath);
+/** Preserve the legacy EDT `src/<Type>` layout until the shared CRUD domain resolves project-specific paths. */
+export function isEdtSourceTypeFolder(configurationRootPath: string, typeFolderPath: string): boolean {
+  const relativePath = path.relative(configurationRootPath, typeFolderPath);
+  return relativePath.split(path.sep)[0]?.toLocaleLowerCase() === 'src';
+}
 
-  // When using placeholder type-nodes, the type folder may be absent on disk.
-  // Create it on-demand so element creation can proceed.
-  // Use a single async stat to avoid TOCTOU between existsSync and statSync.
-  try {
-    const stat = await fs.promises.stat(typeFolderPath);
-    if (!stat.isDirectory()) {
-      throw new Error(`Папка типа не является директорией: ${typeFolderPath}`);
-    }
-  } catch (statErr) {
-    if ((statErr as NodeJS.ErrnoException).code === 'ENOENT') {
-      await fs.promises.mkdir(typeFolderPath, { recursive: true });
-    } else {
-      throw statErr;
-    }
-  }
-
+async function handleCreateEdtRootObject(
+  parentNode: TreeNode,
+  typeFolderPath: string,
+  configurationRootPath: string,
+  name: string,
+): Promise<void> {
+  assertMetadataCrudSupported(parentNode.type, 'create');
+  const rootTag = String(parentNode.type);
+  const targetVersion = await resolveProjectFormatVersion(configurationRootPath);
   const newFilePath = path.join(typeFolderPath, `${name}.xml`);
+  await assertPathWithinRoot(configurationRootPath, newFilePath);
   try {
     await fs.promises.access(newFilePath);
     throw new Error(`Файл уже существует: ${newFilePath}`);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw e;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
     }
   }
+  await assertCfeGenericCreateAllowed(newFilePath, name, { isRootObjectCreate: true });
+  await fs.promises.mkdir(typeFolderPath, { recursive: true });
 
-  const rootTag = String(parentNode.type);
-
-  if (rootTag === 'BusinessProcess') {
-    await ensureCompanionTaskForBusinessProcess(configRootPath, typeFolderPath, name, targetVersion);
-  }
-
-  // Types that need template fallback (templates include ChildObjects with default children)
-  const templateOnlyTypes = new Set(['InformationRegister', 'AccumulationRegister']);
-
-  // Rules-based path
-  const rules = !templateOnlyTypes.has(rootTag) ? rulesRegistry.get(rootTag) : undefined;
+  const templateOnlyTypes = new Set([MetadataType.InformationRegister, MetadataType.AccumulationRegister]);
+  const rules = templateOnlyTypes.has(parentNode.type) ? undefined : rulesRegistry.get(rootTag);
+  const templateXml = rules ? null : await getDesignerTemplateXml(rootTag);
   if (rules) {
     const uuid = XMLWriter.generateSimpleUuid();
-    const ir = metadataConverter.createDefaultIR(rules, { name, uuid });
-    let content = metadataConverter.irToXml(ir, rules);
+    let content = metadataConverter.irToXml(metadataConverter.createDefaultIR(rules, { name, uuid }), rules);
+    content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
+    content = normalizeMetaDataObjectRoot(content, targetVersion);
+    await fs.promises.writeFile(newFilePath, content, 'utf-8');
+  } else if (templateXml !== null) {
+    const uuid = XMLWriter.generateSimpleUuid();
+    let content = substituteDesignerTemplate(templateXml, {
+      uuid,
+      Name: name,
+      Synonym_ru: name,
+      uuidDim: XMLWriter.generateSimpleUuid(),
+      uuidResource: XMLWriter.generateSimpleUuid(),
+      ...(rootTag === 'DocumentJournal'
+        ? (() => {
+            const recorderDocument = process.env.IBCMD_RECORDER_DOCUMENT?.trim();
+            return recorderDocument ? { RecorderDocumentRef: `Document.${recorderDocument}` } : {};
+          })()
+        : {}),
+    });
     content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
     content = normalizeMetaDataObjectRoot(content, targetVersion);
     await fs.promises.writeFile(newFilePath, content, 'utf-8');
   } else {
-    // Template-based fallback (все остальные типы)
-    const templateXml = await getDesignerTemplateXml(rootTag);
-    if (templateXml !== null) {
-      const uuid = XMLWriter.generateSimpleUuid();
-      const uuidDim = XMLWriter.generateSimpleUuid();
-      const uuidResource = XMLWriter.generateSimpleUuid();
-      let content = substituteDesignerTemplate(templateXml, {
-        uuid,
-        Name: name,
-        Synonym_ru: name,
-        ...(rootTag === 'InformationRegister' || rootTag === 'AccumulationRegister'
-          ? { uuidDim, uuidResource }
-          : {}),
-        ...(rootTag === 'DocumentJournal'
-          ? (() => {
-              const doc = process.env.IBCMD_RECORDER_DOCUMENT?.trim();
-              return doc ? { RecorderDocumentRef: `Document.${doc}` } : {};
-            })()
-          : {}),
-      });
-      content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
-      content = normalizeMetaDataObjectRoot(content, targetVersion);
-      await fs.promises.writeFile(newFilePath, content, 'utf-8');
-    } else {
-      await XMLWriter.createMinimalElementFile(newFilePath, rootTag, name, targetVersion);
-    }
+    await XMLWriter.createMinimalElementFile(newFilePath, rootTag, name, targetVersion);
   }
 
-  const elementDir = path.join(typeFolderPath, name);
-  await fs.promises.mkdir(elementDir, { recursive: true });
+  if (rootTag === 'BusinessProcess') {
+    await ensureEdtCompanionTask(configurationRootPath, typeFolderPath, name, targetVersion);
+  }
 
+  const elementDirectory = path.join(typeFolderPath, name);
+  await fs.promises.mkdir(elementDirectory, { recursive: true });
   if (rootTag === 'CommonModule') {
-    const moduleBslPath = path.join(elementDir, 'Ext', 'Module', 'Module.bsl');
-    await fs.promises.mkdir(path.dirname(moduleBslPath), { recursive: true });
-    await fs.promises.writeFile(moduleBslPath, '', 'utf-8');
+    const modulePath = path.join(elementDirectory, 'Ext', 'Module', 'Module.bsl');
+    await fs.promises.mkdir(path.dirname(modulePath), { recursive: true });
+    await fs.promises.writeFile(modulePath, '', 'utf-8');
   }
 
-  try {
-    await addRootObjectToConfiguration(configRootPath, rootTag, name);
-  } catch (err) {
-    Logger.error('Failed to update Configuration.xml', err);
-    throw err;
-  }
-
+  await addRootObjectToConfiguration(configurationRootPath, rootTag, name);
   if (rootTag === 'AccumulationRegister') {
-    try {
-      await appendRegisterReferenceToRecorderDocument(configRootPath, 'AccumulationRegister', name);
-    } catch (e) {
-      Logger.warn('Could not link AccumulationRegister to recorder document', e);
+    await appendRegisterReferenceToRecorderDocument(configurationRootPath, rootTag, name);
+  }
+}
+
+async function ensureEdtCompanionTask(
+  configurationRootPath: string,
+  businessProcessFolderPath: string,
+  taskName: string,
+  targetVersion: string,
+): Promise<void> {
+  const taskFolderPath = path.join(path.dirname(businessProcessFolderPath), 'Tasks');
+  await fs.promises.mkdir(taskFolderPath, { recursive: true });
+  const taskFilePath = path.join(taskFolderPath, `${taskName}.xml`);
+  try {
+    await fs.promises.access(taskFilePath);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
     }
   }
+  const templateXml = await getDesignerTemplateXml('Task');
+  if (templateXml !== null) {
+    const uuid = XMLWriter.generateSimpleUuid();
+    let content = substituteDesignerTemplate(templateXml, { uuid, Name: taskName, Synonym_ru: taskName });
+    content = injectInternalInfoIntoMetadataXml(content, 'Task', taskName);
+    content = normalizeMetaDataObjectRoot(content, targetVersion);
+    await fs.promises.writeFile(taskFilePath, content, 'utf-8');
+  } else {
+    await XMLWriter.createMinimalElementFile(taskFilePath, 'Task', taskName, targetVersion);
+  }
+  await fs.promises.mkdir(path.join(taskFolderPath, taskName), { recursive: true });
+  await addRootObjectToConfiguration(configurationRootPath, 'Task', taskName);
 }
 
 /** Branch: parentNode is a top-level metadata object (Catalog, Document, …) — create nested Attribute. */

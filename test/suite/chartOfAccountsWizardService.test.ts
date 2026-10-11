@@ -6,9 +6,14 @@ import {
   generateChartOfAccountsXml,
   generatePredefinedAccountsXml,
   collectAvailableSubcontoTypes,
-  planCreateChartOfAccounts,
   type ChartOfAccountsWizardParams,
 } from '../../src/services/chartOfAccountsWizardService';
+import { MetadataType } from '../../src/models/treeNode';
+import { planCreateMetadataObject } from '../../src/services/metadataCrudService';
+import {
+  clearDesignerTemplateRepositoryForTests,
+  initDesignerTemplateRepository,
+} from '../../src/services/designerTemplateRepository';
 import { XmlParser } from '../../src/parsers/xmlParser';
 import { buildInternalInfoXml } from '../../src/utils/xml/internalInfoGenerator';
 import { MutationPlanExecutor } from '../../src/services/configurationSession/mutationPlan';
@@ -165,8 +170,9 @@ suite('ChartOfAccountsWizardService Test Suite', () => {
     }
   });
 
-  test('planCreateChartOfAccounts creates all files, directories and updates Configuration.xml', async () => {
+  test('shared metadata CRUD planner creates all ChartOfAccounts files and updates Configuration.xml', async () => {
     const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1c-coa-plan-test-'));
+    initDesignerTemplateRepository(path.resolve('.'));
     try {
       const initialConfigXml = `<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
@@ -196,16 +202,22 @@ suite('ChartOfAccountsWizardService Test Suite', () => {
         ],
       };
 
-      const plan = await planCreateChartOfAccounts({
-        configPath: tmpDir,
-        params,
-      });
+      const planned = await planCreateMetadataObject(
+        { configurationRootPath: tmpDir },
+        {
+          type: MetadataType.ChartOfAccounts,
+          name: params.name,
+          synonym: params.synonym,
+          chartOfAccounts: params,
+        },
+      );
+      const plan = planned.plan;
 
       assert.strictEqual(plan.steps.length, 6); // coasDir, coa.xml, coaChildDir, extDir, predefined.xml, Configuration.xml
 
       const executor = new MutationPlanExecutor(tmpDir);
       const execResult = await executor.execute(plan);
-      assert.strictEqual(execResult.success, true);
+      assert.strictEqual(execResult.filePath, path.join(tmpDir, 'ChartsOfAccounts', 'Хозрасчетный.xml'));
 
       // Verify files on disk
       const coaXmlPath = path.join(tmpDir, 'ChartsOfAccounts', 'Хозрасчетный.xml');
@@ -221,6 +233,7 @@ suite('ChartOfAccountsWizardService Test Suite', () => {
       const updatedConfigXml = await fs.promises.readFile(path.join(tmpDir, 'Configuration.xml'), 'utf8');
       assert.ok(updatedConfigXml.includes('<ChartOfAccounts>Хозрасчетный</ChartOfAccounts>'));
     } finally {
+      clearDesignerTemplateRepositoryForTests();
       await fs.promises.rm(tmpDir, {
         recursive: true,
         force: true,
@@ -230,8 +243,9 @@ suite('ChartOfAccountsWizardService Test Suite', () => {
     }
   });
 
-  test('planCreateChartOfAccounts throws error if object already exists or name is invalid', async () => {
+  test('shared metadata CRUD planner rejects invalid or duplicate ChartOfAccounts names', async () => {
     const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1c-coa-validation-test-'));
+    initDesignerTemplateRepository(path.resolve('.'));
     try {
       const initialConfigXml = `<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
@@ -244,11 +258,11 @@ suite('ChartOfAccountsWizardService Test Suite', () => {
 
       // Invalid name
       await assert.rejects(
-        planCreateChartOfAccounts({
-          configPath: tmpDir,
-          params: { name: '123НевалидноеИмя' },
-        }),
-        /неверно/i
+        planCreateMetadataObject(
+          { configurationRootPath: tmpDir },
+          { type: MetadataType.ChartOfAccounts, name: '123НевалидноеИмя', chartOfAccounts: {} },
+        ),
+        /Имя|имя/i
       );
 
       // Create existing
@@ -257,13 +271,14 @@ suite('ChartOfAccountsWizardService Test Suite', () => {
       await fs.promises.writeFile(path.join(coaDir, 'Существующий.xml'), '<MetaDataObject/>', 'utf8');
 
       await assert.rejects(
-        planCreateChartOfAccounts({
-          configPath: tmpDir,
-          params: { name: 'Существующий' },
-        }),
+        planCreateMetadataObject(
+          { configurationRootPath: tmpDir },
+          { type: MetadataType.ChartOfAccounts, name: 'Существующий', chartOfAccounts: {} },
+        ),
         /уже существует/i
       );
     } finally {
+      clearDesignerTemplateRepositoryForTests();
       await fs.promises.rm(tmpDir, { recursive: true, force: true });
     }
   });

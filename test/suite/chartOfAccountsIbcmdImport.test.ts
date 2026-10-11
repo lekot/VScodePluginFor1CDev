@@ -3,8 +3,13 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { getIbcmdService } from '../../src/services/ibcmd/ibcmdServiceSingleton';
-import { planCreateChartOfAccounts } from '../../src/services/chartOfAccountsWizardService';
+import { MetadataType } from '../../src/models/treeNode';
+import { planCreateMetadataObject } from '../../src/services/metadataCrudService';
 import { MutationPlanExecutor } from '../../src/services/configurationSession/mutationPlan';
+import {
+  clearDesignerTemplateRepositoryForTests,
+  initDesignerTemplateRepository,
+} from '../../src/services/designerTemplateRepository';
 
 async function copyDirectoryRecursive(src: string, dest: string): Promise<void> {
   await fs.promises.mkdir(dest, { recursive: true });
@@ -25,6 +30,10 @@ suite('ChartOfAccounts ibcmd Platform Integration Suite', function () {
 
   let tmpRoot: string | undefined;
 
+  setup(() => {
+    initDesignerTemplateRepository(path.resolve(__dirname, '../../..'));
+  });
+
   teardown(async () => {
     if (tmpRoot) {
       try {
@@ -34,6 +43,7 @@ suite('ChartOfAccounts ibcmd Platform Integration Suite', function () {
       }
       tmpRoot = undefined;
     }
+    clearDesignerTemplateRepositoryForTests();
   });
 
   test('ibcmd imports basic ChartOfAccounts and passes config check with zero warnings', async function () {
@@ -60,38 +70,40 @@ suite('ChartOfAccounts ibcmd Platform Integration Suite', function () {
 
     await copyDirectoryRecursive(fixtureDir, configDir);
 
-    const plan = await planCreateChartOfAccounts({
-      configPath: configDir,
-      params: {
+    const { plan } = await planCreateMetadataObject(
+      { configurationRootPath: configDir },
+      {
+        type: MetadataType.ChartOfAccounts,
         name: 'ПланСчетовПростой',
         synonym: 'Простой план счетов',
-        comment: 'Создано мастером для ibcmd проверки',
-        codeMask: '@@@.@@.@',
-        codeLength: 8,
-        descriptionLength: 120,
-        orderLength: 5,
-        predefinedAccounts: [
-          {
-            name: 'Вспомогательный',
-            code: '000',
-            description: 'Вспомогательный счет',
-            accountType: 'ActivePassive',
-            offBalance: false,
-          },
-          {
-            name: 'Касса',
-            code: '50',
-            description: 'Касса организации',
-            accountType: 'Active',
-            offBalance: false,
-          },
-        ],
+        chartOfAccounts: {
+          comment: 'Создано мастером для ibcmd проверки',
+          codeMask: '@@@.@@.@',
+          codeLength: 8,
+          descriptionLength: 120,
+          predefinedAccounts: [
+            {
+              name: 'Вспомогательный',
+              code: '000',
+              description: 'Вспомогательный счет',
+              accountType: 'ActivePassive',
+              offBalance: false,
+            },
+            {
+              name: 'Касса',
+              code: '50',
+              description: 'Касса организации',
+              accountType: 'Active',
+              offBalance: false,
+            },
+          ],
+        },
       },
-    });
+    );
 
     const executor = new MutationPlanExecutor(configDir);
     const planResult = await executor.execute(plan);
-    assert.strictEqual(planResult.success, true, planResult.error);
+    assert.strictEqual(planResult.filePath, path.join(configDir, 'ChartsOfAccounts', 'ПланСчетовПростой.xml'));
 
     // Create empty infobase
     const createResult = await ibcmd.run(['infobase', 'create', `--db-path=${dbDir}`, `--data=${dataDir}`]);
@@ -153,47 +165,50 @@ suite('ChartOfAccounts ibcmd Platform Integration Suite', function () {
 
     await copyDirectoryRecursive(fixtureDir, configDir);
 
-    const plan = await planCreateChartOfAccounts({
-      configPath: configDir,
-      params: {
+    const { plan } = await planCreateMetadataObject(
+      { configurationRootPath: configDir },
+      {
+        type: MetadataType.ChartOfAccounts,
         name: 'ПланСчетовХозрасчетный',
         synonym: 'Хозрасчетный план счетов с субконто',
-        comment: 'С субконто и признаками учета',
-        codeMask: '@@@.@@.@',
-        codeLength: 8,
-        descriptionLength: 120,
-        orderLength: 5,
-        extDimensionTypes: 'ChartOfCharacteristicTypes.ПланВидовХарактеристик1',
-        maxExtDimensionCount: 3,
-        accountingFlags: [
-          { name: 'Валютный', synonym: 'Валютный учет' },
-          { name: 'Количественный', synonym: 'Количественный учет' },
-        ],
-        extDimensionAccountingFlags: [
-          { name: 'Суммовой', synonym: 'Суммовой учет субконто' },
-        ],
-        predefinedAccounts: [
-          {
-            name: 'РасчетыСПоставщиками',
-            code: '60',
-            description: 'Расчеты с поставщиками и подрядчиками',
-            accountType: 'ActivePassive',
-            offBalance: false,
-          },
-          {
-            name: 'РасчетыСПокупателями',
-            code: '62',
-            description: 'Расчеты с покупателями и заказчиками',
-            accountType: 'ActivePassive',
-            offBalance: false,
-          },
-        ],
+        chartOfAccounts: {
+          comment: 'С субконто и признаками учета',
+          codeMask: '@@@.@@.@',
+          codeLength: 8,
+          descriptionLength: 120,
+          orderLength: 5,
+          extDimensionTypes: 'ChartOfCharacteristicTypes.ПланВидовХарактеристик1',
+          maxExtDimensionCount: 3,
+          accountingFlags: [
+            { name: 'Валютный', synonym: 'Валютный учет' },
+            { name: 'Количественный', synonym: 'Количественный учет' },
+          ],
+          extDimensionAccountingFlags: [
+            { name: 'Суммовой', synonym: 'Суммовой учет субконто' },
+          ],
+          predefinedAccounts: [
+            {
+              name: 'РасчетыСПоставщиками',
+              code: '60',
+              description: 'Расчеты с поставщиками и подрядчиками',
+              accountType: 'ActivePassive',
+              offBalance: false,
+            },
+            {
+              name: 'РасчетыСПокупателями',
+              code: '62',
+              description: 'Расчеты с покупателями и заказчиками',
+              accountType: 'ActivePassive',
+              offBalance: false,
+            },
+          ],
+        },
       },
-    });
+    );
 
     const executor = new MutationPlanExecutor(configDir);
     const planResult = await executor.execute(plan);
-    assert.strictEqual(planResult.success, true, planResult.error);
+    assert.strictEqual(planResult.filePath, path.join(configDir, 'ChartsOfAccounts', 'ПланСчетовХозрасчетный.xml'));
 
     // Create empty infobase
     const createResult = await ibcmd.run(['infobase', 'create', `--db-path=${dbDir}`, `--data=${dataDir}`]);

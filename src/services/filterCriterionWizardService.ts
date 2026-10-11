@@ -1,14 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { XMLWriter } from '../utils/XMLWriter';
-import { validateElementName } from '../utils/elementNameValidator';
 import { XmlParser } from '../parsers/xmlParser';
-import { hashContent } from './configurationSession/atomicFileStorage';
-import type { MutationPlan } from './configurationSession/mutationPlan';
-import { readMutationExpectation } from './filesystemReadSemantics';
-import { CONFIGURATION_XML } from '../constants/fileNames';
-import { requireProjectWriteFormatProfile } from '../utils/format/formatRank';
-import { buildRootObjectConfigurationContent } from './configurationXmlUpdater';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 
 export interface FilterCriterionWizardParams {
@@ -219,7 +212,7 @@ const METADATA_SINGULAR_TO_FOLDER: Record<string, string> = {
   ExchangePlan: 'ExchangePlans',
 };
 
-async function validateContentItemCompatibility(
+export async function validateContentItemCompatibility(
   configRoot: string,
   selectedTypes: string[],
   contentRef: string
@@ -487,72 +480,4 @@ export async function collectAvailableFilterCandidates(
   });
 
   return candidates;
-}
-
-/**
- * Plan creation of FilterCriterion metadata object with multi-file effects.
- */
-export async function planCreateFilterCriterion(
-  configRoot: string,
-  params: FilterCriterionWizardParams
-): Promise<MutationPlan<{ filePath: string }>> {
-  const trimmedName = params.name.trim();
-  const folderPath = path.join(configRoot, 'FilterCriteria');
-  const filePath = path.join(folderPath, `${trimmedName}.xml`);
-  const elementDir = path.join(folderPath, trimmedName);
-
-  let existingSiblingNames: string[] = [];
-  try {
-    const files = await fs.promises.readdir(folderPath);
-    existingSiblingNames = files.filter((f) => f.endsWith('.xml')).map((f) => f.slice(0, -4));
-  } catch {
-    // folder might not exist yet
-  }
-
-  const validation = validateElementName(trimmedName, existingSiblingNames);
-  if (validation) {
-    throw new Error(validation);
-  }
-
-  const fileExpected = await readMutationExpectation(filePath);
-  if (fileExpected.state !== 'missing') {
-    throw new Error(`Object already exists: ${filePath}`);
-  }
-
-  const contentRefs = (params.content || []).map((c) => c.trim()).filter((c) => c.length > 0);
-  if (contentRefs.length === 0) {
-    throw new Error('FilterCriterion content must contain at least one metadata item reference');
-  }
-
-  for (const ref of contentRefs) {
-    await validateContentItemCompatibility(configRoot, params.types || [], ref);
-  }
-
-  const configurationPath = path.join(configRoot, CONFIGURATION_XML);
-  const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
-  const targetVersion = requireProjectWriteFormatProfile(configurationContent).version;
-
-  const content = generateFilterCriterionXml(params, targetVersion);
-  const nextConfigurationContent = buildRootObjectConfigurationContent(configurationContent, {
-    type: 'add',
-    rootTag: 'FilterCriterion',
-    objectName: trimmedName,
-  });
-
-  return {
-    kind: 'filterCriterion.create',
-    steps: [
-      { type: 'ensureDirectory', targetPath: folderPath },
-      { type: 'writeFile', targetPath: filePath, content, encoding: 'utf8', expected: fileExpected },
-      { type: 'ensureDirectory', targetPath: elementDir },
-      {
-        type: 'writeFile',
-        targetPath: configurationPath,
-        content: nextConfigurationContent,
-        encoding: 'utf8',
-        expected: { state: 'file', hash: hashContent(configurationContent) },
-      },
-    ],
-    result: { filePath },
-  };
 }

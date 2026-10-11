@@ -130,6 +130,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
 
     let planExecuted = false;
     let cacheReloaded = false;
+    let capturedPlan: any;
 
     const target: TreeNode = {
       id: 'ChartsOfAccounts',
@@ -144,6 +145,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
       target,
       runConfigurationPlan: async (_configPath: string, plan: any) => {
         planExecuted = true;
+        capturedPlan = plan;
         for (const step of plan.steps) {
           if (step.type === 'ensureDirectory') {
             await fs.promises.mkdir(step.targetPath, { recursive: true });
@@ -161,6 +163,12 @@ suite('ChartOfAccountsWizard UI Flow', () => {
 
     assert.strictEqual(executed, true, 'wizard must return true upon successful creation');
     assert.strictEqual(planExecuted, true, 'configuration plan must be executed');
+    assert.strictEqual(capturedPlan.kind, 'metadata.create', 'wizard must use the shared metadata create planner');
+    assert.strictEqual(
+      capturedPlan.steps.filter((step: any) => step.type === 'writeFile' && step.targetPath === path.join(tmpDir, 'Configuration.xml')).length,
+      1,
+      'the shared plan must write Configuration.xml once',
+    );
     assert.strictEqual(cacheReloaded, true, 'cache must be reloaded');
     assert.ok(fs.existsSync(path.join(tmpDir, 'ChartsOfAccounts', 'Хозрасчетный.xml')), 'xml file must exist');
     assert.ok(fs.existsSync(path.join(tmpDir, 'ChartsOfAccounts', 'Хозрасчетный', 'Ext', 'Predefined.xml')), 'predefined.xml must exist');
@@ -195,7 +203,10 @@ suite('ChartOfAccountsWizard UI Flow', () => {
       if (quickPickStep === 2) {
         return { label: '@@@.@@.@ (маска, длина 8)', mask: '@@@.@@.@', length: 8 };
       }
-      return [];
+      return [
+        { label: 'Признак учета: Валютный', value: 'flag_Валютный' },
+        { label: 'Признак учета субконто: Суммовой', value: 'subconto_Суммовой' },
+      ];
     }) as any;
 
     const target: TreeNode = {
@@ -228,5 +239,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
     const chartXml = await fs.promises.readFile(chartPath, 'utf-8');
     assert.match(chartXml, /<ExtDimensionTypes>ChartOfCharacteristicTypes\.ВидыСубконто<\/ExtDimensionTypes>/);
     assert.match(chartXml, /<MaxExtDimensionCount>5<\/MaxExtDimensionCount>/);
+    assert.match(chartXml, /<AccountingFlag\b/);
+    assert.match(chartXml, /<ExtDimensionAccountingFlag\b/);
   });
 });

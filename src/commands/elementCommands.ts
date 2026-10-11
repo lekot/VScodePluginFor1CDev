@@ -6,6 +6,7 @@ import {
   deleteElement,
   duplicateElement,
   findReferencesWithDiagnostics,
+  isEdtSourceTypeFolder,
   isRootObjectCreateInTypeFolder,
   planDuplicateRootElement,
   planRenameRootElement,
@@ -72,8 +73,11 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
       });
       if (!designerCtx) {return;}
       const { configPath, format } = designerCtx;
+      const isEdtRootTarget = isRootObjectCreateInTypeFolder(target)
+        && !!target.filePath
+        && isEdtSourceTypeFolder(configPath, target.filePath);
 
-      if (target.type === MetadataType.FilterCriterion || target.id === 'FilterCriteria') {
+      if (!isEdtRootTarget && (target.type === MetadataType.FilterCriterion || target.id === 'FilterCriteria')) {
         await runFilterCriterionWizard({
           state,
           target,
@@ -83,7 +87,7 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
         return;
       }
 
-      if (target.type === MetadataType.ChartOfAccounts || target.id === 'ChartsOfAccounts') {
+      if (!isEdtRootTarget && (target.type === MetadataType.ChartOfAccounts || target.id === 'ChartsOfAccounts')) {
         await runChartOfAccountsWizard({
           state,
           target,
@@ -103,10 +107,14 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
       if (name === undefined || name.trim() === '') {return;}
       try {
         const trimmedName = name.trim();
-        if (isRootObjectCreateInTypeFolder(target)) {
+        if (isRootObjectCreateInTypeFolder(target) && !isEdtRootTarget) {
+          const recorderDocument = target.type === MetadataType.DocumentJournal
+              || target.type === MetadataType.AccumulationRegister
+            ? process.env.IBCMD_RECORDER_DOCUMENT?.trim() || undefined
+            : undefined;
           const planned = await planCreateMetadataObject(
             { configurationRootPath: configPath },
-            { type: target.type, name: trimmedName },
+            { type: target.type, name: trimmedName, recorderDocument },
           );
           await runConfigurationPlan(configPath, planned.plan);
         } else {

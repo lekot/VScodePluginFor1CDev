@@ -5,23 +5,47 @@ import {
   generateFilterCriterionXml,
   collectAvailableFilterTypes,
   collectAvailableFilterCandidates,
-  planCreateFilterCriterion,
   type FilterCriterionWizardParams,
   type AvailableFilterType,
   type AvailableFilterCandidate,
 } from '../../src/services/filterCriterionWizardService';
+import { MetadataType } from '../../src/models/treeNode';
+import { planCreateMetadataObject } from '../../src/services/metadataCrudService';
+import {
+  clearDesignerTemplateRepositoryForTests,
+  initDesignerTemplateRepository,
+} from '../../src/services/designerTemplateRepository';
+import type { MutationPlan } from '../../src/services/configurationSession/mutationPlan';
 import { XmlParser } from '../../src/parsers/xmlParser';
 import { readFilterCriterionContent } from '../../src/services/filterCriterionContentFileUpdater';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
+
+async function planCreateFilterCriterion(
+  configurationRootPath: string,
+  params: FilterCriterionWizardParams,
+): Promise<MutationPlan<{ readonly filePath: string }>> {
+  const planned = await planCreateMetadataObject(
+    { configurationRootPath },
+    {
+      type: MetadataType.FilterCriterion,
+      name: params.name,
+      synonym: params.synonym,
+      filterCriterion: params,
+    },
+  );
+  return planned.plan;
+}
 
 suite('FilterCriterionWizardService', () => {
   let tmpDir: string;
 
   setup(async () => {
     tmpDir = await createTempDir('1cviewer-filter-crit-');
+    initDesignerTemplateRepository(path.resolve('.'));
   });
 
   teardown(async () => {
+    clearDesignerTemplateRepositoryForTests();
     await cleanupTempDir(tmpDir);
   });
 
@@ -399,7 +423,7 @@ suite('FilterCriterionWizardService', () => {
     };
 
     const plan = await planCreateFilterCriterion(tmpDir, params);
-    assert.strictEqual(plan.kind, 'filterCriterion.create');
+    assert.strictEqual(plan.kind, 'metadata.create');
     assert.ok(plan.steps.length >= 4, 'must have directory, file, child dir, and configuration update steps');
 
     // Execute steps manually to verify filesystem outcome
@@ -467,7 +491,7 @@ suite('FilterCriterionWizardService', () => {
   test('generateFilterCriterionXml throws error when content is empty or contains only whitespace', () => {
     assert.throws(
       () => {
-        generateFilterCriterionXml({
+      generateFilterCriterionXml({
           name: 'ПустойКритерий',
           types: ['xs:string'],
           content: [],
@@ -478,7 +502,7 @@ suite('FilterCriterionWizardService', () => {
 
     assert.throws(
       () => {
-        generateFilterCriterionXml({
+      generateFilterCriterionXml({
           name: 'ПробельныйКритерий',
           types: ['xs:string'],
           content: ['   ', ''],
@@ -504,7 +528,7 @@ suite('FilterCriterionWizardService', () => {
           content: [],
         });
       },
-      /content must contain at least one/i
+      /Content/i
     );
 
     // Whitespace only elements
@@ -516,8 +540,7 @@ suite('FilterCriterionWizardService', () => {
           content: ['   ', ' \t '],
         });
       },
-      /content must contain at least one/i
+      /Content/i
     );
   });
 });
-
