@@ -27,6 +27,10 @@ import type { ConfigurationRepositoryService } from '../services/configurationRe
 import type { RepositoryStateProjection } from '../services/configurationRepository/repositoryTreeDecorations';
 import type { WorkspaceRegistry } from '../services/configurationSession/WorkspaceRegistry';
 import type { ConfigurationContextResolver } from '../services/configurationSession/ConfigurationContextResolver';
+import {
+  ConfigurationMutationEngine,
+  setConfigurationMutationEngine,
+} from '../services/configurationSession/ConfigurationMutationEngine';
 import { Logger } from '../utils/logger';
 
 /**
@@ -67,12 +71,14 @@ export class ExtensionState {
   private _configurationRepositoryProjection: RepositoryStateProjection | null = null;
   private _workspaceRegistry: WorkspaceRegistry | null = null;
   private _configurationContextResolver: ConfigurationContextResolver | null = null;
+  private _configurationMutationEngine: ConfigurationMutationEngine | null = null;
   private _isDisposed = false;
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
   get workspaceRegistry(): WorkspaceRegistry | null { return this._workspaceRegistry; }
   get configurationContextResolver(): ConfigurationContextResolver | null { return this._configurationContextResolver; }
+  get configurationMutationEngine(): ConfigurationMutationEngine | null { return this._configurationMutationEngine; }
   get treeDataProvider(): MetadataTreeDataProvider | null { return this._treeDataProvider; }
   get treeView(): vscode.TreeView<TreeNode> | null { return this._treeView; }
   get propertiesProvider(): PropertiesProvider | null { return this._propertiesProvider; }
@@ -144,6 +150,7 @@ export class ExtensionState {
   set configurationRepositoryProjection(v: RepositoryStateProjection | null) { this._configurationRepositoryProjection = v; }
   set workspaceRegistry(v: WorkspaceRegistry | null) { this._workspaceRegistry = v; }
   set configurationContextResolver(v: ConfigurationContextResolver | null) { this._configurationContextResolver = v; }
+  set configurationMutationEngine(v: ConfigurationMutationEngine | null) { this._configurationMutationEngine = v; }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -176,6 +183,9 @@ export class ExtensionState {
       await this._workspaceRegistry?.dispose();
     });
     this._workspaceRegistry = null;
+    this._configurationContextResolver = null;
+    this._configurationMutationEngine = null;
+    setConfigurationMutationEngine(undefined);
 
     // 2. Metadata watchers
     for (const w of this._metadataWatchers) {
