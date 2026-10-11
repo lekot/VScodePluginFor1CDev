@@ -37,6 +37,31 @@ const RICH_DESIGNER_ROLE = `<?xml version="1.0" encoding="UTF-8"?>
 </MetaDataObject>
 `;
 
+const NAMESPACE_COLLISION_ROLES = [
+  {
+    name: 'default 1C namespace',
+    xml: `<Role xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:ext="urn:vendor:role-extension">
+  <ext:Rights><ext:Document><ext:Object><ext:Name>Sale</ext:Name><ext:Read>false</ext:Read><ext:FutureRight>true</ext:FutureRight></ext:Object></ext:Document></ext:Rights>
+  <Rights><Document><Object><Name>Sale</Name><ext:Read>false</ext:Read><Read>false</Read><View>true</View></Object></Document></Rights>
+</Role>`,
+    expected: `<Role xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:ext="urn:vendor:role-extension">
+  <ext:Rights><ext:Document><ext:Object><ext:Name>Sale</ext:Name><ext:Read>false</ext:Read><ext:FutureRight>true</ext:FutureRight></ext:Object></ext:Document></ext:Rights>
+  <Rights><Document><Object><Name>Sale</Name><ext:Read>false</ext:Read><Read>true</Read><View>true</View></Object></Document></Rights>
+</Role>`,
+  },
+  {
+    name: 'prefixed 1C namespace',
+    xml: `<m:MetaDataObject xmlns:m="http://v8.1c.ru/8.3/MDClasses" xmlns:ext="urn:vendor:role-extension"><m:Role>
+  <ext:Rights><ext:Document><ext:Object><ext:Name>Sale</ext:Name><ext:Read>false</ext:Read><ext:FutureRight>true</ext:FutureRight></ext:Object></ext:Document></ext:Rights>
+  <m:Rights><m:Document><m:Object><m:Name>Sale</m:Name><ext:Read>false</ext:Read><m:Read>false</m:Read><m:View>true</m:View></m:Object></m:Document></m:Rights>
+</m:Role></m:MetaDataObject>`,
+    expected: `<m:MetaDataObject xmlns:m="http://v8.1c.ru/8.3/MDClasses" xmlns:ext="urn:vendor:role-extension"><m:Role>
+  <ext:Rights><ext:Document><ext:Object><ext:Name>Sale</ext:Name><ext:Read>false</ext:Read><ext:FutureRight>true</ext:FutureRight></ext:Object></ext:Document></ext:Rights>
+  <m:Rights><m:Document><m:Object><m:Name>Sale</m:Name><ext:Read>false</ext:Read><m:Read>true</m:Read><m:View>true</m:View></m:Object></m:Document></m:Rights>
+</m:Role></m:MetaDataObject>`,
+  },
+];
+
 suite('role rights lossless domain model (#262)', () => {
   test('parses non-grid domain rights and unrelated UI save changes only the requested XML node', async () => {
     const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'role-rights-lossless-'));
@@ -197,5 +222,44 @@ suite('role rights lossless domain model (#262)', () => {
     });
     assert.strictEqual(XMLValidator.validate(output), true);
     assert.ok(output.includes('<v8:View marker="keep" >true</v8:View>'));
+  });
+
+  test('patches only 1C Rights and Read elements when extension namespaces reuse their local names', () => {
+    for (const fixture of NAMESPACE_COLLISION_ROLES) {
+      const output = mergeDesignerRoleRightsXml(fixture.xml, {
+        'Document.Sale': { read: true },
+      });
+      assert.strictEqual(output, fixture.expected, `${fixture.name} extension elements must remain untouched`);
+    }
+  });
+
+  test('parses only 1C Read elements when extension namespaces reuse their local name', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'role-namespace-collision-'));
+    const rolePath = path.join(root, 'Roles', 'Power', 'Role.xml');
+    await fs.promises.mkdir(path.dirname(rolePath), { recursive: true });
+
+    try {
+      for (const fixture of NAMESPACE_COLLISION_ROLES) {
+        const parserXml = fixture.xml
+          .replace(
+            '<ext:Read>false</ext:Read><ext:FutureRight>true',
+            '<ext:Read>true</ext:Read><ext:View>true</ext:View><ext:FutureRight>true'
+          )
+          .replace(
+            '<ext:Read>false</ext:Read><Read>false</Read>',
+            '<Read>false</Read><View>true</View><ext:Read>true</ext:Read>'
+          );
+        await fs.promises.writeFile(rolePath, parserXml, 'utf8');
+        const model = await RoleXmlParser.parseRoleXml(rolePath);
+        assert.strictEqual(
+          model.rights['Document.Sale']?.read,
+          false,
+          `${fixture.name} parser must ignore extension Read and read the 1C element`
+        );
+        assert.strictEqual(model.rights['Document.Sale']?.view, true);
+      }
+    } finally {
+      await fs.promises.rm(root, { recursive: true, force: true });
+    }
   });
 });

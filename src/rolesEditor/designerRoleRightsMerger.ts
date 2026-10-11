@@ -1,9 +1,14 @@
 import { XMLValidator } from 'fast-xml-parser';
-import { getRoleRightByKey } from './roleRightsRegistry';
+import { getRoleRightByKey, getRoleRightByXmlName, ROLE_RIGHTS_REGISTRY } from './roleRightsRegistry';
+import { createEmptyObjectRights, type RightsMap } from './models/roleModel';
+
+const MD_CLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
 
 interface XmlNode {
   readonly name: string;
   readonly localName: string;
+  readonly namespaceUri: string;
+  readonly namespaceBindings: ReadonlyMap<string, string>;
   readonly start: number;
   readonly openEnd: number;
   readonly selfClosing: boolean;
@@ -41,6 +46,22 @@ function findMarkupEnd(xml: string, start: number): number {
 function localName(name: string): string {
   const separator = name.lastIndexOf(':');
   return separator < 0 ? name : name.slice(separator + 1);
+}
+
+function namespaceDeclarations(markup: string, inherited?: ReadonlyMap<string, string>): Map<string, string> {
+  const bindings = new Map(inherited ?? [['xml', 'http://www.w3.org/XML/1998/namespace'], ['', '']]);
+  const declaration = /\sxmlns(?::([\w.-]+))?\s*=\s*(["'])(.*?)\2/g;
+  let match: RegExpExecArray | null;
+  while ((match = declaration.exec(markup)) !== null) {
+    const prefix = match[1] ?? '';
+    bindings.set(prefix, decodeXmlText(match[3] ?? ''));
+  }
+  return bindings;
+}
+
+function namespaceUri(name: string, bindings: ReadonlyMap<string, string>): string {
+  const separator = name.indexOf(':');
+  return separator < 0 ? (bindings.get('') ?? '') : (bindings.get(name.slice(0, separator)) ?? '');
 }
 
 function parseXmlNodes(xml: string): XmlNode[] {
@@ -95,9 +116,12 @@ function parseXmlNodes(xml: string): XmlNode[] {
     if (!name) {throw new Error('Malformed Designer Role.xml: invalid opening tag.');}
     const selfClosing = /\/\s*>$/.test(markup);
     const parent = stack[stack.length - 1];
+    const bindings = namespaceDeclarations(markup, parent?.namespaceBindings);
     const node: XmlNode = {
       name,
       localName: localName(name),
+      namespaceUri: namespaceUri(name, bindings),
+      namespaceBindings: bindings,
       start,
       openEnd: end,
       selfClosing,
@@ -142,19 +166,66 @@ function readSimpleText(xml: string, node: XmlNode): string {
   return decodeXmlText(raw).trim();
 }
 
-function findDirect(nodes: readonly XmlNode[], name: string): XmlNode | undefined {
-  return nodes.find((node) => node.localName === name);
+function parseXmlBoolean(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'true' || normalized === '1' || normalized === 'yes';
+}
+
+/**
+ * Read Designer rights from the 1C MDClasses namespace only. This shares the
+ * same namespace-aware token tree used by the lossless XML merger.
+ */
+export function extractDesignerRoleRightsXml(sourceXml: string): RightsMap {
+  if (!sourceXml.trim()) {return {};}
+  const validation = XMLValidator.validate(sourceXml);
+  if (validation !== true) {
+    const detail = typeof validation === 'object' ? validation.err.msg : 'Malformed XML';
+    throw new Error(`Cannot parse Designer Role.xml rights: invalid source XML: ${detail}`);
+  }
+
+  const roots = parseXmlNodes(sourceXml);
+  const { role, rights: rightsSection } = findRoleRights(roots);
+  if (!rightsSection) {return {};}
+
+  const knownTypes = new Set(ROLE_RIGHTS_REGISTRY.flatMap((right) => right.applicableTo));
+  const result: RightsMap = {};
+  for (const typeNode of rightsSection.children) {
+    const typeName = typeNode.localName;
+    if (typeNode.namespaceUri !== role.namespaceUri || !knownTypes.has(typeName)) {continue;}
+    for (const objectNode of typeNode.children) {
+      if (objectNode.localName !== 'Object' || objectNode.namespaceUri !== role.namespaceUri) {continue;}
+      const objectName = getObjectName(sourceXml, objectNode, role.namespaceUri);
+      if (!objectName) {continue;}
+      const objectRights = createEmptyObjectRights();
+      for (const rightNode of objectNode.children) {
+        if (rightNode.namespaceUri !== role.namespaceUri) {continue;}
+        const descriptor = getRoleRightByXmlName(rightNode.localName);
+        if (!descriptor || !descriptor.applicableTo.includes(typeName)) {continue;}
+        objectRights[descriptor.key] = parseXmlBoolean(readSimpleText(sourceXml, rightNode));
+      }
+      if (Object.values(objectRights).some((value) => value === true)) {
+        result[`${typeName}.${objectName}`] = objectRights;
+      }
+    }
+  }
+  return result;
+}
+
+function findDirect(nodes: readonly XmlNode[], name: string, namespace: string): XmlNode | undefined {
+  return nodes.find((node) => node.localName === name && node.namespaceUri === namespace);
 }
 
 function findRoleRights(roots: readonly XmlNode[]): { role: XmlNode; rights?: XmlNode } {
-  const role = walk(roots, (node) => node.localName === 'Role');
+  const role = walk(roots, (node) => node.localName === 'Role' && node.namespaceUri === MD_CLASSES_NAMESPACE)
+    ?? walk(roots, (node) => node.localName === 'Role' && node.namespaceUri === '');
   if (!role) {throw new Error('Designer Role.xml does not contain a Role element.');}
-  const rights = findDirect(role.children, 'Rights') ?? findDirect(role.children, 'ObjectRights');
+  const rights = findDirect(role.children, 'Rights', role.namespaceUri)
+    ?? findDirect(role.children, 'ObjectRights', role.namespaceUri);
   return { role, rights };
 }
 
-function getObjectName(xml: string, object: XmlNode): string | undefined {
-  const name = findDirect(object.children, 'Name');
+function getObjectName(xml: string, object: XmlNode, namespace: string): string | undefined {
+  const name = findDirect(object.children, 'Name', namespace);
   return name ? readSimpleText(xml, name) : undefined;
 }
 
@@ -168,8 +239,7 @@ function prefixOf(name: string): string {
 }
 
 function preferredPrefix(parent: XmlNode): string {
-  const candidate = parent.children.find((child) => child.localName === 'Object') ?? parent.children[0];
-  return candidate ? prefixOf(candidate.name) : prefixOf(parent.name);
+  return prefixOf(parent.name);
 }
 
 function lineIndent(xml: string, offset: number): string | undefined {
@@ -277,7 +347,7 @@ export function mergeDesignerRoleRightsXml(sourceXml: string, changes: DesignerR
     }
     if (Object.keys(applicableChanges).length === 0) {continue;}
 
-    const typeNode = rights && findDirect(rights.children, typeName);
+    const typeNode = rights && findDirect(rights.children, typeName, role.namespaceUri);
     if (!typeNode) {
       const pending = pendingByType.get(typeName) ?? [];
       pending.push({ name: objectName, changes: applicableChanges });
@@ -285,8 +355,8 @@ export function mergeDesignerRoleRightsXml(sourceXml: string, changes: DesignerR
       continue;
     }
     const objectNode = typeNode.children
-      .filter((child) => child.localName === 'Object')
-      .find((candidate) => getObjectName(sourceXml, candidate) === objectName);
+      .filter((child) => child.localName === 'Object' && child.namespaceUri === role.namespaceUri)
+      .find((candidate) => getObjectName(sourceXml, candidate, role.namespaceUri) === objectName);
     if (!objectNode) {
       const pending = pendingByType.get(typeName) ?? [];
       pending.push({ name: objectName, changes: applicableChanges });
@@ -297,7 +367,7 @@ export function mergeDesignerRoleRightsXml(sourceXml: string, changes: DesignerR
     const additions: string[] = [];
     for (const [key, value] of Object.entries(applicableChanges)) {
       const descriptor = getRoleRightByKey(key)!;
-      const existing = findDirect(objectNode.children, descriptor.xmlName);
+      const existing = findDirect(objectNode.children, descriptor.xmlName, role.namespaceUri);
       if (!existing) {
         additions.push(rightTag(objectNode, descriptor.xmlName, value));
         continue;
@@ -346,7 +416,7 @@ export function mergeDesignerRoleRightsXml(sourceXml: string, changes: DesignerR
       patches.push(insertionPatch(sourceXml, role, [`<${rightsName}>${typeBlocks}</${rightsName}>`]));
     } else {
       const typeBlocks = [...pendingByType.entries()].map(([typeName, objects]) => {
-        const existingType = findDirect(rights.children, typeName);
+        const existingType = findDirect(rights.children, typeName, role.namespaceUri);
         if (existingType) {
           const objectsXml = objects.map(({ name, changes: objectChanges }) => objectBlock(existingType, name, objectChanges));
           patches.push(insertionPatch(sourceXml, existingType, objectsXml));
