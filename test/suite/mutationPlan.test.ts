@@ -181,27 +181,37 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
   });
 
-  test('assertFile is boundary-checked and stays outside recovery snapshots around crash boundaries', async () => {
+  test('read-only source assertions are boundary-checked and stay outside recovery snapshots around crash boundaries', async () => {
     const source = path.join(tempDir, 'source.xml');
+    const sourceDirectory = path.join(tempDir, 'sourceDirectory');
     const target = path.join(tempDir, 'duplicate.xml');
     const sourceContent = '<source/>';
+    const sourceArtifactPath = path.join(sourceDirectory, 'Main.xml');
     const targetContent = '<duplicate/>';
     await fs.promises.writeFile(source, sourceContent, 'utf8');
+    await fs.promises.mkdir(sourceDirectory, { recursive: true });
+    await fs.promises.writeFile(sourceArtifactPath, '<artifact/>', 'utf8');
     const sourceMtime = (await fs.promises.stat(source)).mtimeMs;
     const plan = {
-      kind: 'test.assertFileRecovery',
+      kind: 'test.readOnlySourceAssertionsRecovery',
       steps: [
         { type: 'assertFile' as const, targetPath: source, expected: { state: 'file' as const, hash: hashContent(sourceContent) } },
+        {
+          type: 'assertDirectory' as const,
+          targetPath: sourceDirectory,
+          expected: { state: 'directory' as const, fingerprint: await calculateDirectoryFingerprint(sourceDirectory) },
+        },
         { type: 'writeFile' as const, targetPath: target, content: targetContent, encoding: 'utf8' as const, expected: { state: 'missing' as const } },
       ],
       result: null,
     };
 
     for (const scenario of [
-      { operationId: 'before-assert', appliedSteps: 0, targetWritten: false },
-      { operationId: 'after-assert', appliedSteps: 1, targetWritten: false },
-      { operationId: 'write-before-counter', appliedSteps: 1, targetWritten: true },
-      { operationId: 'write-recorded', appliedSteps: 2, targetWritten: true },
+      { operationId: 'before-read-only-assertions', appliedSteps: 0, targetWritten: false },
+      { operationId: 'after-source-file-assertion', appliedSteps: 1, targetWritten: false },
+      { operationId: 'after-source-directory-assertion', appliedSteps: 2, targetWritten: false },
+      { operationId: 'write-before-counter', appliedSteps: 2, targetWritten: true },
+      { operationId: 'write-recorded', appliedSteps: 3, targetWritten: true },
     ]) {
       await fs.promises.rm(target, { force: true });
       if (scenario.targetWritten) {
@@ -211,7 +221,9 @@ suite('MutationPlanExecutor', () => {
       await fs.promises.mkdir(path.join(operationPath, 'backups'), { recursive: true });
       const snapshots = [{ targetPath: target, state: 'missing', contentsBackedUp: false }];
       assert.ok(!snapshots.some((snapshot) => snapshot.targetPath === source),
-        'the read-only source assertion must never have a backup or restore snapshot');
+        'the read-only source file assertion must never have a backup or restore snapshot');
+      assert.ok(!snapshots.some((snapshot) => snapshot.targetPath === sourceDirectory),
+        'the read-only source directory assertion must never have a backup or restore snapshot');
       await fs.promises.writeFile(path.join(operationPath, 'journal.json'), JSON.stringify({
         version: 1,
         operationId: scenario.operationId,
@@ -232,13 +244,22 @@ suite('MutationPlanExecutor', () => {
 
     const externalRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mutation-plan-outside-'));
     const externalSource = path.join(externalRoot, 'source.xml');
+    const externalDirectory = path.join(externalRoot, 'sourceDirectory');
     await fs.promises.writeFile(externalSource, sourceContent, 'utf8');
+    await fs.promises.mkdir(externalDirectory, { recursive: true });
+    await fs.promises.writeFile(path.join(externalDirectory, 'Main.xml'), '<artifact/>', 'utf8');
+    const externalDirectoryFingerprint = await calculateDirectoryFingerprint(externalDirectory);
     try {
       await assert.rejects(
         () => new MutationPlanExecutor(tempDir).execute({
-          kind: 'test.assertFileBoundary',
+          kind: 'test.readOnlySourceAssertionsBoundary',
           steps: [
-            { type: 'assertFile', targetPath: externalSource, expected: { state: 'file', hash: hashContent(sourceContent) } },
+            { type: 'assertFile', targetPath: source, expected: { state: 'file', hash: hashContent(sourceContent) } },
+            {
+              type: 'assertDirectory',
+              targetPath: externalDirectory,
+              expected: { state: 'directory', fingerprint: externalDirectoryFingerprint },
+            },
             { type: 'writeFile', targetPath: target, content: targetContent, encoding: 'utf8', expected: { state: 'missing' } },
           ],
           result: undefined,
@@ -2697,4 +2718,3 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(fs.existsSync(newDirPath), true, 'Directory must be preserved');
   });
 });
-

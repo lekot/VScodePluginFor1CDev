@@ -25,6 +25,13 @@ export type MutationStep =
       readonly expected: { readonly state: 'file'; readonly hash: string };
     }
   | {
+      readonly type: 'assertDirectory';
+      readonly targetPath: string;
+      readonly expected:
+        | { readonly state: 'missing' }
+        | { readonly state: 'directory'; readonly fingerprint: string };
+    }
+  | {
       readonly type: 'writeFile';
       readonly targetPath: string;
       readonly content: string;
@@ -40,6 +47,12 @@ export type MutationStep =
       readonly sourceExpected: MutationExpectation;
       readonly targetExpected: MutationExpectation;
     };
+
+export function isReadOnlyAssertionStep(
+  step: MutationStep,
+): step is Extract<MutationStep, { readonly type: 'assertFile' | 'assertDirectory' }> {
+  return step.type === 'assertFile' || step.type === 'assertDirectory';
+}
 
 export interface MutationPlan<T> {
   readonly kind: string;
@@ -707,6 +720,7 @@ export class MutationPlanExecutor {
       }
       switch (step.type) {
         case 'assertFile':
+        case 'assertDirectory':
           await assertExpectation(step.targetPath, step.expected);
           break;
         case 'writeFile':
@@ -739,7 +753,7 @@ export class MutationPlanExecutor {
       if (step.type === 'movePath') {
         targets.set(step.sourcePath, true);
         targets.set(step.targetPath, true);
-      } else if (step.type !== 'assertFile') {
+      } else if (!isReadOnlyAssertionStep(step)) {
         targets.set(step.targetPath, (targets.get(step.targetPath) ?? false) || step.type !== 'ensureDirectory');
       }
     }
@@ -766,6 +780,11 @@ export class MutationPlanExecutor {
   private async applyStep(step: MutationStep): Promise<void> {
     switch (step.type) {
       case 'assertFile': {
+        const canonicalTarget = await this.revalidateParent(step.targetPath);
+        await assertExpectation(canonicalTarget, step.expected);
+        return;
+      }
+      case 'assertDirectory': {
         const canonicalTarget = await this.revalidateParent(step.targetPath);
         await assertExpectation(canonicalTarget, step.expected);
         return;
@@ -975,7 +994,7 @@ function snapshotsForAppliedSteps(
 ): PathSnapshot[] {
   const appliedPaths = new Set(
     plan.steps.slice(0, appliedSteps)
-      .filter((step) => step.type !== 'assertFile')
+      .filter((step) => !isReadOnlyAssertionStep(step))
       .flatMap((step) => stepPaths(step)),
   );
   return snapshots.filter((snapshot) => appliedPaths.has(snapshot.targetPath));
@@ -1028,7 +1047,7 @@ function computeExpectedDirectoryFingerprint(
   const childNames = new Set<string>();
   for (let i = 0; i < appliedSteps; i++) {
     const step = plan.steps[i];
-    if (!step || step.type === 'assertFile') {
+    if (!step || isReadOnlyAssertionStep(step)) {
       continue;
     }
     const paths = stepPaths(step);
@@ -1147,8 +1166,8 @@ async function resolveEffectiveAppliedSteps(
   if (!nextStep) {
     return appliedSteps;
   }
-  if (nextStep.type === 'assertFile') {
-    // This read-only CAS check has no post-state to infer. Treat it as consumed so
+  if (isReadOnlyAssertionStep(nextStep)) {
+    // Read-only CAS checks have no post-state to infer. Treat them as consumed so
     // recovery can continue to the next effect without inspecting/restoring source.
     return appliedSteps + 1;
   }

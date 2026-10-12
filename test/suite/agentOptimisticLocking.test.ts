@@ -777,6 +777,7 @@ suite('Agent API — Registered Commands dryRun & ifRev dispatch', () => {
     await handlerCreate({ configurationId: configId, type: 'Catalog', name: 'ItemToDuplicate' });
 
     const sourcePath = path.join(tmpDir, 'Catalogs', 'ItemToDuplicate.xml');
+    const sourceDirectory = path.join(tmpDir, 'Catalogs', 'ItemToDuplicate');
     const targetPath = path.join(tmpDir, 'Catalogs', 'ItemDuplicate.xml');
     const sourceRev = await calculateRevision(sourcePath);
     const handlerDuplicate = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.duplicateObject')!;
@@ -794,6 +795,8 @@ suite('Agent API — Registered Commands dryRun & ifRev dispatch', () => {
     assert.ok(dryResult.data?.plannedChanges);
     assert.ok(!dryResult.data?.plannedChanges?.files.includes(sourcePath),
       'read-only source assertion must not appear as a changed file in dry-run impact');
+    assert.ok(!dryResult.data?.plannedChanges?.files.includes(sourceDirectory),
+      'read-only directory assertion must not appear as a changed path in dry-run impact');
     assert.strictEqual(fs.existsSync(sourcePath), true);
     assert.strictEqual(fs.existsSync(targetPath), false);
 

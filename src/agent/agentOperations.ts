@@ -28,6 +28,7 @@ import {
 import { listXmlSiblingNames } from '../services/filesystemReadSemantics';
 import {
     MutationPlanExecutor,
+    isReadOnlyAssertionStep,
     type MutationPlan,
 } from '../services/configurationSession/mutationPlan';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
@@ -998,7 +999,7 @@ export class AgentOperations {
                     ?? path.join(path.dirname(filePath), `${newName}.xml`);
                 const plannedFiles = Array.from(new Set(
                     plan.steps
-                        .filter((step) => step.type !== 'assertFile')
+                        .filter((step) => !isReadOnlyAssertionStep(step))
                         .flatMap((step) => {
                             if ('targetPath' in step && 'sourcePath' in step) {
                                 return [step.sourcePath, step.targetPath];

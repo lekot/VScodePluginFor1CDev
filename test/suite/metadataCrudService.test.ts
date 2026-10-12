@@ -384,6 +384,7 @@ suite('MetadataCrudService', () => {
   test('root duplicate plans have common UI/Agent parity and preserve XML, identities, binary artifacts and impact', async () => {
     const fixture = await createCatalogDuplicateFixture(tempRoot, 'Source');
     const sourcePath = path.join(tempRoot, 'Catalogs', 'Source.xml');
+    const sourceDirectory = path.join(tempRoot, 'Catalogs', 'Source');
     const targetPath = path.join(tempRoot, 'Catalogs', 'SourceCopy.xml');
     const targetDirectory = path.join(tempRoot, 'Catalogs', 'SourceCopy');
     const targetXmlPath = path.join(targetDirectory, 'Forms', 'Main.xml');
@@ -425,6 +426,8 @@ suite('MetadataCrudService', () => {
     assert.ok(common.impact.writePaths.includes(targetBinaryPath));
     assert.ok(common.impact.directoryPaths.includes(targetDirectory));
     assert.ok(!common.impact.affectedPaths.includes(sourcePath), 'the read-only source CAS check is not a mutation impact');
+    assert.ok(!common.impact.affectedPaths.includes(sourceDirectory), 'the read-only directory CAS check is not a mutation impact');
+    assert.ok(!common.impact.directoryPaths.includes(sourceDirectory), 'the source tree is never a planned output directory');
 
     await new MutationPlanExecutor(tempRoot).execute(common.plan);
     assert.strictEqual(await fs.promises.readFile(sourcePath, 'utf8'), sourceContent);
@@ -565,10 +568,59 @@ suite('MetadataCrudService', () => {
     assert.strictEqual(fs.existsSync(path.join(tempRoot, 'Catalogs', 'StaleCopy.xml')), false);
   });
 
+  test('duplicate source directory CAS rejects companion XML changes after planning', async () => {
+    await assertDuplicateDirectoryConflict(tempRoot, async (fixture) => {
+      const xml = await fs.promises.readFile(fixture.mainXmlPath, 'utf8');
+      await fs.promises.writeFile(fixture.mainXmlPath, xml.replace('<Name>Main</Name>', '<Name>Changed</Name>'), 'utf8');
+    }, 'Forms/Main.xml');
+  });
+
+  test('duplicate source directory CAS rejects binary artifact changes after planning', async () => {
+    await assertDuplicateDirectoryConflict(tempRoot, async (fixture) => {
+      await fs.promises.writeFile(path.join(path.dirname(fixture.mainXmlPath), 'Main.bin'), Buffer.from([9, 8, 7]));
+    }, 'Forms/Main.bin');
+  });
+
+  test('duplicate source directory CAS rejects membership changes after planning', async () => {
+    await assertDuplicateDirectoryConflict(tempRoot, async (fixture) => {
+      await fs.promises.writeFile(path.join(path.dirname(fixture.mainXmlPath), 'AddedAfterPlanning.bin'), Buffer.from([1, 2, 3]));
+    }, 'Forms/AddedAfterPlanning.bin');
+  });
+
+  test('duplicate source directory CAS rejects a directory that appears after planning', async () => {
+    const fixture = await createCatalogDuplicateFixture(tempRoot, 'Source');
+    const sourceDirectory = path.join(tempRoot, 'Catalogs', 'Source');
+    await fs.promises.rm(sourceDirectory, { recursive: true, force: true });
+    const configurationPath = path.join(tempRoot, 'Configuration.xml');
+    const configurationBefore = await fs.promises.readFile(configurationPath, 'utf8');
+    const plan = await requireDuplicateMetadataPlanner()({ configurationRootPath: tempRoot }, {
+      type: MetadataType.Catalog,
+      sourceName: 'Source',
+      newName: 'AppearedDirectoryCopy',
+    });
+    await fs.promises.mkdir(sourceDirectory, { recursive: true });
+    const addedContent = Buffer.from([4, 5, 6]);
+    const addedPath = path.join(sourceDirectory, 'AddedAfterPlanning.bin');
+    await fs.promises.writeFile(addedPath, addedContent);
+
+    await assert.rejects(
+      () => new MutationPlanExecutor(tempRoot).execute(plan.plan),
+      (error: unknown) => Boolean(error && typeof error === 'object'
+        && (error as { code?: string }).code === 'PLAN_CONFLICT'),
+    );
+    assert.deepStrictEqual(await fs.promises.readFile(addedPath), addedContent, 'source directory content remains untouched');
+    assert.strictEqual(await fs.promises.readFile(configurationPath, 'utf8'), configurationBefore);
+    assert.strictEqual(fs.existsSync(path.join(tempRoot, 'Catalogs', 'AppearedDirectoryCopy.xml')), false);
+    assert.strictEqual(fs.existsSync(path.join(tempRoot, 'Catalogs', 'AppearedDirectoryCopy')), false);
+    assert.ok(fs.existsSync(fixture.sourcePath), 'the source descriptor remains present');
+  });
+
   test('duplicate source assertion stays read-only and rollback restores copies after a later step failure', async () => {
     const fixture = await createCatalogDuplicateFixture(tempRoot, 'Source');
+    const sourceDirectoryPath = path.join(tempRoot, 'Catalogs', 'Source');
     const sourceStat = await fs.promises.stat(fixture.sourcePath);
     const sourceContent = await fs.promises.readFile(fixture.sourcePath, 'utf8');
+    const sourceBinaryContent = await fs.promises.readFile(path.join(sourceDirectoryPath, 'Forms', 'Main.bin'));
     const configurationPath = path.join(tempRoot, 'Configuration.xml');
     const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
     const duplicatePlanner = requireDuplicateMetadataPlanner();
@@ -576,8 +628,10 @@ suite('MetadataCrudService', () => {
       type: MetadataType.Catalog, sourceName: 'Source', newName: 'RollbackCopy',
     });
     const originalMkdir = fs.promises.mkdir;
+    const originalCopyFile = fs.promises.copyFile;
     const failingDirectory = path.join(tempRoot, 'Catalogs', 'RollbackCopy', 'Forms');
     let failLaterStep = true;
+    let sourceWasBackedUp = false;
     try {
       (fs.promises as any).mkdir = async (directory: fs.PathLike, options?: fs.MakeDirectoryOptions) => {
         if (failLaterStep && path.resolve(String(directory)) === path.resolve(failingDirectory)) {
@@ -586,14 +640,30 @@ suite('MetadataCrudService', () => {
         }
         return originalMkdir.call(fs.promises, directory, options);
       };
+      (fs.promises as any).copyFile = async (source: fs.PathLike, destination: fs.PathLike, ...args: unknown[]) => {
+        const sourcePath = path.resolve(String(source));
+        if (sourcePath === path.resolve(fixture.sourcePath)
+          || sourcePath.startsWith(`${path.resolve(sourceDirectoryPath)}${path.sep}`)) {
+          sourceWasBackedUp = true;
+        }
+        return (originalCopyFile as (...values: unknown[]) => Promise<void>).call(
+          fs.promises,
+          source,
+          destination,
+          ...args,
+        );
+      };
       await assert.rejects(() => new MutationPlanExecutor(tempRoot).execute(plan.plan), /rolled back|directory creation failure/i);
     } finally {
       fs.promises.mkdir = originalMkdir;
+      fs.promises.copyFile = originalCopyFile;
     }
 
+    assert.strictEqual(sourceWasBackedUp, false, 'read-only source assertions must never create rollback backups');
     assert.strictEqual(await fs.promises.readFile(fixture.sourcePath, 'utf8'), sourceContent);
     assert.strictEqual((await fs.promises.stat(fixture.sourcePath)).mtimeMs, sourceStat.mtimeMs,
       'asserting the source must not alter its contents or timestamp, including on rollback');
+    assert.deepStrictEqual(await fs.promises.readFile(path.join(sourceDirectoryPath, 'Forms', 'Main.bin')), sourceBinaryContent);
     assert.strictEqual(await fs.promises.readFile(configurationPath, 'utf8'), configurationContent);
     assert.strictEqual(fs.existsSync(path.join(tempRoot, 'Catalogs', 'RollbackCopy.xml')), false);
     assert.strictEqual(fs.existsSync(path.join(tempRoot, 'Catalogs', 'RollbackCopy')), false);
@@ -678,6 +748,36 @@ function catalogTreeNode(rootPath: string, name: string): TreeNode {
   };
   folderNode.children = [sourceNode];
   return sourceNode;
+}
+
+async function assertDuplicateDirectoryConflict(
+  rootPath: string,
+  changeSourceDirectory: (fixture: CatalogDuplicateFixture) => Promise<void>,
+  changedRelativePath: string,
+): Promise<void> {
+  const fixture = await createCatalogDuplicateFixture(rootPath, 'Source');
+  const plan = await requireDuplicateMetadataPlanner()({ configurationRootPath: rootPath }, {
+    type: MetadataType.Catalog,
+    sourceName: 'Source',
+    newName: 'StaleDirectoryCopy',
+  });
+  const configurationPath = path.join(rootPath, 'Configuration.xml');
+  const configurationBefore = await fs.promises.readFile(configurationPath, 'utf8');
+  await changeSourceDirectory(fixture);
+  const changedPath = path.join(rootPath, 'Catalogs', 'Source', changedRelativePath);
+  const changedContent = await fs.promises.readFile(changedPath);
+
+  await assert.rejects(
+    () => new MutationPlanExecutor(rootPath).execute(plan.plan),
+    (error: unknown) => Boolean(error && typeof error === 'object'
+      && (error as { code?: string }).code === 'PLAN_CONFLICT'),
+    'a stale companion directory snapshot must fail as a plan conflict',
+  );
+  assert.deepStrictEqual(await fs.promises.readFile(changedPath), changedContent,
+    'the source mutation that caused the conflict must remain untouched');
+  assert.strictEqual(await fs.promises.readFile(configurationPath, 'utf8'), configurationBefore);
+  assert.strictEqual(fs.existsSync(path.join(rootPath, 'Catalogs', 'StaleDirectoryCopy.xml')), false);
+  assert.strictEqual(fs.existsSync(path.join(rootPath, 'Catalogs', 'StaleDirectoryCopy')), false);
 }
 
 interface RegisterDeleteFixture {

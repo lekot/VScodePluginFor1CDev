@@ -29,6 +29,11 @@ import {
 } from './registerRecorderDocumentLinker';
 import { hashContent } from './configurationSession/atomicFileStorage';
 import { assertPathWithinRoot } from './configurationSession/pathBoundary';
+import {
+  calculateDirectoryFingerprint,
+  isReadOnlyAssertionStep,
+  MutationPlanError,
+} from './configurationSession/mutationPlan';
 import type { MutationPlan, MutationStep } from './configurationSession/mutationPlan';
 import { planIdentityTokenReplacements } from '../utils/referenceFinder';
 import { listXmlSiblingNames, readMutationExpectation } from './filesystemReadSemantics';
@@ -903,7 +908,15 @@ export async function planDuplicateMetadataObject(
 
   const directoryArtifacts = sourceDirectoryExpected.state === 'directory'
     ? await readDuplicateDirectoryArtifacts(rootPath, sourceDirectoryPath)
-    : { directories: [] as string[], files: [] as MetadataDuplicateDirectoryArtifact[] };
+    : { directories: [], files: [], fingerprint: undefined };
+  const sourceDirectoryFingerprint = directoryArtifacts.fingerprint;
+  if (sourceDirectoryFingerprint !== undefined
+    && await calculateDirectoryFingerprint(sourceDirectoryPath) !== sourceDirectoryFingerprint) {
+    throw new MutationPlanError(
+      'PLAN_CONFLICT',
+      `Metadata object directory changed while planning duplicate: ${sourceDirectoryPath}`,
+    );
+  }
   const xmlContents: string[] = [];
   for (const artifact of directoryArtifacts.files) {
     if (artifact.filePath.toLocaleLowerCase().endsWith('.xml')) {
@@ -929,6 +942,13 @@ export async function planDuplicateMetadataObject(
 
   const steps: MutationStep[] = [
     { type: 'assertFile', targetPath: sourcePath, expected: sourceExpected },
+    {
+      type: 'assertDirectory',
+      targetPath: sourceDirectoryPath,
+      expected: sourceDirectoryFingerprint === undefined
+        ? { state: 'missing' }
+        : { state: 'directory', fingerprint: sourceDirectoryFingerprint },
+    },
     {
       type: 'writeFile', targetPath,
       content: duplicateContent, encoding: 'utf8', expected: targetExpected,
@@ -982,10 +1002,16 @@ interface MetadataDuplicateDirectoryArtifact {
   readonly content: Buffer;
 }
 
+interface MetadataDuplicateDirectorySnapshot {
+  readonly directories: readonly string[];
+  readonly files: readonly MetadataDuplicateDirectoryArtifact[];
+  readonly fingerprint: string;
+}
+
 async function readDuplicateDirectoryArtifacts(
   configurationRootPath: string,
   rootDirectory: string,
-): Promise<{ readonly directories: string[]; readonly files: MetadataDuplicateDirectoryArtifact[] }> {
+): Promise<MetadataDuplicateDirectorySnapshot> {
   const directories: string[] = [];
   const files: MetadataDuplicateDirectoryArtifact[] = [];
   const visit = async (directoryPath: string): Promise<void> => {
@@ -1008,7 +1034,59 @@ async function readDuplicateDirectoryArtifacts(
     }
   };
   await visit(rootDirectory);
-  return { directories, files };
+  return {
+    directories,
+    files,
+    fingerprint: fingerprintDuplicateDirectorySnapshot(rootDirectory, directories, files),
+  };
+}
+
+function fingerprintDuplicateDirectorySnapshot(
+  rootDirectory: string,
+  directories: readonly string[],
+  files: readonly MetadataDuplicateDirectoryArtifact[],
+): string {
+  type Entry =
+    | { readonly name: string; readonly type: 'directory'; readonly directoryPath: string }
+    | { readonly name: string; readonly type: 'file'; readonly content: Buffer };
+  const entriesByDirectory = new Map<string, Entry[]>();
+  for (const directoryPath of directories) {
+    entriesByDirectory.set(path.resolve(directoryPath), []);
+  }
+  for (const directoryPath of directories) {
+    if (path.resolve(directoryPath) === path.resolve(rootDirectory)) {
+      continue;
+    }
+    const parentKey = path.resolve(path.dirname(directoryPath));
+    const parentEntries = entriesByDirectory.get(parentKey);
+    if (parentEntries) {
+      parentEntries.push({
+        name: path.basename(directoryPath),
+        type: 'directory',
+        directoryPath,
+      });
+    }
+  }
+  for (const artifact of files) {
+    const parentEntries = entriesByDirectory.get(path.resolve(path.dirname(artifact.filePath)));
+    if (parentEntries) {
+      parentEntries.push({
+        name: path.basename(artifact.filePath),
+        type: 'file',
+        content: artifact.content,
+      });
+    }
+  }
+
+  const fingerprint = (directoryPath: string): string => {
+    const entries = entriesByDirectory.get(path.resolve(directoryPath)) ?? [];
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    const hashes = entries.map((entry) => entry.type === 'file'
+      ? `F:${entry.name}:${hashContent(entry.content)}`
+      : `D:${entry.name}:${fingerprint(entry.directoryPath)}`);
+    return hashContent(Buffer.from(hashes.join('\n'), 'utf8'));
+  };
+  return fingerprint(rootDirectory);
 }
 
 function collectDuplicateIdentityRemap(contents: readonly string[]): Map<string, string> {
@@ -1168,6 +1246,9 @@ function planned<T>(plan: MutationPlan<T>): PlannedMetadataMutation<T> {
   const addAffected = (value: string): void => addUnique(affectedPaths, value);
 
   for (const step of plan.steps) {
+    if (isReadOnlyAssertionStep(step)) {
+      continue;
+    }
     if (step.type === 'writeFile') {
       addAffected(step.targetPath);
       addUnique(writePaths, step.targetPath);
