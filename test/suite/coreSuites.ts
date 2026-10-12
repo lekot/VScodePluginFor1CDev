@@ -41,6 +41,7 @@ export const coreSuiteFiles: string[] = [
   'suite/compareCodeUnits.test.js',
   'suite/metadataFileLocator.test.js',
   'suite/standardModuleRegistry.integration.test.js',
+  'suite/gotoHandlerRegistryContract.test.js',
   'suite/filesystemReadSemantics.test.js',
   'suite/metadataCrudService.test.js',
   'suite/metadataCreateParity.test.js',
