@@ -57,6 +57,7 @@ interface XmlElementFrame {
   readonly contentStart: number;
   readonly isRecorderSection: boolean;
   readonly isRecorderItem: boolean;
+  readonly hasMetadataObjectReferenceType: boolean;
 }
 
 interface XmlRange {
@@ -89,7 +90,7 @@ function findDirectRecorderItemRanges(xml: string, reference: string): XmlRange[
       if (!frame || frame.name !== closing[1]) {
         throw new Error('Recorder document XML has an inconsistent element structure.');
       }
-      if (frame.isRecorderItem) {
+      if (frame.isRecorderItem && frame.hasMetadataObjectReferenceType) {
         const text = decodeXmlText(xml.slice(frame.contentStart, start)).trim();
         if (text === reference) {
           ranges.push({ start: frame.start, end: end + 1 });
@@ -104,13 +105,18 @@ function findDirectRecorderItemRanges(xml: string, reference: string): XmlRange[
     }
     const name = opening[1]!;
     const parent = stack[stack.length - 1];
+    const grandparent = stack[stack.length - 2];
     const isRecorderSection = localName(name) === 'RegisterRecords'
       && parent !== undefined
-      && localName(parent.name) === 'Document';
+      && localName(parent.name) === 'Properties'
+      && grandparent !== undefined
+      && localName(grandparent.name) === 'Document';
     if (isRecorderSection) {
       recorderSectionCount++;
     }
     const isRecorderItem = name === 'xr:Item' && parent?.isRecorderSection === true;
+    const hasMetadataObjectReferenceType = isRecorderItem
+      && hasAttributeValue(markup, 'xsi:type', 'xr:MDObjectRef');
     const selfClosing = /\/\s*>$/.test(markup);
     if (!selfClosing) {
       stack.push({
@@ -119,6 +125,7 @@ function findDirectRecorderItemRanges(xml: string, reference: string): XmlRange[
         contentStart: end + 1,
         isRecorderSection,
         isRecorderItem,
+        hasMetadataObjectReferenceType,
       });
     }
   }
@@ -127,6 +134,11 @@ function findDirectRecorderItemRanges(xml: string, reference: string): XmlRange[
     throw new Error('Recorder document must contain exactly one Document/RegisterRecords section.');
   }
   return ranges;
+}
+
+function hasAttributeValue(markup: string, name: string, expectedValue: string): boolean {
+  const attribute = new RegExp(`\\s${escapeRegex(name)}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(markup);
+  return (attribute?.[1] ?? attribute?.[2]) === expectedValue;
 }
 
 function findMarkupEnd(xml: string, start: number): number {

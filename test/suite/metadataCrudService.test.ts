@@ -149,6 +149,51 @@ suite('MetadataCrudService', () => {
     assert.strictEqual(await fs.promises.readFile(fixture.documents.get('Unregistered')!, 'utf8'), unregisteredBefore);
   });
 
+  test('AccumulationRegister cleanup follows the Designer Document/Properties template and preserves lookalikes', async () => {
+    const fixture = await createRegisterDeleteFixture(tempRoot, ['RecorderOne', 'RecorderTwo'], ['Unregistered']);
+    const templatePath = path.join(process.cwd(), 'resources', 'designerTemplates', 'Designer', 'Document.xml');
+    const template = await fs.promises.readFile(templatePath, 'utf8');
+    const nestedReference = '<xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.Target</xr:Item>';
+    const recorderOneBefore = designerTemplateRecorderDocumentXml(template, 'RecorderOne', '11111111-1111-4111-8111-111111111111', [
+      nestedReference,
+      '<xr:Item xsi:type="xs:string">AccumulationRegister.Target</xr:Item>',
+      '<xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.TargetExtra</xr:Item>',
+      '<xr:Item xsi:type="xr:MDObjectRef">InformationRegister.Target</xr:Item>',
+    ].join('\n'), nestedReference);
+    const recorderTwoBefore = designerTemplateRecorderDocumentXml(template, 'RecorderTwo', '22222222-2222-4222-8222-222222222222', [
+      nestedReference,
+      '<xr:Item xsi:type="xs:string">AccumulationRegister.Target</xr:Item>',
+      '<xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.TargetExtra</xr:Item>',
+      '<xr:Item xsi:type="xr:MDObjectRef">InformationRegister.Target</xr:Item>',
+    ].join('\n'), nestedReference);
+    const unregisteredBefore = designerTemplateRecorderDocumentXml(template, 'Unregistered', '33333333-3333-4333-8333-333333333333', nestedReference, nestedReference);
+    await fs.promises.writeFile(fixture.documents.get('RecorderOne')!, recorderOneBefore, 'utf8');
+    await fs.promises.writeFile(fixture.documents.get('RecorderTwo')!, recorderTwoBefore, 'utf8');
+    await fs.promises.writeFile(fixture.documents.get('Unregistered')!, unregisteredBefore, 'utf8');
+
+    const deletion = await planDeleteMetadataObject({ configurationRootPath: tempRoot }, {
+      type: MetadataType.AccumulationRegister,
+      name: 'Target',
+    });
+    await new MutationPlanExecutor(tempRoot).execute(deletion.plan);
+
+    for (const name of ['RecorderOne', 'RecorderTwo']) {
+      const xml = await fs.promises.readFile(fixture.documents.get(name)!, 'utf8');
+      const propertiesRecords = extractPropertiesRegisterRecords(xml);
+      assert.doesNotMatch(propertiesRecords, /<xr:Item\s+xsi:type="xr:MDObjectRef">AccumulationRegister\.Target<\/xr:Item>/,
+        'the exact metadata reference in Document/Properties/RegisterRecords is removed');
+      assert.match(propertiesRecords, /<xr:Item\s+xsi:type="xs:string">AccumulationRegister\.Target<\/xr:Item>/,
+        'an Item with matching text but a different xsi:type is retained');
+      assert.match(propertiesRecords, /AccumulationRegister\.TargetExtra/);
+      assert.match(propertiesRecords, /InformationRegister\.Target/);
+      const nestedRecords = xml.match(/<Wrapper><RegisterRecords>([\s\S]*?)<\/RegisterRecords><\/Wrapper>/)?.[1];
+      assert.strictEqual(nestedRecords, nestedReference,
+        'a nested RegisterRecords section outside Document/Properties is preserved');
+    }
+    assert.strictEqual(await fs.promises.readFile(fixture.documents.get('Unregistered')!, 'utf8'), unregisteredBefore,
+      'unregistered documents are not rewritten');
+  });
+
   test('Agent delete dryRun reports recorder documents in plan impact', async () => {
     const fixture = await createRegisterDeleteFixture(tempRoot, ['Recorder']);
     await fs.promises.writeFile(fixture.documents.get('Recorder')!, recorderDocumentXml('Recorder',
@@ -347,9 +392,33 @@ function recorderDocumentXml(name: string, records: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <Document uuid="11111111-1111-4111-8111-111111111111">
-    <Properties><Name>${name}</Name></Properties>
+    <Properties><Name>${name}</Name><RegisterRecords>${records}</RegisterRecords></Properties>
     <ChildObjects><Wrapper><xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.Target</xr:Item></Wrapper></ChildObjects>
-    <RegisterRecords>${records}</RegisterRecords>
   </Document>
 </MetaDataObject>`;
+}
+
+function designerTemplateRecorderDocumentXml(
+  template: string,
+  name: string,
+  uuid: string,
+  records: string,
+  nestedRecords: string,
+): string {
+  const namedTemplate = template.replace('{uuid}', uuid).replace(/\{Name\}/g, name);
+  const withPropertiesRecords = namedTemplate.replace(/<RegisterRecords\s*\/>/, `<RegisterRecords>${records}</RegisterRecords>`);
+  const withNestedRecords = withPropertiesRecords.replace(/<ChildObjects\s*\/>/,
+    `<ChildObjects><Wrapper><RegisterRecords>${nestedRecords}</RegisterRecords></Wrapper></ChildObjects>`);
+  if (namedTemplate === withPropertiesRecords || withPropertiesRecords === withNestedRecords) {
+    throw new Error('Designer Document template did not contain expected insertion points.');
+  }
+  return withNestedRecords;
+}
+
+function extractPropertiesRegisterRecords(xml: string): string {
+  const properties = xml.match(/<Properties>([\s\S]*?)<\/Properties>/)?.[1];
+  assert.ok(properties, 'Designer Document template should contain Properties');
+  const records = properties.match(/<RegisterRecords>([\s\S]*?)<\/RegisterRecords>/)?.[1];
+  assert.ok(records, 'Designer Document template should contain Properties/RegisterRecords');
+  return records;
 }

@@ -106,7 +106,7 @@ suite('CFE generic CRUD guards', () => {
     await fs.promises.writeFile(path.join(registerDirectory, 'Ext_Register.xml'), `<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject><AccumulationRegister uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Ext_Register</Name></Properties><ChildObjects/></AccumulationRegister></MetaDataObject>`, 'utf8');
     await fs.promises.writeFile(path.join(documentsDirectory, 'BaseDocument.xml'), `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Document uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>BaseDocument</Name><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>44444444-4444-4444-8444-444444444444</ExtendedConfigurationObject></Properties><ChildObjects/><RegisterRecords><xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.Ext_Register</xr:Item></RegisterRecords></Document></MetaDataObject>`, 'utf8');
+<MetaDataObject xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Document uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>BaseDocument</Name><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>44444444-4444-4444-8444-444444444444</ExtendedConfigurationObject><RegisterRecords><xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.Ext_Register</xr:Item></RegisterRecords></Properties><ChildObjects/></Document></MetaDataObject>`, 'utf8');
 
     await assert.rejects(
       () => planDeleteMetadataObject({ configurationRootPath: cfeRoot }, {

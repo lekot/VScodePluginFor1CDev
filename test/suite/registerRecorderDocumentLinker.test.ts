@@ -192,9 +192,10 @@ suite('registerRecorderDocumentLinker', () => {
     assert.strictEqual(typeof candidate, 'function', 'delete policy needs a pure XML transformation');
     const remove = candidate as (xml: string, kind: 'AccumulationRegister', name: string) => string;
     const xml = `<MetaDataObject xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-<Document><Properties><Name>Recorder</Name></Properties>
-<ChildObjects><Wrapper><xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.Target</xr:Item></Wrapper></ChildObjects>
+<Document><Properties><Name>Recorder</Name>
 <RegisterRecords><xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.Target</xr:Item><xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.TargetExtra</xr:Item><xr:Item xsi:type="xr:MDObjectRef">InformationRegister.Target</xr:Item></RegisterRecords>
+</Properties>
+<ChildObjects><Wrapper><xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.Target</xr:Item></Wrapper></ChildObjects>
 </Document></MetaDataObject>`;
     const result = remove(xml, 'AccumulationRegister', 'Target');
     const records = result.match(/<RegisterRecords>([\s\S]*?)<\/RegisterRecords>/)?.[1] ?? '';
