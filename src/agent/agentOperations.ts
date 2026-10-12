@@ -22,11 +22,13 @@ import {
 import {
     planCreateMetadataObject,
     planDeleteMetadataObject,
+    planDuplicateMetadataObject,
     planRenameMetadataObject,
 } from '../services/metadataCrudService';
 import { listXmlSiblingNames } from '../services/filesystemReadSemantics';
 import {
     MutationPlanExecutor,
+    isReadOnlyAssertionStep,
     type MutationPlan,
 } from '../services/configurationSession/mutationPlan';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
@@ -58,6 +60,7 @@ import type {
     DeleteTabularSectionParams,
     DeleteObjectParams,
     RenameObjectParams,
+    DuplicateObjectParams,
     SetPropertiesParams,
     GetTypeParams,
     SetTypeParams,
@@ -275,25 +278,9 @@ export class AgentOperations {
 
     /** Builds the serializable multi-file rename plan without applying filesystem effects. */
     async planRenameObject(params: RenameObjectParams): Promise<MutationPlan<AgentResult<{ filePath: string }>>> {
-        const dotPath = typeof params.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
-        const segmentCount = dotPath ? dotPath.split('.').length : 0;
-        if (segmentCount !== 2) {
-            throw new AgentPathError(
-                'INVALID_AGENT_PATH',
-                `renameObject supports only a root object path (RootTag.Name): "${String(params.path)}".`,
-            );
-        }
-        const resolved = await this.resolveContainedAgentPath(params.path);
-        if (resolved.nestedType !== undefined || resolved.tabularSection !== undefined) {
-            throw new AgentPathError(
-                'INVALID_AGENT_PATH',
-                `renameObject does not support nested metadata paths: "${params.path}".`,
-            );
-        }
-        const { rootTag, objectName, filePath } = resolved;
+        const { resolved, metadataType } = await this.resolveRootMetadataObjectMutation(params.path, 'renameObject');
+        const { objectName, filePath } = resolved;
         const newName = params.newName?.trim();
-        const metadataType = getMetadataTypeDescriptorByRootTag(rootTag)?.type;
-        if (!metadataType) { throw new Error(`Unsupported metadata root type: ${rootTag}`); }
         const planned = await planRenameMetadataObject(
             { configurationRootPath: this.configRootPath },
             { type: metadataType, oldName: objectName, newName: newName ?? '' },
@@ -302,6 +289,22 @@ export class AgentOperations {
         return {
             ...planned.plan,
             kind: 'agent.renameObject',
+            result: { success: true, data: { filePath: newFilePath } },
+        };
+    }
+
+    /** Builds the serializable multi-file root duplicate plan without applying filesystem effects. */
+    async planDuplicateObject(params: DuplicateObjectParams): Promise<MutationPlan<AgentResult<{ filePath: string }>>> {
+        const { resolved, metadataType } = await this.resolveRootMetadataObjectMutation(params.path, 'duplicateObject');
+        const newName = params.newName?.trim() ?? '';
+        const planned = await planDuplicateMetadataObject(
+            { configurationRootPath: this.configRootPath },
+            { type: metadataType, sourceName: resolved.objectName, newName },
+        );
+        const newFilePath = path.join(path.dirname(resolved.filePath), `${newName}.xml`);
+        return {
+            ...planned.plan,
+            kind: 'agent.duplicateObject',
             result: { success: true, data: { filePath: newFilePath } },
         };
     }
@@ -908,6 +911,96 @@ export class AgentOperations {
                 const executor = new MutationPlanExecutor(this.configRootPath);
                 const execResult = await executor.execute(plan);
                 if (execResult.success && execResult.data) {
+                    const newRev = await calculateRevision(newFilePath);
+                    return {
+                        ...execResult,
+                        rev: newRev,
+                        target: params.path,
+                        data: {
+                            ...execResult.data,
+                            filePath: newFilePath,
+                            rev: newRev,
+                            target: params.path,
+                        },
+                    };
+                }
+                return execResult;
+            });
+        } catch (err) {
+            return mutationFailure(err);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // duplicateObject
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async duplicateObject(params: DuplicateObjectParams): Promise<AgentResult<CreateObjectResult>> {
+        try {
+            const { dotPath } = parseSourceAddress(params.path);
+            if (dotPath.split('.').length !== 2) {
+                return {
+                    success: false,
+                    code: 'INVALID_AGENT_PATH',
+                    error: `duplicateObject принимает только корневой путь объекта: "${params.path}".`,
+                };
+            }
+            const resolved = await this.resolveContainedAgentPath(params.path);
+            if (resolved.nestedType !== undefined || resolved.tabularSection !== undefined) {
+                return {
+                    success: false,
+                    code: 'INVALID_AGENT_PATH',
+                    error: `duplicateObject не поддерживает вложенные пути метаданных: "${params.path}".`,
+                };
+            }
+            const { filePath } = resolved;
+            const newName = params.newName?.trim() ?? '';
+
+            return await this.withTargetMutationLock<CreateObjectResult>(filePath, async () => {
+                const check = await this.checkMutationPreconditions<CreateObjectResult>(filePath, params.path, params);
+                if (!check.proceed) {
+                    return check.errorResult!;
+                }
+
+                const plan = await this.planDuplicateObject(params);
+                const newFilePath = plan.result.data?.filePath
+                    ?? path.join(path.dirname(filePath), `${newName}.xml`);
+                const plannedFiles = Array.from(new Set(
+                    plan.steps
+                        .filter((step) => !isReadOnlyAssertionStep(step))
+                        .flatMap((step) => {
+                            if ('targetPath' in step && 'sourcePath' in step) {
+                                return [step.sourcePath, step.targetPath];
+                            }
+                            if ('targetPath' in step) {
+                                return [step.targetPath];
+                            }
+                            return [];
+                        })
+                        .filter((candidate): candidate is string => typeof candidate === 'string'),
+                ));
+
+                if (params.dryRun) {
+                    return {
+                        success: true,
+                        dryRun: true,
+                        rev: check.currentRev,
+                        target: params.path,
+                        data: {
+                            filePath: newFilePath,
+                            dryRun: true,
+                            rev: check.currentRev,
+                            target: params.path,
+                            plannedChanges: {
+                                files: plannedFiles,
+                                summary: `Дублирование объекта ${params.path} в ${newName}`,
+                            },
+                        },
+                    };
+                }
+
+                const execResult = await new MutationPlanExecutor(this.configRootPath).execute(plan);
+                if (execResult.success) {
                     const newRev = await calculateRevision(newFilePath);
                     return {
                         ...execResult,
@@ -1537,6 +1630,32 @@ export class AgentOperations {
         const resolved = resolveAgentPath(this.configRootPath, agentPath);
         await assertPathWithinRoot(this.configRootPath, resolved.filePath);
         return resolved;
+    }
+
+    private async resolveRootMetadataObjectMutation(
+        agentPath: unknown,
+        operation: 'renameObject' | 'duplicateObject',
+    ): Promise<{ readonly resolved: ReturnType<typeof resolveAgentPath>; readonly metadataType: MetadataType }> {
+        const dotPath = typeof agentPath === 'string' ? parseSourceAddress(agentPath).dotPath : '';
+        const segmentCount = dotPath ? dotPath.split('.').length : 0;
+        if (segmentCount !== 2) {
+            throw new AgentPathError(
+                'INVALID_AGENT_PATH',
+                `${operation} supports only a root object path (RootTag.Name): "${String(agentPath)}".`,
+            );
+        }
+        const resolved = await this.resolveContainedAgentPath(agentPath as string);
+        if (resolved.nestedType !== undefined || resolved.tabularSection !== undefined) {
+            throw new AgentPathError(
+                'INVALID_AGENT_PATH',
+                `${operation} does not support nested metadata paths: "${String(agentPath)}".`,
+            );
+        }
+        const metadataType = getMetadataTypeDescriptorByRootTag(resolved.rootTag)?.type;
+        if (!metadataType) {
+            throw new Error(`Unsupported metadata root type: ${resolved.rootTag}`);
+        }
+        return { resolved, metadataType };
     }
 
     private async validateExternalDataSourcePath(

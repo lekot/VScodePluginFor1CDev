@@ -71,12 +71,12 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('legacy opt-in registers all 100 operations alongside the seven compact tools', () => {
+  test('legacy opt-in registers all 101 operations alongside the seven compact tools', () => {
     const previous = process.env.CDT_MCP_LEGACY_TOOLS;
     process.env.CDT_MCP_LEGACY_TOOLS = '1';
     try {
       const tools = captureRegisteredTools(async () => ({ success: true }));
-      assert.strictEqual(tools.length, 107);
+      assert.strictEqual(tools.length, 108);
       assert.deepStrictEqual(
         tools.slice(0, MCP_TOOL_CATALOG.length).map(({ name }) => name),
         MCP_TOOL_CATALOG.map(({ name }) => name),
@@ -95,7 +95,7 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('cdt_catalog lists all operations and serializes all 100 input schemas', async () => {
+  test('cdt_catalog lists all operations and serializes all 101 input schemas', async () => {
     const tools = captureRegisteredTools(async () => {
       assert.fail('cdt_catalog must not dispatch Agent commands');
     });
@@ -110,7 +110,7 @@ suite('MCP adapter: tool contract', () => {
       listed.data.operations.map(({ name, profile }) => ({ name, profile })),
       MCP_OPERATION_CATALOG.map(({ name, profile }) => ({ name, profile })),
     );
-    assert.strictEqual(listed.data.operations.length, 100);
+    assert.strictEqual(listed.data.operations.length, 101);
     assert.ok(!listed.data.operations.some(({ name }) => name === 'cdt_forms_exec'));
 
     for (const operation of MCP_OPERATION_CATALOG) {
@@ -173,6 +173,7 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
       ['cdt_read', 'cdt_cfe_list_projects', { configurationId: 'cfg' }, '1c-metadata-tree.agent.cfe.listProjects'],
       ['cdt_write_idempotent', 'cdt_cfe_borrow_object', { extensionConfigurationId: 'cfg', sourceDotPath: 'Catalog.Goods' }, '1c-metadata-tree.agent.cfe.borrowObject'],
       ['cdt_write', 'cdt_create_object', { type: 'Catalog', name: 'Goods' }, '1c-metadata-tree.agent.createObject'],
+      ['cdt_write', 'cdt_duplicate_object', { path: 'Catalog.Goods', newName: 'GoodsCopy', dryRun: true, ifRev: 'a'.repeat(64) }, '1c-metadata-tree.agent.duplicateObject'],
       ['cdt_write_live', 'cdt_debug_stop', { sessionId: 's1' }, '1c-metadata-tree.agent.debug.stop'],
       ['cdt_read_live', 'cdt_forms_status', {}, '1c-metadata-tree.agent.forms.status'],
       ['cdt_write_live', 'cdt_skd_validate', { templatePath: 'template.xml', background: true }, '1c-metadata-tree.agent.skd.validate'],

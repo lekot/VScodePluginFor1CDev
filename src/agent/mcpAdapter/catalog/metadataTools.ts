@@ -95,6 +95,13 @@ const renameObjectInput = z.strictObject({
   newName: elementName,
 });
 
+const duplicateObjectInput = z.strictObject({
+  ...configurationScopeShape,
+  ...mutationOptionsShape,
+  path: rootObjectPath,
+  newName: elementName,
+});
+
 const setPropertiesInput = z.strictObject({
   ...configurationScopeShape,
   ...mutationOptionsShape,
@@ -220,6 +227,13 @@ export const METADATA_TOOLS: readonly McpToolDefinition[] = [
     description: 'Rename a metadata object and update its configuration references.',
     command: '1c-metadata-tree.agent.renameObject',
     inputSchema: renameObjectInput,
+    annotations: WRITE_CLOSED,
+  },
+  {
+    name: 'cdt_duplicate_object',
+    description: 'Duplicate a metadata object, including companion artifacts and configuration registration.',
+    command: '1c-metadata-tree.agent.duplicateObject',
+    inputSchema: duplicateObjectInput,
     annotations: WRITE_CLOSED,
   },
   {

@@ -20,6 +20,18 @@ export type MutationExpectation =
 
 export type MutationStep =
   | {
+      readonly type: 'assertFile';
+      readonly targetPath: string;
+      readonly expected: { readonly state: 'file'; readonly hash: string };
+    }
+  | {
+      readonly type: 'assertDirectory';
+      readonly targetPath: string;
+      readonly expected:
+        | { readonly state: 'missing' }
+        | { readonly state: 'directory'; readonly fingerprint: string };
+    }
+  | {
       readonly type: 'writeFile';
       readonly targetPath: string;
       readonly content: string;
@@ -35,6 +47,27 @@ export type MutationStep =
       readonly sourceExpected: MutationExpectation;
       readonly targetExpected: MutationExpectation;
     };
+
+export type DirectoryFingerprintEntry =
+  | { readonly name: string; readonly type: 'file'; readonly hash: string }
+  | { readonly name: string; readonly type: 'directory'; readonly fingerprint: string };
+
+export function calculateDirectoryFingerprintFromEntries(
+  entries: readonly DirectoryFingerprintEntry[],
+): string {
+  const hashes = [...entries]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((entry) => entry.type === 'file'
+      ? `F:${entry.name}:${entry.hash}`
+      : `D:${entry.name}:${entry.fingerprint}`);
+  return hashContent(Buffer.from(hashes.join('\n'), 'utf8'));
+}
+
+export function isReadOnlyAssertionStep(
+  step: MutationStep,
+): step is Extract<MutationStep, { readonly type: 'assertFile' | 'assertDirectory' }> {
+  return step.type === 'assertFile' || step.type === 'assertDirectory';
+}
 
 export interface MutationPlan<T> {
   readonly kind: string;
@@ -701,6 +734,10 @@ export class MutationPlanExecutor {
         }
       }
       switch (step.type) {
+        case 'assertFile':
+        case 'assertDirectory':
+          await assertExpectation(step.targetPath, step.expected);
+          break;
         case 'writeFile':
         case 'deletePath':
           if (!previouslyMutated.has(step.targetPath)) {
@@ -731,7 +768,7 @@ export class MutationPlanExecutor {
       if (step.type === 'movePath') {
         targets.set(step.sourcePath, true);
         targets.set(step.targetPath, true);
-      } else {
+      } else if (!isReadOnlyAssertionStep(step)) {
         targets.set(step.targetPath, (targets.get(step.targetPath) ?? false) || step.type !== 'ensureDirectory');
       }
     }
@@ -757,6 +794,16 @@ export class MutationPlanExecutor {
 
   private async applyStep(step: MutationStep): Promise<void> {
     switch (step.type) {
+      case 'assertFile': {
+        const canonicalTarget = await this.revalidateParent(step.targetPath);
+        await assertExpectation(canonicalTarget, step.expected);
+        return;
+      }
+      case 'assertDirectory': {
+        const canonicalTarget = await this.revalidateParent(step.targetPath);
+        await assertExpectation(canonicalTarget, step.expected);
+        return;
+      }
       case 'ensureDirectory':
         await this.revalidateParent(step.targetPath);
         await fs.promises.mkdir(step.targetPath, { recursive: true });
@@ -961,7 +1008,9 @@ function snapshotsForAppliedSteps(
   appliedSteps: number,
 ): PathSnapshot[] {
   const appliedPaths = new Set(
-    plan.steps.slice(0, appliedSteps).flatMap((step) => stepPaths(step)),
+    plan.steps.slice(0, appliedSteps)
+      .filter((step) => !isReadOnlyAssertionStep(step))
+      .flatMap((step) => stepPaths(step)),
   );
   return snapshots.filter((snapshot) => appliedPaths.has(snapshot.targetPath));
 }
@@ -1013,7 +1062,7 @@ function computeExpectedDirectoryFingerprint(
   const childNames = new Set<string>();
   for (let i = 0; i < appliedSteps; i++) {
     const step = plan.steps[i];
-    if (!step) {
+    if (!step || isReadOnlyAssertionStep(step)) {
       continue;
     }
     const paths = stepPaths(step);
@@ -1132,6 +1181,11 @@ async function resolveEffectiveAppliedSteps(
   if (!nextStep) {
     return appliedSteps;
   }
+  if (isReadOnlyAssertionStep(nextStep)) {
+    // Read-only CAS checks have no post-state to infer. Treat them as consumed so
+    // recovery can continue to the next effect without inspecting/restoring source.
+    return appliedSteps + 1;
+  }
 
   const unrecordedPaths = stepPaths(nextStep);
   let matchesUnapplied = true;
@@ -1171,8 +1225,7 @@ async function resolveEffectiveAppliedSteps(
 
 export async function calculateDirectoryFingerprint(dirPath: string): Promise<string> {
   const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
-  entries.sort((a, b) => a.name.localeCompare(b.name));
-  const hashes: string[] = [];
+  const fingerprintEntries: DirectoryFingerprintEntry[] = [];
   for (const entry of entries) {
     const full = path.join(dirPath, entry.name);
     if (entry.isSymbolicLink()) {
@@ -1180,12 +1233,16 @@ export async function calculateDirectoryFingerprint(dirPath: string): Promise<st
     }
     if (entry.isFile()) {
       const content = await fs.promises.readFile(full);
-      hashes.push(`F:${entry.name}:${hashContent(content)}`);
+      fingerprintEntries.push({ name: entry.name, type: 'file', hash: hashContent(content) });
     } else if (entry.isDirectory()) {
-      hashes.push(`D:${entry.name}:${await calculateDirectoryFingerprint(full)}`);
+      fingerprintEntries.push({
+        name: entry.name,
+        type: 'directory',
+        fingerprint: await calculateDirectoryFingerprint(full),
+      });
     }
   }
-  return hashContent(Buffer.from(hashes.join('\n'), 'utf8'));
+  return calculateDirectoryFingerprintFromEntries(fingerprintEntries);
 }
 
 async function inspectPath(targetPath: string): Promise<MutationExpectation> {

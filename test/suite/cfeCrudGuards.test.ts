@@ -6,7 +6,7 @@ import '../helpers/vscodeStubRegister';
 import { AgentOperations } from '../../src/agent/agentOperations';
 import { MetadataType, type TreeNode } from '../../src/models/treeNode';
 import { saveProperties, type MessageHandlerContext } from '../../src/providers/propertiesMessageHandler';
-import { createElement, deleteElement } from '../../src/services/elementOperations';
+import { createElement, deleteElement, duplicateElement, planDuplicateRootElement } from '../../src/services/elementOperations';
 import { planDeleteMetadataObject } from '../../src/services/metadataCrudService';
 
 suite('CFE generic CRUD guards', () => {
@@ -84,6 +84,39 @@ suite('CFE generic CRUD guards', () => {
     });
     assert.deepStrictEqual({ success: updateResult.success, code: updateResult.code }, { success: false, code: 'CFE_ADOPTED_OPERATION_REQUIRED' });
     assert.strictEqual(await fs.promises.readFile(adoptedPath, 'utf8'), before);
+  });
+
+  test('shared duplicate planning rejects an adopted CFE root in UI and Agent paths', async () => {
+    const configurationBefore = await fs.promises.readFile(path.join(cfeRoot, 'Configuration.xml'), 'utf8');
+    const objectBefore = await fs.promises.readFile(adoptedPath, 'utf8');
+    const duplicateName = 'Ext_BaseCatalogCopy';
+
+    await assert.rejects(
+      () => planDuplicateRootElement(adoptedNode, duplicateName),
+      isOwnershipError('CFE_ADOPTED_OPERATION_REQUIRED'),
+    );
+    await assert.rejects(
+      () => duplicateElement(adoptedNode, duplicateName),
+      isOwnershipError('CFE_ADOPTED_OPERATION_REQUIRED'),
+    );
+
+    const operations = new AgentOperations(cfeRoot) as AgentOperations & {
+      planDuplicateObject?: (params: { path: string; newName: string }) => Promise<unknown>;
+    };
+    assert.strictEqual(typeof operations.planDuplicateObject, 'function');
+    await assert.rejects(
+      () => operations.planDuplicateObject!({ path: 'Catalog.BaseCatalog', newName: duplicateName }),
+      isOwnershipError('CFE_ADOPTED_OPERATION_REQUIRED'),
+    );
+    const result = await operations.duplicateObject({ path: 'Catalog.BaseCatalog', newName: duplicateName });
+    assert.deepStrictEqual({ success: result.success, code: result.code }, {
+      success: false,
+      code: 'CFE_ADOPTED_OPERATION_REQUIRED',
+    });
+
+    assert.strictEqual(await fs.promises.readFile(adoptedPath, 'utf8'), objectBefore);
+    assert.strictEqual(await fs.promises.readFile(path.join(cfeRoot, 'Configuration.xml'), 'utf8'), configurationBefore);
+    assert.strictEqual(await exists(path.join(cfeRoot, 'Catalogs', `${duplicateName}.xml`)), false);
   });
 
   test('leaves a main configuration outside the CFE root unchanged', async () => {
