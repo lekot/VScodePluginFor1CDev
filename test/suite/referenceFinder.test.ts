@@ -153,6 +153,25 @@ suite('referenceFinder', () => {
     }
   });
 
+  test('malformed XML validation is opt-in and leaves the existing scanner contract unchanged', async () => {
+    const malformedFile = path.join(tmpDir, 'Malformed.xml');
+    const content = '<root><Type>CatalogRef.OldName</broken></root>';
+    await fs.promises.writeFile(malformedFile, content, 'utf-8');
+    const replacements = new Map([['CatalogRef.OldName', 'CatalogRef.NewName']]);
+
+    const legacyPlan = await planIdentityTokenReplacements(tmpDir, replacements);
+    assert.strictEqual(legacyPlan.length, 1);
+    assert.strictEqual(legacyPlan[0].updatedContent, '<root><Type>CatalogRef.NewName</broken></root>');
+
+    await assert.rejects(
+      () => planIdentityTokenReplacements(tmpDir, replacements, { validateXml: true }),
+      (error: unknown) => error instanceof ReferenceScanError
+        && error.details?.reason === 'malformed_xml'
+        && error.details.path === malformedFile,
+    );
+    assert.strictEqual(await fs.promises.readFile(malformedFile, 'utf-8'), content);
+  });
+
   test('planIdentityTokenReplacements throws ReferenceScanError when MAX_SCAN_DEPTH exceeded (#203)', async () => {
     // Create nested directories > 20 deep
     let current = tmpDir;

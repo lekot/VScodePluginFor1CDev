@@ -26,6 +26,7 @@ import { appendRegisterReferenceToRecorderDocumentXml } from './registerRecorder
 import { hashContent } from './configurationSession/atomicFileStorage';
 import { assertPathWithinRoot } from './configurationSession/pathBoundary';
 import type { MutationPlan, MutationStep } from './configurationSession/mutationPlan';
+import { planIdentityTokenReplacements } from '../utils/referenceFinder';
 import { listXmlSiblingNames, readMutationExpectation } from './filesystemReadSemantics';
 import { assertCfeGenericCreateAllowed, assertCfeGenericMutationAllowed } from '../extensionSupport/cfeProject/mutationPolicy';
 import { validateElementName } from '../utils/elementNameValidator';
@@ -57,6 +58,12 @@ export type FilterCriterionCreateOptions = Omit<FilterCriterionWizardParams, 'na
 export interface DeleteMetadataObjectRequest {
   readonly type: MetadataType;
   readonly name: string;
+}
+
+export interface RenameMetadataObjectRequest {
+  readonly type: MetadataType;
+  readonly oldName: string;
+  readonly newName: string;
 }
 
 export interface MetadataMutationImpact {
@@ -488,6 +495,285 @@ export async function planDeleteMetadataObject(
   });
 
   return planned({ kind: 'metadata.delete', steps, result: undefined });
+}
+
+/** Plans a root rename without depending on either the TreeView or Agent response model. */
+export async function planRenameMetadataObject(
+  context: MetadataCrudContext,
+  request: RenameMetadataObjectRequest,
+): Promise<PlannedMetadataMutation<void>> {
+  const descriptor = requireRootDescriptor(request.type);
+  assertMetadataCrudSupported(request.type, 'rename');
+
+  const rootPath = context.configurationRootPath;
+  const oldName = request.oldName.trim();
+  const newName = request.newName.trim();
+  if (!oldName) {
+    throw new Error('Parameter oldName is required and cannot be empty.');
+  }
+  const folderPath = path.join(rootPath, descriptor.designerFolder);
+  const siblingNames = (await listXmlSiblingNames(folderPath))
+    .filter((sibling) => sibling.toLocaleLowerCase() !== oldName.toLocaleLowerCase());
+  const nameValidation = validateElementName(newName, siblingNames);
+  if (nameValidation) {
+    throw new Error(nameValidation);
+  }
+
+  const sourcePath = path.join(folderPath, `${oldName}.xml`);
+  const targetPath = path.join(folderPath, `${newName}.xml`);
+  const oldDirectoryPath = path.join(folderPath, oldName);
+  const newDirectoryPath = path.join(folderPath, newName);
+  const configurationPath = path.join(rootPath, CONFIGURATION_XML);
+  for (const candidate of [sourcePath, targetPath, oldDirectoryPath, newDirectoryPath, configurationPath]) {
+    await assertPathWithinRoot(rootPath, candidate);
+  }
+  await assertCfeGenericMutationAllowed(sourcePath, 'rename');
+
+  const [sourceExpected, targetExpected, oldDirectoryExpected, newDirectoryExpected] = await Promise.all([
+    readMutationExpectation(sourcePath),
+    readMutationExpectation(targetPath),
+    readMutationExpectation(oldDirectoryPath),
+    readMutationExpectation(newDirectoryPath),
+  ]);
+  if (sourceExpected.state !== 'file') {
+    throw new Error(`Metadata object file was not found: ${sourcePath}`);
+  }
+  if (targetExpected.state !== 'missing') {
+    throw new Error(`File already exists: ${targetPath}`);
+  }
+  if (oldDirectoryExpected.state !== 'missing' && oldDirectoryExpected.state !== 'directory') {
+    throw new Error(`Metadata object directory is not a directory: ${oldDirectoryPath}`);
+  }
+  if (newDirectoryExpected.state !== 'missing') {
+    throw new Error(`Metadata object directory already exists: ${newDirectoryPath}`);
+  }
+  if (await isRootObjectRegisteredInConfiguration(rootPath, descriptor.designerRootTag, newName)) {
+    throw new Error(`Объект ${descriptor.designerRootTag}.${newName} уже зарегистрирован в Configuration.xml.`);
+  }
+
+  const sourceContent = await fs.promises.readFile(sourcePath, 'utf8');
+  if (sourceExpected.hash !== hashContent(sourceContent)) {
+    throw new Error(`Metadata object changed while planning: ${sourcePath}`);
+  }
+  const configurationExpected = await readMutationExpectation(configurationPath);
+  if (configurationExpected.state !== 'file') {
+    throw new Error(`Configuration.xml was not found: ${configurationPath}`);
+  }
+  const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
+  if (configurationExpected.hash !== hashContent(configurationContent)) {
+    throw new Error(`Configuration.xml changed while planning: ${configurationPath}`);
+  }
+
+  const replacements = collectOwnIdentityTokenReplacements(
+    sourceContent,
+    descriptor.designerRootTag,
+    oldName,
+    newName,
+  );
+  const referencePlans = await planIdentityTokenReplacements(rootPath, replacements, { validateXml: true });
+  const referencesByPath = new Map(referencePlans.map((reference) => [path.resolve(reference.filePath), reference]));
+  const steps: MutationStep[] = [];
+
+  const descriptorReference = referencesByPath.get(path.resolve(sourcePath));
+  let updatedDescriptor = rewriteRootProperties(
+    descriptorReference?.updatedContent ?? sourceContent,
+    descriptor.designerRootTag,
+    oldName,
+    newName,
+  );
+  updatedDescriptor = rewriteOwnIdentityDeclarations(
+    updatedDescriptor,
+    descriptor.designerRootTag,
+    oldName,
+    newName,
+  );
+  steps.push({
+    type: 'writeFile',
+    targetPath,
+    content: updatedDescriptor,
+    encoding: 'utf8',
+    expected: targetExpected,
+  });
+
+  const directoryArtifacts = oldDirectoryExpected.state === 'directory'
+    ? await readRenameDirectoryArtifacts(rootPath, oldDirectoryPath)
+    : [];
+  for (const artifact of directoryArtifacts) {
+    if (!artifact.filePath.toLocaleLowerCase().endsWith('.xml')) {
+      continue;
+    }
+    const originalContent = artifact.content.toString('utf8');
+    const reference = referencesByPath.get(path.resolve(artifact.filePath));
+    const content = rewriteOwnIdentityDeclarations(
+      reference?.updatedContent ?? originalContent,
+      descriptor.designerRootTag,
+      oldName,
+      newName,
+    );
+    if (content === originalContent) {
+      continue;
+    }
+    steps.push({
+      type: 'writeFile',
+      targetPath: artifact.filePath,
+      content,
+      encoding: 'utf8',
+      expected: { state: 'file', hash: hashContent(artifact.content) },
+    });
+  }
+
+  if (oldDirectoryExpected.state === 'directory') {
+    steps.push({
+      type: 'movePath',
+      sourcePath: oldDirectoryPath,
+      targetPath: newDirectoryPath,
+      sourceExpected: oldDirectoryExpected,
+      targetExpected: newDirectoryExpected,
+    });
+  }
+
+  for (const reference of referencePlans) {
+    const referencePath = path.resolve(reference.filePath);
+    if (
+      referencePath === path.resolve(sourcePath)
+      || referencePath === path.resolve(configurationPath)
+      || isPathWithinDirectory(oldDirectoryPath, reference.filePath)
+    ) {
+      continue;
+    }
+    steps.push({
+      type: 'writeFile',
+      targetPath: reference.filePath,
+      content: reference.updatedContent,
+      encoding: 'utf8',
+      expected: { state: 'file', hash: hashContent(reference.originalContent) },
+    });
+  }
+
+  steps.push({
+    type: 'writeFile',
+    targetPath: configurationPath,
+    content: buildRootObjectConfigurationContent(configurationContent, {
+      type: 'rename',
+      rootTag: descriptor.designerRootTag,
+      objectName: oldName,
+      newName,
+    }),
+    encoding: 'utf8',
+    expected: configurationExpected,
+  });
+  steps.push({ type: 'deletePath', targetPath: sourcePath, expected: sourceExpected });
+
+  return planned({ kind: 'metadata.rename', steps, result: undefined });
+}
+
+interface MetadataRenameDirectoryArtifact {
+  readonly filePath: string;
+  readonly content: Buffer;
+}
+
+async function readRenameDirectoryArtifacts(
+  configurationRootPath: string,
+  rootDirectory: string,
+): Promise<MetadataRenameDirectoryArtifact[]> {
+  const files: MetadataRenameDirectoryArtifact[] = [];
+  const visit = async (directoryPath: string): Promise<void> => {
+    const entries = await fs.promises.readdir(directoryPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(directoryPath, entry.name);
+      await assertPathWithinRoot(configurationRootPath, entryPath);
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Symbolic links are not allowed in metadata object directories: ${entryPath}`);
+      }
+      if (entry.isDirectory()) {
+        await visit(entryPath);
+      } else if (entry.isFile()) {
+        files.push({ filePath: entryPath, content: await fs.promises.readFile(entryPath) });
+      } else {
+        throw new Error(`Unsupported filesystem entry in metadata object directory: ${entryPath}`);
+      }
+    }
+  };
+  await visit(rootDirectory);
+  return files;
+}
+
+function collectOwnIdentityTokenReplacements(
+  descriptor: string,
+  rootTag: string,
+  oldName: string,
+  newName: string,
+): Map<string, string> {
+  const replacements = new Map<string, string>([[`${rootTag}.${oldName}`, `${rootTag}.${newName}`]]);
+  const generatedTypePattern = /<xr:GeneratedType\b[^>]*\bname\s*=\s*(["'])([^"']+)\1/gi;
+  for (const match of descriptor.matchAll(generatedTypePattern)) {
+    if (match[2].endsWith(`.${oldName}`)) {
+      replacements.set(match[2], `${match[2].slice(0, -oldName.length)}${newName}`);
+    }
+  }
+  return replacements;
+}
+
+function rewriteRootProperties(
+  content: string,
+  rootTag: string,
+  oldName: string,
+  newName: string,
+): string {
+  const rootStart = content.search(new RegExp(`<${escapeRegex(rootTag)}\\b`));
+  if (rootStart < 0) {
+    throw new Error(`Root metadata element ${rootTag} was not found in XML.`);
+  }
+  const propertiesStart = content.indexOf('<Properties>', rootStart);
+  const propertiesEnd = content.indexOf('</Properties>', propertiesStart);
+  if (propertiesStart < 0 || propertiesEnd < 0) {
+    throw new Error(`Properties for root metadata element ${rootTag} were not found in XML.`);
+  }
+  const end = propertiesEnd + '</Properties>'.length;
+  let properties = content.slice(propertiesStart, end);
+  const namePattern = new RegExp(`(<Name>\\s*)${escapeRegex(oldName)}(\\s*</Name>)`);
+  if (!namePattern.test(properties)) {
+    throw new Error(`Metadata identity does not match ${rootTag}.${oldName}.`);
+  }
+  properties = properties.replace(namePattern, `$1${newName}$2`);
+  const synonymStart = properties.indexOf('<Synonym>');
+  const synonymEnd = properties.indexOf('</Synonym>', synonymStart);
+  if (synonymStart >= 0 && synonymEnd > synonymStart) {
+    const prefix = properties.slice(0, synonymStart);
+    const synonym = properties.slice(synonymStart, synonymEnd + '</Synonym>'.length)
+      .replace(/<v8:content>[^<]*<\/v8:content>/, `<v8:content>${newName}</v8:content>`);
+    properties = prefix + synonym + properties.slice(synonymEnd + '</Synonym>'.length);
+  }
+  return content.slice(0, propertiesStart) + properties + content.slice(end);
+}
+
+function rewriteOwnIdentityDeclarations(
+  content: string,
+  rootTag: string,
+  oldName: string,
+  newName: string,
+): string {
+  let result = content.replace(
+    /(<xr:GeneratedType\b[^>]*\bname\s*=\s*["'])([^"']+)(["'])/gi,
+    (whole, prefix: string, identity: string, suffix: string) => identity.endsWith(`.${oldName}`)
+      ? `${prefix}${identity.slice(0, -oldName.length)}${newName}${suffix}`
+      : whole,
+  );
+  const fieldPattern = new RegExp(
+    `(<xr:Field>\\s*)${escapeRegex(rootTag)}\\.${escapeRegex(oldName)}(?=[.<])`,
+    'g',
+  );
+  result = result.replace(fieldPattern, `$1${rootTag}.${newName}`);
+  return result;
+}
+
+function isPathWithinDirectory(directoryPath: string, candidatePath: string): boolean {
+  const relative = path.relative(path.resolve(directoryPath), path.resolve(candidatePath));
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function requireRootDescriptor(type: MetadataType) {

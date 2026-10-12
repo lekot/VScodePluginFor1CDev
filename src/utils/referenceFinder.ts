@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { XMLValidator } from 'fast-xml-parser';
 import { MetadataType } from '../models/treeNode';
 import { Logger } from './logger';
 import { METADATA_TYPE_TO_REFERENCE_KIND } from '../constants/metadataTypeReferenceKinds';
@@ -12,7 +13,7 @@ export class ReferenceScanError extends Error {
     message: string,
     public readonly details?: {
       path: string;
-      reason: 'readdir_failed' | 'read_file_failed' | 'max_depth_exceeded';
+      reason: 'readdir_failed' | 'read_file_failed' | 'max_depth_exceeded' | 'malformed_xml';
       cause?: unknown;
     }
   ) {
@@ -23,7 +24,7 @@ export class ReferenceScanError extends Error {
 
 export interface ScanDiagnostic {
   path: string;
-  reason: 'readdir_failed' | 'read_file_failed' | 'max_depth_exceeded';
+  reason: 'readdir_failed' | 'read_file_failed' | 'max_depth_exceeded' | 'malformed_xml';
   message: string;
   cause?: unknown;
 }
@@ -197,16 +198,22 @@ export interface PlannedReferenceWrite {
   replaceCount: number;
 }
 
+export interface PlanIdentityTokenReplacementsOptions {
+  /** Validate every scanned XML file before treating the traversal as authoritative. */
+  readonly validateXml?: boolean;
+}
+
 /** Builds reference rewrites without touching disk so callers can include them in one WAL plan. */
 export async function planIdentityTokenReplacements(
   configPath: string,
-  replacements: ReadonlyMap<string, string>
+  replacements: ReadonlyMap<string, string>,
+  options: PlanIdentityTokenReplacementsOptions = {},
 ): Promise<PlannedReferenceWrite[]> {
   if (replacements.size === 0) {
     return [];
   }
   const plans: PlannedReferenceWrite[] = [];
-  await collectReplacementPlans(configPath, replacements, plans, 0);
+  await collectReplacementPlans(configPath, replacements, plans, 0, options);
   return plans;
 }
 
@@ -247,7 +254,8 @@ async function collectReplacementPlans(
   dir: string,
   replacements: ReadonlyMap<string, string>,
   plans: PlannedReferenceWrite[],
-  depth: number
+  depth: number,
+  options: PlanIdentityTokenReplacementsOptions,
 ): Promise<void> {
   if (depth > MAX_SCAN_DEPTH) {
     const message = `referenceFinder: max depth ${MAX_SCAN_DEPTH} reached at ${dir}`;
@@ -267,9 +275,9 @@ async function collectReplacementPlans(
   for (const e of entries) {
     const full = path.join(dir, e.name);
     if (e.isDirectory()) {
-      await collectReplacementPlans(full, replacements, plans, depth + 1);
+      await collectReplacementPlans(full, replacements, plans, depth + 1, options);
     } else if (e.isFile() && e.name.endsWith('.xml')) {
-      const plan = await buildReplacementPlan(full, replacements);
+      const plan = await buildReplacementPlan(full, replacements, options);
       if (plan) {
         plans.push(plan);
       }
@@ -279,7 +287,8 @@ async function collectReplacementPlans(
 
 async function buildReplacementPlan(
   filePath: string,
-  replacements: ReadonlyMap<string, string>
+  replacements: ReadonlyMap<string, string>,
+  options: PlanIdentityTokenReplacementsOptions,
 ): Promise<PlannedReferenceWrite | undefined> {
   let content: string;
   try {
@@ -289,6 +298,18 @@ async function buildReplacementPlan(
     Logger.error(message, err);
     throw new ReferenceScanError(message, { path: filePath, reason: 'read_file_failed', cause: err });
 
+  }
+  if (options.validateXml) {
+    const validation = XMLValidator.validate(content, { allowBooleanAttributes: false });
+    if (validation !== true) {
+      const detail = validation.err?.msg ?? 'unknown XML validation error';
+      const message = `referenceFinder: malformed XML at ${filePath}: ${detail}`;
+      throw new ReferenceScanError(message, {
+        path: filePath,
+        reason: 'malformed_xml',
+        cause: validation,
+      });
+    }
   }
   let updatedContent = content;
   let replaceCount = 0;
