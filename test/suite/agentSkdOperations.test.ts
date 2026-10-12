@@ -21,6 +21,7 @@ import {
     type PowerShellRunnerDependencies,
 } from '../../src/services/skd/powershellRunner';
 import { SkdOperations } from '../../src/agent/agentSkdOperations';
+import type { AgentResult } from '../../src/agent/types';
 import type { ProcessTreeTerminationOutcome } from '../../src/services/ibcmd/processTreeTermination';
 
 // Фиктивный extensionPath — скрипты будут не найдены, но это ок для smoke-теста
@@ -266,6 +267,116 @@ suite('SkdOperations — truncated PowerShell payload contract', () => {
     });
 });
 
+suite('SkdOperations — cancellation and timeout after possible effects', () => {
+    const operationsUnderTest: Array<{
+        name: string;
+        stdout: string;
+        invoke: (operations: SkdOperations, token?: vscode.CancellationToken) => Promise<AgentResult<unknown>>;
+    }> = [
+        {
+            name: 'skdCompile',
+            stdout: 'OK  /tmp/output.xml\nDataSets: 3  Fields: 10\nSize: 2048 bytes\n',
+            invoke: (operations, token) => operations.skdCompile({ outputPath: '/tmp/output.xml', value: '{}' }, token),
+        },
+        {
+            name: 'skdInfo',
+            stdout: 'DataSet: Main\nFields: 10\n',
+            invoke: (operations, token) => operations.skdInfo({ templatePath: 'template.xml' }, token),
+        },
+        {
+            name: 'skdEdit',
+            stdout: '[OK] Saved /tmp/template.xml\n',
+            invoke: (operations, token) => operations.skdEdit({
+                templatePath: '/tmp/template.xml',
+                operation: 'add-field',
+                value: '{}',
+            }, token),
+        },
+        {
+            name: 'skdValidate',
+            stdout: '[OK] СКД валидна\n',
+            invoke: (operations, token) => operations.skdValidate({ templatePath: 'template.xml' }, token),
+        },
+    ];
+
+    for (const operation of operationsUnderTest) {
+        test(`${operation.name} treats close(0) during confirmed cancellation termination as inDoubt`, async () => {
+            const child = new InjectedPowerShellChild();
+            const terminationGate = createTerminationGate();
+            let terminationStarted!: () => void;
+            const terminationStartedPromise = new Promise<void>((resolve) => { terminationStarted = resolve; });
+            let runnerResult: PowerShellRunResult | undefined;
+            const dependencies = makePowerShellDependencies(child, async () => {
+                terminationStarted();
+                return terminationGate.promise;
+            });
+            const operations = new SkdOperations({
+                extensionPath: FAKE_EXTENSION_PATH,
+                runPowerShellScript: async (options) => {
+                    runnerResult = await runPowerShellScript(options, dependencies);
+                    return runnerResult;
+                },
+            });
+            const source = new vscode.CancellationTokenSource();
+            const confirmedTermination: ProcessTreeTerminationOutcome = {
+                terminated: true,
+                hardKillUsed: false,
+                survivingPids: [],
+                errors: [],
+            };
+
+            try {
+                const resultPromise = operation.invoke(operations, source.token);
+                await child.waitForSpawn();
+                source.cancel();
+                await terminationStartedPromise;
+                child.completeExit(0, null);
+                terminationGate.release(confirmedTermination);
+
+                const result = await resultPromise;
+                assert.strictEqual(runnerResult?.exitCode, 0, 'the close(0) race must be preserved');
+                assert.strictEqual(runnerResult?.effectPossible, true);
+                assert.strictEqual(runnerResult?.cancellationRequested, true);
+                assert.strictEqual(runnerResult?.cancelled, true, 'termination confirmation does not acknowledge the SKD result');
+                assert.strictEqual(runnerResult?.termination?.terminated, true);
+                assert.strictEqual(result.success, false);
+                assert.strictEqual(result.code, 'SKD_OPERATION_IN_DOUBT');
+                assert.deepStrictEqual(result.data, { status: 'inDoubt', effectPossible: true });
+            } finally {
+                terminationGate.release(confirmedTermination);
+                child.completeExit(null, 'SIGTERM');
+                source.dispose();
+            }
+        });
+
+        test(`${operation.name} treats a timed-out exitCode 0 with possible effects as inDoubt`, async () => {
+            const operations = new SkdOperations({
+                extensionPath: FAKE_EXTENSION_PATH,
+                runPowerShellScript: async () => ({
+                    stdout: operation.stdout,
+                    stderr: '',
+                    exitCode: 0,
+                    started: true,
+                    effectPossible: true,
+                    timedOut: true,
+                    termination: {
+                        terminated: true,
+                        hardKillUsed: false,
+                        survivingPids: [],
+                        errors: [],
+                    },
+                }),
+            });
+
+            const result = await operation.invoke(operations);
+
+            assert.strictEqual(result.success, false);
+            assert.strictEqual(result.code, 'SKD_OPERATION_IN_DOUBT');
+            assert.deepStrictEqual(result.data, { status: 'inDoubt', effectPossible: true });
+        });
+    }
+});
+
 suite('PowerShell runner process-tree termination', () => {
     test('decodes UTF-8 characters split across stdout and stderr chunks', async () => {
         const child = new InjectedPowerShellChild();
@@ -298,7 +409,7 @@ suite('PowerShell runner process-tree termination', () => {
         assert.strictEqual(outputChunks.join(''), 'Проверка СКДОшибка PowerShell');
     });
 
-    test('decodes split legacy OEM866 output while streaming', async () => {
+    test('decodes CP866 розница when stdout and stderr split after the first lead byte', async () => {
         const child = new InjectedPowerShellChild();
         const run = runPowerShellScript({ scriptPath: 'injected.ps1', args: [] },
             makePowerShellDependencies(child, async () => ({
@@ -309,14 +420,19 @@ suite('PowerShell runner process-tree termination', () => {
             })));
 
         await child.waitForSpawn();
-        const encoded = iconv.encode('Ошибка СКД', 'cp866');
+        const encoded = iconv.encode('розница', 'cp866');
+        assert.strictEqual(encoded.toString('hex'), 'e0aea7ada8e6a0');
         child.stdout.write(encoded.subarray(0, 1));
-        child.stdout.write(encoded.subarray(1, 4));
-        child.stdout.write(encoded.subarray(4));
+        child.stderr.write(encoded.subarray(0, 1));
+        for (let index = 1; index < encoded.length; index++) {
+            child.stdout.write(encoded.subarray(index, index + 1));
+            child.stderr.write(encoded.subarray(index, index + 1));
+        }
         child.completeExit(0, null);
 
         const result = await run;
-        assert.strictEqual(result.stdout, 'Ошибка СКД');
+        assert.strictEqual(result.stdout, 'розница');
+        assert.strictEqual(result.stderr, 'розница');
     });
 
     test('bounds retained stdout and stderr payloads and reports overflow', async () => {

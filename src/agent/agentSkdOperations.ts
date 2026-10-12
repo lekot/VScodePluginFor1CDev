@@ -316,7 +316,6 @@ function processCancellationFailure(
     if (
         (result.cancelled || result.cancellationRequested || result.timedOut)
         && result.effectPossible
-        && (result.exitCode !== 0 || terminationUnconfirmed)
     ) {
         const survivingPids = result.termination?.survivingPids ?? [];
         const terminationDetails = terminationUnconfirmed
