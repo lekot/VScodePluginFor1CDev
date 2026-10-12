@@ -3,6 +3,8 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { readExtensionName } from '../debug/moduleIdResolver';
 import { METADATA_TYPE_DESCRIPTORS } from '../constants/metadataTypeDescriptors';
+import { getStandardModuleFileName } from '../constants/metadataModuleDescriptors';
+import { MetadataType } from '../models/treeNode';
 import { parseBslRoutines } from '../bsl/routineRangeProvider';
 import type { BslRoutineKind } from '../bsl/bslRoutineTypes';
 
@@ -278,10 +280,14 @@ export class BslLocalCompletionIndex {
 
   private async getCandidatePaths(document: vscode.TextDocument, moduleName: string): Promise<readonly string[]> {
     const orderedRoots = await this.getOrderedRoots(document);
+    const moduleFileName = getStandardModuleFileName(MetadataType.CommonModule, 'CommonModule');
+    if (!moduleFileName) {
+      return [];
+    }
     return orderedRoots.flatMap((root) => [
-      path.join(root, 'CommonModules', moduleName, 'Ext', 'Module.bsl'),
+      path.join(root, 'CommonModules', moduleName, 'Ext', moduleFileName),
       path.join(root, 'CommonModules', moduleName, 'Ext', 'Module', 'Module.bsl'),
-      path.join(root, 'src', 'CommonModules', moduleName, 'Module.bsl'),
+      path.join(root, 'src', 'CommonModules', moduleName, moduleFileName),
     ]).slice(0, MAX_CANDIDATE_PATHS);
   }
 
@@ -291,7 +297,10 @@ export class BslLocalCompletionIndex {
     moduleKind: 'ManagerModule' | 'ObjectModule',
   ): Promise<readonly string[]> {
     const orderedRoots = await this.getOrderedRoots(document);
-    const moduleFile = `${moduleKind}.bsl`;
+    const moduleFile = getStandardModuleFileName(MetadataType.Catalog, moduleKind);
+    if (!moduleFile) {
+      return [];
+    }
     return orderedRoots.flatMap((root) => [
       path.join(root, 'Catalogs', catalogName, 'Ext', moduleFile),
       path.join(root, 'src', 'Catalogs', catalogName, moduleFile),
