@@ -4,6 +4,8 @@ import { TreeNode, MetadataType } from '../models/treeNode';
 import {
   assertMetadataCrudSupported,
   DESIGNER_ROOT_OBJECT_TYPES,
+  getMetadataTypeDescriptorByType,
+  supportsMetadataRootChildObject,
 } from '../constants/metadataTypeDescriptors';
 import { Logger } from '../utils/logger';
 import { ROOT_TAGS_WITHOUT_CHILDOBJECTS, XMLWriter } from '../utils/XMLWriter';
@@ -137,6 +139,29 @@ export function isRootObjectCreateInTypeFolder(parentNode: TreeNode): boolean {
  */
 function getSiblingNames(parent: TreeNode): string[] {
   return (parent.children || []).map((c) => c.name);
+}
+
+function assertRootChildObjectAllowed(
+  parentType: MetadataType,
+  childKind: 'Attribute' | 'TabularSection',
+): void {
+  if (supportsMetadataRootChildObject(parentType, childKind)) {
+    return;
+  }
+
+  const descriptor = getMetadataTypeDescriptorByType(parentType);
+  if (!descriptor?.structure.hasChildObjects) {
+    throw new Error(
+      'В формате Designer у этого типа метаданных нет ChildObjects (например, роль, общий модуль). ' +
+        'Создание реквизита/табличной части под выбранным узлом не поддерживается.'
+    );
+  }
+
+  if (parentType === MetadataType.Subsystem) {
+    throw new Error('Создание реквизита под подсистемой не поддерживается.');
+  }
+
+  throw new Error(`Создание ${childKind} под ${String(parentType)} не поддерживается.`);
 }
 
 /** Directory that contains Configuration.xml (Designer root or EDT project root). */
@@ -324,12 +349,7 @@ async function ensureEdtCompanionTask(
 
 /** Branch: parentNode is a top-level metadata object (Catalog, Document, …) — create nested Attribute. */
 async function handleCreateNestedUnderTopLevel(parentNode: TreeNode, name: string): Promise<void> {
-  if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(parentNode.type))) {
-    throw new Error(
-      'В формате Designer у этого типа метаданных нет ChildObjects (например, роль, общий модуль). ' +
-        'Создание реквизита/табличной части под выбранным узлом не поддерживается.'
-    );
-  }
+  assertRootChildObjectAllowed(parentNode.type, 'Attribute');
   const filePath = parentNode.filePath;
   if (!filePath) {
     throw new Error('Файл объекта не найден.');
@@ -348,12 +368,8 @@ async function handleCreateInContainerFolder(
   parent: TreeNode,
   name: string
 ): Promise<void> {
-  if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(parent.type))) {
-    throw new Error(
-      'В формате Designer у этого типа метаданных нет ChildObjects. ' +
-        'Создание реквизита/табличной части под выбранным узлом не поддерживается.'
-    );
-  }
+  const elementType = parentNode.type === MetadataType.Attribute ? 'Attribute' : 'TabularSection';
+  assertRootChildObjectAllowed(parent.type, elementType);
   const filePath = parent.filePath;
   if (!filePath) {
     throw new Error('Файл объекта не найден.');
@@ -363,7 +379,6 @@ async function handleCreateInContainerFolder(
   } catch {
     throw new Error('Файл объекта не найден.');
   }
-  const elementType = parentNode.type === MetadataType.Attribute ? 'Attribute' : 'TabularSection';
   await XMLWriter.addNestedElement(filePath, elementType, name, {}, parent.type, parent.name);
 }
 

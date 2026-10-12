@@ -8,7 +8,6 @@ export const commonFormRules: MetadataObjectRules = {
         'xmlns': 'http://v8.1c.ru/8.3/MDClasses',
         'xmlns:v8': 'http://v8.1c.ru/8.1/data/core',
     },
-    hasChildObjects: false,
     properties: {
         comment: { type: 'string', order: 1, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },
         formType: { type: 'SystemEnumeration', order: 2, xml: 'FormType', yaml: 'ТипФормы', defaultValueXML: 'Managed', typeSE: 'FormType' },

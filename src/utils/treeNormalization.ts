@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
+import { getMetadataTypeDescriptorByType } from '../constants/metadataTypeDescriptors';
 import { ConfigFormat } from '../parsers/formatDetector';
 import { Logger } from './logger';
 
@@ -79,62 +80,76 @@ function reorderChildrenByIds(node: TreeNode, orderedIds: string[]): void {
   });
 }
 
+function metadataFolder(type: MetadataType, name: string): PlaceholderDef {
+  const descriptor = getMetadataTypeDescriptorByType(type);
+  if (!descriptor?.structure.designerRootObject) {
+    throw new Error(`Missing canonical root metadata descriptor for ${String(type)}.`);
+  }
+  return {
+    id: descriptor.designerFolder,
+    name,
+    type: descriptor.type,
+    typeDirName: descriptor.designerFolder,
+  };
+}
+
 const R4_TOP_LEVEL_ORDER: ReadonlyArray<PlaceholderDef> = [
   // R5 group "Общие" (UI-only placeholder group).
   { id: 'Common', name: 'Общие', type: MetadataType.Unknown },
   // R4 supported (folder-backed) types.
-  { id: 'Constants', name: 'Константы', type: MetadataType.Constant, typeDirName: 'Constants' },
-  { id: 'Catalogs', name: 'Справочники', type: MetadataType.Catalog, typeDirName: 'Catalogs' },
-  { id: 'Documents', name: 'Документы', type: MetadataType.Document, typeDirName: 'Documents' },
-  { id: 'ExchangePlans', name: 'Планы обмена', type: MetadataType.ExchangePlan, typeDirName: 'ExchangePlans' },
-  { id: 'DocumentJournals', name: 'Журналы документов', type: MetadataType.DocumentJournal, typeDirName: 'DocumentJournals' },
-  { id: 'DocumentNumerators', name: 'Нумераторы документов', type: MetadataType.DocumentNumerator, typeDirName: 'DocumentNumerators' },
-  { id: 'Sequences', name: 'Последовательности', type: MetadataType.Sequence, typeDirName: 'Sequences' },
-  { id: 'Enums', name: 'Перечисления', type: MetadataType.Enum, typeDirName: 'Enums' },
-  { id: 'Reports', name: 'Отчеты', type: MetadataType.Report, typeDirName: 'Reports' },
-  { id: 'DataProcessors', name: 'Обработки', type: MetadataType.DataProcessor, typeDirName: 'DataProcessors' },
-  { id: 'ChartsOfCharacteristicTypes', name: 'Планы видов характеристик', type: MetadataType.ChartOfCharacteristicTypes, typeDirName: 'ChartsOfCharacteristicTypes' },
-  { id: 'ChartsOfAccounts', name: 'Планы счетов', type: MetadataType.ChartOfAccounts, typeDirName: 'ChartsOfAccounts' },
-  { id: 'ChartsOfCalculationTypes', name: 'Планы видов расчета', type: MetadataType.ChartOfCalculationTypes, typeDirName: 'ChartsOfCalculationTypes' },
-  { id: 'InformationRegisters', name: 'Регистры сведений', type: MetadataType.InformationRegister, typeDirName: 'InformationRegisters' },
-  { id: 'AccumulationRegisters', name: 'Регистры накопления', type: MetadataType.AccumulationRegister, typeDirName: 'AccumulationRegisters' },
-  { id: 'AccountingRegisters', name: 'Регистры бухгалтерии', type: MetadataType.AccountingRegister, typeDirName: 'AccountingRegisters' },
-  { id: 'CalculationRegisters', name: 'Регистры расчета', type: MetadataType.CalculationRegister, typeDirName: 'CalculationRegisters' },
-  { id: 'BusinessProcesses', name: 'Бизнес-процессы', type: MetadataType.BusinessProcess, typeDirName: 'BusinessProcesses' },
-  { id: 'Tasks', name: 'Задачи', type: MetadataType.Task, typeDirName: 'Tasks' },
-  { id: 'ExternalDataSources', name: 'Внешние источники данных', type: MetadataType.ExternalDataSource, typeDirName: 'ExternalDataSources' },
+  metadataFolder(MetadataType.Constant, 'Константы'),
+  metadataFolder(MetadataType.Catalog, 'Справочники'),
+  metadataFolder(MetadataType.Document, 'Документы'),
+  metadataFolder(MetadataType.ExchangePlan, 'Планы обмена'),
+  metadataFolder(MetadataType.DocumentJournal, 'Журналы документов'),
+  metadataFolder(MetadataType.DocumentNumerator, 'Нумераторы документов'),
+  metadataFolder(MetadataType.Sequence, 'Последовательности'),
+  metadataFolder(MetadataType.Enum, 'Перечисления'),
+  metadataFolder(MetadataType.Report, 'Отчеты'),
+  metadataFolder(MetadataType.DataProcessor, 'Обработки'),
+  metadataFolder(MetadataType.ChartOfCharacteristicTypes, 'Планы видов характеристик'),
+  metadataFolder(MetadataType.ChartOfAccounts, 'Планы счетов'),
+  metadataFolder(MetadataType.ChartOfCalculationTypes, 'Планы видов расчета'),
+  metadataFolder(MetadataType.InformationRegister, 'Регистры сведений'),
+  metadataFolder(MetadataType.AccumulationRegister, 'Регистры накопления'),
+  metadataFolder(MetadataType.AccountingRegister, 'Регистры бухгалтерии'),
+  metadataFolder(MetadataType.CalculationRegister, 'Регистры расчета'),
+  metadataFolder(MetadataType.BusinessProcess, 'Бизнес-процессы'),
+  metadataFolder(MetadataType.Task, 'Задачи'),
+  metadataFolder(MetadataType.ExternalDataSource, 'Внешние источники данных'),
 ];
 
 const R5_COMMON_CHILD_ORDER: ReadonlyArray<PlaceholderDef> = [
-  { id: 'Subsystems', name: 'Подсистемы', type: MetadataType.Subsystem, typeDirName: 'Subsystems' },
-  { id: 'CommonModules', name: 'Общие модули', type: MetadataType.CommonModule, typeDirName: 'CommonModules' },
-  { id: 'CommonAttributes', name: 'Общие реквизиты', type: MetadataType.CommonAttribute, typeDirName: 'CommonAttributes' },
-  { id: 'SessionParameters', name: 'Параметры сеанса', type: MetadataType.SessionParameter, typeDirName: 'SessionParameters' },
-  { id: 'Roles', name: 'Роли', type: MetadataType.Role, typeDirName: 'Roles' },
-  { id: 'FilterCriteria', name: 'Критерии отбора', type: MetadataType.FilterCriterion, typeDirName: 'FilterCriteria' },
-  { id: 'EventSubscriptions', name: 'Подписки на события', type: MetadataType.EventSubscription, typeDirName: 'EventSubscriptions' },
-  { id: 'ScheduledJobs', name: 'Регламентные задания', type: MetadataType.ScheduledJob, typeDirName: 'ScheduledJobs' },
+  metadataFolder(MetadataType.Subsystem, 'Подсистемы'),
+  metadataFolder(MetadataType.CommonModule, 'Общие модули'),
+  metadataFolder(MetadataType.CommonAttribute, 'Общие реквизиты'),
+  metadataFolder(MetadataType.SessionParameter, 'Параметры сеанса'),
+  metadataFolder(MetadataType.Role, 'Роли'),
+  metadataFolder(MetadataType.Interface, 'Интерфейсы'),
+  metadataFolder(MetadataType.FilterCriterion, 'Критерии отбора'),
+  metadataFolder(MetadataType.EventSubscription, 'Подписки на события'),
+  metadataFolder(MetadataType.ScheduledJob, 'Регламентные задания'),
 
   // UI-only placeholders without code mapping.
   { id: 'Bots', name: 'Боты', type: MetadataType.Unknown },
-  { id: 'FunctionalOptions', name: 'Функциональные опции', type: MetadataType.FunctionalOption, typeDirName: 'FunctionalOptions' },
-  { id: 'FunctionalOptionsParameters', name: 'Параметры функциональных опций', type: MetadataType.FunctionalOptionsParameter, typeDirName: 'FunctionalOptionsParameters' },
-  { id: 'DefinedTypes', name: 'Определяемые типы', type: MetadataType.DefinedType, typeDirName: 'DefinedTypes' },
-  { id: 'SettingsStorages', name: 'Хранилища настроек', type: MetadataType.SettingsStorage, typeDirName: 'SettingsStorages' },
-  { id: 'CommonCommands', name: 'Общие команды', type: MetadataType.CommonCommand, typeDirName: 'CommonCommands' },
-  { id: 'CommandGroups', name: 'Группы команд', type: MetadataType.CommandGroup, typeDirName: 'CommandGroups' },
-  { id: 'CommonForms', name: 'Общие формы', type: MetadataType.CommonForm, typeDirName: 'CommonForms' },
-  { id: 'CommonTemplates', name: 'Общие макеты', type: MetadataType.CommonTemplate, typeDirName: 'CommonTemplates' },
-  { id: 'CommonPictures', name: 'Общие картинки', type: MetadataType.CommonPicture, typeDirName: 'CommonPictures' },
-  { id: 'XDTOPackages', name: 'XDTO-пакеты', type: MetadataType.XDTOPackage, typeDirName: 'XDTOPackages' },
-  { id: 'WebServices', name: 'Web-сервисы', type: MetadataType.WebService, typeDirName: 'WebServices' },
-  { id: 'HTTPServices', name: 'HTTP-сервисы', type: MetadataType.HTTPService, typeDirName: 'HTTPServices' },
-  { id: 'WSReferences', name: 'WS-ссылки', type: MetadataType.WSReference, typeDirName: 'WSReferences' },
+  metadataFolder(MetadataType.FunctionalOption, 'Функциональные опции'),
+  metadataFolder(MetadataType.FunctionalOptionsParameter, 'Параметры функциональных опций'),
+  metadataFolder(MetadataType.DefinedType, 'Определяемые типы'),
+  metadataFolder(MetadataType.SettingsStorage, 'Хранилища настроек'),
+  metadataFolder(MetadataType.CommonCommand, 'Общие команды'),
+  metadataFolder(MetadataType.CommandGroup, 'Группы команд'),
+  metadataFolder(MetadataType.CommonForm, 'Общие формы'),
+  metadataFolder(MetadataType.CommonTemplate, 'Общие макеты'),
+  metadataFolder(MetadataType.CommonPicture, 'Общие картинки'),
+  metadataFolder(MetadataType.XDTOPackage, 'XDTO-пакеты'),
+  metadataFolder(MetadataType.WebService, 'Web-сервисы'),
+  metadataFolder(MetadataType.HTTPService, 'HTTP-сервисы'),
+  metadataFolder(MetadataType.WSReference, 'WS-ссылки'),
   { id: 'WebSocketClients', name: 'WebSocket-клиенты', type: MetadataType.Unknown },
-  { id: 'IntegrationServices', name: 'Сервисы интеграции', type: MetadataType.IntegrationService, typeDirName: 'IntegrationServices' },
-  { id: 'StyleItems', name: 'Элементы стиля', type: MetadataType.StyleItem, typeDirName: 'StyleItems' },
-  { id: 'Styles', name: 'Стили', type: MetadataType.Style, typeDirName: 'Styles' },
-  { id: 'Languages', name: 'Языки', type: MetadataType.Language, typeDirName: 'Languages' },
+  metadataFolder(MetadataType.IntegrationService, 'Сервисы интеграции'),
+  metadataFolder(MetadataType.StyleItem, 'Элементы стиля'),
+  metadataFolder(MetadataType.Style, 'Стили'),
+  metadataFolder(MetadataType.Language, 'Языки'),
 ];
 
 /**

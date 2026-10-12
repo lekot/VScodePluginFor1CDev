@@ -10,7 +10,6 @@ export const enumRules: MetadataObjectRules = {
         'xmlns:xr': 'http://v8.1c.ru/8.3/xcf/readable',
         'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
     },
-    hasChildObjects: true,
     properties: {
         auxiliaryChoiceForm: { type: 'string', order: 1, xml: 'AuxiliaryChoiceForm', defaultValueXML: '' },
         auxiliaryListForm: { type: 'string', order: 2, xml: 'AuxiliaryListForm', defaultValueXML: '' },

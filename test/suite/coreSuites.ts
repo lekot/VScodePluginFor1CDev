@@ -47,6 +47,7 @@ export const coreSuiteFiles: string[] = [
   'suite/metadataCreateParity.test.js',
   'suite/metadataRenameParity.test.js',
   'suite/metadataTypeMapper.test.js',
+  'suite/metadataTypeRegistryCompleteness.test.js',
   'suite/metadataLoader.test.js',
   'suite/xmlChildObjects.test.js',
   'suite/xmlParser.test.js',

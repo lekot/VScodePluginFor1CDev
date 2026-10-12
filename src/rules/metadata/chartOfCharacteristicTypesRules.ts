@@ -11,7 +11,6 @@ export const chartOfCharacteristicTypesRules: MetadataObjectRules = {
         'xmlns:xs': 'http://www.w3.org/2001/XMLSchema',
         'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
     },
-    hasChildObjects: true,
     properties: {
         name: { type: 'string', order: 1, xml: 'Name', yaml: 'Имя', required: true },
         synonym: { type: 'I8nText', order: 2, xml: 'Synonym', yaml: 'Синоним' },

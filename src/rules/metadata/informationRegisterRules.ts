@@ -10,7 +10,6 @@ export const informationRegisterRules: MetadataObjectRules = {
         'xmlns:xr': 'http://v8.1c.ru/8.3/xcf/readable',
         'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
     },
-    hasChildObjects: true,
     properties: {
         auxiliaryListForm: { type: 'string', order: 1, xml: 'AuxiliaryListForm', defaultValueXML: '' },
         auxiliaryRecordForm: { type: 'string', order: 2, xml: 'AuxiliaryRecordForm', defaultValueXML: '' },

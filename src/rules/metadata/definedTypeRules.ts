@@ -9,7 +9,6 @@ export const definedTypeRules: MetadataObjectRules = {
         'xmlns:v8': 'http://v8.1c.ru/8.1/data/core',
         'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
     },
-    hasChildObjects: false,
     properties: {
         comment: { type: 'string', order: 1, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },
         name: { type: 'string', order: 2, xml: 'Name', yaml: 'Имя', required: true },

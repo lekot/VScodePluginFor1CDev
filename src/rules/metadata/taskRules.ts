@@ -11,7 +11,6 @@ export const taskRules: MetadataObjectRules = {
         'xmlns:xs': 'http://www.w3.org/2001/XMLSchema',
         'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
     },
-    hasChildObjects: true,
     properties: {
         addressing: { type: 'string', order: 1, xml: 'Addressing', yaml: 'Адресация', defaultValueXML: '' },
         autonumbering: { type: 'boolean', order: 2, xml: 'Autonumbering', yaml: 'Автонумерация', defaultValueXML: true },

@@ -9,7 +9,6 @@ export const constantRules: MetadataObjectRules = {
         'xmlns:v8': 'http://v8.1c.ru/8.1/data/core',
         'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
     },
-    hasChildObjects: false,
     properties: {
         choiceFoldersAndItems: { type: 'SystemEnumeration', order: 1, xml: 'ChoiceFoldersAndItems', defaultValueXML: 'Items', typeSE: 'FoldersAndItemsUse' },
         choiceForm: { type: 'string', order: 2, xml: 'ChoiceForm', defaultValueXML: '' },

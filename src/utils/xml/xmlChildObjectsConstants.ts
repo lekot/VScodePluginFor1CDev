@@ -1,4 +1,4 @@
-import { DESIGNER_ROOT_OBJECT_TYPES } from '../../constants/metadataTypeDescriptors';
+import { DESIGNER_ROOT_OBJECT_TYPES, METADATA_TYPE_DESCRIPTORS } from '../../constants/metadataTypeDescriptors';
 import type { MetadataObjectPathSegment } from '../../types/metadataObjectPath';
 
 /**
@@ -7,36 +7,15 @@ import type { MetadataObjectPathSegment } from '../../types/metadataObjectPath';
 export const TOP_LEVEL_TYPES = DESIGNER_ROOT_OBJECT_TYPES;
 
 /**
- * Root metadata tags that omit ChildObjects in Designer XML (docs/1c-config-objects-spec.md).
- * Не подставлять искусственно ChildObjects при добавлении вложенных элементов — иначе ibcmd / конфигуратор отвергнут файл.
+ * Root tags that omit ChildObjects, projected from the canonical metadata registry.
+ * Form is a nested metadata object and is therefore the one explicit non-root exception.
  */
-export const ROOT_TAGS_WITHOUT_CHILDOBJECTS = new Set<string>([
-  'CommonModule',
-  'Role',
-  'SessionParameter',
-  'FunctionalOption',
-  'FunctionalOptionsParameter',
-  'CommandGroup',
-  'Interface',
-  // Стиль оформления: в ibcmd при пустом ChildObjects — «ожидаемое Style»; в выгрузке нет контейнера ChildObjects.
-  'Style',
-  'EventSubscription',
-  'DefinedType',
-  'Language',
-  'CommonPicture',
-  'CommonAttribute',
-  'CommonForm',
-  /** Встроенная форма объекта: в ibcmd ожидается последовательность без пустого ChildObjects (см. docs/1c-config-objects-spec.md §6.3). */
+export const ROOT_TAGS_WITHOUT_CHILDOBJECTS: ReadonlySet<string> = new Set([
+  ...METADATA_TYPE_DESCRIPTORS
+    .filter((descriptor) => !descriptor.structure.hasChildObjects)
+    .map((descriptor) => descriptor.designerRootTag),
+  /** Embedded object form: ibcmd expects no empty ChildObjects section (docs/1c-config-objects-spec.md §6.3). */
   'Form',
-  'WSReference',
-  'StyleItem',
-  'XDTOPackage',
-  // Только Properties, без ChildObjects (spec; иначе ibcmd config import падает).
-  'DocumentNumerator',
-  'ScheduledJob',
-  'Constant',
-  // Подсистема содержит только состав (Content) и вложенные Subsystem — реквизитов нет.
-  'Subsystem',
 ]);
 
 /**

@@ -2169,11 +2169,13 @@ suite('elementOperations', () => {
     assert.strictEqual(result, undefined);
   });
 
-  test('createElement rejects nested attribute on Subsystem instance (no ChildObjects)', async () => {
+  test('createElement rejects Attribute on Subsystem although its XML has ChildObjects', async () => {
     const subsystemsDir = path.join(tmpDir, 'Subsystems');
     await fs.promises.mkdir(subsystemsDir, { recursive: true });
     const subsystemXml = path.join(subsystemsDir, 'ПодсистемаТест.xml');
     await XMLWriter.createMinimalElementFile(subsystemXml, 'Subsystem', 'ПодсистемаТест', '2.20');
+    const initialSubsystemXml = await readFileContent(subsystemXml);
+    assert.match(initialSubsystemXml, /<ChildObjects\s*\/?\s*>/, 'Subsystem XML retains its structural ChildObjects section');
     const subsystemsTypeNode: TreeNode = {
       id: 'Subsystems',
       name: 'Подсистемы',
@@ -2194,7 +2196,7 @@ suite('elementOperations', () => {
     };
     await assert.rejects(
       async () => createElement(subsystemInstance, 'BadAttr'),
-      /нет ChildObjects/
+      /реквизит.*подсистем|подсистем.*реквизит/i
     );
   });
 
