@@ -143,6 +143,13 @@ suite('gotoHandler canonical module registry contract (#284)', () => {
         expectedFileName: 'ObjectManagerModule.bsl',
       },
       {
+        name: 'Enum ObjectManagerModule legacy alias is unsupported',
+        metadataFolder: 'Enums',
+        metadataType: MetadataType.Enum,
+        objectName: 'UnsupportedLegacyEnum',
+        moduleName: 'ObjectManagerModule',
+      },
+      {
         name: 'Enum ObjectModule is unsupported',
         metadataFolder: 'Enums',
         metadataType: MetadataType.Enum,

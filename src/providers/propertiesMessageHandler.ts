@@ -1073,7 +1073,11 @@ export async function handleGotoHandlerMessage(
       metadataType,
       parts.moduleName as StandardModuleKind
     );
-    const moduleBslFile = HANDLER_MODULE_FILE_MAP[parts.moduleName] ?? standardModuleFile;
+    const legacyModuleFile = HANDLER_MODULE_FILE_MAP[parts.moduleName];
+    const legacyAliasAllowed =
+      legacyModuleFile !== undefined &&
+      getStandardModuleFileName(metadataType, 'ObjectModule') !== undefined;
+    const moduleBslFile = standardModuleFile ?? (legacyAliasAllowed ? legacyModuleFile : undefined);
     if (!moduleBslFile) {
       vscode.window.showWarningMessage(
         `Модуль "${parts.moduleName}" не поддерживается для типа "${parts.objectType}".`
