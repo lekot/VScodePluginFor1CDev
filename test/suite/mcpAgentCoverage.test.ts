@@ -38,6 +38,7 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_delete_tabular_section', 'deleteTabularSection', 'writeClosed'),
   tool('cdt_delete_object', 'deleteObject', 'writeClosed'),
   tool('cdt_rename_object', 'renameObject', 'writeClosed'),
+  tool('cdt_duplicate_object', 'duplicateObject', 'writeClosed'),
   tool('cdt_set_properties', 'setProperties', 'writeClosed'),
 
   tool('cdt_debug_start', 'debug.start', 'writeOpen'),
@@ -185,6 +186,7 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
   cdt_delete_tabular_section: { configurationId: 'cfg', path: 'Catalog.Goods.TabularSection.Items' },
   cdt_delete_object: { configurationId: 'cfg', path: 'Catalog.Goods' },
   cdt_rename_object: { configurationId: 'cfg', path: 'Catalog.Goods', newName: 'Products' },
+  cdt_duplicate_object: { configurationId: 'cfg', path: 'Catalog.Goods', newName: 'GoodsCopy', dryRun: true, ifRev: 'a'.repeat(64) },
   cdt_set_properties: { configurationId: 'cfg', path: 'Catalog.Goods', properties: { nested: { enabled: true }, values: [1, null] } },
   cdt_debug_start: { rootProject: 'C:/project', infobase: 'File=C:/db', platformPath: 'C:/1cv8', extensions: ['C:/ext'], debugServerHost: '127.0.0.1', debugServerPort: 1550, debuggeeType: 'thinClient', databasePath: 'C:/db' },
   cdt_debug_stop: { sessionId: 'session' },
@@ -342,6 +344,7 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'createObject invalid name identifier', tool: 'cdt_create_object', input: { type: 'Catalog', name: '1Goods' } },
   { label: 'addAttribute invalid name identifier', tool: 'cdt_add_attribute', input: { path: 'Catalog.Goods', name: 'Bad-Name' } },
   { label: 'renameObject invalid newName identifier', tool: 'cdt_rename_object', input: { path: 'Catalog.Goods', newName: 'Bad-Name' } },
+  { label: 'duplicateObject invalid newName identifier', tool: 'cdt_duplicate_object', input: { path: 'Catalog.Goods', newName: 'Bad-Name' } },
 
   { label: 'Agent path has one segment', tool: 'cdt_get_yaml', input: { path: 'Catalog' } },
   { label: 'Agent path has three segments', tool: 'cdt_get_properties', input: { path: 'Catalog.Goods.Attribute' } },
@@ -349,6 +352,7 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'Agent path contains invalid identifier', tool: 'cdt_delete_object', input: { path: 'Catalog.Bad-Name' } },
   { label: 'deleteObject rejects nested path', tool: 'cdt_delete_object', input: { path: 'Catalog.Goods.Attribute.Code' } },
   { label: 'root object path has four segments', tool: 'cdt_rename_object', input: { path: 'Catalog.Goods.Attribute.Code', newName: 'Products' } },
+  { label: 'duplicateObject rejects nested path', tool: 'cdt_duplicate_object', input: { path: 'Catalog.Goods.Attribute.Code', newName: 'CodeCopy' } },
   { label: 'attribute path has two segments', tool: 'cdt_delete_attribute', input: { path: 'Catalog.Goods' } },
   { label: 'attribute path has invalid segment', tool: 'cdt_delete_attribute', input: { path: 'Catalog.Goods.Attribute.Bad-Name' } },
   { label: 'tabular section path has wrong marker', tool: 'cdt_add_tabular_section_column', input: { path: 'Catalog.Goods.Attribute.Items', name: 'Quantity' } },
@@ -492,10 +496,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('operation registry has the exact 100 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 100, 'test oracle must enumerate all 100 operations');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 100);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 100);
+  test('operation registry has the exact 101 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 101, 'test oracle must enumerate all 101 operations');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 101);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 101);
 
     assert.deepStrictEqual(
       MCP_OPERATION_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -551,8 +555,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 100);
-    assert.strictEqual(new Set(registered).size, 100);
+    assert.strictEqual(registered.length, 101);
+    assert.strictEqual(new Set(registered).size, 101);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -566,7 +570,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 100 valid operation fixtures pass and every root schema rejects an extra property', () => {
+  test('all 101 valid operation fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];

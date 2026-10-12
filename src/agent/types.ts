@@ -325,6 +325,12 @@ export interface RenameObjectParams extends MutationScopedParams {
     newName: string;
 }
 
+export interface DuplicateObjectParams extends MutationScopedParams {
+    /** Root metadata object Agent path, e.g. 'Catalog.Товары'. */
+    path: string;
+    newName: string;
+}
+
 export interface GetPropertiesParams extends ConfigurationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары' */
     path: string;

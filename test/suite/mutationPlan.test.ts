@@ -181,6 +181,77 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
   });
 
+  test('assertFile is boundary-checked and stays outside recovery snapshots around crash boundaries', async () => {
+    const source = path.join(tempDir, 'source.xml');
+    const target = path.join(tempDir, 'duplicate.xml');
+    const sourceContent = '<source/>';
+    const targetContent = '<duplicate/>';
+    await fs.promises.writeFile(source, sourceContent, 'utf8');
+    const sourceMtime = (await fs.promises.stat(source)).mtimeMs;
+    const plan = {
+      kind: 'test.assertFileRecovery',
+      steps: [
+        { type: 'assertFile' as const, targetPath: source, expected: { state: 'file' as const, hash: hashContent(sourceContent) } },
+        { type: 'writeFile' as const, targetPath: target, content: targetContent, encoding: 'utf8' as const, expected: { state: 'missing' as const } },
+      ],
+      result: null,
+    };
+
+    for (const scenario of [
+      { operationId: 'before-assert', appliedSteps: 0, targetWritten: false },
+      { operationId: 'after-assert', appliedSteps: 1, targetWritten: false },
+      { operationId: 'write-before-counter', appliedSteps: 1, targetWritten: true },
+      { operationId: 'write-recorded', appliedSteps: 2, targetWritten: true },
+    ]) {
+      await fs.promises.rm(target, { force: true });
+      if (scenario.targetWritten) {
+        await fs.promises.writeFile(target, targetContent, 'utf8');
+      }
+      const operationPath = path.join(tempDir, '.cdt-journal', scenario.operationId);
+      await fs.promises.mkdir(path.join(operationPath, 'backups'), { recursive: true });
+      const snapshots = [{ targetPath: target, state: 'missing', contentsBackedUp: false }];
+      assert.ok(!snapshots.some((snapshot) => snapshot.targetPath === source),
+        'the read-only source assertion must never have a backup or restore snapshot');
+      await fs.promises.writeFile(path.join(operationPath, 'journal.json'), JSON.stringify({
+        version: 1,
+        operationId: scenario.operationId,
+        plan,
+        state: 'applying',
+        appliedSteps: scenario.appliedSteps,
+        snapshots,
+      }), 'utf8');
+
+      await assert.doesNotReject(() => new MutationPlanExecutor(tempDir).recover(),
+        `${scenario.operationId} must recover without a false RECOVERY_REQUIRED`);
+      assert.strictEqual(fs.existsSync(target), false,
+        `${scenario.operationId} must roll back a later duplicate write when it occurred`);
+      assert.strictEqual(await fs.promises.readFile(source, 'utf8'), sourceContent);
+      assert.strictEqual((await fs.promises.stat(source)).mtimeMs, sourceMtime);
+      assert.strictEqual(fs.existsSync(operationPath), false);
+    }
+
+    const externalRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mutation-plan-outside-'));
+    const externalSource = path.join(externalRoot, 'source.xml');
+    await fs.promises.writeFile(externalSource, sourceContent, 'utf8');
+    try {
+      await assert.rejects(
+        () => new MutationPlanExecutor(tempDir).execute({
+          kind: 'test.assertFileBoundary',
+          steps: [
+            { type: 'assertFile', targetPath: externalSource, expected: { state: 'file', hash: hashContent(sourceContent) } },
+            { type: 'writeFile', targetPath: target, content: targetContent, encoding: 'utf8', expected: { state: 'missing' } },
+          ],
+          result: undefined,
+        }),
+        (error: unknown) => Boolean(error && typeof error === 'object'
+          && (error as { code?: string }).code === 'PATH_OUTSIDE_ROOT'),
+      );
+      assert.strictEqual(fs.existsSync(target), false, 'out-of-root assertion must fail before any write');
+    } finally {
+      await fs.promises.rm(externalRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   test('Issue #167: failed preparation cleans up pre-effect operation directory and unblocks next plan', async () => {
     const fileA = path.join(tempDir, 'fileA.xml');
     const fileB = path.join(tempDir, 'fileB.xml');
@@ -2626,5 +2697,4 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(fs.existsSync(newDirPath), true, 'Directory must be preserved');
   });
 });
-
 

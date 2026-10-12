@@ -29,6 +29,7 @@ import type {
     DeleteTabularSectionParams,
     DeleteObjectParams,
     RenameObjectParams,
+    DuplicateObjectParams,
     SetPropertiesParams,
     GetTypeParams,
     SetTypeParams,
@@ -807,6 +808,37 @@ export function registerAgentCommands(
         }
     );
 
+    // ─── 1c-metadata-tree.agent.duplicateObject ─────────────────────────────
+
+    const duplicateObjectCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.duplicateObject',
+        async (params: DuplicateObjectParams) => {
+            let dotPath = '';
+            try {
+                dotPath = typeof params?.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
+            } catch (error) {
+                if (error instanceof AgentPathError) {
+                    return { success: false, code: error.code, error: error.message };
+                }
+                return { success: false, code: 'INVALID_AGENT_PATH', error: error instanceof Error ? error.message : String(error) };
+            }
+            const segmentCount = dotPath ? dotPath.split('.').length : 0;
+            if (segmentCount !== 2) {
+                return {
+                    success: false,
+                    code: 'INVALID_AGENT_PATH',
+                    error: `duplicateObject supports only a root object path (RootTag.Name): "${String(params?.path)}".`,
+                };
+            }
+            const dryRun = params?.dryRun === true;
+            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.duplicateObject', async (configRoot) => {
+                const result = await new AgentOperations(configRoot).duplicateObject(params);
+                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
+                return result;
+            });
+        }
+    );
+
     // ─── 1c-metadata-tree.agent.setProperties ────────────────────────────────
 
     const setPropertiesCommand = vscode.commands.registerCommand(
@@ -1549,7 +1581,7 @@ export function registerAgentCommands(
         createObjectCommand, getYamlCommand, listObjectsCommand, listChildrenCommand, resolveSourceAddressCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
         deleteAttributeCommand, deleteTabularSectionCommand, deleteObjectCommand,
-        renameObjectCommand, setPropertiesCommand,
+        renameObjectCommand, duplicateObjectCommand, setPropertiesCommand,
         debugStartCommand, debugStopCommand, debugSetBreakpointCommand,
         debugClearBreakpointsCommand, debugSetExceptionFilterCommand, debugWaitForStopCommand,
         debugGetStackTraceCommand, debugGetScopesCommand, debugGetVariablesCommand,
@@ -1637,4 +1669,3 @@ function extractAddressFromObjectSpec(spec: string): string {
     }
     return trimmed;
 }
-

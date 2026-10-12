@@ -722,6 +722,11 @@
         "category": "CDT 41 Agent"
       },
       {
+        "command": "1c-metadata-tree.agent.duplicateObject",
+        "title": "Agent: Дублировать объект метаданных",
+        "category": "CDT 41 Agent"
+      },
+      {
         "command": "1c-metadata-tree.agent.setProperties",
         "title": "Agent: Установить свойства объекта",
         "category": "CDT 41 Agent"

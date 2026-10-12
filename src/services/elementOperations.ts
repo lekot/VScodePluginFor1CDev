@@ -22,15 +22,9 @@ import {
 } from './registerRecorderDocumentLinker';
 import {
   addRootObjectToConfiguration,
-  buildRootObjectConfigurationContent,
-  isRootObjectRegisteredInConfiguration,
-  removeRootObjectFromConfiguration,
 } from './configurationXmlUpdater';
-import { hashContent } from './configurationSession/atomicFileStorage';
 import type {
-  MutationExpectation,
   MutationPlan,
-  MutationStep,
 } from './configurationSession/mutationPlan';
 import {
   assertNoSymlinkSegments,
@@ -61,6 +55,7 @@ import { rulesRegistry, metadataConverter } from '../rules';
 import {
   planCreateMetadataObject,
   planDeleteMetadataObject,
+  planDuplicateMetadataObject,
   planRenameMetadataObject,
 } from './metadataCrudService';
 import { runConfigurationPlan } from './configurationSession/configurationMutationGateway';
@@ -727,6 +722,15 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
   if (!parent) {
     throw new Error('Нет родительского узла.');
   }
+  if (TOP_LEVEL_TYPES.has(node.type)) {
+    const name = newName.trim();
+    const plan = await planDuplicateRootElement(node, name);
+    const { typeFolderPath } = requireRootMutationNode(node);
+    const configRootPath = await findConfigurationRootDir(typeFolderPath);
+    await new MutationPlanExecutor(configRootPath).execute(plan);
+    Logger.info(`Duplicated element to ${path.join(typeFolderPath, `${name}.xml`)}`);
+    return;
+  }
   const err = validateElementName(newName.trim(), getSiblingNames(parent));
   if (err) {
     throw new Error(err);
@@ -793,246 +797,8 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
     return;
   }
 
-  if (TOP_LEVEL_TYPES.has(node.type)) {
-    assertMetadataCrudSupported(node.type, 'duplicate');
-    const typeNode = parent;
-    const typeFolderPath = typeNode.filePath;
-    if (!typeFolderPath) {
-      throw new Error('Папка типа не найдена.');
-    }
-    const sourcePath = node.filePath;
-    if (!sourcePath) {
-      throw new Error('Файл исходного элемента не найден.');
-    }
-    try {
-      await fs.promises.access(sourcePath);
-    } catch {
-      throw new Error('Файл исходного элемента не найден.');
-    }
-    const newFilePath = path.join(typeFolderPath, `${name}.xml`);
-    const newFileExists = await fs.promises.access(newFilePath).then(() => true).catch(() => false);
-    if (newFileExists) {
-      throw new Error(`Файл уже существует: ${newFilePath}`);
-    }
-    const configRootPath = await findConfigurationRootDir(typeFolderPath);
-    // Duplicating a root creates a descriptor and may create an object
-    // directory. Validate Configuration.xml before either filesystem write.
-    await resolveProjectFormatVersion(configRootPath);
-    const rootTag = String(node.type);
-    const oldDir = path.join(typeFolderPath, node.name);
-    const newDir = path.join(typeFolderPath, name);
-    let oldDirStat: fs.Stats | undefined;
-    try {
-      oldDirStat = await fs.promises.stat(oldDir);
-    } catch {
-      // oldDir does not exist
-    }
-    const newDirExists = await fs.promises.access(newDir).then(() => true).catch(() => false);
-    if (newDirExists) {
-      throw new Error(`Каталог объекта уже существует: ${newDir}`);
-    }
-    if (await isRootObjectRegisteredInConfiguration(configRootPath, rootTag, name)) {
-      throw new Error(`Объект ${rootTag}.${name} уже зарегистрирован в Configuration.xml.`);
-    }
-
-    const sourceContent = await fs.promises.readFile(sourcePath, 'utf-8');
-    const rootOpeningTag = sourceContent.match(new RegExp(`<${escapeRegex(rootTag)}\\b[^>]*>`))?.[0];
-    if (!rootOpeningTag || !/\buuid\s*=\s*["'][^"']+["']/.test(rootOpeningTag)) {
-      throw new Error(`UUID корневого элемента ${rootTag} не найден в XML дубликата.`);
-    }
-    const sourceArtifacts = oldDirStat?.isDirectory() ? await readXmlArtifacts(oldDir) : [];
-    const identityRemap = collectIdentityRemap([
-      sourceContent,
-      ...sourceArtifacts.map((artifact) => artifact.content),
-    ]);
-    let content = rewriteRootProperties(sourceContent, rootTag, node.name, name);
-    content = rewriteOwnIdentityDeclarations(content, rootTag, node.name, name);
-    content = applyIdentityRemap(content, identityRemap);
-
-    let registered = false;
-    try {
-      await fs.promises.writeFile(newFilePath, content, { encoding: 'utf-8', flag: 'wx' });
-      if (oldDirStat?.isDirectory()) {
-        await fs.promises.cp(oldDir, newDir, { recursive: true, errorOnExist: true, force: false });
-        for (const artifact of sourceArtifacts) {
-          const relativePath = path.relative(oldDir, artifact.filePath);
-          let updated = rewriteOwnIdentityDeclarations(artifact.content, rootTag, node.name, name);
-          updated = applyIdentityRemap(updated, identityRemap);
-          await fs.promises.writeFile(path.join(newDir, relativePath), updated, 'utf-8');
-        }
-      }
-      await addRootObjectToConfiguration(configRootPath, rootTag, name);
-      registered = true;
-    } catch (error) {
-      if (registered) {
-        await removeRootObjectFromConfiguration(configRootPath, rootTag, name).catch((rollbackError) =>
-          Logger.error('Failed to roll back Configuration.xml after duplicate', rollbackError)
-        );
-      }
-      await fs.promises.rm(newDir, { recursive: true, force: true }).catch(() => undefined);
-      await fs.promises.rm(newFilePath, { force: true }).catch(() => undefined);
-      throw error;
-    }
-    Logger.info(`Duplicated element to ${newFilePath}`);
-    return;
-  }
 
   throw new Error('Дублирование для этого типа элемента не поддерживается.');
-}
-
-/**
- * Escapes special regex characters in a string.
- * @param s - String to escape
- * @returns Escaped string safe for use in RegExp
- */
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-const UUID_TEXT_PATTERN = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
-
-interface XmlArtifact {
-  filePath: string;
-  content: string;
-}
-
-async function readXmlArtifacts(rootDir: string): Promise<XmlArtifact[]> {
-  const result: XmlArtifact[] = [];
-  const visit = async (dir: string): Promise<void> => {
-    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const entryPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await visit(entryPath);
-      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.xml')) {
-        result.push({ filePath: entryPath, content: await fs.promises.readFile(entryPath, 'utf-8') });
-      }
-    }
-  };
-  await visit(rootDir);
-  return result;
-}
-
-function collectIdentityRemap(contents: readonly string[]): Map<string, string> {
-  const identities = new Set<string>();
-  for (const content of contents) {
-    // uuid is always an identity declaration. UUID-valued id attributes are
-    // identities used by predefined/auxiliary descriptors.
-    for (const match of content.matchAll(/\b(?:uuid|id)\s*=\s*(["'])([^"']+)\1/gi)) {
-      if (/\buuid\s*=/i.test(match[0]) || new RegExp(`^${UUID_TEXT_PATTERN}$`).test(match[2])) {
-        identities.add(match[2]);
-      }
-    }
-    const identityTag = new RegExp(
-      `<(?:[A-Za-z_][\\w.-]*:)?(?:TypeId|ValueId|ThisNode)>\\s*(${UUID_TEXT_PATTERN})\\s*</`,
-      'gi'
-    );
-    for (const match of content.matchAll(identityTag)) {
-      identities.add(match[1]);
-    }
-  }
-  return new Map([...identities].map((identity) => [identity, XMLWriter.generateSimpleUuid()]));
-}
-
-function applyIdentityRemap(content: string, remap: ReadonlyMap<string, string>): string {
-  let result = content;
-  for (const [oldIdentity, newIdentity] of remap) {
-    result = result.replace(new RegExp(escapeRegex(oldIdentity), 'g'), newIdentity);
-  }
-  return result;
-}
-
-function rewriteRootProperties(
-  content: string,
-  rootTag: string,
-  oldName: string,
-  newName: string
-): string {
-  const rootStart = content.search(new RegExp(`<${escapeRegex(rootTag)}\\b`));
-  if (rootStart < 0) {
-    throw new Error(`Корневой элемент ${rootTag} не найден в XML.`);
-  }
-  const propertiesStart = content.indexOf('<Properties>', rootStart);
-  const propertiesEnd = content.indexOf('</Properties>', propertiesStart);
-  if (propertiesStart < 0 || propertiesEnd < 0) {
-    throw new Error(`Properties корневого элемента ${rootTag} не найдены в XML.`);
-  }
-  const end = propertiesEnd + '</Properties>'.length;
-  let properties = content.slice(propertiesStart, end);
-  properties = properties.replace(
-    new RegExp(`<Name>\\s*${escapeRegex(oldName)}\\s*</Name>`),
-    `<Name>${newName}</Name>`
-  );
-  const synonymStart = properties.indexOf('<Synonym>');
-  const synonymEnd = properties.indexOf('</Synonym>', synonymStart);
-  if (synonymStart >= 0 && synonymEnd > synonymStart) {
-    const prefix = properties.slice(0, synonymStart);
-    const synonym = properties.slice(synonymStart, synonymEnd + '</Synonym>'.length)
-      .replace(/<v8:content>[^<]*<\/v8:content>/, `<v8:content>${newName}</v8:content>`);
-    properties = prefix + synonym + properties.slice(synonymEnd + '</Synonym>'.length);
-  }
-  return content.slice(0, propertiesStart) + properties + content.slice(end);
-}
-
-function rewriteOwnIdentityDeclarations(
-  content: string,
-  rootTag: string,
-  oldName: string,
-  newName: string
-): string {
-  let result = content.replace(
-    /(<xr:GeneratedType\b[^>]*\bname\s*=\s*["'])([^"']+)(["'])/gi,
-    (whole, prefix: string, identity: string, suffix: string) => identity.endsWith(`.${oldName}`)
-      ? `${prefix}${identity.slice(0, -oldName.length)}${newName}${suffix}`
-      : whole
-  );
-  const fieldPattern = new RegExp(
-    `(<xr:Field>\\s*)${escapeRegex(rootTag)}\\.${escapeRegex(oldName)}(?=[.<])`,
-    'g'
-  );
-  result = result.replace(fieldPattern, `$1${rootTag}.${newName}`);
-  return result;
-}
-
-interface DirectoryArtifact {
-  readonly filePath: string;
-  readonly content: Buffer;
-}
-
-async function readDirectoryArtifacts(rootDir: string): Promise<{
-  directories: string[];
-  files: DirectoryArtifact[];
-}> {
-  const directories: string[] = [];
-  const files: DirectoryArtifact[] = [];
-  const visit = async (dir: string): Promise<void> => {
-    directories.push(dir);
-    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const entryPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await visit(entryPath);
-      } else if (entry.isFile()) {
-        files.push({ filePath: entryPath, content: await fs.promises.readFile(entryPath) });
-      }
-    }
-  };
-  await visit(rootDir);
-  return { directories, files };
-}
-
-async function mutationExpectation(targetPath: string): Promise<MutationExpectation> {
-  try {
-    const stat = await fs.promises.stat(targetPath);
-    if (stat.isDirectory()) { return { state: 'directory' }; }
-    if (stat.isFile()) {
-      return { state: 'file', hash: hashContent(await fs.promises.readFile(targetPath)) };
-    }
-    throw new Error(`Unsupported filesystem entry: ${targetPath}`);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') { return { state: 'missing' }; }
-    throw error;
-  }
 }
 
 function requireRootMutationNode(node: TreeNode): {
@@ -1059,85 +825,14 @@ export async function planDuplicateRootElement(
   node: TreeNode,
   newName: string,
 ): Promise<MutationPlan<void>> {
-  assertMetadataCrudSupported(node.type, 'duplicate');
-  const { parent, filePath, typeFolderPath, rootTag } = requireRootMutationNode(node);
-  const name = newName.trim();
-  const validation = validateElementName(name, getSiblingNames(parent));
-  if (validation) { throw new Error(validation); }
-  await assertCfeGenericDuplicateAllowed(filePath, name);
-  const sourceExpected = await mutationExpectation(filePath);
-  if (sourceExpected.state !== 'file') { throw new Error(`Metadata object file was not found: ${filePath}`); }
-
-  const newFilePath = path.join(typeFolderPath, `${name}.xml`);
-  const newDir = path.join(typeFolderPath, name);
-  if ((await mutationExpectation(newFilePath)).state !== 'missing') {
-    throw new Error(`File already exists: ${newFilePath}`);
-  }
-  if ((await mutationExpectation(newDir)).state !== 'missing') {
-    throw new Error(`Metadata object directory already exists: ${newDir}`);
-  }
-
-  const sourceContent = await fs.promises.readFile(filePath, 'utf8');
-  const rootOpeningTag = sourceContent.match(new RegExp(`<${escapeRegex(rootTag)}\\b[^>]*>`))?.[0];
-  if (!rootOpeningTag || !/\buuid\s*=\s*["'][^"']+["']/.test(rootOpeningTag)) {
-    throw new Error(`Root ${rootTag} UUID was not found in duplicate source XML.`);
-  }
-  const oldDir = path.join(typeFolderPath, node.name);
-  const oldDirExpected = await mutationExpectation(oldDir);
-  const tree = oldDirExpected.state === 'directory'
-    ? await readDirectoryArtifacts(oldDir)
-    : { directories: [], files: [] as DirectoryArtifact[] };
-  const xmlSources = tree.files
-    .filter((artifact) => artifact.filePath.toLocaleLowerCase().endsWith('.xml'))
-    .map((artifact) => artifact.content.toString('utf8'));
-  const identityRemap = collectIdentityRemap([sourceContent, ...xmlSources]);
-  let descriptor = rewriteRootProperties(sourceContent, rootTag, node.name, name);
-  descriptor = rewriteOwnIdentityDeclarations(descriptor, rootTag, node.name, name);
-  descriptor = applyIdentityRemap(descriptor, identityRemap);
-
-  const steps: MutationStep[] = [{
-    type: 'writeFile', targetPath: newFilePath, content: descriptor,
-    encoding: 'utf8', expected: { state: 'missing' },
-  }];
-  for (const sourceDir of tree.directories) {
-    steps.push({
-      type: 'ensureDirectory',
-      targetPath: path.join(newDir, path.relative(oldDir, sourceDir)),
-    });
-  }
-  for (const artifact of tree.files) {
-    const targetPath = path.join(newDir, path.relative(oldDir, artifact.filePath));
-    if (artifact.filePath.toLocaleLowerCase().endsWith('.xml')) {
-      let content = rewriteOwnIdentityDeclarations(
-        artifact.content.toString('utf8'), rootTag, node.name, name,
-      );
-      content = applyIdentityRemap(content, identityRemap);
-      steps.push({
-        type: 'writeFile', targetPath, content, encoding: 'utf8', expected: { state: 'missing' },
-      });
-    } else {
-      steps.push({
-        type: 'writeFile', targetPath, content: artifact.content.toString('base64'),
-        encoding: 'base64', expected: { state: 'missing' },
-      });
-    }
-  }
-  if (tree.directories.length === 0) {
-    steps.push({ type: 'ensureDirectory', targetPath: newDir });
-  }
+  const { typeFolderPath } = requireRootMutationNode(node);
   const configRootPath = await findConfigurationRootDir(typeFolderPath);
-  const configurationPath = path.join(configRootPath, CONFIGURATION_XML);
-  const configuration = await fs.promises.readFile(configurationPath, 'utf8');
-  steps.push({
-    type: 'writeFile', targetPath: configurationPath,
-    content: buildRootObjectConfigurationContent(configuration, {
-      type: 'add', rootTag, objectName: name,
-    }),
-    encoding: 'utf8', expected: { state: 'file', hash: hashContent(configuration) },
-  });
-  return { kind: 'ui.duplicateRootElement', steps, result: undefined };
+  const planned = await planDuplicateMetadataObject(
+    { configurationRootPath: configRootPath },
+    { type: node.type, sourceName: node.name, newName },
+  );
+  return { ...planned.plan, kind: 'ui.duplicateRootElement' };
 }
-
 /** Builds a root rename, including directory XML identities and project references. */
 export async function planRenameRootElement(
   node: TreeNode,

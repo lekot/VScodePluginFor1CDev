@@ -32,7 +32,11 @@ import { assertPathWithinRoot } from './configurationSession/pathBoundary';
 import type { MutationPlan, MutationStep } from './configurationSession/mutationPlan';
 import { planIdentityTokenReplacements } from '../utils/referenceFinder';
 import { listXmlSiblingNames, readMutationExpectation } from './filesystemReadSemantics';
-import { assertCfeGenericCreateAllowed, assertCfeGenericMutationAllowed } from '../extensionSupport/cfeProject/mutationPolicy';
+import {
+  assertCfeGenericCreateAllowed,
+  assertCfeGenericDuplicateAllowed,
+  assertCfeGenericMutationAllowed,
+} from '../extensionSupport/cfeProject/mutationPolicy';
 import { validateElementName } from '../utils/elementNameValidator';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { requireProjectWriteFormatProfile } from '../utils/format/formatRank';
@@ -68,6 +72,12 @@ export interface DeleteMetadataObjectRequest {
 export interface RenameMetadataObjectRequest {
   readonly type: MetadataType;
   readonly oldName: string;
+  readonly newName: string;
+}
+
+export interface DuplicateMetadataObjectRequest {
+  readonly type: MetadataType;
+  readonly sourceName: string;
   readonly newName: string;
 }
 
@@ -817,6 +827,217 @@ export async function planRenameMetadataObject(
   return planned({ kind: 'metadata.rename', steps, result: undefined });
 }
 
+/** Plans a root duplicate without depending on either the TreeView or Agent response model. */
+export async function planDuplicateMetadataObject(
+  context: MetadataCrudContext,
+  request: DuplicateMetadataObjectRequest,
+): Promise<PlannedMetadataMutation<void>> {
+  const descriptor = requireRootDescriptor(request.type);
+  assertMetadataCrudSupported(request.type, 'duplicate');
+
+  const rootPath = context.configurationRootPath;
+  const sourceName = request.sourceName.trim();
+  const newName = request.newName.trim();
+  if (!sourceName) {
+    throw new Error('Parameter sourceName is required and cannot be empty.');
+  }
+  const folderPath = path.join(rootPath, descriptor.designerFolder);
+  const nameValidation = validateElementName(newName, await listXmlSiblingNames(folderPath));
+  if (nameValidation) {
+    throw new Error(nameValidation);
+  }
+
+  const sourcePath = path.join(folderPath, `${sourceName}.xml`);
+  const targetPath = path.join(folderPath, `${newName}.xml`);
+  const sourceDirectoryPath = path.join(folderPath, sourceName);
+  const targetDirectoryPath = path.join(folderPath, newName);
+  const configurationPath = path.join(rootPath, CONFIGURATION_XML);
+  for (const candidate of [sourcePath, targetPath, sourceDirectoryPath, targetDirectoryPath, configurationPath]) {
+    await assertPathWithinRoot(rootPath, candidate);
+  }
+  await assertCfeGenericDuplicateAllowed(sourcePath, newName);
+
+  const [sourceExpected, targetExpected, sourceDirectoryExpected, targetDirectoryExpected] = await Promise.all([
+    readMutationExpectation(sourcePath),
+    readMutationExpectation(targetPath),
+    readMutationExpectation(sourceDirectoryPath),
+    readMutationExpectation(targetDirectoryPath),
+  ]);
+  if (sourceExpected.state !== 'file') {
+    throw new Error(`Файл элемента не найден: ${sourcePath}`);
+  }
+  if (targetExpected.state !== 'missing') {
+    throw new Error(`File already exists: ${targetPath}`);
+  }
+  if (sourceDirectoryExpected.state !== 'missing' && sourceDirectoryExpected.state !== 'directory') {
+    throw new Error(`Путь к каталогу объекта не является каталогом: ${sourceDirectoryPath}`);
+  }
+  if (targetDirectoryExpected.state !== 'missing') {
+    throw new Error(`Каталог объекта уже существует: ${targetDirectoryPath}`);
+  }
+
+  const configurationExpected = await readMutationExpectation(configurationPath);
+  if (configurationExpected.state !== 'file') {
+    throw new Error(`Configuration.xml was not found: ${configurationPath}`);
+  }
+  const [sourceContent, configurationContent] = await Promise.all([
+    fs.promises.readFile(sourcePath, 'utf8'),
+    fs.promises.readFile(configurationPath, 'utf8'),
+  ]);
+  if (sourceExpected.hash !== hashContent(sourceContent)) {
+    throw new Error(`Metadata object changed while planning: ${sourcePath}`);
+  }
+  if (configurationExpected.hash !== hashContent(configurationContent)) {
+    throw new Error(`Configuration.xml changed while planning: ${configurationPath}`);
+  }
+  assertWellFormedXml(sourceContent, sourcePath);
+  assertWellFormedXml(configurationContent, configurationPath);
+  requireProjectWriteFormatProfile(configurationContent);
+  const rootOpeningTag = sourceContent.match(new RegExp(`<${escapeRegex(descriptor.designerRootTag)}\\b[^>]*>`))?.[0];
+  if (!rootOpeningTag || !/\buuid\s*=\s*["'][^"']+["']/.test(rootOpeningTag)) {
+    throw new Error(`Root ${descriptor.designerRootTag} UUID was not found in duplicate source XML.`);
+  }
+  if (await isRootObjectRegisteredInConfiguration(rootPath, descriptor.designerRootTag, newName)) {
+    throw new Error(`Объект ${descriptor.designerRootTag}.${newName} уже зарегистрирован в Configuration.xml.`);
+  }
+
+  const directoryArtifacts = sourceDirectoryExpected.state === 'directory'
+    ? await readDuplicateDirectoryArtifacts(rootPath, sourceDirectoryPath)
+    : { directories: [] as string[], files: [] as MetadataDuplicateDirectoryArtifact[] };
+  const xmlContents: string[] = [];
+  for (const artifact of directoryArtifacts.files) {
+    if (artifact.filePath.toLocaleLowerCase().endsWith('.xml')) {
+      const content = artifact.content.toString('utf8');
+      assertWellFormedXml(content, artifact.filePath);
+      xmlContents.push(content);
+    }
+  }
+  const identityRemap = collectDuplicateIdentityRemap([sourceContent, ...xmlContents]);
+  let duplicateContent = rewriteRootProperties(
+    sourceContent,
+    descriptor.designerRootTag,
+    sourceName,
+    newName,
+  );
+  duplicateContent = rewriteOwnIdentityDeclarations(
+    duplicateContent,
+    descriptor.designerRootTag,
+    sourceName,
+    newName,
+  );
+  duplicateContent = applyDuplicateIdentityRemap(duplicateContent, identityRemap);
+
+  const steps: MutationStep[] = [
+    { type: 'assertFile', targetPath: sourcePath, expected: sourceExpected },
+    {
+      type: 'writeFile', targetPath,
+      content: duplicateContent, encoding: 'utf8', expected: targetExpected,
+    },
+  ];
+  for (const sourceDirectory of directoryArtifacts.directories) {
+    steps.push({
+      type: 'ensureDirectory',
+      targetPath: path.join(targetDirectoryPath, path.relative(sourceDirectoryPath, sourceDirectory)),
+    });
+  }
+  for (const artifact of directoryArtifacts.files) {
+    const artifactTargetPath = path.join(targetDirectoryPath, path.relative(sourceDirectoryPath, artifact.filePath));
+    if (artifact.filePath.toLocaleLowerCase().endsWith('.xml')) {
+      let content = rewriteOwnIdentityDeclarations(
+        artifact.content.toString('utf8'),
+        descriptor.designerRootTag,
+        sourceName,
+        newName,
+      );
+      content = applyDuplicateIdentityRemap(content, identityRemap);
+      steps.push({
+        type: 'writeFile', targetPath: artifactTargetPath,
+        content, encoding: 'utf8', expected: { state: 'missing' },
+      });
+    } else {
+      steps.push({
+        type: 'writeFile', targetPath: artifactTargetPath,
+        content: artifact.content.toString('base64'), encoding: 'base64', expected: { state: 'missing' },
+      });
+    }
+  }
+  if (directoryArtifacts.directories.length === 0) {
+    steps.push({ type: 'ensureDirectory', targetPath: targetDirectoryPath });
+  }
+  steps.push({
+    type: 'writeFile', targetPath: configurationPath,
+    content: buildRootObjectConfigurationContent(configurationContent, {
+      type: 'add', rootTag: descriptor.designerRootTag, objectName: newName,
+    }),
+    encoding: 'utf8', expected: configurationExpected,
+  });
+
+  return planned({ kind: 'metadata.duplicate', steps, result: undefined });
+}
+
+const DUPLICATE_UUID_PATTERN = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
+
+interface MetadataDuplicateDirectoryArtifact {
+  readonly filePath: string;
+  readonly content: Buffer;
+}
+
+async function readDuplicateDirectoryArtifacts(
+  configurationRootPath: string,
+  rootDirectory: string,
+): Promise<{ readonly directories: string[]; readonly files: MetadataDuplicateDirectoryArtifact[] }> {
+  const directories: string[] = [];
+  const files: MetadataDuplicateDirectoryArtifact[] = [];
+  const visit = async (directoryPath: string): Promise<void> => {
+    await assertPathWithinRoot(configurationRootPath, directoryPath);
+    directories.push(directoryPath);
+    const entries = await fs.promises.readdir(directoryPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(directoryPath, entry.name);
+      await assertPathWithinRoot(configurationRootPath, entryPath);
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Symbolic links are not allowed in metadata object directories: ${entryPath}`);
+      }
+      if (entry.isDirectory()) {
+        await visit(entryPath);
+      } else if (entry.isFile()) {
+        files.push({ filePath: entryPath, content: await fs.promises.readFile(entryPath) });
+      } else {
+        throw new Error(`Unsupported filesystem entry in metadata object directory: ${entryPath}`);
+      }
+    }
+  };
+  await visit(rootDirectory);
+  return { directories, files };
+}
+
+function collectDuplicateIdentityRemap(contents: readonly string[]): Map<string, string> {
+  const identities = new Set<string>();
+  for (const content of contents) {
+    for (const match of content.matchAll(/\b(?:uuid|id)\s*=\s*(["'])([^"']+)\1/gi)) {
+      if (/\buuid\s*=/i.test(match[0]) || new RegExp(`^${DUPLICATE_UUID_PATTERN}$`).test(match[2])) {
+        identities.add(match[2]);
+      }
+    }
+    const identityTag = new RegExp(
+      `<(?:[A-Za-z_][\\w.-]*:)?(?:TypeId|ValueId|ThisNode)>\\s*(${DUPLICATE_UUID_PATTERN})\\s*</`,
+      'gi',
+    );
+    for (const match of content.matchAll(identityTag)) {
+      identities.add(match[1]);
+    }
+  }
+  return new Map([...identities].map((identity) => [identity, generateSimpleUuid()]));
+}
+
+function applyDuplicateIdentityRemap(content: string, remap: ReadonlyMap<string, string>): string {
+  let result = content;
+  for (const [oldIdentity, newIdentity] of remap) {
+    result = result.replace(new RegExp(escapeRegex(oldIdentity), 'g'), newIdentity);
+  }
+  return result;
+}
+
 interface MetadataRenameDirectoryArtifact {
   readonly filePath: string;
   readonly content: Buffer;
@@ -956,7 +1177,7 @@ function planned<T>(plan: MutationPlan<T>): PlannedMetadataMutation<T> {
     } else if (step.type === 'deletePath') {
       addAffected(step.targetPath);
       addUnique(deletePaths, step.targetPath);
-    } else {
+    } else if (step.type === 'movePath') {
       addAffected(step.sourcePath);
       addAffected(step.targetPath);
     }

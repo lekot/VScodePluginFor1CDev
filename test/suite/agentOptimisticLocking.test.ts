@@ -772,6 +772,60 @@ suite('Agent API — Registered Commands dryRun & ifRev dispatch', () => {
     assert.strictEqual(failResult.code, 'CONCURRENT_MODIFICATION_ERROR');
   });
 
+  test('duplicateObject command preserves dryRun, ifRev, root-only scope and execution semantics', async () => {
+    const handlerCreate = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.createObject')!;
+    await handlerCreate({ configurationId: configId, type: 'Catalog', name: 'ItemToDuplicate' });
+
+    const sourcePath = path.join(tmpDir, 'Catalogs', 'ItemToDuplicate.xml');
+    const targetPath = path.join(tmpDir, 'Catalogs', 'ItemDuplicate.xml');
+    const sourceRev = await calculateRevision(sourcePath);
+    const handlerDuplicate = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.duplicateObject')!;
+    assert.ok(handlerDuplicate, 'duplicateObject command must be registered');
+
+    const dryResult = await handlerDuplicate({
+      configurationId: configId,
+      path: 'Catalog.ItemToDuplicate',
+      newName: 'ItemDuplicate',
+      ifRev: sourceRev,
+      dryRun: true,
+    }) as AgentResult<CreateObjectResult>;
+    assert.strictEqual(dryResult.success, true, dryResult.error);
+    assert.strictEqual(dryResult.dryRun, true);
+    assert.ok(dryResult.data?.plannedChanges);
+    assert.ok(!dryResult.data?.plannedChanges?.files.includes(sourcePath),
+      'read-only source assertion must not appear as a changed file in dry-run impact');
+    assert.strictEqual(fs.existsSync(sourcePath), true);
+    assert.strictEqual(fs.existsSync(targetPath), false);
+
+    const badRevision = await handlerDuplicate({
+      configurationId: configId,
+      path: 'Catalog.ItemToDuplicate',
+      newName: 'ItemDuplicate',
+      ifRev: 'e'.repeat(64),
+    }) as AgentResult;
+    assert.strictEqual(badRevision.success, false);
+    assert.strictEqual(badRevision.code, 'CONCURRENT_MODIFICATION_ERROR');
+    assert.strictEqual(fs.existsSync(targetPath), false);
+
+    const nested = await handlerDuplicate({
+      configurationId: configId,
+      path: 'Catalog.ItemToDuplicate.Attribute.Code',
+      newName: 'CodeCopy',
+    }) as AgentResult;
+    assert.strictEqual(nested.success, false);
+    assert.strictEqual(nested.code, 'INVALID_AGENT_PATH');
+
+    const result = await handlerDuplicate({
+      configurationId: configId,
+      path: 'Catalog.ItemToDuplicate',
+      newName: 'ItemDuplicate',
+      ifRev: sourceRev,
+    }) as AgentResult<CreateObjectResult>;
+    assert.strictEqual(result.success, true, result.error);
+    assert.strictEqual(await fs.promises.realpath(result.data?.filePath ?? ''), await fs.promises.realpath(targetPath));
+    assert.strictEqual(fs.existsSync(targetPath), true);
+  });
+
   test('mutation commands with dryRun: true route as read, without operationId or snapshotVersion increment', async () => {
     // Setup rich fixture with Catalog.Goods and EventSubscription.OnWrite
     const goodsDir = path.join(tmpDir, 'Catalogs');
@@ -1022,5 +1076,3 @@ suite('Agent API — Registered Commands dryRun & ifRev dispatch', () => {
     assert.strictEqual(createRes1.code, 'INVALID_AGENT_PATH');
   });
 });
-
-

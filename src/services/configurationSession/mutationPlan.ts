@@ -20,6 +20,11 @@ export type MutationExpectation =
 
 export type MutationStep =
   | {
+      readonly type: 'assertFile';
+      readonly targetPath: string;
+      readonly expected: { readonly state: 'file'; readonly hash: string };
+    }
+  | {
       readonly type: 'writeFile';
       readonly targetPath: string;
       readonly content: string;
@@ -701,6 +706,9 @@ export class MutationPlanExecutor {
         }
       }
       switch (step.type) {
+        case 'assertFile':
+          await assertExpectation(step.targetPath, step.expected);
+          break;
         case 'writeFile':
         case 'deletePath':
           if (!previouslyMutated.has(step.targetPath)) {
@@ -731,7 +739,7 @@ export class MutationPlanExecutor {
       if (step.type === 'movePath') {
         targets.set(step.sourcePath, true);
         targets.set(step.targetPath, true);
-      } else {
+      } else if (step.type !== 'assertFile') {
         targets.set(step.targetPath, (targets.get(step.targetPath) ?? false) || step.type !== 'ensureDirectory');
       }
     }
@@ -757,6 +765,11 @@ export class MutationPlanExecutor {
 
   private async applyStep(step: MutationStep): Promise<void> {
     switch (step.type) {
+      case 'assertFile': {
+        const canonicalTarget = await this.revalidateParent(step.targetPath);
+        await assertExpectation(canonicalTarget, step.expected);
+        return;
+      }
       case 'ensureDirectory':
         await this.revalidateParent(step.targetPath);
         await fs.promises.mkdir(step.targetPath, { recursive: true });
@@ -961,7 +974,9 @@ function snapshotsForAppliedSteps(
   appliedSteps: number,
 ): PathSnapshot[] {
   const appliedPaths = new Set(
-    plan.steps.slice(0, appliedSteps).flatMap((step) => stepPaths(step)),
+    plan.steps.slice(0, appliedSteps)
+      .filter((step) => step.type !== 'assertFile')
+      .flatMap((step) => stepPaths(step)),
   );
   return snapshots.filter((snapshot) => appliedPaths.has(snapshot.targetPath));
 }
@@ -1013,7 +1028,7 @@ function computeExpectedDirectoryFingerprint(
   const childNames = new Set<string>();
   for (let i = 0; i < appliedSteps; i++) {
     const step = plan.steps[i];
-    if (!step) {
+    if (!step || step.type === 'assertFile') {
       continue;
     }
     const paths = stepPaths(step);
@@ -1131,6 +1146,11 @@ async function resolveEffectiveAppliedSteps(
   const nextStep = plan.steps[appliedSteps];
   if (!nextStep) {
     return appliedSteps;
+  }
+  if (nextStep.type === 'assertFile') {
+    // This read-only CAS check has no post-state to infer. Treat it as consumed so
+    // recovery can continue to the next effect without inspecting/restoring source.
+    return appliedSteps + 1;
   }
 
   const unrecordedPaths = stepPaths(nextStep);
