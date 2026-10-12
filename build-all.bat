@@ -22,6 +22,9 @@ if not exist releases mkdir releases
 echo Building VSIX package...
 node node_modules/@vscode/vsce/vsce package -o releases/
 if %errorlevel% neq 0 exit /b %errorlevel%
+echo Checking Marketplace icon dimensions...
+node scripts/check-vsix-icon.js releases/1c-metadata-tree-vscode-%NEWVERSION%.vsix
+if %errorlevel% neq 0 exit /b %errorlevel%
 
 echo.
 echo Build complete! VSIX: releases/1c-metadata-tree-vscode-%NEWVERSION%.vsix
