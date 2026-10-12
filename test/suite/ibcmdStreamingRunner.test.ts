@@ -115,6 +115,59 @@ suite('IbcmdStreamingRunner', () => {
     assert.ok(chunks.join('').includes('out'));
   });
 
+  test('auto encoding aborts a live child on a short UTF-8 prompt before EOF', async function () {
+    this.timeout(7000);
+    const cancellation = cancellable();
+    const prompt = 'Имя пользователя :';
+    const childScript = [
+      `process.stdout.write(${JSON.stringify(prompt)}, 'utf8');`,
+      'setInterval(() => {}, 1000);',
+    ].join(' ');
+    const startedAt = Date.now();
+    let terminationRequested = false;
+    const running = runIbcmdStreaming({
+      executablePath: process.execPath,
+      args: ['-e', childScript],
+      timeoutMs: 6000,
+      cancellation,
+      abortPattern: /Имя пользователя\s*:/,
+      terminateProcessTreeImpl: async (child) => {
+        terminationRequested = true;
+        await new Promise<void>((resolve) => {
+          if (child.exitCode !== null || child.signalCode !== null) {
+            resolve();
+            return;
+          }
+          child.once('close', () => resolve());
+          child.kill('SIGTERM');
+        });
+        return { terminated: true, hardKillUsed: false, survivingPids: [], errors: [] };
+      },
+    });
+
+    let deadline: NodeJS.Timeout | undefined;
+    const completed = await Promise.race([
+      running.then((outcome) => ({ outcome })),
+      new Promise<{ deadlineExceeded: true }>((resolve) => {
+        deadline = setTimeout(() => resolve({ deadlineExceeded: true }), 1500);
+      }),
+    ]);
+    if (deadline !== undefined) {
+      clearTimeout(deadline);
+    }
+    if ('deadlineExceeded' in completed) {
+      cancellation.cancel();
+      await running;
+      assert.fail('abortPattern must terminate the child before EOF within 1.5 seconds');
+    }
+
+    assert.strictEqual(completed.outcome.abortPatternMatched, true);
+    assert.strictEqual(completed.outcome.timedOut, false);
+    assert.strictEqual(completed.outcome.cancelled, false);
+    assert.strictEqual(terminationRequested, true);
+    assert.ok(Date.now() - startedAt < 1500);
+  });
+
   test('redacts a supplied ibcmd credential split across live stream chunks', async () => {
     const ctrl = createControllableSpawn();
     const chunks: string[] = [];

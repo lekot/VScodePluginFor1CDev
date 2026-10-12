@@ -145,13 +145,10 @@ export interface IbcmdStreamChunkDecoders {
 /**
  * Per-chunk decoding for spawn streams. CP866 / windows-1251 are single-byte; UTF-8 uses TextDecoder `{ stream: true }` per stream.
  *
- * `auto` mode detects encoding on the first chunk containing non-ASCII bytes (≥ 0x80).
- * If that chunk is valid UTF-8, all subsequent chunks are decoded as UTF-8 streaming.
- * Otherwise CP866 and CP1251 are scored by how many Russian letters they produce.
- * If no non-ASCII bytes appear before the stream ends, UTF-8 is used throughout.
- *
- * The encoding decision is shared between stdout and stderr: the first non-ASCII chunk
- * from either stream determines the encoding for both.
+ * `auto` mode selects an encoding from the first chunk containing non-ASCII bytes.
+ * An invalid UTF-8 chunk selects the better-scoring legacy Cyrillic encoding; otherwise UTF-8
+ * is selected immediately so interactive ibcmd prompts remain visible to abort-pattern checks.
+ * The first stream with non-ASCII output selects the shared encoding for stdout and stderr.
  *
  * `utf16le` uses UTF-16 LE streaming (e.g. some wide-character pipes / tools on Windows).
  */
@@ -188,22 +185,18 @@ export function createIbcmdStreamChunkDecoders(mode: IbcmdConsoleOutputEncoding)
     const utf8Out = new TextDecoder('utf-8', { fatal: false });
     const utf8Err = new TextDecoder('utf-8', { fatal: false });
 
-    const decodeAuto = (chunk: Buffer, utf8Dec: InstanceType<typeof TextDecoder>): string => {
-      if (!decided) {
-        const hasHighBytes = chunk.some(b => b >= 0x80);
-        if (hasHighBytes) {
-          decided = true;
-          useUtf8 = isLikelyUtf8(chunk);
-          if (!useUtf8) {
-            legacyEncoding = detectLegacyCyrillicEncoding(chunk);
-            return iconv.decode(chunk, legacyEncoding);
-          }
+    const decodeAuto = (chunk: Buffer, utf8Decoder: InstanceType<typeof TextDecoder>): string => {
+      if (!decided && chunk.some((byte) => byte >= 0x80)) {
+        decided = true;
+        useUtf8 = isLikelyUtf8(chunk);
+        if (!useUtf8) {
+          legacyEncoding = detectLegacyCyrillicEncoding(chunk);
+          return iconv.decode(chunk, legacyEncoding);
         }
       }
-      if (useUtf8) {
-        return utf8Dec.decode(chunk, { stream: true });
-      }
-      return iconv.decode(chunk, legacyEncoding);
+      return useUtf8
+        ? utf8Decoder.decode(chunk, { stream: true })
+        : iconv.decode(chunk, legacyEncoding);
     };
 
     return {

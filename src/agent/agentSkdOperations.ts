@@ -85,6 +85,8 @@ export class SkdOperations {
 
         const cancelled = processCancellationFailure(result);
         if (cancelled) { return cancelled; }
+        const truncatedOutput = successfulOutputTruncationFailure(result);
+        if (truncatedOutput) { return truncatedOutput; }
 
         if (result.exitCode !== 0) {
             const errMsg = result.stderr.trim() || result.stdout.trim() || `skd-compile failed with exit code ${result.exitCode}`;
@@ -153,6 +155,8 @@ export class SkdOperations {
 
         const cancelled = processCancellationFailure(result);
         if (cancelled) { return cancelled; }
+        const truncatedOutput = successfulOutputTruncationFailure(result);
+        if (truncatedOutput) { return truncatedOutput; }
 
         if (result.exitCode !== 0) {
             const errMsg = result.stderr.trim() || result.stdout.trim() || `skd-info failed with exit code ${result.exitCode}`;
@@ -215,6 +219,8 @@ export class SkdOperations {
 
         const cancelled = processCancellationFailure(result);
         if (cancelled) { return cancelled; }
+        const truncatedOutput = successfulOutputTruncationFailure(result);
+        if (truncatedOutput) { return truncatedOutput; }
 
         if (result.exitCode !== 0) {
             const errMsg = result.stderr.trim() || result.stdout.trim() || `skd-edit failed with exit code ${result.exitCode}`;
@@ -268,6 +274,8 @@ export class SkdOperations {
 
         const cancelled = processCancellationFailure(result);
         if (cancelled) { return cancelled; }
+        const truncatedOutput = successfulOutputTruncationFailure(result);
+        if (truncatedOutput) { return truncatedOutput; }
 
         if (result.exitCode !== 0) {
             // exitCode 1 can mean file not found — still return as structured result
@@ -308,7 +316,6 @@ function processCancellationFailure(
     if (
         (result.cancelled || result.cancellationRequested || result.timedOut)
         && result.effectPossible
-        && (result.exitCode !== 0 || terminationUnconfirmed)
     ) {
         const survivingPids = result.termination?.survivingPids ?? [];
         const terminationDetails = terminationUnconfirmed
@@ -327,6 +334,23 @@ function processCancellationFailure(
         };
     }
     return undefined;
+}
+
+function successfulOutputTruncationFailure(
+    result: Awaited<ReturnType<typeof runPowerShellScript>>,
+): AgentResult<never> | undefined {
+    if (result.exitCode !== 0 || (!result.stdoutTruncated && !result.stderrTruncated)) {
+        return undefined;
+    }
+
+    const truncatedStreams: string[] = [];
+    if (result.stdoutTruncated) { truncatedStreams.push('stdout'); }
+    if (result.stderrTruncated) { truncatedStreams.push('stderr'); }
+    return {
+        success: false,
+        code: 'SKD_OUTPUT_TRUNCATED',
+        error: `Вывод PowerShell усечён (${truncatedStreams.join(', ')}); результат СКД не разбирался.`,
+    };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
