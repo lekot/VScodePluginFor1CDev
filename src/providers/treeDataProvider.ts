@@ -24,6 +24,7 @@ import {
   normalizeConfigRelativePath,
 } from '../bindings/bindingPathUtils';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
+import { getStandardModuleFileName, type StandardModuleKind } from '../constants/metadataModuleDescriptors';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
 import { TreeFilterService, FILTERABLE_METADATA_TYPES } from './treeFilterService';
 import { TreeCacheService } from './treeCacheService';
@@ -1885,16 +1886,16 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       }
 
       case 'objectModule':
-        return this.findModuleNode(objectNode, 'ObjectModule.bsl');
+        return this.findStandardModuleNode(objectNode, 'ObjectModule');
 
       case 'managerModule':
-        return this.findModuleNode(objectNode, 'ManagerModule.bsl');
+        return this.findStandardModuleNode(objectNode, 'ManagerModule');
 
       case 'recordSetModule':
-        return this.findModuleNode(objectNode, 'RecordSetModule.bsl');
+        return this.findStandardModuleNode(objectNode, 'RecordSetModule');
 
       case 'valueManagerModule':
-        return this.findModuleNode(objectNode, 'ValueManagerModule.bsl');
+        return this.findStandardModuleNode(objectNode, 'ValueManagerModule');
 
       case 'form': {
         if (objectNode.type === MetadataType.CommonForm) {
@@ -2000,6 +2001,14 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return allExtChildren.find((c) => c.name === fileName) ?? null;
   }
 
+  private async findStandardModuleNode(
+    objectNode: TreeNode,
+    kind: StandardModuleKind
+  ): Promise<TreeNode | null> {
+    const fileName = getStandardModuleFileName(objectNode.type, kind);
+    return fileName ? this.findModuleNode(objectNode, fileName) : null;
+  }
+
   /**
    * Merge two children arrays without duplicates (by identity).
    * Used to combine getChildren() result (possibly filtered) with raw node.children.
@@ -2018,5 +2027,6 @@ function normalizeConfigIdentity(configPath: string | undefined): string {
   if (!value) {
     return '';
   }
+
   return configurationPathKey(value);
 }

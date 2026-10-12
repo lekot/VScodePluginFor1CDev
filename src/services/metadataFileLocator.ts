@@ -4,6 +4,7 @@
  */
 
 import * as path from 'path';
+import { getStandardModuleByFileName, type StandardModuleKind } from '../constants/metadataModuleDescriptors';
 import { METADATA_TYPE_DESCRIPTORS } from '../constants/metadataTypeDescriptors';
 
 // ---------------------------------------------------------------------------
@@ -144,8 +145,9 @@ export function locateMetadataFile(
       const objectName = stripXmlExt(rest[0]);
       return { ...base, objectName };
     }
-    if (rest.length === 3 && rest[1] === 'Ext' && rest[2] === 'Module.bsl') {
-      return { ...base, objectName: rest[0], subPath: { kind: 'commonModule' } };
+    if (rest.length === 3 && rest[1] === 'Ext') {
+      const subPath = resolveStandardModuleSubPath(objectType, rest[2]);
+      return subPath ? { ...base, objectName: rest[0], subPath } : null;
     }
     return null;
   }
@@ -155,8 +157,9 @@ export function locateMetadataFile(
     if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
       return { ...base, objectName: stripXmlExt(rest[0]) };
     }
-    if (rest.length === 3 && rest[1] === 'Ext' && rest[2] === 'ValueManagerModule.bsl') {
-      return { ...base, objectName: rest[0], subPath: { kind: 'valueManagerModule' } };
+    if (rest.length === 3 && rest[1] === 'Ext') {
+      const subPath = resolveStandardModuleSubPath(objectType, rest[2]);
+      return subPath ? { ...base, objectName: rest[0], subPath } : null;
     }
     return null;
   }
@@ -354,19 +357,48 @@ function parseExtModule(
   objectName: string,
   fileName: string
 ): MetadataLocation | null {
-  switch (fileName) {
-    case 'ObjectModule.bsl':
-      return { ...base, objectName, subPath: { kind: 'objectModule' } };
-    case 'ManagerModule.bsl':
-      return { ...base, objectName, subPath: { kind: 'managerModule' } };
-    case 'RecordSetModule.bsl':
-      return { ...base, objectName, subPath: { kind: 'recordSetModule' } };
-    case 'ValueManagerModule.bsl':
-      return { ...base, objectName, subPath: { kind: 'valueManagerModule' } };
-    case 'PredefinedData.xml':
-      return { ...base, objectName, subPath: { kind: 'predefinedData' } };
-    default:
-      return null;
+  const standardModule = resolveStandardModuleSubPath(base.objectType, fileName);
+  if (standardModule) {
+    return { ...base, objectName, subPath: standardModule };
+  }
+  if (fileName === 'PredefinedData.xml') {
+    return { ...base, objectName, subPath: { kind: 'predefinedData' } };
+  }
+  return null;
+}
+
+function resolveStandardModuleSubPath(
+  objectType: string,
+  fileName: string
+): MetadataFileSubPath | undefined {
+  const metadataType = METADATA_TYPE_DESCRIPTORS.find((descriptor) => descriptor.designerFolder === objectType)?.type;
+  if (!metadataType) {
+    return undefined;
+  }
+  const descriptor = getStandardModuleByFileName(metadataType, fileName);
+  if (!descriptor) {
+    return undefined;
+  }
+  const kind = standardModuleSubPathKind(descriptor.kind);
+  return kind ? { kind } : undefined;
+}
+
+function standardModuleSubPathKind(
+  kind: StandardModuleKind
+): Extract<MetadataFileSubPath, { kind: 'objectModule' | 'managerModule' | 'recordSetModule' | 'valueManagerModule' | 'commonModule' }>['kind'] | undefined {
+  switch (kind) {
+    case 'ObjectModule':
+      return 'objectModule';
+    case 'ManagerModule':
+      return 'managerModule';
+    case 'RecordSetModule':
+      return 'recordSetModule';
+    case 'ValueManagerModule':
+      return 'valueManagerModule';
+    case 'CommonModule':
+      return 'commonModule';
+    case 'ManagedApplicationModule':
+      return undefined;
   }
 }
 

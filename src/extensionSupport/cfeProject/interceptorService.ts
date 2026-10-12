@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { getStandardModuleFileName, type StandardModuleKind } from '../../constants/metadataModuleDescriptors';
 import { getMetadataTypeDescriptorByRootTag, METADATA_TYPE_DESCRIPTORS } from '../../constants/metadataTypeDescriptors';
 import { CONFIGURATION_XML } from '../../constants/fileNames';
 import { hashContent } from '../../services/configurationSession/atomicFileStorage';
@@ -35,14 +36,6 @@ const MODULE_COMPATIBILITY: Readonly<Record<string, readonly CfeModuleKind[]>> =
   Catalog: Object.freeze(['ObjectModule', 'ManagerModule'] as const),
   Document: Object.freeze(['ObjectModule', 'ManagerModule'] as const),
   CommonModule: Object.freeze(['Module'] as const),
-});
-
-const MODULE_FILE_NAMES: Readonly<Record<CfeModuleKind, string>> = Object.freeze({
-  Module: 'Module.bsl',
-  ObjectModule: 'ObjectModule.bsl',
-  ManagerModule: 'ManagerModule.bsl',
-  RecordSetModule: 'RecordSetModule.bsl',
-  ValueManagerModule: 'ValueManagerModule.bsl',
 });
 
 const INTERCEPTOR_SUFFIX: Readonly<Record<CfeInterceptorKind, string>> = Object.freeze({
@@ -383,7 +376,15 @@ async function modulePathFor(
   if (!descriptor) {
     throw new CfeProjectError('CFE_DEPENDENCY_UNSUPPORTED', `Тип объекта «${type}» не поддержан для перехватов CFE.`);
   }
-  return safePath(root, path.join(root, descriptor.designerFolder, name, 'Ext', MODULE_FILE_NAMES[moduleKind]));
+  const standardModuleKind: StandardModuleKind = moduleKind === 'Module' ? 'CommonModule' : moduleKind;
+  const fileName = getStandardModuleFileName(descriptor.type, standardModuleKind);
+  if (!fileName) {
+    throw new CfeProjectError(
+      'CFE_DEPENDENCY_UNSUPPORTED',
+      `Модуль «${moduleKind}» не объявлен для типа «${type}» в реестре стандартных модулей CFE.`
+    );
+  }
+  return safePath(root, path.join(root, descriptor.designerFolder, name, 'Ext', fileName));
 }
 
 async function safePath(root: string, candidate: string): Promise<string> {

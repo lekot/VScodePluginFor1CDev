@@ -8,6 +8,12 @@ import * as path from 'path';
 import { XMLParser } from 'fast-xml-parser';
 import { RdbgModuleId } from './rdbg/rdbgTypes';
 import { METADATA_TYPE_DESCRIPTORS } from '../constants/metadataTypeDescriptors';
+import {
+  getStandardModuleByFileName,
+  getStandardModuleFileName,
+  type StandardModuleKind,
+} from '../constants/metadataModuleDescriptors';
+import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 
 export interface ModuleIdResolveResult {
   moduleId: RdbgModuleId;
@@ -39,14 +45,7 @@ export const TOP_LEVEL_TYPE_FOLDERS: ReadonlySet<string> = new Set(
 // ---------------------------------------------------------------------------
 // Module type → propertyId (platform-constant UUID)
 // ---------------------------------------------------------------------------
-type ModuleKind =
-  | 'ObjectModule'
-  | 'CommonModule'
-  | 'FormModule'
-  | 'ValueManagerModule'
-  | 'CommandModule'
-  | 'ManagerModule'
-  | 'RecordSetModule';
+type ModuleKind = Exclude<StandardModuleKind, 'ManagedApplicationModule'> | 'FormModule' | 'CommandModule';
 
 /**
  * Platform-constant UUIDs for module propertyId in the RDBG debug protocol.
@@ -131,26 +130,6 @@ function parseBslPath(
   const xmlAt = (...segments: string[]): string =>
     path.join(workspaceRoot, typeFolder, ...segments);
 
-  // ---- CommonModules/<ModuleName>/Ext/Module.bsl ----
-  if (typeFolder === 'CommonModules' && rest.join('/') === 'Ext/Module.bsl') {
-    return {
-      typeFolder,
-      objectName,
-      moduleKind: 'CommonModule',
-      xmlFilePath: xmlAt(`${objectName}.xml`),
-    };
-  }
-
-  // ---- Constants/<ConstName>/Ext/ValueManagerModule.bsl ----
-  if (typeFolder === 'Constants' && rest.join('/') === 'Ext/ValueManagerModule.bsl') {
-    return {
-      typeFolder,
-      objectName,
-      moduleKind: 'ValueManagerModule',
-      xmlFilePath: xmlAt(`${objectName}.xml`),
-    };
-  }
-
   // ---- <TypeFolder>/<ObjectName>/Forms/<FormName>/Ext/Form/Module.bsl ----
   //  rest = ['Forms', '<FormName>', 'Ext', 'Form', 'Module.bsl']
   if (
@@ -192,24 +171,20 @@ function parseBslPath(
     };
   }
 
-  // ---- <TypeFolder>/<ObjectName>/Ext/ObjectModule.bsl ----
-  if (rest.join('/') === 'Ext/ObjectModule.bsl') {
-    return {
-      typeFolder,
-      objectName,
-      moduleKind: 'ObjectModule',
-      xmlFilePath: xmlAt(`${objectName}.xml`),
-    };
-  }
-
-  // ---- <TypeFolder>/<ObjectName>/Ext/ManagerModule.bsl ----
-  if (rest.join('/') === 'Ext/ManagerModule.bsl') {
-    return {
-      typeFolder,
-      objectName,
-      moduleKind: 'ManagerModule',
-      xmlFilePath: xmlAt(`${objectName}.xml`),
-    };
+  // ---- Root standard modules declared by the canonical registry ----
+  if (rest.length === 2 && rest[0] === 'Ext') {
+    const standardModule = getStandardModuleByFileName(
+      MetadataTypeMapper.map(typeFolder),
+      rest[1]
+    );
+    if (standardModule && standardModule.kind !== 'ManagedApplicationModule') {
+      return {
+        typeFolder,
+        objectName,
+        moduleKind: standardModule.kind,
+        xmlFilePath: xmlAt(`${objectName}.xml`),
+      };
+    }
   }
 
   return undefined;
@@ -670,7 +645,8 @@ function metadataDumpNameToRelativeBslPath(metadataName: string, kind: ModuleKin
     if (!modName) {
       return undefined;
     }
-    return `CommonModules/${modName}/Ext/Module.bsl`;
+    const fileName = getStandardModuleFileName(MetadataTypeMapper.map('CommonModules'), kind);
+    return fileName ? `CommonModules/${modName}/Ext/${fileName}` : undefined;
   }
 
   if (kind === 'FormModule') {
@@ -728,7 +704,8 @@ function metadataDumpNameToRelativeBslPath(metadataName: string, kind: ModuleKin
     if (!folder) {
       return undefined;
     }
-    return `${folder}/${obj}/Ext/ValueManagerModule.bsl`;
+    const fileName = getStandardModuleFileName(MetadataTypeMapper.map(folder), kind);
+    return fileName ? `${folder}/${obj}/Ext/${fileName}` : undefined;
   }
 
   const modSuffix =
@@ -755,16 +732,11 @@ function metadataDumpNameToRelativeBslPath(metadataName: string, kind: ModuleKin
     return undefined;
   }
 
-  if (kind === 'ObjectModule') {
-    return `${folder}/${obj}/Ext/ObjectModule.bsl`;
-  }
-  if (kind === 'ManagerModule') {
-    return `${folder}/${obj}/Ext/ManagerModule.bsl`;
-  }
   if (kind === 'RecordSetModule') {
     return undefined;
   }
-  return undefined;
+  const fileName = getStandardModuleFileName(MetadataTypeMapper.map(folder), kind);
+  return fileName ? `${folder}/${obj}/Ext/${fileName}` : undefined;
 }
 
 /**

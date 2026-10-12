@@ -19,6 +19,8 @@ import {
   getIdentitySensitiveMetadataPropertyNames,
   IDENTITY_PROPERTY_EDIT_ERROR,
 } from '../domain/metadataPropertyClassifier';
+import { getStandardModuleFileName, type StandardModuleKind } from '../constants/metadataModuleDescriptors';
+import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 
 /**
  * Context passed to all message handlers — replaces class `this`.
@@ -930,11 +932,8 @@ export function isMatchingCurrentFormSelection(
  * Maps the module name segment used in Handler to the actual BSL file name.
  */
 const HANDLER_MODULE_FILE_MAP: Record<string, string> = {
-  ObjectModule: 'ObjectModule.bsl',
+  // Event handlers can refer to the legacy alias even though it is not a standard module kind.
   ObjectManagerModule: 'ObjectManagerModule.bsl',
-  RecordSetModule: 'RecordSetModule.bsl',
-  ManagerModule: 'ManagerModule.bsl',
-  Module: 'Module.bsl',
 };
 
 /**
@@ -1059,9 +1058,23 @@ export async function handleGotoHandlerMessage(
 
   let moduleBslPath: string;
   if (parts.objectType === 'CommonModule') {
-    moduleBslPath = path.join(objectFolder, 'Ext', 'Module.bsl');
+    const commonModuleFile = getStandardModuleFileName(
+      MetadataType.CommonModule,
+      'CommonModule'
+    );
+    if (!commonModuleFile) {
+      vscode.window.showWarningMessage('Стандартный модуль общего модуля не найден в реестре.');
+      return;
+    }
+    moduleBslPath = path.join(objectFolder, 'Ext', commonModuleFile);
   } else {
-    const moduleBslFile = HANDLER_MODULE_FILE_MAP[parts.moduleName] ?? `${parts.moduleName}.bsl`;
+    const metadataType = MetadataTypeMapper.map(parts.objectType);
+    const standardModuleFile = getStandardModuleFileName(
+      metadataType,
+      parts.moduleName as StandardModuleKind
+    );
+    const moduleBslFile =
+      HANDLER_MODULE_FILE_MAP[parts.moduleName] ?? standardModuleFile ?? `${parts.moduleName}.bsl`;
     moduleBslPath = path.join(objectFolder, 'Ext', moduleBslFile);
   }
 
