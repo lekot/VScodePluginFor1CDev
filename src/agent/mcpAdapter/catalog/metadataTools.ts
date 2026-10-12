@@ -22,6 +22,45 @@ const createObjectInput = z.strictObject({
   name: elementName,
   synonym: z.string().optional(),
   properties: z.record(z.string(), z.unknown()).optional(),
+  chartOfAccounts: z.strictObject({
+    synonym: z.string().optional(),
+    comment: z.string().optional(),
+    codeMask: z.string().optional(),
+    codeLength: z.number().int().nonnegative().optional(),
+    descriptionLength: z.number().int().nonnegative().optional(),
+    orderLength: z.number().int().nonnegative().optional(),
+    codeSeries: z.enum(['WholeChartOfAccounts', 'WithinSubordination']).optional(),
+    checkUnique: z.boolean().optional(),
+    useStandardCommands: z.boolean().optional(),
+    extDimensionTypes: z.string().optional(),
+    maxExtDimensionCount: z.number().int().min(0).max(50).optional(),
+    accountingFlags: z.array(z.strictObject({
+      name: elementName,
+      synonym: z.string().optional(),
+      type: z.string().optional(),
+    })).optional(),
+    extDimensionAccountingFlags: z.array(z.strictObject({
+      name: elementName,
+      synonym: z.string().optional(),
+      type: z.string().optional(),
+    })).optional(),
+    predefinedAccounts: z.array(z.strictObject({
+      name: elementName,
+      code: z.string(),
+      description: z.string(),
+      accountType: z.enum(['Active', 'Passive', 'ActivePassive']).optional(),
+      offBalance: z.boolean().optional(),
+      order: z.string().optional(),
+    })).optional(),
+  }).optional(),
+  filterCriterion: z.strictObject({
+    synonym: z.string().optional(),
+    comment: z.string().optional(),
+    types: z.array(z.string()),
+    content: z.array(z.string()),
+    useStandardCommands: z.boolean().optional(),
+  }).optional(),
+  recorderDocument: elementName.optional(),
 });
 
 const listObjectsInput = z.strictObject({

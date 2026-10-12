@@ -1,11 +1,10 @@
 import * as vscode from 'vscode';
-import { TreeNode } from '../models/treeNode';
+import { MetadataType, TreeNode } from '../models/treeNode';
 import { ExtensionState } from '../state/extensionState';
 import { validateElementName } from '../utils/elementNameValidator';
 import {
   collectAvailableFilterTypes,
   collectAvailableFilterCandidates,
-  planCreateFilterCriterion,
   type FilterCriterionWizardParams,
 } from '../services/filterCriterionWizardService';
 import { Logger } from '../utils/logger';
@@ -13,6 +12,7 @@ import { getSelectedNode, requireDesignerFormat } from '../helpers/commandHelper
 
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
 import { runConfigurationPlan as defaultRunConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
+import { planCreateMetadataObject } from '../services/metadataCrudService';
 
 export interface RunFilterCriterionWizardOptions {
   state: ExtensionState;
@@ -122,9 +122,17 @@ export async function runFilterCriterionWizard(options: RunFilterCriterionWizard
   };
 
   try {
-    const plan = await planCreateFilterCriterion(configPath, params);
+    const planned = await planCreateMetadataObject(
+      { configurationRootPath: configPath },
+      {
+        type: MetadataType.FilterCriterion,
+        name: trimmedName,
+        synonym: params.synonym,
+        filterCriterion: params,
+      },
+    );
     const executePlan = runConfigurationPlan ?? defaultRunConfigurationPlan;
-    await executePlan(configPath, plan);
+    await executePlan(configPath, planned.plan);
     vscode.window.showInformationMessage(`Создан критерий отбора: ${trimmedName}`);
 
     if (invalidateCacheAndReload) {

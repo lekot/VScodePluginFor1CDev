@@ -1,10 +1,9 @@
 import * as vscode from 'vscode';
-import { TreeNode } from '../models/treeNode';
+import { MetadataType, TreeNode } from '../models/treeNode';
 import { ExtensionState } from '../state/extensionState';
 import { validateElementName } from '../utils/elementNameValidator';
 import {
   collectAvailableSubcontoTypes,
-  planCreateChartOfAccounts,
   type ChartOfAccountsWizardParams,
   type InitialPredefinedAccount,
   type AccountingFlagParam,
@@ -13,6 +12,7 @@ import { Logger } from '../utils/logger';
 import { getSelectedNode, requireDesignerFormat } from '../helpers/commandHelpers';
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
 import { runConfigurationPlan as defaultRunConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
+import { planCreateMetadataObject } from '../services/metadataCrudService';
 
 export interface RunChartOfAccountsWizardOptions {
   state: ExtensionState;
@@ -225,13 +225,18 @@ export async function runChartOfAccountsWizard(options: RunChartOfAccountsWizard
   };
 
   try {
-    const plan = await planCreateChartOfAccounts({
-      configPath,
-      params,
-    });
+    const planned = await planCreateMetadataObject(
+      { configurationRootPath: configPath },
+      {
+        type: MetadataType.ChartOfAccounts,
+        name: trimmedName,
+        synonym: params.synonym,
+        chartOfAccounts: params,
+      },
+    );
 
     const executePlan = runConfigurationPlan ?? defaultRunConfigurationPlan;
-    await executePlan(configPath, plan);
+    await executePlan(configPath, planned.plan);
 
     if (invalidateCacheAndReload) {
       await invalidateCacheAndReload(configPath);

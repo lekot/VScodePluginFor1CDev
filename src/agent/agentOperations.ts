@@ -253,6 +253,9 @@ export class AgentOperations {
                 name,
                 synonym: params.synonym,
                 properties: params.properties,
+                chartOfAccounts: params.chartOfAccounts,
+                filterCriterion: params.filterCriterion,
+                recorderDocument: params.recorderDocument,
             },
         );
         return toAgentCreatePlan(planned.plan);
@@ -406,6 +409,9 @@ export class AgentOperations {
                         name: trimmedName,
                         synonym: params.synonym,
                         properties: params.properties,
+                        chartOfAccounts: params.chartOfAccounts,
+                        filterCriterion: params.filterCriterion,
+                        recorderDocument: params.recorderDocument,
                     },
                 );
                 const plan = toAgentCreatePlan(metadataMutation.plan);

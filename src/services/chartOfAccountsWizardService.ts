@@ -1,14 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { XMLWriter } from '../utils/XMLWriter';
-import { validateElementName } from '../utils/elementNameValidator';
-import { hashContent } from './configurationSession/atomicFileStorage';
-import type { MutationPlan, MutationStep } from './configurationSession/mutationPlan';
-import { readMutationExpectation } from './filesystemReadSemantics';
-import type { AgentResult } from '../agent/types';
-import { CONFIGURATION_XML } from '../constants/fileNames';
-import { requireProjectWriteFormatProfile } from '../utils/format/formatRank';
-import { buildRootObjectConfigurationContent } from './configurationXmlUpdater';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 
 export interface InitialPredefinedAccount {
@@ -48,11 +40,6 @@ export interface AvailableSubcontoType {
   ref: string;
   name: string;
   label: string;
-}
-
-export interface PlanCreateChartOfAccountsOptions {
-  configPath: string;
-  params: ChartOfAccountsWizardParams;
 }
 
 function escapeXml(value: string): string {
@@ -365,70 +352,4 @@ export function generatePredefinedAccountsXml(
 <PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="ChartOfAccountsPredefinedItems" version="${targetVersion}">
 ${itemsXml}</PredefinedData>
 `;
-}
-
-/**
- * Plan creation of ChartOfAccounts as an atomic MutationPlan.
- */
-export async function planCreateChartOfAccounts(
-  options: PlanCreateChartOfAccountsOptions
-): Promise<MutationPlan<AgentResult<{ filePath: string }>>> {
-  const { configPath, params } = options;
-  const name = params.name.trim();
-
-  const validationError = validateElementName(name, []);
-  if (validationError) {
-    throw new Error(`Имя плана счетов неверно: ${validationError}`);
-  }
-
-  const coasDir = path.join(configPath, 'ChartsOfAccounts');
-  const coaXmlPath = path.join(coasDir, `${name}.xml`);
-  const coaChildDir = path.join(coasDir, name);
-  const extDir = path.join(coaChildDir, 'Ext');
-  const predefinedXmlPath = path.join(extDir, 'Predefined.xml');
-  const configXmlPath = path.join(configPath, CONFIGURATION_XML);
-
-  const fileExpected = await readMutationExpectation(coaXmlPath);
-  if (fileExpected.state !== 'missing') {
-    throw new Error(`План счетов с именем «${name}» уже существует.`);
-  }
-
-  const configurationContent = await fs.promises.readFile(configXmlPath, 'utf8');
-  const targetVersion = requireProjectWriteFormatProfile(configurationContent).version;
-
-  const nextConfigurationContent = buildRootObjectConfigurationContent(configurationContent, {
-    type: 'add',
-    rootTag: 'ChartOfAccounts',
-    objectName: name,
-  });
-
-  const coaXmlContent = generateChartOfAccountsXml(params, targetVersion);
-  const predefinedContent = generatePredefinedAccountsXml(params, targetVersion);
-  const predefinedExpected = await readMutationExpectation(predefinedXmlPath);
-
-  const steps: MutationStep[] = [
-    { type: 'ensureDirectory', targetPath: coasDir },
-    { type: 'writeFile', targetPath: coaXmlPath, content: coaXmlContent, encoding: 'utf8', expected: fileExpected },
-    { type: 'ensureDirectory', targetPath: coaChildDir },
-    { type: 'ensureDirectory', targetPath: extDir },
-    { type: 'writeFile', targetPath: predefinedXmlPath, content: predefinedContent, encoding: 'utf8', expected: predefinedExpected },
-    {
-      type: 'writeFile',
-      targetPath: configXmlPath,
-      content: nextConfigurationContent,
-      encoding: 'utf8',
-      expected: { state: 'file', hash: hashContent(configurationContent) },
-    },
-  ];
-
-  return {
-    kind: 'chartOfAccounts.create',
-    steps,
-    result: {
-      success: true,
-      data: {
-        filePath: coaXmlPath,
-      },
-    },
-  };
 }
