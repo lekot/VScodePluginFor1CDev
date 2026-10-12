@@ -198,6 +198,74 @@ suite('SkdOperations — background cancellation contract', () => {
     });
 });
 
+suite('SkdOperations — truncated PowerShell payload contract', () => {
+    const operationsUnderTest = [
+        {
+            name: 'skdValidate (valid prefix, omitted later errors)',
+            stdout: '[OK] СКД валидна\n',
+            invoke: (operations: SkdOperations) => operations.skdValidate({ templatePath: 'template.xml' }),
+        },
+        {
+            name: 'skdCompile',
+            stdout: 'OK  /tmp/output.xml\nDataSets: 3  Fields: 10  Calculated: 2  Totals: 4  Params: 5  Variants: 1\nSize: 2048 bytes\n',
+            invoke: (operations: SkdOperations) => operations.skdCompile({ outputPath: '/tmp/output.xml', value: '{}' }),
+        },
+        {
+            name: 'skdInfo',
+            stdout: 'DataSet: Main\nFields: 10\n',
+            invoke: (operations: SkdOperations) => operations.skdInfo({ templatePath: 'template.xml' }),
+        },
+        {
+            name: 'skdEdit',
+            stdout: '[OK] Saved /tmp/template.xml\n',
+            invoke: (operations: SkdOperations) => operations.skdEdit({
+                templatePath: '/tmp/template.xml',
+                operation: 'add-field',
+                value: '{}',
+            }),
+        },
+    ];
+
+    for (const operation of operationsUnderTest) {
+        for (const stream of ['stdout', 'stderr'] as const) {
+            test(`${operation.name} fails closed before parsing when ${stream} is truncated after exit 0`, async () => {
+                const operations = new SkdOperations({
+                    extensionPath: FAKE_EXTENSION_PATH,
+                    runPowerShellScript: async () => ({
+                        stdout: operation.stdout,
+                        stderr: 'partial PowerShell diagnostic',
+                        exitCode: 0,
+                        ...(stream === 'stdout' ? { stdoutTruncated: true } : { stderrTruncated: true }),
+                    }),
+                });
+
+                const result = await operation.invoke(operations);
+
+                assert.strictEqual(result.success, false);
+                assert.strictEqual(result.code, 'SKD_OUTPUT_TRUNCATED');
+                assert.match(result.error ?? '', new RegExp(stream, 'i'));
+                assert.strictEqual(result.data, undefined);
+            });
+        }
+    }
+
+    test('skdInfo preserves its existing application-level [TRUNCATED] result', async () => {
+        const operations = new SkdOperations({
+            extensionPath: FAKE_EXTENSION_PATH,
+            runPowerShellScript: async () => ({
+                stdout: 'Overview\n[TRUNCATED]\n',
+                stderr: '',
+                exitCode: 0,
+            }),
+        });
+
+        const result = await operations.skdInfo({ templatePath: 'template.xml' });
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.data && 'info' in result.data ? result.data.truncated : undefined, true);
+    });
+});
+
 suite('PowerShell runner process-tree termination', () => {
     test('decodes UTF-8 characters split across stdout and stderr chunks', async () => {
         const child = new InjectedPowerShellChild();
