@@ -2162,7 +2162,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "package": "node node_modules/@vscode/vsce/vsce package",
+    "package": "node node_modules/@vscode/vsce/vsce package && node scripts/check-vsix-icon.js",
     "copy:webviews": "node scripts/copy-webviews.js",
     "bundle:query-builder-visitor": "node scripts/bundle-query-builder-visitor.js",
     "generate:bsl-completion-index": "npm run compile && node scripts/generate-bsl-completion-index.js",
@@ -2206,6 +2206,7 @@
     "mocha": "^10.0.0",
     "prettier": "^3.0.0",
     "typescript": "^5.0.0",
+    "yauzl": "^2.10.0",
     "zod": "^4.4.3"
   },
   "dependencies": {
