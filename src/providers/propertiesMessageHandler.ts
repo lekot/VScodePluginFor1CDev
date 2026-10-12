@@ -1073,8 +1073,13 @@ export async function handleGotoHandlerMessage(
       metadataType,
       parts.moduleName as StandardModuleKind
     );
-    const moduleBslFile =
-      HANDLER_MODULE_FILE_MAP[parts.moduleName] ?? standardModuleFile ?? `${parts.moduleName}.bsl`;
+    const moduleBslFile = HANDLER_MODULE_FILE_MAP[parts.moduleName] ?? standardModuleFile;
+    if (!moduleBslFile) {
+      vscode.window.showWarningMessage(
+        `Модуль "${parts.moduleName}" не поддерживается для типа "${parts.objectType}".`
+      );
+      return;
+    }
     moduleBslPath = path.join(objectFolder, 'Ext', moduleBslFile);
   }
 
