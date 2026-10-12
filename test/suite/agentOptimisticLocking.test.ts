@@ -829,6 +829,38 @@ suite('Agent API — Registered Commands dryRun & ifRev dispatch', () => {
     assert.strictEqual(fs.existsSync(targetPath), true);
   });
 
+  test('root object mutation commands keep operation-specific scope errors before configuration resolution', async () => {
+    const cases = [
+      {
+        commandId: '1c-metadata-tree.agent.deleteObject',
+        action: 'deleteObject',
+        params: { path: 'Catalog.Goods.Attribute.Code' },
+        error: 'deleteObject supports only a root object path: "Catalog.Goods.Attribute.Code".',
+      },
+      {
+        commandId: '1c-metadata-tree.agent.renameObject',
+        action: 'renameObject',
+        params: { path: 'Catalog.Goods.Attribute.Code', newName: 'CodeCopy' },
+        error: 'renameObject supports only a root object path (RootTag.Name): "Catalog.Goods.Attribute.Code".',
+      },
+      {
+        commandId: '1c-metadata-tree.agent.duplicateObject',
+        action: 'duplicateObject',
+        params: { path: 'Catalog.Goods.Attribute.Code', newName: 'CodeCopy' },
+        error: 'duplicateObject supports only a root object path (RootTag.Name): "Catalog.Goods.Attribute.Code".',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const handler = vscodeTestState.registeredCommandHandlers.get(testCase.commandId);
+      assert.ok(handler, `${testCase.commandId} must be registered`);
+      const result = await handler({ configurationId: 'missing-configuration', ...testCase.params }) as AgentResult;
+      assert.strictEqual(result.success, false, testCase.commandId);
+      assert.strictEqual(result.code, 'INVALID_AGENT_PATH', testCase.commandId);
+      assert.strictEqual(result.error, testCase.error, testCase.commandId);
+    }
+  });
+
   test('mutation commands with dryRun: true route as read, without operationId or snapshotVersion increment', async () => {
     // Setup rich fixture with Catalog.Goods and EventSubscription.OnWrite
     const goodsDir = path.join(tmpDir, 'Catalogs');

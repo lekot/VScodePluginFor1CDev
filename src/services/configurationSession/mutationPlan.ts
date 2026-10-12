@@ -48,6 +48,21 @@ export type MutationStep =
       readonly targetExpected: MutationExpectation;
     };
 
+export type DirectoryFingerprintEntry =
+  | { readonly name: string; readonly type: 'file'; readonly hash: string }
+  | { readonly name: string; readonly type: 'directory'; readonly fingerprint: string };
+
+export function calculateDirectoryFingerprintFromEntries(
+  entries: readonly DirectoryFingerprintEntry[],
+): string {
+  const hashes = [...entries]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((entry) => entry.type === 'file'
+      ? `F:${entry.name}:${entry.hash}`
+      : `D:${entry.name}:${entry.fingerprint}`);
+  return hashContent(Buffer.from(hashes.join('\n'), 'utf8'));
+}
+
 export function isReadOnlyAssertionStep(
   step: MutationStep,
 ): step is Extract<MutationStep, { readonly type: 'assertFile' | 'assertDirectory' }> {
@@ -1210,8 +1225,7 @@ async function resolveEffectiveAppliedSteps(
 
 export async function calculateDirectoryFingerprint(dirPath: string): Promise<string> {
   const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
-  entries.sort((a, b) => a.name.localeCompare(b.name));
-  const hashes: string[] = [];
+  const fingerprintEntries: DirectoryFingerprintEntry[] = [];
   for (const entry of entries) {
     const full = path.join(dirPath, entry.name);
     if (entry.isSymbolicLink()) {
@@ -1219,12 +1233,16 @@ export async function calculateDirectoryFingerprint(dirPath: string): Promise<st
     }
     if (entry.isFile()) {
       const content = await fs.promises.readFile(full);
-      hashes.push(`F:${entry.name}:${hashContent(content)}`);
+      fingerprintEntries.push({ name: entry.name, type: 'file', hash: hashContent(content) });
     } else if (entry.isDirectory()) {
-      hashes.push(`D:${entry.name}:${await calculateDirectoryFingerprint(full)}`);
+      fingerprintEntries.push({
+        name: entry.name,
+        type: 'directory',
+        fingerprint: await calculateDirectoryFingerprint(full),
+      });
     }
   }
-  return hashContent(Buffer.from(hashes.join('\n'), 'utf8'));
+  return calculateDirectoryFingerprintFromEntries(fingerprintEntries);
 }
 
 async function inspectPath(targetPath: string): Promise<MutationExpectation> {

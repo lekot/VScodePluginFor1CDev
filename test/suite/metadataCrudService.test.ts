@@ -416,6 +416,10 @@ suite('MetadataCrudService', () => {
     assert.deepStrictEqual(normalizedSteps(agentPlan), normalizedSteps(common.plan));
     assert.strictEqual(agentPlan.kind, 'agent.duplicateObject');
     await assert.rejects(
+      () => agentOperations.planRenameObject({ path: 'Catalog.Source.Attribute.Code', newName: 'CodeRenamed' }),
+      /renameObject supports only a root object path/i,
+    );
+    await assert.rejects(
       () => agentOperations.planDuplicateObject!({ path: 'Catalog.Source.Attribute.Code', newName: 'CodeCopy' }),
       /root object path/i,
     );

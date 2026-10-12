@@ -31,9 +31,11 @@ import { hashContent } from './configurationSession/atomicFileStorage';
 import { assertPathWithinRoot } from './configurationSession/pathBoundary';
 import {
   calculateDirectoryFingerprint,
+  calculateDirectoryFingerprintFromEntries,
   isReadOnlyAssertionStep,
   MutationPlanError,
 } from './configurationSession/mutationPlan';
+import type { DirectoryFingerprintEntry } from './configurationSession/mutationPlan';
 import type { MutationPlan, MutationStep } from './configurationSession/mutationPlan';
 import { planIdentityTokenReplacements } from '../utils/referenceFinder';
 import { listXmlSiblingNames, readMutationExpectation } from './filesystemReadSemantics';
@@ -1046,45 +1048,51 @@ function fingerprintDuplicateDirectorySnapshot(
   directories: readonly string[],
   files: readonly MetadataDuplicateDirectoryArtifact[],
 ): string {
-  type Entry =
-    | { readonly name: string; readonly type: 'directory'; readonly directoryPath: string }
-    | { readonly name: string; readonly type: 'file'; readonly content: Buffer };
-  const entriesByDirectory = new Map<string, Entry[]>();
+  const directoriesByParent = new Map<string, Array<{ readonly name: string; readonly directoryPath: string }>>();
+  const filesByParent = new Map<string, Array<{ readonly name: string; readonly content: Buffer }>>();
   for (const directoryPath of directories) {
-    entriesByDirectory.set(path.resolve(directoryPath), []);
+    directoriesByParent.set(path.resolve(directoryPath), []);
+    filesByParent.set(path.resolve(directoryPath), []);
   }
   for (const directoryPath of directories) {
     if (path.resolve(directoryPath) === path.resolve(rootDirectory)) {
       continue;
     }
     const parentKey = path.resolve(path.dirname(directoryPath));
-    const parentEntries = entriesByDirectory.get(parentKey);
-    if (parentEntries) {
-      parentEntries.push({
+    const parentDirectories = directoriesByParent.get(parentKey);
+    if (parentDirectories) {
+      parentDirectories.push({
         name: path.basename(directoryPath),
-        type: 'directory',
         directoryPath,
       });
     }
   }
   for (const artifact of files) {
-    const parentEntries = entriesByDirectory.get(path.resolve(path.dirname(artifact.filePath)));
-    if (parentEntries) {
-      parentEntries.push({
+    const parentFiles = filesByParent.get(path.resolve(path.dirname(artifact.filePath)));
+    if (parentFiles) {
+      parentFiles.push({
         name: path.basename(artifact.filePath),
-        type: 'file',
         content: artifact.content,
       });
     }
   }
 
   const fingerprint = (directoryPath: string): string => {
-    const entries = entriesByDirectory.get(path.resolve(directoryPath)) ?? [];
-    entries.sort((left, right) => left.name.localeCompare(right.name));
-    const hashes = entries.map((entry) => entry.type === 'file'
-      ? `F:${entry.name}:${hashContent(entry.content)}`
-      : `D:${entry.name}:${fingerprint(entry.directoryPath)}`);
-    return hashContent(Buffer.from(hashes.join('\n'), 'utf8'));
+    const filesForDirectory = filesByParent.get(path.resolve(directoryPath)) ?? [];
+    const directoriesForDirectory = directoriesByParent.get(path.resolve(directoryPath)) ?? [];
+    const entries: DirectoryFingerprintEntry[] = [
+      ...filesForDirectory.map((entry) => ({
+        name: entry.name,
+        type: 'file' as const,
+        hash: hashContent(entry.content),
+      })),
+      ...directoriesForDirectory.map((entry) => ({
+        name: entry.name,
+        type: 'directory' as const,
+        fingerprint: fingerprint(entry.directoryPath),
+      })),
+    ];
+    return calculateDirectoryFingerprintFromEntries(entries);
   };
   return fingerprint(rootDirectory);
 }

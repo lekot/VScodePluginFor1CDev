@@ -18,6 +18,7 @@ import { DebugSessionRegistry } from './debugSessionRegistry';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import type {
     CreateObjectParams,
+    CreateObjectResult,
     GetYamlParams,
     ListObjectsParams,
     ListChildrenParams,
@@ -36,7 +37,9 @@ import type {
     GetSourceParams,
     SetSourceParams,
     AgentResult,
+    MutationResultData,
     ConfigurationScopedParams,
+    MutationScopedParams,
     AgentSupportGetStatusParams,
     AgentSupportSetObjectModeParams,
     AgentSupportEnableObjectRulesParams,
@@ -310,6 +313,41 @@ export function registerAgentCommands(
             };
         }
     };
+
+    const registerRootObjectMutationCommand = <
+        TParams extends MutationScopedParams & { readonly path: string },
+        TResult,
+    >(
+        commandId: string,
+        action: string,
+        includeRootTagName: boolean,
+        execute: (operations: AgentOperations, params: TParams) => Promise<AgentResult<TResult>>,
+    ): vscode.Disposable => vscode.commands.registerCommand(commandId, async (params: TParams) => {
+        let dotPath = '';
+        try {
+            dotPath = typeof params?.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
+        } catch (error) {
+            if (error instanceof AgentPathError) {
+                return { success: false, code: error.code, error: error.message };
+            }
+            return { success: false, code: 'INVALID_AGENT_PATH', error: error instanceof Error ? error.message : String(error) };
+        }
+        const segmentCount = dotPath ? dotPath.split('.').length : 0;
+        if (segmentCount !== 2) {
+            const pathFormat = includeRootTagName ? ' (RootTag.Name)' : '';
+            return {
+                success: false,
+                code: 'INVALID_AGENT_PATH',
+                error: `${action} supports only a root object path${pathFormat}: "${String(params?.path)}".`,
+            };
+        }
+        const dryRun = params?.dryRun === true;
+        return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : `agent.${action}`, async (configRoot) => {
+            const result = await execute(new AgentOperations(configRoot), params);
+            if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
+            return result;
+        });
+    });
 
     const runPlanForConfiguration = async <T>(
         params: ConfigurationScopedParams,
@@ -746,97 +784,25 @@ export function registerAgentCommands(
         }
     );
 
-    // ─── 1c-metadata-tree.agent.deleteObject ─────────────────────────────────
+    // ─── Root metadata object mutations ─────────────────────────────────────
 
-    const deleteObjectCommand = vscode.commands.registerCommand(
+    const deleteObjectCommand = registerRootObjectMutationCommand<DeleteObjectParams, MutationResultData>(
         '1c-metadata-tree.agent.deleteObject',
-        async (params: DeleteObjectParams) => {
-            let dotPath = '';
-            try {
-                dotPath = typeof params?.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
-            } catch (error) {
-                if (error instanceof AgentPathError) {
-                    return { success: false, code: error.code, error: error.message };
-                }
-                return { success: false, code: 'INVALID_AGENT_PATH', error: error instanceof Error ? error.message : String(error) };
-            }
-            const segmentCount = dotPath ? dotPath.split('.').length : 0;
-            if (segmentCount !== 2) {
-                return {
-                    success: false,
-                    code: 'INVALID_AGENT_PATH',
-                    error: `deleteObject supports only a root object path: "${String(params?.path)}".`,
-                };
-            }
-            const dryRun = params?.dryRun === true;
-            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.deleteObject', async (configRoot) => {
-                const result = await new AgentOperations(configRoot).deleteObject(params);
-                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
-                return result;
-            });
-        }
+        'deleteObject',
+        false,
+        (operations, params) => operations.deleteObject(params),
     );
-
-    // ─── 1c-metadata-tree.agent.renameObject ─────────────────────────────────
-
-    const renameObjectCommand = vscode.commands.registerCommand(
+    const renameObjectCommand = registerRootObjectMutationCommand<RenameObjectParams, CreateObjectResult>(
         '1c-metadata-tree.agent.renameObject',
-        async (params: RenameObjectParams) => {
-            let dotPath = '';
-            try {
-                dotPath = typeof params?.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
-            } catch (error) {
-                if (error instanceof AgentPathError) {
-                    return { success: false, code: error.code, error: error.message };
-                }
-                return { success: false, code: 'INVALID_AGENT_PATH', error: error instanceof Error ? error.message : String(error) };
-            }
-            const segmentCount = dotPath ? dotPath.split('.').length : 0;
-            if (segmentCount !== 2) {
-                return {
-                    success: false,
-                    code: 'INVALID_AGENT_PATH',
-                    error: `renameObject supports only a root object path (RootTag.Name): "${String(params?.path)}".`,
-                };
-            }
-            const dryRun = params?.dryRun === true;
-            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.renameObject', async (configRoot) => {
-                const result = await new AgentOperations(configRoot).renameObject(params);
-                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
-                return result;
-            });
-        }
+        'renameObject',
+        true,
+        (operations, params) => operations.renameObject(params),
     );
-
-    // ─── 1c-metadata-tree.agent.duplicateObject ─────────────────────────────
-
-    const duplicateObjectCommand = vscode.commands.registerCommand(
+    const duplicateObjectCommand = registerRootObjectMutationCommand<DuplicateObjectParams, CreateObjectResult>(
         '1c-metadata-tree.agent.duplicateObject',
-        async (params: DuplicateObjectParams) => {
-            let dotPath = '';
-            try {
-                dotPath = typeof params?.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
-            } catch (error) {
-                if (error instanceof AgentPathError) {
-                    return { success: false, code: error.code, error: error.message };
-                }
-                return { success: false, code: 'INVALID_AGENT_PATH', error: error instanceof Error ? error.message : String(error) };
-            }
-            const segmentCount = dotPath ? dotPath.split('.').length : 0;
-            if (segmentCount !== 2) {
-                return {
-                    success: false,
-                    code: 'INVALID_AGENT_PATH',
-                    error: `duplicateObject supports only a root object path (RootTag.Name): "${String(params?.path)}".`,
-                };
-            }
-            const dryRun = params?.dryRun === true;
-            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.duplicateObject', async (configRoot) => {
-                const result = await new AgentOperations(configRoot).duplicateObject(params);
-                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
-                return result;
-            });
-        }
+        'duplicateObject',
+        true,
+        (operations, params) => operations.duplicateObject(params),
     );
 
     // ─── 1c-metadata-tree.agent.setProperties ────────────────────────────────

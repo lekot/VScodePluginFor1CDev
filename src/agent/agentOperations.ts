@@ -278,25 +278,9 @@ export class AgentOperations {
 
     /** Builds the serializable multi-file rename plan without applying filesystem effects. */
     async planRenameObject(params: RenameObjectParams): Promise<MutationPlan<AgentResult<{ filePath: string }>>> {
-        const dotPath = typeof params.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
-        const segmentCount = dotPath ? dotPath.split('.').length : 0;
-        if (segmentCount !== 2) {
-            throw new AgentPathError(
-                'INVALID_AGENT_PATH',
-                `renameObject supports only a root object path (RootTag.Name): "${String(params.path)}".`,
-            );
-        }
-        const resolved = await this.resolveContainedAgentPath(params.path);
-        if (resolved.nestedType !== undefined || resolved.tabularSection !== undefined) {
-            throw new AgentPathError(
-                'INVALID_AGENT_PATH',
-                `renameObject does not support nested metadata paths: "${params.path}".`,
-            );
-        }
-        const { rootTag, objectName, filePath } = resolved;
+        const { resolved, metadataType } = await this.resolveRootMetadataObjectMutation(params.path, 'renameObject');
+        const { objectName, filePath } = resolved;
         const newName = params.newName?.trim();
-        const metadataType = getMetadataTypeDescriptorByRootTag(rootTag)?.type;
-        if (!metadataType) { throw new Error(`Unsupported metadata root type: ${rootTag}`); }
         const planned = await planRenameMetadataObject(
             { configurationRootPath: this.configRootPath },
             { type: metadataType, oldName: objectName, newName: newName ?? '' },
@@ -311,23 +295,7 @@ export class AgentOperations {
 
     /** Builds the serializable multi-file root duplicate plan without applying filesystem effects. */
     async planDuplicateObject(params: DuplicateObjectParams): Promise<MutationPlan<AgentResult<{ filePath: string }>>> {
-        const dotPath = typeof params.path === 'string' ? parseSourceAddress(params.path).dotPath : '';
-        const segmentCount = dotPath ? dotPath.split('.').length : 0;
-        if (segmentCount !== 2) {
-            throw new AgentPathError(
-                'INVALID_AGENT_PATH',
-                `duplicateObject supports only a root object path (RootTag.Name): "${String(params.path)}".`,
-            );
-        }
-        const resolved = await this.resolveContainedAgentPath(params.path);
-        if (resolved.nestedType !== undefined || resolved.tabularSection !== undefined) {
-            throw new AgentPathError(
-                'INVALID_AGENT_PATH',
-                `duplicateObject does not support nested metadata paths: "${params.path}".`,
-            );
-        }
-        const metadataType = getMetadataTypeDescriptorByRootTag(resolved.rootTag)?.type;
-        if (!metadataType) { throw new Error(`Unsupported metadata root type: ${resolved.rootTag}`); }
+        const { resolved, metadataType } = await this.resolveRootMetadataObjectMutation(params.path, 'duplicateObject');
         const newName = params.newName?.trim() ?? '';
         const planned = await planDuplicateMetadataObject(
             { configurationRootPath: this.configRootPath },
@@ -1662,6 +1630,32 @@ export class AgentOperations {
         const resolved = resolveAgentPath(this.configRootPath, agentPath);
         await assertPathWithinRoot(this.configRootPath, resolved.filePath);
         return resolved;
+    }
+
+    private async resolveRootMetadataObjectMutation(
+        agentPath: unknown,
+        operation: 'renameObject' | 'duplicateObject',
+    ): Promise<{ readonly resolved: ReturnType<typeof resolveAgentPath>; readonly metadataType: MetadataType }> {
+        const dotPath = typeof agentPath === 'string' ? parseSourceAddress(agentPath).dotPath : '';
+        const segmentCount = dotPath ? dotPath.split('.').length : 0;
+        if (segmentCount !== 2) {
+            throw new AgentPathError(
+                'INVALID_AGENT_PATH',
+                `${operation} supports only a root object path (RootTag.Name): "${String(agentPath)}".`,
+            );
+        }
+        const resolved = await this.resolveContainedAgentPath(agentPath as string);
+        if (resolved.nestedType !== undefined || resolved.tabularSection !== undefined) {
+            throw new AgentPathError(
+                'INVALID_AGENT_PATH',
+                `${operation} does not support nested metadata paths: "${String(agentPath)}".`,
+            );
+        }
+        const metadataType = getMetadataTypeDescriptorByRootTag(resolved.rootTag)?.type;
+        if (!metadataType) {
+            throw new Error(`Unsupported metadata root type: ${resolved.rootTag}`);
+        }
+        return { resolved, metadataType };
     }
 
     private async validateExternalDataSourcePath(

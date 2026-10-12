@@ -40,6 +40,32 @@ suite('MutationPlanExecutor', () => {
     await fs.promises.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
   });
 
+  test('directory fingerprint entry hashing matches the executor for nested file and directory snapshots', async () => {
+    const nestedPath = path.join(tempDir, 'Forms');
+    const emptyPath = path.join(tempDir, 'Empty');
+    await fs.promises.mkdir(nestedPath, { recursive: true });
+    await fs.promises.mkdir(emptyPath, { recursive: true });
+    await fs.promises.writeFile(path.join(tempDir, 'z.bin'), Buffer.from([0, 255, 2]));
+    await fs.promises.writeFile(path.join(nestedPath, 'Main.xml'), '<Form/>', 'utf8');
+
+    type FingerprintEntry =
+      | { readonly name: string; readonly type: 'file'; readonly hash: string }
+      | { readonly name: string; readonly type: 'directory'; readonly fingerprint: string };
+    const fingerprintModule = require('../../src/services/configurationSession/mutationPlan') as {
+      calculateDirectoryFingerprintFromEntries?: (entries: readonly FingerprintEntry[]) => string;
+    };
+    const calculateFromEntries = fingerprintModule.calculateDirectoryFingerprintFromEntries;
+    assert.strictEqual(typeof calculateFromEntries, 'function',
+      'the filesystem and duplicate snapshot must share the directory-entry hashing contract');
+
+    const rootEntries: FingerprintEntry[] = [
+      { name: 'z.bin', type: 'file', hash: hashContent(await fs.promises.readFile(path.join(tempDir, 'z.bin'))) },
+      { name: 'Forms', type: 'directory', fingerprint: await calculateDirectoryFingerprint(nestedPath) },
+      { name: 'Empty', type: 'directory', fingerprint: await calculateDirectoryFingerprint(emptyPath) },
+    ];
+    assert.strictEqual(calculateFromEntries!(rootEntries), await calculateDirectoryFingerprint(tempDir));
+  });
+
   test('rolls every file back when a later step fails', async () => {
     const first = path.join(tempDir, 'first.xml');
     const second = path.join(tempDir, 'second.xml');
