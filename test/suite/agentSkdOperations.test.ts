@@ -11,6 +11,7 @@ import * as path from 'path';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import type { ChildProcess } from 'child_process';
+import iconv from 'iconv-lite';
 import '../helpers/vscodeStubRegister';
 import {
     resolvePowerShellExecutable,
@@ -198,6 +199,154 @@ suite('SkdOperations — background cancellation contract', () => {
 });
 
 suite('PowerShell runner process-tree termination', () => {
+    test('decodes UTF-8 characters split across stdout and stderr chunks', async () => {
+        const child = new InjectedPowerShellChild();
+        const outputChunks: string[] = [];
+        const run = runPowerShellScript({
+            scriptPath: 'injected.ps1',
+            args: [],
+            onOutput: (chunk) => outputChunks.push(chunk),
+        }, makePowerShellDependencies(child, async () => ({
+            terminated: true,
+            hardKillUsed: false,
+            survivingPids: [],
+            errors: [],
+        })));
+
+        await child.waitForSpawn();
+        const stdout = Buffer.from('Проверка СКД', 'utf8');
+        const stderr = Buffer.from('Ошибка PowerShell', 'utf8');
+        child.stdout.write(stdout.subarray(0, 1));
+        child.stdout.write(stdout.subarray(1, 4));
+        child.stdout.write(stdout.subarray(4));
+        child.stderr.write(stderr.subarray(0, 2));
+        child.stderr.write(stderr.subarray(2, 7));
+        child.stderr.write(stderr.subarray(7));
+        child.completeExit(0, null);
+
+        const result = await run;
+        assert.strictEqual(result.stdout, 'Проверка СКД');
+        assert.strictEqual(result.stderr, 'Ошибка PowerShell');
+        assert.strictEqual(outputChunks.join(''), 'Проверка СКДОшибка PowerShell');
+    });
+
+    test('decodes split legacy OEM866 output while streaming', async () => {
+        const child = new InjectedPowerShellChild();
+        const run = runPowerShellScript({ scriptPath: 'injected.ps1', args: [] },
+            makePowerShellDependencies(child, async () => ({
+                terminated: true,
+                hardKillUsed: false,
+                survivingPids: [],
+                errors: [],
+            })));
+
+        await child.waitForSpawn();
+        const encoded = iconv.encode('Ошибка СКД', 'cp866');
+        child.stdout.write(encoded.subarray(0, 1));
+        child.stdout.write(encoded.subarray(1, 4));
+        child.stdout.write(encoded.subarray(4));
+        child.completeExit(0, null);
+
+        const result = await run;
+        assert.strictEqual(result.stdout, 'Ошибка СКД');
+    });
+
+    test('bounds retained stdout and stderr payloads and reports overflow', async () => {
+        const child = new InjectedPowerShellChild();
+        const oversized = Buffer.alloc(1024 * 1024 + 37, 0x61);
+        const run = runPowerShellScript({ scriptPath: 'injected.ps1', args: [] },
+            makePowerShellDependencies(child, async () => ({
+                terminated: true,
+                hardKillUsed: false,
+                survivingPids: [],
+                errors: [],
+            })));
+
+        await child.waitForSpawn();
+        child.stdout.write(oversized);
+        child.stderr.write(oversized);
+        child.completeExit(0, null);
+
+        const result = await run;
+        const bounded = result as PowerShellRunResult & {
+            stdoutTruncated?: boolean;
+            stderrTruncated?: boolean;
+        };
+        assert.ok(Buffer.byteLength(result.stdout) <= 1024 * 1024);
+        assert.ok(Buffer.byteLength(result.stderr) <= 1024 * 1024);
+        assert.strictEqual(bounded.stdoutTruncated, true);
+        assert.strictEqual(bounded.stderrTruncated, true);
+    });
+
+    test('pre-cancel avoids resolving and spawning a PowerShell child', async () => {
+        const source = new vscode.CancellationTokenSource();
+        source.cancel();
+        let resolveCalls = 0;
+        let spawnCalls = 0;
+
+        try {
+            const result = await runPowerShellScript({
+                scriptPath: 'injected.ps1',
+                args: [],
+                token: source.token,
+            }, {
+                resolveExecutable: async () => {
+                    resolveCalls += 1;
+                    return 'injected-powershell';
+                },
+                spawnImpl: (() => {
+                    spawnCalls += 1;
+                    return new InjectedPowerShellChild() as unknown as ChildProcess;
+                }) as NonNullable<PowerShellRunnerDependencies['spawnImpl']>,
+            });
+
+            assert.strictEqual(resolveCalls, 0);
+            assert.strictEqual(spawnCalls, 0);
+            assert.strictEqual(result.started, false);
+            assert.strictEqual(result.effectPossible, false);
+            assert.strictEqual(result.cancelled, true);
+        } finally {
+            source.dispose();
+        }
+    });
+
+    test('cancellation after handle creation but before spawn preserves shared lifecycle outcome', async () => {
+        const child = new InjectedPowerShellChild(false);
+        const source = new vscode.CancellationTokenSource();
+        let terminationCalls = 0;
+        const dependencies = makePowerShellDependencies(child, async () => {
+            terminationCalls += 1;
+            return {
+                terminated: false,
+                hardKillUsed: true,
+                survivingPids: [34567],
+                errors: ['injected survivor before spawn'],
+            };
+        });
+
+        try {
+            const run = runPowerShellScript({
+                scriptPath: 'injected.ps1',
+                args: [],
+                token: source.token,
+            }, dependencies);
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            source.cancel();
+
+            const result = await run;
+            assert.strictEqual(terminationCalls, 1);
+            assert.strictEqual(result.started, false);
+            assert.strictEqual(result.effectPossible, true);
+            assert.strictEqual(result.cancellationRequested, true);
+            assert.strictEqual(result.cancelled, false);
+            assert.strictEqual(result.termination?.terminated, false);
+            assert.deepStrictEqual(result.termination?.survivingPids, [34567]);
+        } finally {
+            child.completeExit(null, 'SIGTERM');
+            source.dispose();
+        }
+    });
+
     test('cancellation reports survivor PIDs and leaves SKD outcome inDoubt', async () => {
         const child = new InjectedPowerShellChild();
         const terminationGate = createTerminationGate();
@@ -271,6 +420,7 @@ suite('PowerShell runner process-tree termination', () => {
             await delay(40);
             const callsWhenSettling = terminationCalls;
             const settledBeforeTerminationConfirmed = runnerResult !== undefined;
+            child.completeExit(0, null);
             terminationGate.release({
                 terminated: false,
                 hardKillUsed: true,
@@ -283,6 +433,7 @@ suite('PowerShell runner process-tree termination', () => {
             assert.strictEqual(settledBeforeTerminationConfirmed, false, 'the operation must wait for termination outcome');
             assert.deepStrictEqual(child.signals, [], 'timeout must not signal only the PowerShell root');
             assert.strictEqual(runnerResult?.timedOut, true);
+            assert.strictEqual(runnerResult?.exitCode, -1, 'timeout preserves the PowerShell domain result');
             assert.strictEqual(runnerResult?.termination?.terminated, false);
             assert.deepStrictEqual(runnerResult?.termination?.survivingPids, [56789]);
             assert.strictEqual(result.success, false);
@@ -334,13 +485,18 @@ class InjectedPowerShellChild extends EventEmitter {
     private spawnWaiters: Array<() => void> = [];
     private closed = false;
 
-    constructor() {
+    constructor(autoSpawn = true) {
         super();
-        setImmediate(() => {
-            this.spawned = true;
-            this.emit('spawn');
-            for (const resolve of this.spawnWaiters.splice(0)) { resolve(); }
-        });
+        if (autoSpawn) {
+            setImmediate(() => this.emitSpawn());
+        }
+    }
+
+    private emitSpawn(): void {
+        if (this.spawned) { return; }
+        this.spawned = true;
+        this.emit('spawn');
+        for (const resolve of this.spawnWaiters.splice(0)) { resolve(); }
     }
 
     kill(signal?: NodeJS.Signals | number): boolean {

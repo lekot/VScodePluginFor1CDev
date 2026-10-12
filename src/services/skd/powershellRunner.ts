@@ -1,20 +1,28 @@
 // src/services/skd/powershellRunner.ts
-// Запуск PowerShell-скриптов через child_process.spawn.
-// Декодирование вывода через decodeConsoleStreamAuto (UTF-8/OEM866 на Windows).
+// Запуск PowerShell-скриптов через общий lifecycle runner.
+// Потоковый вывод декодируется как UTF-8 или OEM866 на Windows.
 
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import type * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { createIbcmdStreamChunkDecoders, decodeConsoleStreamAuto } from '../ibcmd/consoleStreamDecoder';
+import { createIbcmdStreamChunkDecoders } from '../ibcmd/consoleStreamDecoder';
+import type { ProcessTreeTerminationOutcome } from '../ibcmd/processTreeTermination';
 import {
-    terminateProcessTree,
-    type ProcessTreeTerminationOutcome,
-} from '../ibcmd/processTreeTermination';
+  runStreamingProcess,
+  type StreamCancellation,
+  type StreamingProcessRawOutcome,
+} from '../process/streamingProcessRunner';
 
 const execFileAsync = promisify(execFile);
 const TERMINATION_GRACE_MS = 1500;
+export const POWERSHELL_OUTPUT_MAX_BYTES = 1024 * 1024;
+
+const NO_CANCELLATION: StreamCancellation = {
+  isCancellationRequested: false,
+  onCancellationRequested: () => ({ dispose: () => {} }),
+};
 
 // ─── Resolve PowerShell executable ───────────────────────────────────────────
 
@@ -99,6 +107,12 @@ export interface PowerShellRunResult {
     timedOut?: boolean;
     /** Result of bounded process-tree termination after cancellation or timeout. */
     termination?: ProcessTreeTerminationOutcome;
+    /** True when stdout was clipped to the configured payload limit. */
+    stdoutTruncated?: boolean;
+    /** True when stderr was clipped to the configured payload limit. */
+    stderrTruncated?: boolean;
+    /** Complete low-level lifecycle outcome retained for callers that need its diagnostics. */
+    processOutcome?: StreamingProcessRawOutcome;
 }
 
 /** Injectable process boundary for deterministic lifecycle tests. */
@@ -111,156 +125,145 @@ export interface PowerShellRunnerDependencies {
     ) => Promise<ProcessTreeTerminationOutcome>;
 }
 
-/**
- * Запускает PS1-скрипт и возвращает stdout/stderr/exitCode.
- * Stdout и stderr декодируются через decodeConsoleStreamAuto (UTF-8 → OEM866 fallback на Windows).
- * При таймауте процесс убивается, exitCode = -1.
- */
+/** Runs a PowerShell script through the shared owned-process lifecycle. */
 export async function runPowerShellScript(
     opts: PowerShellRunOptions,
     dependencies: PowerShellRunnerDependencies = {},
 ): Promise<PowerShellRunResult> {
-    if (opts.token?.isCancellationRequested) {
-        return { stdout: '', stderr: '', exitCode: -3, started: false, cancelled: true };
+    const cancellation = opts.token ?? NO_CANCELLATION;
+    const timeoutMs = opts.timeoutMs ?? 60000;
+    if (cancellation.isCancellationRequested) {
+        const outcome = await runStreamingProcess({
+            executablePath: '',
+            args: [],
+            timeoutMs,
+            cancellation,
+        });
+        return toPowerShellResult(outcome, new BoundedPayload(POWERSHELL_OUTPUT_MAX_BYTES),
+            new BoundedPayload(POWERSHELL_OUTPUT_MAX_BYTES));
     }
+
     const exe = await (dependencies.resolveExecutable ?? resolvePowerShellExecutable)();
+    if (cancellation.isCancellationRequested) {
+        const outcome = await runStreamingProcess({
+            executablePath: '',
+            args: [],
+            timeoutMs,
+            cancellation,
+        });
+        return toPowerShellResult(outcome, new BoundedPayload(POWERSHELL_OUTPUT_MAX_BYTES),
+            new BoundedPayload(POWERSHELL_OUTPUT_MAX_BYTES));
+    }
     if (!exe) {
         return {
             stdout: '',
             stderr: 'PowerShell не найден. Установите PowerShell Core (pwsh) или используйте Windows.',
             exitCode: -2,
+            started: false,
+            effectPossible: false,
         };
     }
 
-    const { scriptPath, args, cwd, timeoutMs = 60000 } = opts;
+    const stdout = new BoundedPayload(POWERSHELL_OUTPUT_MAX_BYTES);
+    const stderr = new BoundedPayload(POWERSHELL_OUTPUT_MAX_BYTES);
+    const spawnArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', opts.scriptPath, ...opts.args];
+    const outcome = await runStreamingProcess({
+        executablePath: exe,
+        args: spawnArgs,
+        timeoutMs,
+        cancellation,
+        spawnOptions: { cwd: opts.cwd },
+        streamDecoders: createIbcmdStreamChunkDecoders('auto'),
+        terminationGraceMs: TERMINATION_GRACE_MS,
+        onStreamChunk: (chunk, stream) => {
+            (stream === 'stdout' ? stdout : stderr).append(chunk);
+            opts.onOutput?.(chunk);
+        },
+        ...(dependencies.spawnImpl ? { spawnImpl: dependencies.spawnImpl } : {}),
+        ...(dependencies.terminateProcessTreeImpl
+            ? { terminateProcessTreeImpl: dependencies.terminateProcessTreeImpl }
+            : {}),
+    });
 
-    if (opts.token?.isCancellationRequested) {
-        return { stdout: '', stderr: '', exitCode: -3, started: false, cancelled: true };
+    return toPowerShellResult(outcome, stdout, stderr);
+}
+
+function toPowerShellResult(
+    outcome: StreamingProcessRawOutcome,
+    stdout: BoundedPayload,
+    stderr: BoundedPayload,
+): PowerShellRunResult {
+    const reportedStderr = outcome.spawnErrorMessage === undefined
+        ? stderr
+        : new BoundedPayload(POWERSHELL_OUTPUT_MAX_BYTES);
+    if (outcome.spawnErrorMessage !== undefined) {
+        reportedStderr.append(outcome.spawnErrorMessage);
+    }
+    const result: PowerShellRunResult = {
+        stdout: stdout.text,
+        stderr: reportedStderr.text,
+        exitCode: outcome.timedOut
+            ? -1
+            : (outcome.cancelled && !outcome.effectPossible ? -3 : (outcome.exitCode ?? -1)),
+        started: outcome.started,
+        effectPossible: outcome.effectPossible,
+        processOutcome: outcome,
+    };
+    if (outcome.cancelled) {
+        if (outcome.effectPossible) {
+            result.cancellationRequested = true;
+        }
+        result.cancelled = !outcome.effectPossible || outcome.termination?.terminated === true;
+    }
+    if (outcome.timedOut) {
+        result.timedOut = true;
+    }
+    if (outcome.termination) {
+        result.termination = outcome.termination;
+    }
+    if (stdout.truncated) {
+        result.stdoutTruncated = true;
+    }
+    if (reportedStderr.truncated) {
+        result.stderrTruncated = true;
+    }
+    return result;
+}
+
+class BoundedPayload {
+    private readonly chunks: string[] = [];
+    private retainedBytes = 0;
+    truncated = false;
+
+    constructor(private readonly maxBytes: number) {}
+
+    get text(): string {
+        return this.chunks.join('');
     }
 
-    const spawnArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args];
-
-    return new Promise<PowerShellRunResult>((resolve) => {
-        const stdoutChunks: Buffer[] = [];
-        const stderrChunks: Buffer[] = [];
-        const decoders = createIbcmdStreamChunkDecoders('auto');
-        let started = false;
-        let childHandleCreated = false;
-        let settled = false;
-        let terminationReason: 'cancelled' | 'timedOut' | undefined;
-        let terminationOutcome: ProcessTreeTerminationOutcome | undefined;
-        let closeCode: number | null | undefined;
-        let spawnErrorMessage: string | undefined;
-        let streamsFlushed = false;
-        const lifecycle: {
-            timer: ReturnType<typeof setTimeout> | undefined;
-            cancellation: vscode.Disposable | undefined;
-        } = { timer: undefined, cancellation: undefined };
-        const clearLifecycle = (): void => {
-            if (lifecycle.timer !== undefined) {
-                clearTimeout(lifecycle.timer);
-                lifecycle.timer = undefined;
-            }
-            lifecycle.cancellation?.dispose();
-            lifecycle.cancellation = undefined;
-        };
-        const flushStreams = (): void => {
-            if (streamsFlushed) { return; }
-            streamsFlushed = true;
-            const stdoutRemainder = decoders.flushStdout();
-            const stderrRemainder = decoders.flushStderr();
-            if (stdoutRemainder) { opts.onOutput?.(stdoutRemainder); }
-            if (stderrRemainder) { opts.onOutput?.(stderrRemainder); }
-        };
-        const finish = (): void => {
-            if (settled) { return; }
-            settled = true;
-            clearLifecycle();
-            flushStreams();
-            const cancellationRequested = terminationReason === 'cancelled';
-            resolve({
-                stdout: decodeConsoleStreamAuto(Buffer.concat(stdoutChunks)),
-                stderr: spawnErrorMessage ?? decodeConsoleStreamAuto(Buffer.concat(stderrChunks)),
-                exitCode: terminationReason === 'timedOut' ? -1 : (closeCode ?? -1),
-                started,
-                effectPossible: childHandleCreated,
-                ...(cancellationRequested ? { cancellationRequested: true } : {}),
-                ...(cancellationRequested
-                    ? { cancelled: terminationOutcome?.terminated === true }
-                    : {}),
-                ...(terminationReason === 'timedOut' ? { timedOut: true } : {}),
-                ...(terminationOutcome ? { termination: terminationOutcome } : {}),
-            });
-        };
-        let child: ReturnType<typeof spawn>;
-        try {
-            child = (dependencies.spawnImpl ?? spawn)(exe, spawnArgs, {
-                cwd,
-                windowsHide: true,
-                ...(process.platform === 'win32' ? {} : { detached: true }),
-            });
-            childHandleCreated = true;
-        } catch (error) {
-            spawnErrorMessage = error instanceof Error ? error.message : String(error);
-            closeCode = -1;
-            finish();
+    append(chunk: string): void {
+        if (!chunk || this.truncated) {
+            return;
+        }
+        const remainingBytes = this.maxBytes - this.retainedBytes;
+        if (Buffer.byteLength(chunk, 'utf8') <= remainingBytes) {
+            this.chunks.push(chunk);
+            this.retainedBytes += Buffer.byteLength(chunk, 'utf8');
             return;
         }
 
-        child.stdout?.on('data', (chunk: Buffer) => {
-            if (settled) { return; }
-            stdoutChunks.push(chunk);
-            opts.onOutput?.(decoders.decodeStdout(chunk));
-        });
-        child.stderr?.on('data', (chunk: Buffer) => {
-            if (settled) { return; }
-            stderrChunks.push(chunk);
-            opts.onOutput?.(decoders.decodeStderr(chunk));
-        });
-        child.on('spawn', () => { started = true; });
-        const terminate = dependencies.terminateProcessTreeImpl
-            ?? ((target: ChildProcess, graceMs: number) => terminateProcessTree(target, {
-                graceMs,
-                hardKillGraceMs: graceMs,
-            }));
-        const requestTermination = (reason: 'cancelled' | 'timedOut'): void => {
-            if (settled || terminationReason) { return; }
-            terminationReason = reason;
-            clearLifecycle();
-            void Promise.resolve()
-                .then(() => terminate(child, TERMINATION_GRACE_MS))
-                .catch((error): ProcessTreeTerminationOutcome => ({
-                    terminated: false,
-                    hardKillUsed: false,
-                    survivingPids: child.pid ? [child.pid] : [],
-                    errors: [error instanceof Error ? error.message : String(error)],
-                }))
-                .then((outcome) => {
-                    terminationOutcome = outcome;
-                    finish();
-                });
-        };
-
-        lifecycle.cancellation = opts.token?.onCancellationRequested(() => requestTermination('cancelled'));
-        if (terminationReason) { clearLifecycle(); }
-        if (opts.token?.isCancellationRequested) {
-            requestTermination('cancelled');
-        }
-        if (!terminationReason) {
-            lifecycle.timer = setTimeout(() => requestTermination('timedOut'), timeoutMs);
-        }
-
-        child.on('close', (code) => {
-            closeCode = code;
-            if (!terminationReason) { finish(); }
-        });
-
-        child.on('error', (err) => {
-            spawnErrorMessage = err.message;
-            if (!terminationReason) {
-                closeCode = -1;
-                finish();
+        let prefix = '';
+        for (const character of chunk) {
+            const characterBytes = Buffer.byteLength(character, 'utf8');
+            if (characterBytes > this.maxBytes - this.retainedBytes) {
+                break;
             }
-        });
-    });
+            prefix += character;
+            this.retainedBytes += characterBytes;
+        }
+        if (prefix) {
+            this.chunks.push(prefix);
+        }
+        this.truncated = true;
+    }
 }
