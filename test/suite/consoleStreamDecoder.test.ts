@@ -171,7 +171,8 @@ suite('consoleStreamDecoder createIbcmdStreamChunkDecoders', () => {
   test('auto: UTF-8 Cyrillic chunk decoded correctly', () => {
     const dec = createIbcmdStreamChunkDecoders('auto');
     const buf = Buffer.from('Импорт конфигурации из XML', 'utf8');
-    assert.strictEqual(dec.decodeStdout(buf), 'Импорт конфигурации из XML');
+    const decoded = dec.decodeStdout(buf) + dec.flushStdout();
+    assert.strictEqual(decoded, 'Импорт конфигурации из XML');
   });
 
   test('auto: CP1251 chunk decoded correctly', () => {
@@ -186,13 +187,86 @@ suite('consoleStreamDecoder createIbcmdStreamChunkDecoders', () => {
     assert.strictEqual(dec.decodeStderr(iconv.encode(message, 'cp866')), message);
   });
 
+  for (const stream of ['stdout', 'stderr'] as const) {
+    test(`auto: CP866 розница survives every two-chunk split on ${stream}`, () => {
+      const message = 'розница';
+      const raw = iconv.encode(message, 'cp866');
+      assert.strictEqual(raw.toString('hex'), 'e0aea7ada8e6a0');
+
+      for (let split = 1; split < raw.length; split++) {
+        const dec = createIbcmdStreamChunkDecoders('auto');
+        const decode = stream === 'stdout' ? dec.decodeStdout : dec.decodeStderr;
+        const flush = stream === 'stdout' ? dec.flushStdout : dec.flushStderr;
+        const actual = decode(raw.subarray(0, split))
+          + decode(raw.subarray(split))
+          + flush();
+        assert.strictEqual(actual, message, `incorrect decode with split after byte ${split}`);
+      }
+
+      const dec = createIbcmdStreamChunkDecoders('auto');
+      const decode = stream === 'stdout' ? dec.decodeStdout : dec.decodeStderr;
+      const flush = stream === 'stdout' ? dec.flushStdout : dec.flushStderr;
+      const bytewise = [...raw].map((byte) => decode(Buffer.from([byte]))).join('') + flush();
+      assert.strictEqual(bytewise, message, 'one-byte chunks must preserve the complete CP866 word');
+    });
+
+    test(`auto: UTF-8 Cyrillic survives every two-chunk split on ${stream}`, () => {
+      const message = 'Розница';
+      const raw = Buffer.from(message, 'utf8');
+
+      for (let split = 1; split < raw.length; split++) {
+        const dec = createIbcmdStreamChunkDecoders('auto');
+        const decode = stream === 'stdout' ? dec.decodeStdout : dec.decodeStderr;
+        const flush = stream === 'stdout' ? dec.flushStdout : dec.flushStderr;
+        const actual = decode(raw.subarray(0, split))
+          + decode(raw.subarray(split))
+          + flush();
+        assert.strictEqual(actual, message, `incorrect decode with split after byte ${split}`);
+      }
+    });
+  }
+
+  test('auto: shared CP866 decision resolves an incomplete lead buffered on the other stream', () => {
+    const dec = createIbcmdStreamChunkDecoders('auto');
+    const stdout = iconv.encode('розница', 'cp866');
+    const stderr = iconv.encode('Ошибка', 'cp866');
+    let decodedStdout = dec.decodeStdout(stdout.subarray(0, 1));
+    let decodedStderr = dec.decodeStderr(stderr.subarray(0, 1));
+    decodedStderr += dec.decodeStderr(stderr.subarray(1));
+    decodedStdout += dec.decodeStdout(stdout.subarray(1));
+    decodedStdout += dec.flushStdout();
+    decodedStderr += dec.flushStderr();
+
+    assert.strictEqual(decodedStdout, 'розница');
+    assert.strictEqual(decodedStderr, 'Ошибка');
+  });
+
+  test('auto: valid UTF-8 stream releases its bounded detection sample before end of stream', () => {
+    const dec = createIbcmdStreamChunkDecoders('auto');
+    const message = 'А'.repeat(10000);
+    const raw = Buffer.from(message, 'utf8');
+    let decoded = '';
+    let emittedBeforeEnd = false;
+
+    for (let index = 0; index < raw.length; index++) {
+      const chunk = dec.decodeStdout(raw.subarray(index, index + 1));
+      decoded += chunk;
+      emittedBeforeEnd ||= chunk.length > 0;
+    }
+    decoded += dec.flushStdout();
+
+    assert.strictEqual(decoded, message);
+    assert.strictEqual(emittedBeforeEnd, true, 'auto detection must not retain an unbounded stream prefix');
+  });
+
   test('auto: ASCII-only chunks defer decision and decode as UTF-8', () => {
     const dec = createIbcmdStreamChunkDecoders('auto');
     const ascii = Buffer.from('hello world', 'ascii');
     assert.strictEqual(dec.decodeStdout(ascii), 'hello world');
     // After ASCII chunks, UTF-8 should still work
     const utf8chunk = Buffer.from('Тест', 'utf8');
-    assert.strictEqual(dec.decodeStdout(utf8chunk), 'Тест');
+    const decoded = dec.decodeStdout(utf8chunk) + dec.flushStdout();
+    assert.strictEqual(decoded, 'Тест');
   });
 
   test('oem866 on Windows decodes CP866 chunks', () => {
