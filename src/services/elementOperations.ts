@@ -19,7 +19,6 @@ import {
 import { substituteDesignerTemplate } from './designerTemplateSubstitutor';
 import {
   appendRegisterReferenceToRecorderDocument,
-  removeRegisterReferenceFromRecorderDocument,
 } from './registerRecorderDocumentLinker';
 import {
   addRootObjectToConfiguration,
@@ -59,7 +58,11 @@ import {
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import { rulesRegistry, metadataConverter } from '../rules';
-import { planCreateMetadataObject, planRenameMetadataObject } from './metadataCrudService';
+import {
+  planCreateMetadataObject,
+  planDeleteMetadataObject,
+  planRenameMetadataObject,
+} from './metadataCrudService';
 import { runConfigurationPlan } from './configurationSession/configurationMutationGateway';
 import { MutationPlanExecutor } from './configurationSession/mutationPlan';
 
@@ -1290,39 +1293,18 @@ export async function deleteElement(
       throw new Error('Файл элемента не найден.');
     }
     const dirPath = path.dirname(filePath);
-    const elementDir = path.join(dirPath, node.name);
     const configRootPath = await findConfigurationRootDir(dirPath);
-    // Removing the descriptor is irreversible if Configuration.xml cannot be
-    // safely updated, so resolve the profile before the first deletion.
-    await resolveProjectFormatVersion(configRootPath);
-    await fs.promises.unlink(filePath);
-    let elementDirStat: fs.Stats | undefined;
-    try {
-      elementDirStat = await fs.promises.stat(elementDir);
-    } catch {
-      // directory does not exist
+    const planned = await planDeleteMetadataObject(
+      { configurationRootPath: configRootPath },
+      { type: node.type, name: node.name },
+    );
+    const plannedDescriptorDelete = planned.plan.steps.some((step) => (
+      step.type === 'deletePath' && isSamePath(step.targetPath, filePath)
+    ));
+    if (!plannedDescriptorDelete) {
+      throw new Error('Корневой объект не совпадает с выбранным файлом элемента.');
     }
-    if (elementDirStat?.isDirectory()) {
-      await fs.promises.rm(elementDir, { recursive: true });
-    }
-    const rootTag = String(node.type);
-    try {
-      await removeRootObjectFromConfiguration(configRootPath, rootTag, node.name);
-    } catch (err) {
-      Logger.error('Failed to update Configuration.xml on delete', err);
-      throw err;
-    }
-    if (rootTag === 'AccumulationRegister') {
-      try {
-        await removeRegisterReferenceFromRecorderDocument(
-          configRootPath,
-          'AccumulationRegister',
-          node.name
-        );
-      } catch (e) {
-        Logger.warn('Could not remove AccumulationRegister ref from recorder document', e);
-      }
-    }
+    await new MutationPlanExecutor(configRootPath).execute(planned.plan);
     Logger.info(`Deleted element file ${filePath}`);
     return;
   }

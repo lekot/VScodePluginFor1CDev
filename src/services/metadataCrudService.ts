@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { XMLValidator } from 'fast-xml-parser';
 import { MetadataType } from '../models/treeNode';
 import {
   assertMetadataCrudSupported,
@@ -22,7 +23,10 @@ import {
   validateContentItemCompatibility,
   type FilterCriterionWizardParams,
 } from './filterCriterionWizardService';
-import { appendRegisterReferenceToRecorderDocumentXml } from './registerRecorderDocumentLinker';
+import {
+  appendRegisterReferenceToRecorderDocumentXml,
+  removeRegisterReferenceFromRecorderDocumentXml,
+} from './registerRecorderDocumentLinker';
 import { hashContent } from './configurationSession/atomicFileStorage';
 import { assertPathWithinRoot } from './configurationSession/pathBoundary';
 import type { MutationPlan, MutationStep } from './configurationSession/mutationPlan';
@@ -36,6 +40,7 @@ import { generateSimpleUuid } from '../utils/xml/xmlHelpers';
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import { XmlParser } from '../parsers/xmlParser';
+import { getValueByLocalName } from '../parsers/xmlNavHelpers';
 
 /** Minimal root-path context for this foundation step; resolved configuration targets remain a follow-up. */
 export interface MetadataCrudContext {
@@ -475,8 +480,22 @@ export async function planDeleteMetadataObject(
     throw new Error(`Object file not found: ${filePath}`);
   }
   const directoryExpected = await readMutationExpectation(elementDir);
+  const configurationExpected = await readMutationExpectation(configurationPath);
+  if (configurationExpected.state !== 'file') {
+    throw new Error(`Configuration.xml was not found: ${configurationPath}`);
+  }
   const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
+  if (configurationExpected.hash !== hashContent(configurationContent)) {
+    throw new Error(`Configuration.xml changed while planning: ${configurationPath}`);
+  }
+  assertWellFormedXml(configurationContent, configurationPath);
+  requireProjectWriteFormatProfile(configurationContent);
+
+  const recorderCleanupSteps = request.type === MetadataType.AccumulationRegister
+    ? await planRegisterRecorderCleanup(rootPath, request.name, configurationContent)
+    : [];
   const steps: MutationStep[] = [
+    ...recorderCleanupSteps,
     { type: 'deletePath', targetPath: filePath, expected: fileExpected },
   ];
   if (directoryExpected.state !== 'missing') {
@@ -491,10 +510,141 @@ export async function planDeleteMetadataObject(
       objectName: request.name,
     }),
     encoding: 'utf8',
-    expected: { state: 'file', hash: hashContent(configurationContent) },
+    expected: configurationExpected,
   });
 
   return planned({ kind: 'metadata.delete', steps, result: undefined });
+}
+
+async function planRegisterRecorderCleanup(
+  configurationRootPath: string,
+  registerName: string,
+  configurationContent: string,
+): Promise<MutationStep[]> {
+  const documentNames = readRegisteredDocumentNames(configurationContent);
+  const steps: MutationStep[] = [];
+
+  for (const documentName of documentNames) {
+    const filePath = path.join(configurationRootPath, 'Documents', `${documentName}.xml`);
+    await assertPathWithinRoot(configurationRootPath, filePath);
+    const expected = await readMutationExpectation(filePath);
+    if (expected.state !== 'file') {
+      throw new Error(`Registered recorder document is missing or is not a file: ${filePath}`);
+    }
+
+    const content = await fs.promises.readFile(filePath, 'utf8');
+    if (expected.hash !== hashContent(content)) {
+      throw new Error(`Registered recorder document changed while planning: ${filePath}`);
+    }
+    const documentNameFromXml = readRecorderDocumentName(content, filePath);
+    if (documentNameFromXml !== documentName) {
+      throw new Error(`Registered recorder document identity does not match Document.${documentName}: ${filePath}`);
+    }
+
+    const updatedContent = removeRegisterReferenceFromRecorderDocumentXml(
+      content,
+      'AccumulationRegister',
+      registerName,
+    );
+    if (updatedContent === content) {
+      continue;
+    }
+
+    await assertCfeGenericMutationAllowed(filePath, 'update');
+    steps.push({
+      type: 'writeFile',
+      targetPath: filePath,
+      content: updatedContent,
+      encoding: 'utf8',
+      expected,
+    });
+  }
+
+  return steps;
+}
+
+function readRegisteredDocumentNames(configurationContent: string): string[] {
+  assertWellFormedXml(configurationContent, CONFIGURATION_XML);
+  const parsed = XmlParser.parseString(configurationContent);
+  const metadata = requireXmlRecord(getValueByLocalName(parsed, 'MetaDataObject'), CONFIGURATION_XML);
+  const configuration = requireXmlRecord(getValueByLocalName(metadata, 'Configuration'), CONFIGURATION_XML);
+  const childObjectsValue = getValueByLocalName(configuration, 'ChildObjects');
+  if (childObjectsValue === undefined) {
+    return [];
+  }
+  const childObjects = requireXmlRecord(childObjectsValue, CONFIGURATION_XML);
+  const documentsValue = getValueByLocalName(childObjects, 'Document');
+  if (documentsValue === undefined) {
+    return [];
+  }
+
+  const documentEntries = Array.isArray(documentsValue) ? documentsValue : [documentsValue];
+  const names = documentEntries.map((entry) => readXmlText(entry, `${CONFIGURATION_XML} Document entry`));
+  const seen = new Set<string>();
+  for (const name of names) {
+    const validation = validateElementName(name, []);
+    if (validation) {
+      throw new Error(`${CONFIGURATION_XML} contains an invalid registered Document name "${name}": ${validation}`);
+    }
+    if (seen.has(name)) {
+      throw new Error(`${CONFIGURATION_XML} contains a duplicate registered Document name: ${name}`);
+    }
+    seen.add(name);
+  }
+  return names;
+}
+
+function readRecorderDocumentName(content: string, filePath: string): string {
+  assertWellFormedXml(content, filePath);
+  const parsed = XmlParser.parseString(content);
+  const metadata = requireXmlRecord(getValueByLocalName(parsed, 'MetaDataObject'), filePath);
+  const document = requireXmlRecord(getValueByLocalName(metadata, 'Document'), filePath);
+  const properties = requireXmlRecord(getValueByLocalName(document, 'Properties'), filePath);
+  const name = readXmlText(getValueByLocalName(properties, 'Name'), `${filePath} Properties/Name`);
+  const validation = validateElementName(name, []);
+  if (validation) {
+    throw new Error(`Registered recorder document has an invalid name in ${filePath}: ${validation}`);
+  }
+  return name;
+}
+
+function requireXmlRecord(value: unknown, source: string): Record<string, unknown> {
+  const single = unwrapSingleXmlValue(value, source);
+  if (!single || typeof single !== 'object' || Array.isArray(single)) {
+    throw new Error(`Malformed XML structure in ${source}.`);
+  }
+  return single as Record<string, unknown>;
+}
+
+function readXmlText(value: unknown, source: string): string {
+  const single = unwrapSingleXmlValue(value, source);
+  const text = typeof single === 'string'
+    ? single
+    : single && typeof single === 'object' && !Array.isArray(single)
+      ? (single as Record<string, unknown>)['#text']
+      : undefined;
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error(`Malformed XML text value in ${source}.`);
+  }
+  return text.trim();
+}
+
+function unwrapSingleXmlValue(value: unknown, source: string): unknown {
+  if (!Array.isArray(value)) {
+    return value;
+  }
+  if (value.length !== 1) {
+    throw new Error(`Duplicate XML element in ${source}.`);
+  }
+  return value[0];
+}
+
+function assertWellFormedXml(content: string, source: string): void {
+  const validation = XMLValidator.validate(content, { allowBooleanAttributes: false });
+  if (validation !== true) {
+    const detail = typeof validation === 'object' ? validation.err.msg : 'Malformed XML';
+    throw new Error(`Malformed XML in ${source}: ${detail}`);
+  }
 }
 
 /** Plans a root rename without depending on either the TreeView or Agent response model. */

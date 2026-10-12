@@ -7,6 +7,7 @@ import { AgentOperations } from '../../src/agent/agentOperations';
 import { MetadataType, type TreeNode } from '../../src/models/treeNode';
 import { saveProperties, type MessageHandlerContext } from '../../src/providers/propertiesMessageHandler';
 import { createElement, deleteElement } from '../../src/services/elementOperations';
+import { planDeleteMetadataObject } from '../../src/services/metadataCrudService';
 
 suite('CFE generic CRUD guards', () => {
   let workspace: string;
@@ -92,6 +93,28 @@ suite('CFE generic CRUD guards', () => {
     const result = await new AgentOperations(mainRoot).createObject({ type: 'Catalog', name: 'UnprefixedMainCatalog' });
     assert.strictEqual(result.success, true, result.error);
     assert.ok(await exists(path.join(mainRoot, 'Catalogs', 'UnprefixedMainCatalog.xml')));
+  });
+
+  test('shared delete planning rejects recorder cleanup of an adopted CFE Document', async () => {
+    const configPath = path.join(cfeRoot, 'Configuration.xml');
+    const registerDirectory = path.join(cfeRoot, 'AccumulationRegisters');
+    const documentsDirectory = path.join(cfeRoot, 'Documents');
+    await fs.promises.mkdir(registerDirectory, { recursive: true });
+    await fs.promises.mkdir(documentsDirectory, { recursive: true });
+    await fs.promises.writeFile(configPath, `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject version="2.21"><Configuration uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Extension</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose><NamePrefix>Ext_</NamePrefix></Properties><ChildObjects><AccumulationRegister>Ext_Register</AccumulationRegister><Document>BaseDocument</Document></ChildObjects></Configuration></MetaDataObject>`, 'utf8');
+    await fs.promises.writeFile(path.join(registerDirectory, 'Ext_Register.xml'), `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject><AccumulationRegister uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Ext_Register</Name></Properties><ChildObjects/></AccumulationRegister></MetaDataObject>`, 'utf8');
+    await fs.promises.writeFile(path.join(documentsDirectory, 'BaseDocument.xml'), `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Document uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>BaseDocument</Name><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>44444444-4444-4444-8444-444444444444</ExtendedConfigurationObject><RegisterRecords><xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.Ext_Register</xr:Item></RegisterRecords></Properties><ChildObjects/></Document></MetaDataObject>`, 'utf8');
+
+    await assert.rejects(
+      () => planDeleteMetadataObject({ configurationRootPath: cfeRoot }, {
+        type: MetadataType.AccumulationRegister,
+        name: 'Ext_Register',
+      }),
+      isOwnershipError('CFE_ADOPTED_OPERATION_REQUIRED'),
+    );
   });
 
   test('fails closed when a CFE target crosses a symbolic-link boundary', async function () {

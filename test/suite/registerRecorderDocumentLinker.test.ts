@@ -5,6 +5,7 @@ import {
   appendRegisterReferenceToRecorderDocument,
   removeRegisterReferenceFromRecorderDocument,
 } from '../../src/services/registerRecorderDocumentLinker';
+import * as registerRecorderDocumentLinker from '../../src/services/registerRecorderDocumentLinker';
 import { SMOKE_EMPTY_CONF_RECORDER_DOCUMENT } from '../helpers/smokeIbcmdConstants';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
 
@@ -182,5 +183,26 @@ suite('registerRecorderDocumentLinker', () => {
     } finally {
       await cleanupTempDir(d);
     }
+  });
+
+  test('pure removal targets exact xr:Item children of RegisterRecords and is idempotent', () => {
+    const candidate = (registerRecorderDocumentLinker as unknown as Record<string, unknown>)[
+      'removeRegisterReferenceFromRecorderDocumentXml'
+    ];
+    assert.strictEqual(typeof candidate, 'function', 'delete policy needs a pure XML transformation');
+    const remove = candidate as (xml: string, kind: 'AccumulationRegister', name: string) => string;
+    const xml = `<MetaDataObject xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<Document><Properties><Name>Recorder</Name>
+<RegisterRecords><xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.Target</xr:Item><xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.TargetExtra</xr:Item><xr:Item xsi:type="xr:MDObjectRef">InformationRegister.Target</xr:Item></RegisterRecords>
+</Properties>
+<ChildObjects><Wrapper><xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister.Target</xr:Item></Wrapper></ChildObjects>
+</Document></MetaDataObject>`;
+    const result = remove(xml, 'AccumulationRegister', 'Target');
+    const records = result.match(/<RegisterRecords>([\s\S]*?)<\/RegisterRecords>/)?.[1] ?? '';
+    assert.doesNotMatch(records, /<xr:Item[^>]*>AccumulationRegister\.Target<\/xr:Item>/);
+    assert.match(records, /AccumulationRegister\.TargetExtra/);
+    assert.match(records, /InformationRegister\.Target/);
+    assert.match(result, /<Wrapper><xr:Item[^>]*>AccumulationRegister\.Target<\/xr:Item><\/Wrapper>/);
+    assert.strictEqual(remove(result, 'AccumulationRegister', 'Target'), result);
   });
 });
