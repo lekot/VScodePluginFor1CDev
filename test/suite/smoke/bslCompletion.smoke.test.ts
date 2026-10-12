@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { cleanupSmokeFile } from '../../helpers/smokeFileCleanup';
 
 const EXTENSION_ID = 'Lekot.1c-metadata-tree-vscode';
 
@@ -25,18 +26,15 @@ async function revealMetadataFile(filePath: string): Promise<void> {
   await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
 }
 
-function assertPathIsWithin(parentPath: string, targetPath: string): void {
-  const parent = path.resolve(parentPath);
-  const target = path.resolve(targetPath);
-  const relative = path.relative(parent, target);
-  if (
-    relative === ''
-    || relative === '..'
-    || relative.startsWith(`..${path.sep}`)
-    || path.isAbsolute(relative)
-  ) {
-    throw new Error(`Refusing to remove path outside its expected parent: ${target}`);
+async function closeSmokeDocumentTabs(document: vscode.TextDocument): Promise<void> {
+  const documentUri = document.uri.toString();
+  const matchingTabs = vscode.window.tabGroups.all
+    .flatMap(({ tabs }) => tabs)
+    .filter((tab) => tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === documentUri);
+  if (matchingTabs.length === 0) {
+    return;
   }
+  assert.strictEqual(await vscode.window.tabGroups.close(matchingTabs), true, 'all BSL document tabs must close');
 }
 
 suite('Smoke: BSL completion', () => {
@@ -57,10 +55,6 @@ suite('Smoke: BSL completion', () => {
     const catalogWorkspace = vscode.workspace.workspaceFolders?.find(({ uri }) =>
       fs.existsSync(path.join(uri.fsPath, 'Catalogs', 'TestCatalog1.xml')),
     );
-    const callerName = `CompletionCaller${process.pid}`;
-    const callerRoot = commonModuleWorkspace
-      ? path.join(commonModuleWorkspace.uri.fsPath, 'CommonModules', callerName)
-      : undefined;
     const source = [
       'Процедура ЛокальнаяПроцедура(Первый, Второй)',
       'КонецПроцедуры',
@@ -78,13 +72,21 @@ suite('Smoke: BSL completion', () => {
       'Справочники.TestCatalog1.Созд',
       'Current',
     ].join('\n');
-    const filePath = callerRoot
-      ? path.join(callerRoot, 'Ext', 'Module.bsl')
+    const filePath = commonModuleWorkspace
+      ? path.join(
+        commonModuleWorkspace.uri.fsPath,
+        'CommonModules',
+        `.bsl-completion-smoke-${process.pid}-${Date.now()}.bsl`,
+      )
       : path.join(workspaceFolder?.uri.fsPath ?? '', `.bsl-completion-smoke-${process.pid}-${Date.now()}.bsl`);
     let document: vscode.TextDocument | undefined;
 
+    assert.ok(
+      fs.existsSync(path.dirname(filePath)),
+      'temporary BSL source must reuse an existing directory watched by the metadata tree',
+    );
+
     try {
-      await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
       await fs.promises.writeFile(filePath, source, 'utf8');
       document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
       assert.strictEqual(document.languageId, 'bsl', 'temporary .bsl file must use the BSL language selector');
@@ -221,14 +223,16 @@ suite('Smoke: BSL completion', () => {
         assert.strictEqual(commonModule?.detail, 'Общий модуль метаданных');
       }
     } finally {
-      if (document && vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString()) {
-        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-      }
-      await fs.promises.unlink(filePath).catch(() => undefined);
-      if (callerRoot && commonModuleWorkspace) {
-        assertPathIsWithin(path.join(commonModuleWorkspace.uri.fsPath, 'CommonModules'), callerRoot);
-        await fs.promises.rm(callerRoot, { recursive: true, force: true });
-      }
+      const documentToClose = document;
+      await cleanupSmokeFile(
+        documentToClose ? () => closeSmokeDocumentTabs(documentToClose) : undefined,
+        async () => {
+          if (fs.existsSync(filePath)) {
+            await fs.promises.unlink(filePath);
+          }
+        },
+      );
+      document = undefined;
     }
   });
 });
