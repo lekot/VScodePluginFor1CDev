@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { XMLValidator } from 'fast-xml-parser';
+import { localName } from '../parsers/xmlNavHelpers';
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -27,6 +29,156 @@ export function appendRegisterReferenceToRecorderDocumentXml(
     return xml.replace('</RegisterRecords>', `${itemLine}\n\t\t</RegisterRecords>`);
   }
   throw new Error('Recorder document has no RegisterRecords section to update.');
+}
+
+/** Pure removal of one exact direct recorder reference, without changing other XML identities. */
+export function removeRegisterReferenceFromRecorderDocumentXml(
+  xml: string,
+  registerKind: 'AccumulationRegister' | 'InformationRegister',
+  registerName: string,
+): string {
+  const validation = XMLValidator.validate(xml, { allowBooleanAttributes: false });
+  if (validation !== true) {
+    const detail = typeof validation === 'object' ? validation.err.msg : 'Malformed XML';
+    throw new Error(`Recorder document XML is malformed: ${detail}`);
+  }
+
+  const itemRanges = findDirectRecorderItemRanges(xml, `${registerKind}.${registerName}`);
+  let result = xml;
+  for (const range of itemRanges.reverse()) {
+    result = `${result.slice(0, range.start)}${result.slice(range.end)}`;
+  }
+  return result;
+}
+
+interface XmlElementFrame {
+  readonly name: string;
+  readonly start: number;
+  readonly contentStart: number;
+  readonly isRecorderSection: boolean;
+  readonly isRecorderItem: boolean;
+}
+
+interface XmlRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+function findDirectRecorderItemRanges(xml: string, reference: string): XmlRange[] {
+  const stack: XmlElementFrame[] = [];
+  const ranges: XmlRange[] = [];
+  let recorderSectionCount = 0;
+  let cursor = 0;
+
+  while (cursor < xml.length) {
+    const start = xml.indexOf('<', cursor);
+    if (start < 0) {
+      break;
+    }
+    const end = findMarkupEnd(xml, start);
+    const markup = xml.slice(start, end + 1);
+    cursor = end + 1;
+
+    if (markup.startsWith('<!--') || markup.startsWith('<![CDATA[') || markup.startsWith('<?') || markup.startsWith('<!')) {
+      continue;
+    }
+
+    const closing = /^<\s*\/\s*([^\s>]+)\s*>$/.exec(markup);
+    if (closing) {
+      const frame = stack.pop();
+      if (!frame || frame.name !== closing[1]) {
+        throw new Error('Recorder document XML has an inconsistent element structure.');
+      }
+      if (frame.isRecorderItem) {
+        const text = decodeXmlText(xml.slice(frame.contentStart, start)).trim();
+        if (text === reference) {
+          ranges.push({ start: frame.start, end: end + 1 });
+        }
+      }
+      continue;
+    }
+
+    const opening = /^<\s*([^\s/>]+)/.exec(markup);
+    if (!opening) {
+      continue;
+    }
+    const name = opening[1]!;
+    const parent = stack[stack.length - 1];
+    const isRecorderSection = localName(name) === 'RegisterRecords'
+      && parent !== undefined
+      && localName(parent.name) === 'Document';
+    if (isRecorderSection) {
+      recorderSectionCount++;
+    }
+    const isRecorderItem = name === 'xr:Item' && parent?.isRecorderSection === true;
+    const selfClosing = /\/\s*>$/.test(markup);
+    if (!selfClosing) {
+      stack.push({
+        name,
+        start,
+        contentStart: end + 1,
+        isRecorderSection,
+        isRecorderItem,
+      });
+    }
+  }
+
+  if (recorderSectionCount !== 1) {
+    throw new Error('Recorder document must contain exactly one Document/RegisterRecords section.');
+  }
+  return ranges;
+}
+
+function findMarkupEnd(xml: string, start: number): number {
+  const terminator = xml.startsWith('<!--', start)
+    ? '-->'
+    : xml.startsWith('<![CDATA[', start)
+      ? ']]>'
+      : xml.startsWith('<?', start)
+        ? '?>'
+        : undefined;
+  if (terminator) {
+    const terminatorIndex = xml.indexOf(terminator, start + 2);
+    if (terminatorIndex < 0) {
+      throw new Error('Recorder document XML contains an unterminated markup section.');
+    }
+    return terminatorIndex + terminator.length - 1;
+  }
+
+  let quote: string | undefined;
+  let subsetDepth = 0;
+  for (let index = start + 1; index < xml.length; index++) {
+    const character = xml[index]!;
+    if (quote) {
+      if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+    } else if (xml.startsWith('<!DOCTYPE', start) && character === '[') {
+      subsetDepth++;
+    } else if (xml.startsWith('<!DOCTYPE', start) && character === ']') {
+      subsetDepth--;
+    } else if (character === '>' && subsetDepth === 0) {
+      return index;
+    }
+  }
+  throw new Error('Recorder document XML contains an unterminated element tag.');
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/gi, (_, codePoint: string) => String.fromCodePoint(parseInt(codePoint, 16)))
+    .replace(/&#([0-9]+);/g, (_, codePoint: string) => String.fromCodePoint(parseInt(codePoint, 10)))
+    .replace(/&(amp|lt|gt|quot|apos);/g, (_, entity: string) => ({
+      amp: '&',
+      lt: '<',
+      gt: '>',
+      quot: '"',
+      apos: "'",
+    }[entity] ?? _));
 }
 
 /** Имя документа-регистратора: явный аргумент или `process.env.IBCMD_RECORDER_DOCUMENT`. */
