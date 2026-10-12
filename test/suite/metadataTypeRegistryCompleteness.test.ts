@@ -7,6 +7,7 @@ import {
   METADATA_TYPE_DESCRIPTORS,
   getMetadataTypeDescriptorByType,
   supportsMetadataCrud,
+  type MetadataGenericRootChildObjectKind,
 } from '../../src/constants/metadataTypeDescriptors';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
@@ -20,21 +21,53 @@ suite('Metadata type registry completeness', () => {
     const descriptorRootTags = METADATA_TYPE_DESCRIPTORS.map((descriptor) => descriptor.designerRootTag).sort();
     assert.deepStrictEqual([...rulesRegistry.allRootTags()].sort(), descriptorRootTags);
 
+    const expectedGenericChildren = new Map<MetadataType, readonly MetadataGenericRootChildObjectKind[]>([
+      [MetadataType.Catalog, ['Attribute', 'TabularSection']],
+      [MetadataType.Document, ['Attribute', 'TabularSection']],
+      [MetadataType.Report, ['Attribute', 'TabularSection']],
+      [MetadataType.DataProcessor, ['Attribute', 'TabularSection']],
+      [MetadataType.BusinessProcess, ['Attribute', 'TabularSection']],
+      [MetadataType.Task, ['Attribute', 'TabularSection']],
+      [MetadataType.ExchangePlan, ['Attribute', 'TabularSection']],
+      [MetadataType.ChartOfCharacteristicTypes, ['Attribute', 'TabularSection']],
+      [MetadataType.ChartOfAccounts, ['Attribute', 'TabularSection']],
+      [MetadataType.ChartOfCalculationTypes, ['Attribute', 'TabularSection']],
+      [MetadataType.InformationRegister, ['Attribute']],
+      [MetadataType.AccumulationRegister, ['Attribute']],
+      [MetadataType.AccountingRegister, ['Attribute']],
+      [MetadataType.CalculationRegister, ['Attribute']],
+    ]);
+
     for (const descriptor of METADATA_TYPE_DESCRIPTORS) {
       const rules = rulesRegistry.get(descriptor.designerRootTag);
       assert.ok(rules, `missing XML rules for ${descriptor.designerRootTag}`);
 
       assert.strictEqual(typeof descriptor.structure.hasChildObjects, 'boolean');
       assert.deepStrictEqual(
-        descriptor.structure.hasChildObjects,
-        descriptor.structure.childObjectKinds.length > 0,
-        `${descriptor.designerRootTag}: child-kind admission must agree with root ChildObjects structure`,
+        descriptor.genericRootChildObjectKinds,
+        expectedGenericChildren.get(descriptor.type) ?? [],
+        `${descriptor.designerRootTag}: generic child admission must match the explicit support matrix`,
       );
+      if (descriptor.genericRootChildObjectKinds.length > 0) {
+        assert.strictEqual(descriptor.structure.hasChildObjects, true);
+      }
+    }
+
+    for (const type of [
+      MetadataType.Enum,
+      MetadataType.Sequence,
+      MetadataType.WebService,
+      MetadataType.HTTPService,
+      MetadataType.IntegrationService,
+      MetadataType.Subsystem,
+    ]) {
+      const descriptor = getMetadataTypeDescriptorByType(type)!;
+      assert.strictEqual(descriptor.structure.hasChildObjects, true, `${String(type)} retains its structural ChildObjects`);
+      assert.deepStrictEqual(descriptor.genericRootChildObjectKinds, [], `${String(type)} does not admit generic children`);
     }
 
     const subsystem = getMetadataTypeDescriptorByType(MetadataType.Subsystem)!;
     assert.strictEqual(subsystem.structure.hasChildObjects, true);
-    assert.deepStrictEqual(subsystem.structure.childObjectKinds, ['Subsystem']);
 
     const parsedSubsystem = new XMLParser({ ignoreAttributes: false }).parse(
       '<MetaDataObject><Subsystem><ChildObjects><Subsystem>Child</Subsystem></ChildObjects></Subsystem></MetaDataObject>',

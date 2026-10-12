@@ -3,7 +3,7 @@ import { MetadataType } from '../models/treeNode';
 export type MetadataModuleCapability = 'debug-path';
 export type MetadataUiCapability = 'metadata-tree';
 export type MetadataCrudOperation = 'create' | 'rename' | 'duplicate' | 'delete';
-export type MetadataRootChildObjectKind = 'Attribute' | 'TabularSection' | 'Subsystem';
+export type MetadataGenericRootChildObjectKind = 'Attribute' | 'TabularSection';
 
 export type MetadataCrudCapability =
   | { readonly supported: true }
@@ -24,9 +24,9 @@ export interface MetadataTypeDescriptor {
     readonly designerRootObject: true;
     /** Whether this Designer root XML uses a top-level <ChildObjects> section. */
     readonly hasChildObjects: boolean;
-    /** Child tags admitted by the generic root-level create path. */
-    readonly childObjectKinds: readonly MetadataRootChildObjectKind[];
   };
+  /** Generic root child tags admitted by elementOperations; independent of ChildObjects structure. */
+  readonly genericRootChildObjectKinds: readonly MetadataGenericRootChildObjectKind[];
   readonly crud: MetadataCrudCapabilities;
   readonly designerFolder: string;
   readonly designerRootTag: string;
@@ -42,7 +42,7 @@ interface DescriptorOptions {
   readonly referenceKind?: string;
   readonly debugPath?: boolean;
   readonly rootTagAliases?: readonly string[];
-  readonly childObjectKinds?: readonly MetadataRootChildObjectKind[];
+  readonly genericRootChildObjectKinds?: readonly MetadataGenericRootChildObjectKind[];
 }
 
 const SUPPORTED_ROOT_CRUD: MetadataCrudCapabilities = Object.freeze({
@@ -60,12 +60,11 @@ function descriptor(
   hasChildObjects: boolean,
   options: DescriptorOptions = {}
 ): MetadataTypeDescriptor {
-  const childObjectKinds = Object.freeze([
-    ...(options.childObjectKinds ?? (hasChildObjects ? ['Attribute', 'TabularSection'] : [])),
-  ]);
+  const genericRootChildObjectKinds = Object.freeze([...(options.genericRootChildObjectKinds ?? [])]);
   return Object.freeze({
     type,
-    structure: Object.freeze({ designerRootObject: true as const, hasChildObjects, childObjectKinds }),
+    structure: Object.freeze({ designerRootObject: true as const, hasChildObjects }),
+    genericRootChildObjectKinds,
     crud,
     designerFolder,
     designerRootTag,
@@ -79,20 +78,49 @@ function descriptor(
 }
 
 export const METADATA_TYPE_DESCRIPTORS: readonly MetadataTypeDescriptor[] = Object.freeze([
-  descriptor('Catalogs', MetadataType.Catalog, 'Catalog', SUPPORTED_ROOT_CRUD, true, { referenceKind: 'CatalogRef', debugPath: true }),
-  descriptor('Documents', MetadataType.Document, 'Document', SUPPORTED_ROOT_CRUD, true, { referenceKind: 'DocumentRef', debugPath: true }),
+  descriptor('Catalogs', MetadataType.Catalog, 'Catalog', SUPPORTED_ROOT_CRUD, true, {
+    referenceKind: 'CatalogRef', debugPath: true, genericRootChildObjectKinds: ['Attribute', 'TabularSection'],
+  }),
+  descriptor('Documents', MetadataType.Document, 'Document', SUPPORTED_ROOT_CRUD, true, {
+    referenceKind: 'DocumentRef', debugPath: true, genericRootChildObjectKinds: ['Attribute', 'TabularSection'],
+  }),
   descriptor('Enums', MetadataType.Enum, 'Enum', SUPPORTED_ROOT_CRUD, true, { referenceKind: 'EnumRef', debugPath: true }),
-  descriptor('Reports', MetadataType.Report, 'Report', SUPPORTED_ROOT_CRUD, true, { debugPath: true }),
-  descriptor('DataProcessors', MetadataType.DataProcessor, 'DataProcessor', SUPPORTED_ROOT_CRUD, true, { debugPath: true }),
-  descriptor('ChartsOfCharacteristicTypes', MetadataType.ChartOfCharacteristicTypes, 'ChartOfCharacteristicTypes', SUPPORTED_ROOT_CRUD, true, { referenceKind: 'ChartOfCharacteristicTypesRef', debugPath: true }),
-  descriptor('ChartsOfAccounts', MetadataType.ChartOfAccounts, 'ChartOfAccounts', SUPPORTED_ROOT_CRUD, true, { referenceKind: 'ChartOfAccountsRef', debugPath: true }),
-  descriptor('ChartsOfCalculationTypes', MetadataType.ChartOfCalculationTypes, 'ChartOfCalculationTypes', SUPPORTED_ROOT_CRUD, true, { referenceKind: 'ChartOfCalculationTypesRef', debugPath: true }),
-  descriptor('InformationRegisters', MetadataType.InformationRegister, 'InformationRegister', SUPPORTED_ROOT_CRUD, true, { debugPath: true }),
-  descriptor('AccumulationRegisters', MetadataType.AccumulationRegister, 'AccumulationRegister', SUPPORTED_ROOT_CRUD, true, { debugPath: true }),
-  descriptor('AccountingRegisters', MetadataType.AccountingRegister, 'AccountingRegister', SUPPORTED_ROOT_CRUD, true, { debugPath: true }),
-  descriptor('CalculationRegisters', MetadataType.CalculationRegister, 'CalculationRegister', SUPPORTED_ROOT_CRUD, true, { debugPath: true }),
-  descriptor('BusinessProcesses', MetadataType.BusinessProcess, 'BusinessProcess', SUPPORTED_ROOT_CRUD, true, { debugPath: true }),
-  descriptor('Tasks', MetadataType.Task, 'Task', SUPPORTED_ROOT_CRUD, true, { debugPath: true }),
+  descriptor('Reports', MetadataType.Report, 'Report', SUPPORTED_ROOT_CRUD, true, {
+    debugPath: true, genericRootChildObjectKinds: ['Attribute', 'TabularSection'],
+  }),
+  descriptor('DataProcessors', MetadataType.DataProcessor, 'DataProcessor', SUPPORTED_ROOT_CRUD, true, {
+    debugPath: true, genericRootChildObjectKinds: ['Attribute', 'TabularSection'],
+  }),
+  descriptor('ChartsOfCharacteristicTypes', MetadataType.ChartOfCharacteristicTypes, 'ChartOfCharacteristicTypes', SUPPORTED_ROOT_CRUD, true, {
+    referenceKind: 'ChartOfCharacteristicTypesRef', debugPath: true,
+    genericRootChildObjectKinds: ['Attribute', 'TabularSection'],
+  }),
+  descriptor('ChartsOfAccounts', MetadataType.ChartOfAccounts, 'ChartOfAccounts', SUPPORTED_ROOT_CRUD, true, {
+    referenceKind: 'ChartOfAccountsRef', debugPath: true,
+    genericRootChildObjectKinds: ['Attribute', 'TabularSection'],
+  }),
+  descriptor('ChartsOfCalculationTypes', MetadataType.ChartOfCalculationTypes, 'ChartOfCalculationTypes', SUPPORTED_ROOT_CRUD, true, {
+    referenceKind: 'ChartOfCalculationTypesRef', debugPath: true,
+    genericRootChildObjectKinds: ['Attribute', 'TabularSection'],
+  }),
+  descriptor('InformationRegisters', MetadataType.InformationRegister, 'InformationRegister', SUPPORTED_ROOT_CRUD, true, {
+    debugPath: true, genericRootChildObjectKinds: ['Attribute'],
+  }),
+  descriptor('AccumulationRegisters', MetadataType.AccumulationRegister, 'AccumulationRegister', SUPPORTED_ROOT_CRUD, true, {
+    debugPath: true, genericRootChildObjectKinds: ['Attribute'],
+  }),
+  descriptor('AccountingRegisters', MetadataType.AccountingRegister, 'AccountingRegister', SUPPORTED_ROOT_CRUD, true, {
+    debugPath: true, genericRootChildObjectKinds: ['Attribute'],
+  }),
+  descriptor('CalculationRegisters', MetadataType.CalculationRegister, 'CalculationRegister', SUPPORTED_ROOT_CRUD, true, {
+    debugPath: true, genericRootChildObjectKinds: ['Attribute'],
+  }),
+  descriptor('BusinessProcesses', MetadataType.BusinessProcess, 'BusinessProcess', SUPPORTED_ROOT_CRUD, true, {
+    debugPath: true, genericRootChildObjectKinds: ['Attribute', 'TabularSection'],
+  }),
+  descriptor('Tasks', MetadataType.Task, 'Task', SUPPORTED_ROOT_CRUD, true, {
+    debugPath: true, genericRootChildObjectKinds: ['Attribute', 'TabularSection'],
+  }),
   descriptor('ExternalDataSources', MetadataType.ExternalDataSource, 'ExternalDataSource', SUPPORTED_ROOT_CRUD, true),
   descriptor('Sequences', MetadataType.Sequence, 'Sequence', SUPPORTED_ROOT_CRUD, true, { debugPath: true }),
   descriptor('Constants', MetadataType.Constant, 'Constant', SUPPORTED_ROOT_CRUD, false, { debugPath: true }),
@@ -112,9 +140,11 @@ export const METADATA_TYPE_DESCRIPTORS: readonly MetadataTypeDescriptor[] = Obje
   descriptor('HTTPServices', MetadataType.HTTPService, 'HTTPService', SUPPORTED_ROOT_CRUD, true, { debugPath: true }),
   descriptor('IntegrationServices', MetadataType.IntegrationService, 'IntegrationService', SUPPORTED_ROOT_CRUD, true, { debugPath: true }),
   descriptor('Subsystems', MetadataType.Subsystem, 'Subsystem', SUPPORTED_ROOT_CRUD, true, {
-    childObjectKinds: ['Subsystem'],
+    genericRootChildObjectKinds: [],
   }),
-  descriptor('ExchangePlans', MetadataType.ExchangePlan, 'ExchangePlan', SUPPORTED_ROOT_CRUD, true, { debugPath: true }),
+  descriptor('ExchangePlans', MetadataType.ExchangePlan, 'ExchangePlan', SUPPORTED_ROOT_CRUD, true, {
+    debugPath: true, genericRootChildObjectKinds: ['Attribute', 'TabularSection'],
+  }),
   descriptor('DocumentJournals', MetadataType.DocumentJournal, 'DocumentJournal', SUPPORTED_ROOT_CRUD, true, { debugPath: true }),
   descriptor('DefinedTypes', MetadataType.DefinedType, 'DefinedType', SUPPORTED_ROOT_CRUD, false),
   descriptor('CommonAttributes', MetadataType.CommonAttribute, 'CommonAttribute', SUPPORTED_ROOT_CRUD, false),
@@ -166,11 +196,11 @@ export function supportsMetadataCrud(type: MetadataType, operation: MetadataCrud
 }
 
 /** Whether the generic root-level create path may add this ChildObjects tag under a metadata type. */
-export function supportsMetadataRootChildObject(
+export function supportsMetadataGenericRootChildObject(
   type: MetadataType,
-  childKind: MetadataRootChildObjectKind,
+  childKind: MetadataGenericRootChildObjectKind,
 ): boolean {
-  return getMetadataTypeDescriptorByType(type)?.structure.childObjectKinds.includes(childKind) ?? false;
+  return getMetadataTypeDescriptorByType(type)?.genericRootChildObjectKinds.includes(childKind) ?? false;
 }
 
 export function assertMetadataCrudSupported(type: MetadataType, operation: MetadataCrudOperation): void {

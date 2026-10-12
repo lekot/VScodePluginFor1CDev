@@ -5,7 +5,7 @@ import {
   assertMetadataCrudSupported,
   DESIGNER_ROOT_OBJECT_TYPES,
   getMetadataTypeDescriptorByType,
-  supportsMetadataRootChildObject,
+  supportsMetadataGenericRootChildObject,
 } from '../constants/metadataTypeDescriptors';
 import { Logger } from '../utils/logger';
 import { ROOT_TAGS_WITHOUT_CHILDOBJECTS, XMLWriter } from '../utils/XMLWriter';
@@ -145,7 +145,7 @@ function assertRootChildObjectAllowed(
   parentType: MetadataType,
   childKind: 'Attribute' | 'TabularSection',
 ): void {
-  if (supportsMetadataRootChildObject(parentType, childKind)) {
+  if (supportsMetadataGenericRootChildObject(parentType, childKind)) {
     return;
   }
 
@@ -158,7 +158,8 @@ function assertRootChildObjectAllowed(
   }
 
   if (parentType === MetadataType.Subsystem) {
-    throw new Error('Создание реквизита под подсистемой не поддерживается.');
+    const childLabel = childKind === 'Attribute' ? 'реквизита' : 'табличной части';
+    throw new Error(`Создание ${childLabel} под подсистемой не поддерживается.`);
   }
 
   throw new Error(`Создание ${childKind} под ${String(parentType)} не поддерживается.`);

@@ -2200,6 +2200,138 @@ suite('elementOperations', () => {
     );
   });
 
+  const unsupportedGenericChildCases: ReadonlyArray<{
+    rootType: MetadataType;
+    rootTag: string;
+    childKind: 'Attribute' | 'TabularSection';
+  }> = [
+    { rootType: MetadataType.Enum, rootTag: 'Enum', childKind: 'Attribute' },
+    { rootType: MetadataType.Enum, rootTag: 'Enum', childKind: 'TabularSection' },
+    { rootType: MetadataType.Sequence, rootTag: 'Sequence', childKind: 'Attribute' },
+    { rootType: MetadataType.Sequence, rootTag: 'Sequence', childKind: 'TabularSection' },
+    { rootType: MetadataType.WebService, rootTag: 'WebService', childKind: 'Attribute' },
+    { rootType: MetadataType.WebService, rootTag: 'WebService', childKind: 'TabularSection' },
+    { rootType: MetadataType.HTTPService, rootTag: 'HTTPService', childKind: 'Attribute' },
+    { rootType: MetadataType.HTTPService, rootTag: 'HTTPService', childKind: 'TabularSection' },
+    { rootType: MetadataType.IntegrationService, rootTag: 'IntegrationService', childKind: 'Attribute' },
+    { rootType: MetadataType.IntegrationService, rootTag: 'IntegrationService', childKind: 'TabularSection' },
+    { rootType: MetadataType.Subsystem, rootTag: 'Subsystem', childKind: 'TabularSection' },
+  ];
+
+  for (const { rootType, rootTag, childKind } of unsupportedGenericChildCases) {
+    test(`createElement rejects generic ${childKind} under ${rootTag} and preserves its XML`, async () => {
+      const objectDir = path.join(tmpDir, 'generic-child-admission', rootTag, childKind);
+      await fs.promises.mkdir(objectDir, { recursive: true });
+      const objectName = `${rootTag}Instance`;
+      const xmlPath = path.join(objectDir, `${objectName}.xml`);
+      await XMLWriter.createMinimalElementFile(xmlPath, rootTag, objectName, '2.20');
+
+      const typeFolder: TreeNode = {
+        id: `${rootTag}s`,
+        name: rootTag,
+        type: rootType,
+        properties: {},
+        filePath: objectDir,
+        parent: configNode,
+        children: [],
+      };
+      const metadataObject: TreeNode = {
+        id: `${rootTag}s.${objectName}`,
+        name: objectName,
+        type: rootType,
+        properties: {},
+        filePath: xmlPath,
+        parent: typeFolder,
+        children: [],
+      };
+      const target = childKind === 'Attribute' ? metadataObject : {
+        id: 'TabularSections',
+        name: 'Табличные части',
+        type: MetadataType.TabularSection,
+        properties: {},
+        parent: metadataObject,
+        children: [],
+      };
+      const initialXml = await readFileContent(xmlPath);
+
+      await assert.rejects(
+        async () => createElement(target, `Unsupported${childKind}`),
+        /не поддерживается|нет ChildObjects/i,
+      );
+      assert.strictEqual(await readFileContent(xmlPath), initialXml);
+    });
+  }
+
+  const supportedGenericChildCases: ReadonlyArray<{
+    rootType: MetadataType;
+    rootTag: string;
+    childKind: 'Attribute' | 'TabularSection';
+  }> = [
+    ...[
+      { rootType: MetadataType.Catalog, rootTag: 'Catalog' },
+      { rootType: MetadataType.Document, rootTag: 'Document' },
+      { rootType: MetadataType.Report, rootTag: 'Report' },
+      { rootType: MetadataType.DataProcessor, rootTag: 'DataProcessor' },
+      { rootType: MetadataType.BusinessProcess, rootTag: 'BusinessProcess' },
+      { rootType: MetadataType.Task, rootTag: 'Task' },
+      { rootType: MetadataType.ExchangePlan, rootTag: 'ExchangePlan' },
+      { rootType: MetadataType.ChartOfCharacteristicTypes, rootTag: 'ChartOfCharacteristicTypes' },
+      { rootType: MetadataType.ChartOfAccounts, rootTag: 'ChartOfAccounts' },
+      { rootType: MetadataType.ChartOfCalculationTypes, rootTag: 'ChartOfCalculationTypes' },
+    ].flatMap(({ rootType, rootTag }) => [
+      { rootType, rootTag, childKind: 'Attribute' as const },
+      { rootType, rootTag, childKind: 'TabularSection' as const },
+    ]),
+    { rootType: MetadataType.InformationRegister, rootTag: 'InformationRegister', childKind: 'Attribute' },
+    { rootType: MetadataType.AccumulationRegister, rootTag: 'AccumulationRegister', childKind: 'Attribute' },
+    { rootType: MetadataType.AccountingRegister, rootTag: 'AccountingRegister', childKind: 'Attribute' },
+    { rootType: MetadataType.CalculationRegister, rootTag: 'CalculationRegister', childKind: 'Attribute' },
+  ];
+
+  for (const { rootType, rootTag, childKind } of supportedGenericChildCases) {
+    test(`createElement keeps generic ${childKind} support for ${rootTag}`, async () => {
+      const objectDir = path.join(tmpDir, 'generic-child-admission', rootTag);
+      await fs.promises.mkdir(objectDir, { recursive: true });
+      const objectName = `${rootTag}Instance`;
+      const xmlPath = path.join(objectDir, `${objectName}.xml`);
+      await XMLWriter.createMinimalElementFile(xmlPath, rootTag, objectName, '2.20');
+
+      const typeFolder: TreeNode = {
+        id: `${rootTag}s`,
+        name: rootTag,
+        type: rootType,
+        properties: {},
+        filePath: objectDir,
+        parent: configNode,
+        children: [],
+      };
+      const metadataObject: TreeNode = {
+        id: `${rootTag}s.${objectName}`,
+        name: objectName,
+        type: rootType,
+        properties: {},
+        filePath: xmlPath,
+        parent: typeFolder,
+        children: [],
+      };
+
+      const target: TreeNode = childKind === 'Attribute' ? metadataObject : {
+        id: 'TabularSections',
+        name: 'Табличные части',
+        type: MetadataType.TabularSection,
+        properties: {},
+        parent: metadataObject,
+        children: [],
+      };
+      const childName = `Allowed${childKind}`;
+      await createElement(target, childName);
+
+      const xml = await readFileContent(xmlPath);
+      assert.match(xml, new RegExp(`<${childKind}\\b`));
+      assert.match(xml, new RegExp(`<Name>${childName}</Name>`));
+    });
+  }
+
   test('appendPredefinedDesignerItem COT: uses boolean type from owner file', async () => {
     const { appendPredefinedDesignerItem } = await import('../../src/utils/xml/predefinedDataAppender');
     const dir = await createTempDir('1cviewer-cot-predef-');
