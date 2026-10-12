@@ -143,6 +143,7 @@ suite('treeNormalization Test Suite', () => {
       'CommonAttributes',
       'SessionParameters',
       'Roles',
+      'Interfaces',
       'FilterCriteria',
       'EventSubscriptions',
       'ScheduledJobs',

@@ -8,7 +8,6 @@ export const languageRules: MetadataObjectRules = {
         'xmlns': 'http://v8.1c.ru/8.3/MDClasses',
         'xmlns:v8': 'http://v8.1c.ru/8.1/data/core',
     },
-    hasChildObjects: false,
     properties: {
         languageCode: { type: 'string', order: 1, xml: 'LanguageCode', yaml: 'КодЯзыка', defaultValueXML: 'ru' },
         comment: { type: 'string', order: 2, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },

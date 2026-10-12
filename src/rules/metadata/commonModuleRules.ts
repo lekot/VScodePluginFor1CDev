@@ -8,7 +8,6 @@ export const commonModuleRules: MetadataObjectRules = {
         'xmlns': 'http://v8.1c.ru/8.3/MDClasses',
         'xmlns:v8': 'http://v8.1c.ru/8.1/data/core',
     },
-    hasChildObjects: false,
     properties: {
         clientManagedApplication: { type: 'boolean', order: 1, xml: 'ClientManagedApplication', yaml: 'КлиентУправляемоеПриложение', defaultValueXML: true },
         clientOrdinaryApplication: { type: 'boolean', order: 2, xml: 'ClientOrdinaryApplication', yaml: 'КлиентОбычноеПриложение', defaultValueXML: true },

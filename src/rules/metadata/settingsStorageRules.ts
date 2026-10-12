@@ -8,7 +8,6 @@ export const settingsStorageRules: MetadataObjectRules = {
         'xmlns': 'http://v8.1c.ru/8.3/MDClasses',
         'xmlns:v8': 'http://v8.1c.ru/8.1/data/core',
     },
-    hasChildObjects: true,
     properties: {
         auxiliaryLoadForm: { type: 'string', order: 1, xml: 'AuxiliaryLoadForm', defaultValueXML: '' },
         auxiliarySaveForm: { type: 'string', order: 2, xml: 'AuxiliarySaveForm', defaultValueXML: '' },

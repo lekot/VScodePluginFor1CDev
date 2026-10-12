@@ -10,7 +10,6 @@ export const webServiceRules: MetadataObjectRules = {
         'xmlns:xr': 'http://v8.1c.ru/8.3/xcf/readable',
         'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
     },
-    hasChildObjects: true,
     properties: {
         comment: { type: 'string', order: 1, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },
         descriptorFileName: { type: 'string', order: 2, xml: 'DescriptorFileName', yaml: 'ИмяФайлаДескриптора', defaultValueXML: '' },

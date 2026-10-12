@@ -1,5 +1,6 @@
 // src/rules/MetadataConverter.ts
 import * as yaml from 'js-yaml';
+import { getMetadataTypeDescriptorByRootTag } from '../constants/metadataTypeDescriptors';
 import { xmlParser, xmlBuilder } from '../utils/xml/xmlCore';
 import {
     IMetadataConverter,
@@ -88,6 +89,11 @@ export class MetadataConverter implements IMetadataConverter {
     }
 
     irToXml(ir: MetadataIR, rules: MetadataObjectRules): string {
+        const descriptor = getMetadataTypeDescriptorByRootTag(rules.rootTag);
+        if (!descriptor) {
+            throw new Error(`Missing canonical metadata descriptor for XML root tag "${rules.rootTag}".`);
+        }
+
         const context: ConversionContext = {
             objectName: ir.name,
             objectType: ir.objectType,
@@ -132,7 +138,7 @@ export class MetadataConverter implements IMetadataConverter {
             '@_uuid': ir.uuid,
             Properties: propertiesObj,
         };
-        if (rules.hasChildObjects) {
+        if (descriptor.structure.hasChildObjects) {
             rootContent['ChildObjects'] = '';
         }
 

@@ -8,7 +8,6 @@ export const commandGroupRules: MetadataObjectRules = {
         'xmlns': 'http://v8.1c.ru/8.3/MDClasses',
         'xmlns:v8': 'http://v8.1c.ru/8.1/data/core',
     },
-    hasChildObjects: false,
     properties: {
         category: { type: 'SystemEnumeration', order: 1, xml: 'Category', yaml: 'Категория', defaultValueXML: 'ActionsPanel', typeSE: 'CommandGroupCategory' },
         comment: { type: 'string', order: 2, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },

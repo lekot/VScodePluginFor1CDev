@@ -10,7 +10,6 @@ export const accumulationRegisterRules: MetadataObjectRules = {
         'xmlns:xr': 'http://v8.1c.ru/8.3/xcf/readable',
         'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
     },
-    hasChildObjects: true,
     properties: {
         auxiliaryListForm: { type: 'string', order: 1, xml: 'AuxiliaryListForm', defaultValueXML: '' },
         comment: { type: 'string', order: 2, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },

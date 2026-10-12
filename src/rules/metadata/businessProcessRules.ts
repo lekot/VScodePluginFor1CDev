@@ -11,7 +11,6 @@ export const businessProcessRules: MetadataObjectRules = {
         'xmlns:xs': 'http://www.w3.org/2001/XMLSchema',
         'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
     },
-    hasChildObjects: true,
     properties: {
         autonumbering: { type: 'boolean', order: 1, xml: 'Autonumbering', yaml: 'Автонумерация', defaultValueXML: true },
         auxiliaryChoiceForm: { type: 'string', order: 2, xml: 'AuxiliaryChoiceForm', defaultValueXML: '' },

@@ -8,7 +8,6 @@ export const externalDataSourceRules: MetadataObjectRules = {
         'xmlns': 'http://v8.1c.ru/8.3/MDClasses',
         'xmlns:v8': 'http://v8.1c.ru/8.1/data/core',
     },
-    hasChildObjects: true,
     properties: {
         comment: { type: 'string', order: 1, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },
         dataLockControlMode: { type: 'SystemEnumeration', order: 2, xml: 'DataLockControlMode', yaml: 'РежимУправленияБлокировкойДанных', defaultValueXML: 'Automatic', typeSE: 'DefaultDataLockControlMode' },
