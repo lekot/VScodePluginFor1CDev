@@ -2,8 +2,6 @@ import iconv from 'iconv-lite';
 import type { IbcmdConsoleOutputEncoding } from './ibcmdConsoleEncodingTypes';
 
 type LegacyCyrillicEncoding = 'cp866' | 'cp1251';
-const AUTO_ENCODING_SAMPLE_BYTES = 256;
-const AUTO_ENCODING_SAMPLE_CAPACITY = AUTO_ENCODING_SAMPLE_BYTES + 3;
 
 function russianLetterCount(text: string): number {
   return text.match(/[А-Яа-яЁё]/gu)?.length ?? 0;
@@ -147,10 +145,10 @@ export interface IbcmdStreamChunkDecoders {
 /**
  * Per-chunk decoding for spawn streams. CP866 / windows-1251 are single-byte; UTF-8 uses TextDecoder `{ stream: true }` per stream.
  *
- * `auto` mode buffers at most 259 bytes per stream after its first non-ASCII byte.
- * An invalid UTF-8 sequence selects the better-scoring legacy Cyrillic encoding;
- * 256 complete valid UTF-8 bytes select UTF-8. Short streams are classified on flush.
- * The first stream that can be classified selects the shared encoding for stdout and stderr.
+ * `auto` mode selects an encoding from the first chunk containing non-ASCII bytes.
+ * An invalid UTF-8 chunk selects the better-scoring legacy Cyrillic encoding; otherwise UTF-8
+ * is selected immediately so interactive ibcmd prompts remain visible to abort-pattern checks.
+ * The first stream with non-ASCII output selects the shared encoding for stdout and stderr.
  *
  * `utf16le` uses UTF-16 LE streaming (e.g. some wide-character pipes / tools on Windows).
  */
@@ -184,96 +182,28 @@ export function createIbcmdStreamChunkDecoders(mode: IbcmdConsoleOutputEncoding)
     let decided = false;
     let useUtf8 = true;
     let legacyEncoding: LegacyCyrillicEncoding = 'cp866';
-    type AutoStreamState = {
-      sample: Buffer;
-      sampleBytes: number;
-      utf8Decoder: InstanceType<typeof TextDecoder>;
-    };
-    const createState = (): AutoStreamState => ({
-      sample: Buffer.allocUnsafe(AUTO_ENCODING_SAMPLE_CAPACITY),
-      sampleBytes: 0,
-      utf8Decoder: new TextDecoder('utf-8', { fatal: false }),
-    });
-    const decodeSelected = (chunk: Buffer, state: AutoStreamState): string => useUtf8
-      ? state.utf8Decoder.decode(chunk, { stream: true })
-      : iconv.decode(chunk, legacyEncoding);
-    const decodePending = (state: AutoStreamState): string => {
-      if (state.sampleBytes === 0) {
-        return '';
-      }
-      const pending = state.sample.subarray(0, state.sampleBytes);
-      state.sampleBytes = 0;
-      return decodeSelected(pending, state);
-    };
-    const decodeAuto = (chunk: Buffer, state: AutoStreamState): string => {
-      if (chunk.length === 0) {
-        return '';
-      }
-      if (decided) {
-        return decodePending(state) + decodeSelected(chunk, state);
-      }
+    const utf8Out = new TextDecoder('utf-8', { fatal: false });
+    const utf8Err = new TextDecoder('utf-8', { fatal: false });
 
-      let asciiPrefix = '';
-      let candidate = chunk;
-      if (state.sampleBytes === 0) {
-        const firstHighByte = chunk.findIndex((byte) => byte >= 0x80);
-        if (firstHighByte < 0) {
-          return chunk.toString('ascii');
-        }
-        asciiPrefix = chunk.subarray(0, firstHighByte).toString('ascii');
-        candidate = chunk.subarray(firstHighByte);
-      }
-
-      const remainingCapacity = AUTO_ENCODING_SAMPLE_CAPACITY - state.sampleBytes;
-      const copiedBytes = Math.min(candidate.length, remainingCapacity);
-      candidate.copy(state.sample, state.sampleBytes, 0, copiedBytes);
-      state.sampleBytes += copiedBytes;
-
-      const sample = state.sample.subarray(0, state.sampleBytes);
-      const validUtf8Prefix = isLikelyUtf8(sample);
-      const completeUtf8 = validUtf8Prefix && isValidUtf8Buffer(sample);
-      if (!validUtf8Prefix) {
+    const decodeAuto = (chunk: Buffer, utf8Decoder: InstanceType<typeof TextDecoder>): string => {
+      if (!decided && chunk.some((byte) => byte >= 0x80)) {
         decided = true;
-        useUtf8 = false;
-        legacyEncoding = detectLegacyCyrillicEncoding(sample);
-      } else if (state.sampleBytes >= AUTO_ENCODING_SAMPLE_BYTES && completeUtf8) {
-        decided = true;
-        useUtf8 = true;
-      } else if (state.sampleBytes >= AUTO_ENCODING_SAMPLE_CAPACITY) {
-        // A valid UTF-8 sequence can be at most four bytes, so the bounded tail
-        // allowance above should complete it. If it still cannot, use legacy decoding.
-        decided = true;
-        useUtf8 = false;
-        legacyEncoding = detectLegacyCyrillicEncoding(sample);
-      }
-
-      if (!decided) {
-        return asciiPrefix;
-      }
-      const rest = candidate.subarray(copiedBytes);
-      return asciiPrefix + decodePending(state) + decodeSelected(rest, state);
-    };
-    const flushAuto = (state: AutoStreamState): string => {
-      if (!decided && state.sampleBytes > 0) {
-        const sample = state.sample.subarray(0, state.sampleBytes);
-        useUtf8 = isValidUtf8Buffer(sample);
+        useUtf8 = isLikelyUtf8(chunk);
         if (!useUtf8) {
-          legacyEncoding = detectLegacyCyrillicEncoding(sample);
+          legacyEncoding = detectLegacyCyrillicEncoding(chunk);
+          return iconv.decode(chunk, legacyEncoding);
         }
-        decided = true;
       }
-      const pending = decodePending(state);
-      return pending + (useUtf8 ? state.utf8Decoder.decode() : '');
+      return useUtf8
+        ? utf8Decoder.decode(chunk, { stream: true })
+        : iconv.decode(chunk, legacyEncoding);
     };
-
-    const stdout = createState();
-    const stderr = createState();
 
     return {
-      decodeStdout: (chunk: Buffer) => decodeAuto(chunk, stdout),
-      decodeStderr: (chunk: Buffer) => decodeAuto(chunk, stderr),
-      flushStdout: () => flushAuto(stdout),
-      flushStderr: () => flushAuto(stderr),
+      decodeStdout: (chunk: Buffer) => decodeAuto(chunk, utf8Out),
+      decodeStderr: (chunk: Buffer) => decodeAuto(chunk, utf8Err),
+      flushStdout: () => (useUtf8 ? utf8Out.decode() : ''),
+      flushStderr: () => (useUtf8 ? utf8Err.decode() : ''),
     };
   }
 

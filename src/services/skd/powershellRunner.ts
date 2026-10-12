@@ -7,7 +7,7 @@ import type { ChildProcess } from 'child_process';
 import type * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { createIbcmdStreamChunkDecoders } from '../ibcmd/consoleStreamDecoder';
+import { createPowerShellStreamChunkDecoders } from './powershellStreamDecoder';
 import type { ProcessTreeTerminationOutcome } from '../ibcmd/processTreeTermination';
 import {
   runStreamingProcess,
@@ -173,7 +173,7 @@ export async function runPowerShellScript(
         timeoutMs,
         cancellation,
         spawnOptions: { cwd: opts.cwd },
-        streamDecoders: createIbcmdStreamChunkDecoders('auto'),
+        streamDecoders: createPowerShellStreamChunkDecoders(),
         terminationGraceMs: TERMINATION_GRACE_MS,
         onStreamChunk: (chunk, stream) => {
             (stream === 'stdout' ? stdout : stderr).append(chunk);

@@ -8,6 +8,7 @@ import {
   decodeIbcmdProcessStreams,
   isLikelyUtf8,
 } from '../../src/services/ibcmd/consoleStreamDecoder';
+import { createPowerShellStreamChunkDecoders } from '../../src/services/skd/powershellStreamDecoder';
 
 suite('consoleStreamDecoder detectLegacyCyrillicEncoding', () => {
   const message = 'Ошибка исключительной блокировки информационной базы.';
@@ -121,7 +122,7 @@ suite('consoleStreamDecoder decodeIbcmdProcessStreams', () => {
   });
 });
 
-suite('consoleStreamDecoder createIbcmdStreamChunkDecoders', () => {
+suite('console stream decoders', () => {
   test('utf8 mode splits a multibyte character across chunks then flush is empty', () => {
     const dec = createIbcmdStreamChunkDecoders('utf8');
     const full = Buffer.from('я', 'utf8');
@@ -188,13 +189,13 @@ suite('consoleStreamDecoder createIbcmdStreamChunkDecoders', () => {
   });
 
   for (const stream of ['stdout', 'stderr'] as const) {
-    test(`auto: CP866 розница survives every two-chunk split on ${stream}`, () => {
+    test(`PowerShell auto: CP866 розница survives every two-chunk split on ${stream}`, () => {
       const message = 'розница';
       const raw = iconv.encode(message, 'cp866');
       assert.strictEqual(raw.toString('hex'), 'e0aea7ada8e6a0');
 
       for (let split = 1; split < raw.length; split++) {
-        const dec = createIbcmdStreamChunkDecoders('auto');
+        const dec = createPowerShellStreamChunkDecoders();
         const decode = stream === 'stdout' ? dec.decodeStdout : dec.decodeStderr;
         const flush = stream === 'stdout' ? dec.flushStdout : dec.flushStderr;
         const actual = decode(raw.subarray(0, split))
@@ -203,19 +204,19 @@ suite('consoleStreamDecoder createIbcmdStreamChunkDecoders', () => {
         assert.strictEqual(actual, message, `incorrect decode with split after byte ${split}`);
       }
 
-      const dec = createIbcmdStreamChunkDecoders('auto');
+      const dec = createPowerShellStreamChunkDecoders();
       const decode = stream === 'stdout' ? dec.decodeStdout : dec.decodeStderr;
       const flush = stream === 'stdout' ? dec.flushStdout : dec.flushStderr;
       const bytewise = [...raw].map((byte) => decode(Buffer.from([byte]))).join('') + flush();
       assert.strictEqual(bytewise, message, 'one-byte chunks must preserve the complete CP866 word');
     });
 
-    test(`auto: UTF-8 Cyrillic survives every two-chunk split on ${stream}`, () => {
+    test(`PowerShell auto: UTF-8 Cyrillic survives every two-chunk split on ${stream}`, () => {
       const message = 'Розница';
       const raw = Buffer.from(message, 'utf8');
 
       for (let split = 1; split < raw.length; split++) {
-        const dec = createIbcmdStreamChunkDecoders('auto');
+        const dec = createPowerShellStreamChunkDecoders();
         const decode = stream === 'stdout' ? dec.decodeStdout : dec.decodeStderr;
         const flush = stream === 'stdout' ? dec.flushStdout : dec.flushStderr;
         const actual = decode(raw.subarray(0, split))
@@ -226,8 +227,8 @@ suite('consoleStreamDecoder createIbcmdStreamChunkDecoders', () => {
     });
   }
 
-  test('auto: shared CP866 decision resolves an incomplete lead buffered on the other stream', () => {
-    const dec = createIbcmdStreamChunkDecoders('auto');
+  test('PowerShell auto: shared CP866 decision resolves an incomplete lead buffered on the other stream', () => {
+    const dec = createPowerShellStreamChunkDecoders();
     const stdout = iconv.encode('розница', 'cp866');
     const stderr = iconv.encode('Ошибка', 'cp866');
     let decodedStdout = dec.decodeStdout(stdout.subarray(0, 1));
@@ -241,8 +242,8 @@ suite('consoleStreamDecoder createIbcmdStreamChunkDecoders', () => {
     assert.strictEqual(decodedStderr, 'Ошибка');
   });
 
-  test('auto: valid UTF-8 stream releases its bounded detection sample before end of stream', () => {
-    const dec = createIbcmdStreamChunkDecoders('auto');
+  test('PowerShell auto: valid UTF-8 stream releases its bounded detection sample before end of stream', () => {
+    const dec = createPowerShellStreamChunkDecoders();
     const message = 'А'.repeat(10000);
     const raw = Buffer.from(message, 'utf8');
     let decoded = '';
