@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { cleanupSmokeFile } from '../../helpers/smokeFileCleanup';
 
 const EXTENSION_ID = 'Lekot.1c-metadata-tree-vscode';
 
@@ -222,13 +223,16 @@ suite('Smoke: BSL completion', () => {
         assert.strictEqual(commonModule?.detail, 'Общий модуль метаданных');
       }
     } finally {
-      if (document) {
-        await closeSmokeDocumentTabs(document);
-      }
+      const documentToClose = document;
+      await cleanupSmokeFile(
+        documentToClose ? () => closeSmokeDocumentTabs(documentToClose) : undefined,
+        async () => {
+          if (fs.existsSync(filePath)) {
+            await fs.promises.unlink(filePath);
+          }
+        },
+      );
       document = undefined;
-      if (fs.existsSync(filePath)) {
-        await fs.promises.unlink(filePath);
-      }
     }
   });
 });
