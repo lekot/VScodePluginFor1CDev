@@ -12,8 +12,6 @@ import {
   findReferencesToElement,
   findReferencesWithDiagnostics,
   ReferenceScanError,
-  planIdentityTokenReplacements,
-  replaceIdentityTokensInProject,
 } from '../utils/referenceFinder';
 import {
   getDesignerTemplateXml,
@@ -28,7 +26,6 @@ import {
   buildRootObjectConfigurationContent,
   isRootObjectRegisteredInConfiguration,
   removeRootObjectFromConfiguration,
-  renameRootObjectInConfiguration,
 } from './configurationXmlUpdater';
 import { hashContent } from './configurationSession/atomicFileStorage';
 import type {
@@ -62,8 +59,9 @@ import {
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import { rulesRegistry, metadataConverter } from '../rules';
-import { planCreateMetadataObject } from './metadataCrudService';
+import { planCreateMetadataObject, planRenameMetadataObject } from './metadataCrudService';
 import { runConfigurationPlan } from './configurationSession/configurationMutationGateway';
+import { MutationPlanExecutor } from './configurationSession/mutationPlan';
 
 async function resolveProjectFormatVersion(configRootPath: string): Promise<string> {
   try {
@@ -973,22 +971,6 @@ function rewriteRootProperties(
   return content.slice(0, propertiesStart) + properties + content.slice(end);
 }
 
-function collectOwnIdentityTokenReplacements(
-  descriptor: string,
-  rootTag: string,
-  oldName: string,
-  newName: string
-): Map<string, string> {
-  const replacements = new Map<string, string>([[`${rootTag}.${oldName}`, `${rootTag}.${newName}`]]);
-  const generatedTypePattern = /<xr:GeneratedType\b[^>]*\bname\s*=\s*(["'])([^"']+)\1/gi;
-  for (const match of descriptor.matchAll(generatedTypePattern)) {
-    if (match[2].endsWith(`.${oldName}`)) {
-      replacements.set(match[2], `${match[2].slice(0, -oldName.length)}${newName}`);
-    }
-  }
-  return replacements;
-}
-
 function rewriteOwnIdentityDeclarations(
   content: string,
   rootTag: string,
@@ -1159,89 +1141,12 @@ export async function planRenameRootElement(
   newName: string,
   configPath: string,
 ): Promise<MutationPlan<void>> {
-  assertMetadataCrudSupported(node.type, 'rename');
-  const { parent, filePath, typeFolderPath, rootTag } = requireRootMutationNode(node);
-  const name = newName.trim();
-  const validation = validateElementName(
-    name,
-    getSiblingNames(parent).filter((sibling) => sibling.toLocaleLowerCase() !== node.name.toLocaleLowerCase()),
+  requireRootMutationNode(node);
+  const planned = await planRenameMetadataObject(
+    { configurationRootPath: configPath },
+    { type: node.type, oldName: node.name, newName },
   );
-  if (validation) { throw new Error(validation); }
-  await assertCfeGenericMutationAllowed(filePath, 'rename');
-  const sourceExpected = await mutationExpectation(filePath);
-  if (sourceExpected.state !== 'file') { throw new Error(`Metadata object file was not found: ${filePath}`); }
-  const newFilePath = path.join(typeFolderPath, `${name}.xml`);
-  if ((await mutationExpectation(newFilePath)).state !== 'missing') {
-    throw new Error(`File already exists: ${newFilePath}`);
-  }
-  const oldDir = path.join(typeFolderPath, node.name);
-  const newDir = path.join(typeFolderPath, name);
-  const oldDirExpected = await mutationExpectation(oldDir);
-  const newDirExpected = await mutationExpectation(newDir);
-  if (newDirExpected.state !== 'missing') {
-    throw new Error(`Metadata object directory already exists: ${newDir}`);
-  }
-
-  const descriptorSource = await fs.promises.readFile(filePath, 'utf8');
-  const replacements = collectOwnIdentityTokenReplacements(descriptorSource, rootTag, node.name, name);
-  let descriptor = rewriteRootProperties(descriptorSource, rootTag, node.name, name);
-  descriptor = rewriteOwnIdentityDeclarations(descriptor, rootTag, node.name, name);
-  const configRootPath = await findConfigurationRootDir(typeFolderPath);
-  const configurationPath = path.join(configRootPath, CONFIGURATION_XML);
-  const configuration = await fs.promises.readFile(configurationPath, 'utf8');
-  const steps: MutationStep[] = [{
-    type: 'writeFile', targetPath: newFilePath, content: descriptor,
-    encoding: 'utf8', expected: { state: 'missing' },
-  }];
-
-  let directoryTree: Awaited<ReturnType<typeof readDirectoryArtifacts>> | undefined;
-  if (oldDirExpected.state === 'directory') {
-    directoryTree = await readDirectoryArtifacts(oldDir);
-    for (const artifact of directoryTree.files) {
-      if (!artifact.filePath.toLocaleLowerCase().endsWith('.xml')) { continue; }
-      steps.push({
-        type: 'writeFile', targetPath: artifact.filePath,
-        content: rewriteOwnIdentityDeclarations(
-          artifact.content.toString('utf8'), rootTag, node.name, name,
-        ),
-        encoding: 'utf8', expected: { state: 'file', hash: hashContent(artifact.content) },
-      });
-    }
-    // Transform existing descendants while their pre-state paths still exist,
-    // then move the complete directory. This keeps every plan expectation valid
-    // during sequential preflight and at the final CAS immediately before apply.
-    steps.push({
-      type: 'movePath', sourcePath: oldDir, targetPath: newDir,
-      sourceExpected: oldDirExpected, targetExpected: newDirExpected,
-    });
-  }
-
-  const isInOldDir = (candidate: string): boolean => {
-    const relative = path.relative(oldDir, candidate);
-    return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
-  };
-  const referencePlans = await planIdentityTokenReplacements(configPath, replacements);
-  for (const referencePlan of referencePlans) {
-    if (
-      referencePlan.filePath === filePath
-      || referencePlan.filePath === configurationPath
-      || isInOldDir(referencePlan.filePath)
-    ) { continue; }
-    steps.push({
-      type: 'writeFile', targetPath: referencePlan.filePath,
-      content: referencePlan.updatedContent, encoding: 'utf8',
-      expected: { state: 'file', hash: hashContent(referencePlan.originalContent) },
-    });
-  }
-  steps.push({
-    type: 'writeFile', targetPath: configurationPath,
-    content: buildRootObjectConfigurationContent(configuration, {
-      type: 'rename', rootTag, objectName: node.name, newName: name,
-    }),
-    encoding: 'utf8', expected: { state: 'file', hash: hashContent(configuration) },
-  });
-  steps.push({ type: 'deletePath', targetPath: filePath, expected: sourceExpected });
-  return { kind: 'ui.renameRootElement', steps, result: undefined };
+  return { ...planned.plan, kind: 'ui.renameRootElement' };
 }
 
 export interface DeleteElementContext {
@@ -1477,7 +1382,7 @@ export async function deleteElement(
 export async function renameElement(
   node: TreeNode,
   newName: string,
-  configPath: string
+  _configPath: string
 ): Promise<void> {
   if (node.type === MetadataType.Configuration) {
     throw new Error('Нельзя переименовать корень конфигурации.');
@@ -1505,9 +1410,8 @@ export async function renameElement(
   } catch {
     throw new Error('Файл элемента не найден.');
   }
-  await assertCfeGenericMutationAllowed(filePath, 'rename');
-
   if (node.type === MetadataType.Attribute || node.type === MetadataType.TabularSection) {
+    await assertCfeGenericMutationAllowed(filePath, 'rename');
     const parentFilePath = node.parentFilePath || (parent as TreeNode).filePath;
     if (!parentFilePath) {
       throw new Error('Родительский файл не найден.');
@@ -1531,107 +1435,14 @@ export async function renameElement(
   }
 
   if (TOP_LEVEL_TYPES.has(node.type)) {
-    assertMetadataCrudSupported(node.type, 'rename');
     const typeFolderPath = path.dirname(filePath);
-    const configRootPath = await findConfigurationRootDir(typeFolderPath);
-    // Rename writes a new descriptor and updates Configuration.xml.
-    await resolveProjectFormatVersion(configRootPath);
-    const rootTag = String(node.type);
-    const newFilePath = path.join(typeFolderPath, `${name}.xml`);
-    if (newFilePath === filePath) {
-      await replaceIdentityTokensInProject(
-        configPath,
-        new Map([[`${rootTag}.${oldName}`, `${rootTag}.${name}`]])
-      );
-      return;
-    }
-    const newFileExists = await fs.promises.access(newFilePath).then(() => true).catch(() => false);
-    if (newFileExists) {
-      throw new Error(`Файл уже существует: ${newFilePath}`);
-    }
-    const oldDir = path.join(typeFolderPath, oldName);
-    const newDir = path.join(typeFolderPath, name);
-    let oldDirStat: fs.Stats | undefined;
-    try {
-      oldDirStat = await fs.promises.stat(oldDir);
-    } catch {
-      // directory does not exist
-    }
-    const newDirExists = await fs.promises.access(newDir).then(() => true).catch(() => false);
-    if (newDirExists) {
-      throw new Error(`Каталог объекта уже существует: ${newDir}`);
-    }
-    if (!await isRootObjectRegisteredInConfiguration(configRootPath, rootTag, oldName)) {
-      throw new Error(`Configuration.xml: root object ${rootTag}.${oldName} is not registered.`);
-    }
-    if (await isRootObjectRegisteredInConfiguration(configRootPath, rootTag, name)) {
-      throw new Error(`Объект ${rootTag}.${name} уже зарегистрирован в Configuration.xml.`);
-    }
-
-    const originalContent = await fs.promises.readFile(filePath, 'utf-8');
-    const originalConfiguration = await fs.promises.readFile(
-      path.join(configRootPath, CONFIGURATION_XML),
-      'utf-8'
+    const configurationRootPath = await findConfigurationRootDir(typeFolderPath);
+    await resolveProjectFormatVersion(configurationRootPath);
+    const planned = await planRenameMetadataObject(
+      { configurationRootPath },
+      { type: node.type, oldName, newName: name },
     );
-    const sourceArtifacts = oldDirStat?.isDirectory() ? await readXmlArtifacts(oldDir) : [];
-    const identityReplacements = collectOwnIdentityTokenReplacements(
-      originalContent,
-      rootTag,
-      oldName,
-      name
-    );
-    let content = rewriteRootProperties(originalContent, rootTag, oldName, name);
-    content = rewriteOwnIdentityDeclarations(content, rootTag, oldName, name);
-
-    // Fail-closed preflight: verify complete reference traversal before modifying disk (#203)
-    await planIdentityTokenReplacements(configPath, identityReplacements);
-
-    let directoryMoved = false;
-    let configurationChanged = false;
-    let updated: { filePath: string; replaceCount: number }[] = [];
-    try {
-      await fs.promises.writeFile(newFilePath, content, { encoding: 'utf-8', flag: 'wx' });
-      await fs.promises.unlink(filePath);
-      if (oldDirStat?.isDirectory()) {
-        await fs.promises.rename(oldDir, newDir);
-        directoryMoved = true;
-        for (const artifact of sourceArtifacts) {
-          const relativePath = path.relative(oldDir, artifact.filePath);
-          const transformed = rewriteOwnIdentityDeclarations(
-            artifact.content,
-            rootTag,
-            oldName,
-            name
-          );
-          await fs.promises.writeFile(path.join(newDir, relativePath), transformed, 'utf-8');
-        }
-      }
-      await renameRootObjectInConfiguration(configRootPath, rootTag, oldName, name);
-      configurationChanged = true;
-      updated = await replaceIdentityTokensInProject(configPath, identityReplacements);
-    } catch (error) {
-      if (configurationChanged) {
-        await fs.promises.writeFile(
-          path.join(configRootPath, CONFIGURATION_XML),
-          originalConfiguration,
-          'utf-8'
-        ).catch((rollbackError) => Logger.error('Failed to roll back Configuration.xml after rename', rollbackError));
-      }
-      if (directoryMoved) {
-        await fs.promises.rename(newDir, oldDir).catch((rollbackError) =>
-          Logger.error('Failed to roll back metadata directory after rename', rollbackError)
-        );
-        for (const artifact of sourceArtifacts) {
-          await fs.promises.writeFile(artifact.filePath, artifact.content, 'utf-8').catch(() => undefined);
-        }
-      }
-      await fs.promises.rm(newFilePath, { force: true }).catch(() => undefined);
-      await fs.promises.writeFile(filePath, originalContent, 'utf-8').catch((rollbackError) =>
-        Logger.error('Failed to restore metadata descriptor after rename', rollbackError)
-      );
-      throw error;
-    }
-    Logger.info(`Renamed to ${name}, updated ${updated.length} file(s)`);
+    await new MutationPlanExecutor(configurationRootPath).execute(planned.plan);
     return;
   }
 

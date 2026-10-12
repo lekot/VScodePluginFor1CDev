@@ -6,9 +6,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { rulesRegistry, metadataConverter } from '../rules';
-import {
-    buildRootObjectConfigurationContent,
-} from '../services/configurationXmlUpdater';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { MetadataType } from '../models/treeNode';
 import { validateElementName } from '../utils/elementNameValidator';
@@ -20,19 +17,17 @@ import {
 } from '../extensionSupport/cfeProject/mutationPolicy';
 import { CfeOwnershipError, type CfeObjectIdentity } from '../extensionSupport/cfeProject/ownership';
 import {
-    assertMetadataCrudSupported,
     getMetadataTypeDescriptorByRootTag,
 } from '../constants/metadataTypeDescriptors';
 import {
     planCreateMetadataObject,
     planDeleteMetadataObject,
+    planRenameMetadataObject,
 } from '../services/metadataCrudService';
-import { listXmlSiblingNames, readMutationExpectation } from '../services/filesystemReadSemantics';
-import { hashContent } from '../services/configurationSession/atomicFileStorage';
+import { listXmlSiblingNames } from '../services/filesystemReadSemantics';
 import {
     MutationPlanExecutor,
     type MutationPlan,
-    type MutationStep,
 } from '../services/configurationSession/mutationPlan';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
 import { getIdentitySensitiveMetadataPropertyNames } from '../domain/metadataPropertyClassifier';
@@ -296,57 +291,19 @@ export class AgentOperations {
             );
         }
         const { rootTag, objectName, filePath } = resolved;
-        assertMetadataCrudSupported(rootTag as MetadataType, 'rename');
-        await assertCfeGenericMutationAllowed(filePath, 'rename');
-        const sourceExpected = await readMutationExpectation(filePath);
-        if (sourceExpected.state !== 'file') { throw new Error(`Object file not found: ${filePath}`); }
-        const folderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ?? `${rootTag}s`;
-        const folderPath = path.join(this.configRootPath, folderName);
         const newName = params.newName?.trim();
-        const validation = validateElementName(
-            newName,
-            (await listXmlSiblingNames(folderPath)).filter(
-                (sibling) => sibling.toLocaleLowerCase() !== objectName.toLocaleLowerCase(),
-            ),
+        const metadataType = getMetadataTypeDescriptorByRootTag(rootTag)?.type;
+        if (!metadataType) { throw new Error(`Unsupported metadata root type: ${rootTag}`); }
+        const planned = await planRenameMetadataObject(
+            { configurationRootPath: this.configRootPath },
+            { type: metadataType, oldName: objectName, newName: newName ?? '' },
         );
-        if (validation) { throw new Error(validation); }
-        const newFilePath = path.join(folderPath, `${newName}.xml`);
-        const targetExpected = await readMutationExpectation(newFilePath);
-        if (targetExpected.state !== 'missing') { throw new Error(`Object already exists: ${newFilePath}`); }
-        const oldDir = path.join(folderPath, objectName);
-        const newDir = path.join(folderPath, newName);
-        const oldDirExpected = await readMutationExpectation(oldDir);
-        const newDirExpected = await readMutationExpectation(newDir);
-        if (newDirExpected.state !== 'missing') { throw new Error(`Object directory already exists: ${newDir}`); }
-        const objectContent = await fs.promises.readFile(filePath, 'utf8');
-        const configurationPath = path.join(this.configRootPath, CONFIGURATION_XML);
-        const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
-        const steps: MutationStep[] = [
-            {
-                type: 'writeFile', targetPath: filePath,
-                content: XMLWriter.buildUpdatedPropertiesXml(objectContent, { Name: newName }),
-                encoding: 'utf8', expected: sourceExpected,
-            },
-            {
-                type: 'movePath', sourcePath: filePath, targetPath: newFilePath,
-                sourceExpected: { state: 'file', hash: hashContent(XMLWriter.buildUpdatedPropertiesXml(objectContent, { Name: newName })) },
-                targetExpected,
-            },
-        ];
-        if (oldDirExpected.state !== 'missing') {
-            steps.push({
-                type: 'movePath', sourcePath: oldDir, targetPath: newDir,
-                sourceExpected: oldDirExpected, targetExpected: newDirExpected,
-            });
-        }
-        steps.push({
-            type: 'writeFile', targetPath: configurationPath,
-            content: buildRootObjectConfigurationContent(configurationContent, {
-                type: 'rename', rootTag, objectName, newName,
-            }),
-            encoding: 'utf8', expected: { state: 'file', hash: hashContent(configurationContent) },
-        });
-        return { kind: 'agent.renameObject', steps, result: { success: true, data: { filePath: newFilePath } } };
+        const newFilePath = path.join(path.dirname(filePath), `${newName ?? ''}.xml`);
+        return {
+            ...planned.plan,
+            kind: 'agent.renameObject',
+            result: { success: true, data: { filePath: newFilePath } },
+        };
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -896,8 +853,7 @@ export class AgentOperations {
                     error: `renameObject не поддерживает вложенные пути метаданных: "${params.path}".`,
                 };
             }
-            const { rootTag, objectName, filePath } = resolved;
-            await assertCfeGenericMutationAllowed(filePath, 'rename');
+            const { filePath } = resolved;
 
             try {
                 await fs.promises.access(filePath);
@@ -905,23 +861,7 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
-            const folderName =
-                MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ??
-                `${rootTag}s`;
-            const typeFolderPath = path.join(this.configRootPath, folderName);
-
             const newName = params.newName?.trim();
-            const nameValidation = validateElementName(
-                newName,
-                (await listXmlSiblingNames(typeFolderPath)).filter(
-                    (name) => name.toLocaleLowerCase() !== objectName.toLocaleLowerCase(),
-                ),
-            );
-            if (nameValidation) {
-                return { success: false, error: nameValidation };
-            }
-
-            const newFilePath = path.join(typeFolderPath, `${newName}.xml`);
 
             return await this.withTargetMutationLock(filePath, async () => {
                 const check = await this.checkMutationPreconditions<CreateObjectResult>(filePath, params.path, params);
@@ -930,6 +870,8 @@ export class AgentOperations {
                 }
 
                 const plan = await this.planRenameObject(params);
+                const newFilePath = plan.result.data?.filePath
+                    ?? path.join(path.dirname(filePath), `${newName ?? ''}.xml`);
                 const plannedFiles = Array.from(new Set(
                     plan.steps
                         .flatMap((step) => {
