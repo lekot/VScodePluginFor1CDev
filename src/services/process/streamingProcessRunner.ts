@@ -28,6 +28,8 @@ export interface StreamingProcessRunnerOptions {
   args: readonly string[];
   timeoutMs: number;
   cancellation: StreamCancellation;
+  /** Optional one-shot payload written to child stdin before it is closed. */
+  stdinInput?: string | Buffer;
   onStreamChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void;
   /** Receives every redacted decoded character before bounded-log truncation. */
   inspectStreamChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void;
@@ -61,6 +63,8 @@ export interface StreamingProcessRawOutcome {
   timedOut: boolean;
   spawnErrorCode?: string;
   spawnErrorMessage?: string;
+  stdinErrorCode?: string;
+  stdinErrorMessage?: string;
   abortPatternMatched?: boolean;
   termination?: ProcessTreeTerminationOutcome;
 }
@@ -154,7 +158,7 @@ export class RingBufferText {
   }
 }
 
-type TerminationReason = 'cancelled' | 'timedOut' | 'abortPattern';
+type TerminationReason = 'cancelled' | 'timedOut' | 'abortPattern' | 'stdinError';
 
 export async function runStreamingProcess(
   options: StreamingProcessRunnerOptions
@@ -181,7 +185,7 @@ export async function runStreamingProcess(
     child = spawnFn(options.executablePath, [...options.args], {
       ...options.spawnOptions,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [options.stdinInput === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       ...(process.platform === 'win32' ? {} : { detached: true }),
     });
   } catch (error) {
@@ -223,6 +227,7 @@ export async function runStreamingProcess(
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let cancelDisposable: DisposableLike | undefined;
     let terminationReason: TerminationReason | undefined;
+    let stdinFailure: { code: string; message: string } | undefined;
     let closeExitCode: number | null = null;
     let closeSignal: NodeJS.Signals | null = null;
     const decoders = options.streamDecoders ?? createUtf8StreamChunkDecoders();
@@ -278,11 +283,15 @@ export async function runStreamingProcess(
       });
     };
 
-    const requestTermination = (reason: TerminationReason): void => {
+    const requestTermination = (
+      reason: TerminationReason,
+      inputFailure?: { code: string; message: string },
+    ): void => {
       if (settled || terminationReason) {
         return;
       }
       terminationReason = reason;
+      stdinFailure = inputFailure;
       cleanup();
       const graceMs = Math.max(0, options.terminationGraceMs ?? 1500);
       const terminate =
@@ -305,6 +314,12 @@ export async function runStreamingProcess(
             cancelled: reason === 'cancelled',
             timedOut: reason === 'timedOut',
             ...(reason === 'abortPattern' ? { abortPatternMatched: true } : {}),
+            ...(stdinFailure
+              ? {
+                  stdinErrorCode: stdinFailure.code,
+                  stdinErrorMessage: stdinFailure.message,
+                }
+              : {}),
             ...(cleanupFailed
               ? {
                   spawnErrorCode: 'PROCESS_TREE_TERMINATION_FAILED',
@@ -394,6 +409,31 @@ export async function runStreamingProcess(
     );
     if (options.cancellation.isCancellationRequested) {
       requestTermination('cancelled');
+    }
+    if (!settled && !terminationReason && options.stdinInput !== undefined) {
+      const stdin = child.stdin;
+      if (!stdin) {
+        requestTermination('stdinError', {
+          code: 'STDIN_UNAVAILABLE',
+          message: 'spawn did not provide a writable stdin stream',
+        });
+      } else {
+        stdin.once('error', (error) => {
+          const stdinError = error as NodeJS.ErrnoException;
+          requestTermination('stdinError', {
+            code: stdinError.code ?? 'STDIN_ERROR',
+            message: stdinError.message,
+          });
+        });
+        try {
+          stdin.end(options.stdinInput);
+        } catch (error) {
+          requestTermination('stdinError', {
+            code: (error as NodeJS.ErrnoException).code ?? 'STDIN_ERROR',
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
     }
   });
 }
