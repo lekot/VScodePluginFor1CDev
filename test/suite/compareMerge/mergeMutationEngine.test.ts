@@ -55,15 +55,17 @@ suite('Compare merge mutation engine (#264)', () => {
     );
     if (path.sep === '/') {
       const literalBackslashName = 'literal\\name.bin';
-      const literalContent = Buffer.from([9, 0, 7, 255]);
+      const oldLiteralContent = Buffer.from([1, 3, 5, 7]);
+      const incomingLiteralContent = Buffer.from([9, 0, 7, 255]);
       assert.deepStrictEqual(
         await fs.readFile(path.join(fixture.folderTargetPath, literalBackslashName)),
-        literalContent,
+        incomingLiteralContent,
       );
       assert.deepStrictEqual(
         await fs.readFile(path.join(fixture.folderBackupPath, literalBackslashName)),
-        literalContent,
+        oldLiteralContent,
       );
+      assert.strictEqual(await exists(path.join(fixture.folderBackupPath, 'incoming.xml')), false);
     }
     assert.strictEqual(await readText(fixture.xmlBackupPath), fixture.oldXml);
     assert.deepStrictEqual(await fs.readFile(fixture.binaryBackupPath), fixture.oldBinary);
@@ -425,6 +427,9 @@ async function createMixedFixture(tempDirs: string[], options: { xmlOnly?: boole
     await fs.writeFile(binaryTargetPath, oldBinary);
     await fs.writeFile(oldFolderPath, '<OldOnly/>', 'utf8');
     await fs.mkdir(path.join(folderTargetPath, 'Legacy', 'Empty'), { recursive: true });
+    if (path.sep === '/') {
+      await fs.writeFile(path.join(folderTargetPath, 'literal\\name.bin'), Buffer.from([1, 3, 5, 7]));
+    }
   }
   await fs.mkdir(path.dirname(binarySourcePath), { recursive: true });
   await fs.writeFile(binarySourcePath, incomingBinary);
