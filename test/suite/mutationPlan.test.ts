@@ -100,6 +100,627 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
   });
 
+  test('#264: subtree reset removes old-only children and creates a deterministic mixed binary/XML tree', async () => {
+    const targetDir = path.join(tempDir, 'Resources');
+    const oldNested = path.join(targetDir, 'Forms', 'Nested');
+    await fs.promises.mkdir(path.join(oldNested, 'OldEmpty'), { recursive: true });
+    await fs.promises.mkdir(path.join(targetDir, 'OldRootEmpty'), { recursive: true });
+    await fs.promises.writeFile(path.join(targetDir, 'obsolete.xml'), '<Old/>', 'utf8');
+    await fs.promises.writeFile(path.join(targetDir, 'Forms', 'Form.xml'), '<OldForm/>', 'utf8');
+    await fs.promises.writeFile(path.join(oldNested, 'Preview.bin'), Buffer.from([0, 1, 255, 0]));
+
+    const targetXml = path.join(targetDir, 'Forms', 'Form.xml');
+    const targetBinary = path.join(oldNested, 'Preview.bin');
+    const targetEmpty = path.join(targetDir, 'Generated', 'Deep', 'Empty');
+    const xmlContent = '<Form><Name>New</Name></Form>';
+    const binaryContent = Buffer.from([0, 255, 7, 0, 128]);
+    const executor = new MutationPlanExecutor(tempDir);
+
+    await executor.execute({
+      kind: 'test.subtreeReset',
+      steps: [
+        {
+          type: 'deletePath', targetPath: targetDir,
+          expected: { state: 'directory', fingerprint: await calculateDirectoryFingerprint(targetDir) },
+        },
+        { type: 'ensureDirectory', targetPath: targetDir },
+        { type: 'ensureDirectory', targetPath: path.join(targetDir, 'Forms') },
+        { type: 'ensureDirectory', targetPath: oldNested },
+        { type: 'ensureDirectory', targetPath: targetEmpty },
+        {
+          type: 'writeFile', targetPath: targetXml, content: xmlContent, encoding: 'utf8',
+          expected: { state: 'missing' },
+        },
+        {
+          type: 'writeFile', targetPath: targetBinary, content: binaryContent.toString('base64'), encoding: 'base64',
+          expected: { state: 'missing' },
+        },
+      ],
+      result: undefined,
+    });
+
+    assert.strictEqual(await fs.promises.readFile(targetXml, 'utf8'), xmlContent);
+    assert.deepStrictEqual(await fs.promises.readFile(targetBinary), binaryContent);
+    assert.strictEqual(fs.existsSync(path.join(targetDir, 'obsolete.xml')), false);
+    assert.strictEqual(fs.existsSync(path.join(targetDir, 'OldRootEmpty')), false);
+    assert.strictEqual(fs.existsSync(path.join(oldNested, 'OldEmpty')), false);
+    assert.strictEqual(fs.existsSync(targetEmpty), true);
+    const expectedTree = path.join(tempDir, 'expected-tree');
+    await fs.promises.mkdir(path.join(expectedTree, 'Forms', 'Nested'), { recursive: true });
+    await fs.promises.mkdir(path.join(expectedTree, 'Generated', 'Deep', 'Empty'), { recursive: true });
+    await fs.promises.writeFile(path.join(expectedTree, 'Forms', 'Form.xml'), xmlContent, 'utf8');
+    await fs.promises.writeFile(path.join(expectedTree, 'Forms', 'Nested', 'Preview.bin'), binaryContent);
+    assert.strictEqual(
+      await calculateDirectoryFingerprint(targetDir),
+      await calculateDirectoryFingerprint(expectedTree),
+    );
+  });
+
+  test('#264: late write failure rolls a recreated mixed subtree back to its complete original tree', async () => {
+    const targetDir = path.join(tempDir, 'Resources');
+    const nestedDir = path.join(targetDir, 'Forms', 'Nested');
+    await fs.promises.mkdir(path.join(nestedDir, 'OldEmpty'), { recursive: true });
+    await fs.promises.mkdir(path.join(targetDir, 'OldRootEmpty'), { recursive: true });
+    await fs.promises.writeFile(path.join(targetDir, 'obsolete.xml'), '<Old/>', 'utf8');
+    await fs.promises.writeFile(path.join(targetDir, 'Forms', 'Form.xml'), '<OldForm/>', 'utf8');
+    await fs.promises.writeFile(path.join(nestedDir, 'Preview.bin'), Buffer.from([9, 8, 7]));
+    const originalFingerprint = await calculateDirectoryFingerprint(targetDir);
+    const originalRename = fs.promises.rename;
+    let atomicFileWrites = 0;
+    fs.promises.rename = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
+      if (path.basename(String(source)).startsWith('.cdt-plan-') && ++atomicFileWrites === 2) {
+        throw new Error('injected late atomic write failure');
+      }
+      return originalRename.call(fs.promises, source, destination);
+    };
+
+    try {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).execute({
+          kind: 'test.subtreeResetRollback',
+          steps: [
+            {
+              type: 'deletePath', targetPath: targetDir,
+              expected: { state: 'directory', fingerprint: originalFingerprint },
+            },
+            { type: 'ensureDirectory', targetPath: targetDir },
+            { type: 'ensureDirectory', targetPath: path.join(targetDir, 'Forms') },
+            { type: 'ensureDirectory', targetPath: nestedDir },
+            {
+              type: 'writeFile', targetPath: path.join(targetDir, 'Forms', 'Form.xml'),
+              content: '<NewForm/>', encoding: 'utf8', expected: { state: 'missing' },
+            },
+            {
+              type: 'writeFile', targetPath: path.join(nestedDir, 'Preview.bin'),
+              content: Buffer.from([1, 2, 3]).toString('base64'), encoding: 'base64',
+              expected: { state: 'missing' },
+            },
+          ],
+          result: undefined,
+        }),
+        (error: MutationPlanError) => error.code === 'PLAN_FAILED',
+      );
+    } finally {
+      fs.promises.rename = originalRename;
+    }
+
+    assert.strictEqual(await calculateDirectoryFingerprint(targetDir), originalFingerprint);
+    assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'Forms', 'Form.xml'), 'utf8'), '<OldForm/>');
+    assert.deepStrictEqual(await fs.promises.readFile(path.join(nestedDir, 'Preview.bin')), Buffer.from([9, 8, 7]));
+    assert.strictEqual(fs.existsSync(path.join(nestedDir, 'OldEmpty')), true);
+    assert.strictEqual(fs.existsSync(path.join(targetDir, 'OldRootEmpty')), true);
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+  });
+
+  test('#264: rollback preserves a foreign child added after subtree recreation', async () => {
+    const targetDir = path.join(tempDir, 'Resources');
+    await fs.promises.mkdir(path.join(targetDir, 'Forms'), { recursive: true });
+    await fs.promises.writeFile(path.join(targetDir, 'old.xml'), '<Old/>', 'utf8');
+    const originalRename = fs.promises.rename;
+    let foreignFileAdded = false;
+    fs.promises.rename = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
+      await originalRename.call(fs.promises, source, destination);
+      if (!foreignFileAdded && path.basename(String(source)).startsWith('.cdt-plan-')) {
+        foreignFileAdded = true;
+        await fs.promises.writeFile(path.join(targetDir, 'foreign.xml'), '<Foreign/>', 'utf8');
+      }
+    };
+
+    try {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).execute({
+          kind: 'test.subtreeResetForeignChild',
+          steps: [
+            {
+              type: 'deletePath', targetPath: targetDir,
+              expected: { state: 'directory', fingerprint: await calculateDirectoryFingerprint(targetDir) },
+            },
+            { type: 'ensureDirectory', targetPath: targetDir },
+            { type: 'ensureDirectory', targetPath: path.join(targetDir, 'Forms') },
+            {
+              type: 'writeFile', targetPath: path.join(targetDir, 'Forms', 'Form.xml'),
+              content: '<Planned/>', encoding: 'utf8', expected: { state: 'missing' },
+            },
+            {
+              type: 'writeFile', targetPath: path.join(targetDir, 'foreign.xml'),
+              content: '<PlannedForeign/>', encoding: 'utf8', expected: { state: 'missing' },
+            },
+          ],
+          result: undefined,
+        }),
+        (error: MutationPlanError) => error.code === 'RECOVERY_REQUIRED',
+      );
+    } finally {
+      fs.promises.rename = originalRename;
+    }
+
+    assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'foreign.xml'), 'utf8'), '<Foreign/>');
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), true);
+  });
+
+  test('#264: an unknown descendant state after an ancestor move fails before filesystem effects', async () => {
+    const sourceDir = path.join(tempDir, 'Source');
+    const targetDir = path.join(tempDir, 'Target');
+    await fs.promises.mkdir(sourceDir, { recursive: true });
+    await fs.promises.writeFile(path.join(sourceDir, 'from-source.xml'), '<Source/>', 'utf8');
+
+    await assert.rejects(
+      new MutationPlanExecutor(tempDir).execute({
+        kind: 'test.unknownMovedDescendant',
+        steps: [
+          {
+            type: 'movePath', sourcePath: sourceDir, targetPath: targetDir,
+            sourceExpected: { state: 'directory', fingerprint: await calculateDirectoryFingerprint(sourceDir) },
+            targetExpected: { state: 'missing' },
+          },
+          {
+            type: 'writeFile', targetPath: path.join(targetDir, 'from-source.xml'),
+            content: '<Replacement/>', encoding: 'utf8', expected: { state: 'missing' },
+          },
+        ],
+        result: undefined,
+      }),
+      (error: MutationPlanError) => error.code === 'PLAN_CONFLICT',
+    );
+
+    assert.strictEqual(await fs.promises.readFile(path.join(sourceDir, 'from-source.xml'), 'utf8'), '<Source/>');
+    assert.strictEqual(fs.existsSync(targetDir), false);
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+  });
+
+  test('#264: repeated ensures after recreating nested directories preserve the full rollback prefix', async () => {
+    const targetDir = path.join(tempDir, 'Tree');
+    const nestedDir = path.join(targetDir, 'Forms', 'Nested');
+    await fs.promises.mkdir(path.join(nestedDir, 'OldEmpty'), { recursive: true });
+    await fs.promises.mkdir(path.join(targetDir, 'OldRootEmpty'), { recursive: true });
+    await fs.promises.writeFile(path.join(targetDir, 'old.xml'), '<Old/>', 'utf8');
+    await fs.promises.writeFile(path.join(nestedDir, 'Preview.bin'), Buffer.from([0, 255, 4]));
+    const originalFingerprint = await calculateDirectoryFingerprint(targetDir);
+    const originalRename = fs.promises.rename;
+    fs.promises.rename = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
+      if (path.basename(String(destination)) === 'C.xml') {
+        throw new Error('injected late write failure');
+      }
+      return originalRename.call(fs.promises, source, destination);
+    };
+
+    try {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).execute({
+          kind: 'test.repeatedEnsureResetRollback',
+          steps: [
+            { type: 'deletePath', targetPath: targetDir, expected: { state: 'directory', fingerprint: originalFingerprint } },
+            { type: 'ensureDirectory', targetPath: targetDir },
+            { type: 'writeFile', targetPath: path.join(targetDir, 'A.xml'), content: '<A/>', encoding: 'utf8', expected: { state: 'missing' } },
+            { type: 'ensureDirectory', targetPath: targetDir },
+            { type: 'writeFile', targetPath: path.join(targetDir, 'B.xml'), content: '<B/>', encoding: 'utf8', expected: { state: 'missing' } },
+            { type: 'ensureDirectory', targetPath: nestedDir },
+            { type: 'writeFile', targetPath: path.join(nestedDir, 'A.xml'), content: '<NestedA/>', encoding: 'utf8', expected: { state: 'missing' } },
+            { type: 'ensureDirectory', targetPath: nestedDir },
+            { type: 'writeFile', targetPath: path.join(nestedDir, 'B.xml'), content: '<NestedB/>', encoding: 'utf8', expected: { state: 'missing' } },
+            { type: 'writeFile', targetPath: path.join(targetDir, 'C.xml'), content: '<C/>', encoding: 'utf8', expected: { state: 'missing' } },
+          ],
+          result: undefined,
+        }),
+        (error: MutationPlanError) => error.code === 'PLAN_FAILED',
+      );
+    } finally {
+      fs.promises.rename = originalRename;
+    }
+
+    assert.strictEqual(await calculateDirectoryFingerprint(targetDir), originalFingerprint);
+    assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'old.xml'), 'utf8'), '<Old/>');
+    assert.deepStrictEqual(await fs.promises.readFile(path.join(nestedDir, 'Preview.bin')), Buffer.from([0, 255, 4]));
+    assert.strictEqual(fs.existsSync(path.join(targetDir, 'OldRootEmpty')), true);
+    assert.strictEqual(fs.existsSync(path.join(nestedDir, 'OldEmpty')), true);
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+  });
+
+  test('#264: repeated ensures in an existing nested tree roll back planned files without losing original children', async () => {
+    const targetDir = path.join(tempDir, 'Tree');
+    const nestedDir = path.join(targetDir, 'Forms', 'Nested');
+    await fs.promises.mkdir(path.join(nestedDir, 'KeepEmpty'), { recursive: true });
+    await fs.promises.writeFile(path.join(targetDir, 'old.xml'), '<Old/>', 'utf8');
+    await fs.promises.writeFile(path.join(nestedDir, 'keep.bin'), Buffer.from([7, 0, 7]));
+    const originalFingerprint = await calculateDirectoryFingerprint(targetDir);
+    const originalRename = fs.promises.rename;
+    fs.promises.rename = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
+      if (path.basename(String(destination)) === 'C.xml') {
+        throw new Error('injected late write failure');
+      }
+      return originalRename.call(fs.promises, source, destination);
+    };
+
+    try {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).execute({
+          kind: 'test.repeatedEnsureExistingRollback',
+          steps: [
+            { type: 'ensureDirectory', targetPath: targetDir },
+            { type: 'writeFile', targetPath: path.join(targetDir, 'A.xml'), content: '<A/>', encoding: 'utf8', expected: { state: 'missing' } },
+            { type: 'ensureDirectory', targetPath: targetDir },
+            { type: 'ensureDirectory', targetPath: nestedDir },
+            { type: 'writeFile', targetPath: path.join(nestedDir, 'A.xml'), content: '<NestedA/>', encoding: 'utf8', expected: { state: 'missing' } },
+            { type: 'ensureDirectory', targetPath: nestedDir },
+            { type: 'writeFile', targetPath: path.join(nestedDir, 'B.xml'), content: '<NestedB/>', encoding: 'utf8', expected: { state: 'missing' } },
+            { type: 'writeFile', targetPath: path.join(targetDir, 'C.xml'), content: '<C/>', encoding: 'utf8', expected: { state: 'missing' } },
+          ],
+          result: undefined,
+        }),
+        (error: MutationPlanError) => error.code === 'PLAN_FAILED',
+      );
+    } finally {
+      fs.promises.rename = originalRename;
+    }
+
+    assert.strictEqual(await calculateDirectoryFingerprint(targetDir), originalFingerprint);
+    assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'old.xml'), 'utf8'), '<Old/>');
+    assert.deepStrictEqual(await fs.promises.readFile(path.join(nestedDir, 'keep.bin')), Buffer.from([7, 0, 7]));
+    assert.strictEqual(fs.existsSync(path.join(nestedDir, 'KeepEmpty')), true);
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+  });
+
+  test('#264: existing directory projection fails closed before delete when a write made its tree fingerprint unknown', async () => {
+    const targetDir = path.join(tempDir, 'Tree');
+    await fs.promises.mkdir(path.join(targetDir, 'OriginalEmpty'), { recursive: true });
+    await fs.promises.writeFile(path.join(targetDir, 'old.xml'), '<Old/>', 'utf8');
+    const originalFingerprint = await calculateDirectoryFingerprint(targetDir);
+
+    await assert.rejects(
+      new MutationPlanExecutor(tempDir).execute({
+        kind: 'test.opaqueExistingDirectoryProjection',
+        steps: [
+          { type: 'writeFile', targetPath: path.join(targetDir, 'A.xml'), content: '<A/>', encoding: 'utf8', expected: { state: 'missing' } },
+          { type: 'ensureDirectory', targetPath: targetDir },
+          { type: 'deletePath', targetPath: targetDir, expected: { state: 'directory', fingerprint: originalFingerprint } },
+        ],
+        result: undefined,
+      }),
+      (error: MutationPlanError) => error.code === 'PLAN_CONFLICT',
+    );
+
+    assert.strictEqual(await calculateDirectoryFingerprint(targetDir), originalFingerprint);
+    assert.strictEqual(fs.existsSync(path.join(targetDir, 'A.xml')), false);
+    assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'old.xml'), 'utf8'), '<Old/>');
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+  });
+
+  test('#264: a directory-state-only move accepts a known child write in its source directory', async () => {
+    const sourceDir = path.join(tempDir, 'Tree');
+    const targetDir = path.join(tempDir, 'RenamedTree');
+    const childPath = path.join(sourceDir, 'Existing.xml');
+    await fs.promises.mkdir(sourceDir, { recursive: true });
+    await fs.promises.writeFile(childPath, '<Old/>', 'utf8');
+
+    await new MutationPlanExecutor(tempDir).execute({
+      kind: 'test.directoryStateOnlyMoveAfterChildWrite',
+      steps: [
+        {
+          type: 'writeFile', targetPath: childPath, content: '<Renamed/>', encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('<Old/>') },
+        },
+        {
+          type: 'movePath', sourcePath: sourceDir, targetPath: targetDir,
+          sourceExpected: { state: 'directory' }, targetExpected: { state: 'missing' },
+        },
+      ],
+      result: undefined,
+    });
+
+    assert.strictEqual(fs.existsSync(sourceDir), false);
+    assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'Existing.xml'), 'utf8'), '<Renamed/>');
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+  });
+
+  test('#264: a stale explicit directory fingerprint still rejects a move after child writes before effects', async () => {
+    const sourceDir = path.join(tempDir, 'Tree');
+    const targetDir = path.join(tempDir, 'RenamedTree');
+    const childPath = path.join(sourceDir, 'Existing.xml');
+    await fs.promises.mkdir(sourceDir, { recursive: true });
+    await fs.promises.writeFile(childPath, '<Old/>', 'utf8');
+    const originalFingerprint = await calculateDirectoryFingerprint(sourceDir);
+
+    await assert.rejects(
+      new MutationPlanExecutor(tempDir).execute({
+        kind: 'test.staleDirectoryFingerprintAfterChildWrite',
+        steps: [
+          {
+            type: 'writeFile', targetPath: childPath, content: '<Renamed/>', encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent('<Old/>') },
+          },
+          {
+            type: 'movePath', sourcePath: sourceDir, targetPath: targetDir,
+            sourceExpected: { state: 'directory', fingerprint: originalFingerprint },
+            targetExpected: { state: 'missing' },
+          },
+        ],
+        result: undefined,
+      }, 'stale-explicit-directory-fingerprint'),
+      (error: MutationPlanError) => error.code === 'PLAN_CONFLICT',
+    );
+
+    assert.strictEqual(await fs.promises.readFile(childPath, 'utf8'), '<Old/>');
+    assert.strictEqual(fs.existsSync(targetDir), false);
+    assert.strictEqual(
+      fs.existsSync(path.join(tempDir, '.cdt-journal', 'stale-explicit-directory-fingerprint')),
+      false,
+    );
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    if (fs.existsSync(journalRoot)) {
+      const journalEntries = await fs.promises.readdir(journalRoot);
+      assert.deepStrictEqual(
+        journalEntries,
+        [],
+        `unexpected journal entries after preflight conflict: ${journalEntries.join(', ')}`,
+      );
+    }
+  });
+
+  test('#264: rollback rejects an opaque moved-directory state and preserves planned and foreign children', async () => {
+    const sourceDir = path.join(tempDir, 'Tree');
+    const targetDir = path.join(tempDir, 'MovedTree');
+    const childPath = path.join(sourceDir, 'Existing.xml');
+    const failurePath = path.join(tempDir, 'C.xml');
+    await fs.promises.mkdir(sourceDir, { recursive: true });
+    await fs.promises.writeFile(childPath, '<Old/>', 'utf8');
+    const originalRename = fs.promises.rename;
+    fs.promises.rename = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
+      if (path.basename(String(destination)) === path.basename(failurePath)) {
+        throw new Error('injected failure after directory move');
+      }
+      await originalRename.call(fs.promises, source, destination);
+      if (
+        path.basename(String(source)) === path.basename(sourceDir)
+        && path.basename(String(destination)) === path.basename(targetDir)
+      ) {
+        await fs.promises.writeFile(path.join(targetDir, 'Foreign.xml'), '<Foreign/>', 'utf8');
+      }
+    };
+
+    try {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).execute({
+          kind: 'test.opaqueMovedDirectoryRollback',
+          steps: [
+            {
+              type: 'writeFile', targetPath: childPath, content: '<Planned/>', encoding: 'utf8',
+              expected: { state: 'file', hash: hashContent('<Old/>') },
+            },
+            {
+              type: 'movePath', sourcePath: sourceDir, targetPath: targetDir,
+              sourceExpected: { state: 'directory' }, targetExpected: { state: 'missing' },
+            },
+            {
+              type: 'writeFile', targetPath: failurePath, content: '<C/>', encoding: 'utf8',
+              expected: { state: 'missing' },
+            },
+          ],
+          result: undefined,
+        }),
+        (error: MutationPlanError) => error.code === 'RECOVERY_REQUIRED',
+      );
+    } finally {
+      fs.promises.rename = originalRename;
+    }
+
+    assert.strictEqual(fs.existsSync(sourceDir), false);
+    assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'Existing.xml'), 'utf8'), '<Planned/>');
+    assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'Foreign.xml'), 'utf8'), '<Foreign/>');
+    assert.strictEqual(fs.existsSync(failurePath), false);
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), true);
+  });
+
+  test('#264: crash recovery handles recorded and unrecorded writes after repeated ensure', async () => {
+    for (const crashPoint of ['after-repeat-ensure', 'after-next-write-before-counter'] as const) {
+      const root = path.join(tempDir, crashPoint);
+      await fs.promises.mkdir(root, { recursive: true });
+      const targetDir = path.join(root, 'Tree');
+      const nestedDir = path.join(targetDir, 'Generated', 'Empty');
+      await fs.promises.mkdir(path.join(targetDir, 'OldEmpty'), { recursive: true });
+      await fs.promises.writeFile(path.join(targetDir, 'old.xml'), '<Old/>', 'utf8');
+      const originalFingerprint = await calculateDirectoryFingerprint(targetDir);
+      const aPath = path.join(targetDir, 'A.xml');
+      const bPath = path.join(nestedDir, 'B.xml');
+      const cPath = path.join(nestedDir, 'C.xml');
+      const plan = {
+        kind: 'test.repeatedEnsureCrashRecovery',
+        steps: [
+          { type: 'deletePath' as const, targetPath: targetDir, expected: { state: 'directory' as const, fingerprint: originalFingerprint } },
+          { type: 'ensureDirectory' as const, targetPath: targetDir },
+          { type: 'writeFile' as const, targetPath: aPath, content: '<A/>', encoding: 'utf8' as const, expected: { state: 'missing' as const } },
+          { type: 'ensureDirectory' as const, targetPath: targetDir },
+          { type: 'ensureDirectory' as const, targetPath: nestedDir },
+          { type: 'writeFile' as const, targetPath: bPath, content: '<B/>', encoding: 'utf8' as const, expected: { state: 'missing' as const } },
+          { type: 'ensureDirectory' as const, targetPath: nestedDir },
+          { type: 'writeFile' as const, targetPath: cPath, content: '<C/>', encoding: 'utf8' as const, expected: { state: 'missing' as const } },
+        ],
+        result: null,
+      };
+      const appliedSteps = 7;
+      const interruptedOp = path.join(root, '.cdt-journal', `interrupted-${crashPoint}`);
+      const backupPath = path.join(interruptedOp, 'backups', '0');
+      await fs.promises.mkdir(path.dirname(backupPath), { recursive: true });
+      await fs.promises.cp(targetDir, backupPath, { recursive: true });
+      const snapshots = [
+        { targetPath: targetDir, state: 'directory', fingerprint: originalFingerprint, backupName: '0', contentsBackedUp: true },
+        { targetPath: aPath, state: 'missing', contentsBackedUp: false },
+        { targetPath: nestedDir, state: 'missing', contentsBackedUp: false },
+        { targetPath: bPath, state: 'missing', contentsBackedUp: false },
+        { targetPath: cPath, state: 'missing', contentsBackedUp: false },
+      ];
+      await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+      await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+        version: 1,
+        operationId: `interrupted-${crashPoint}`,
+        plan,
+        state: 'applying',
+        appliedSteps,
+        snapshots,
+      }), 'utf8');
+
+      await fs.promises.rm(targetDir, { recursive: true, force: true });
+      await fs.promises.mkdir(targetDir, { recursive: true });
+      await fs.promises.writeFile(aPath, '<A/>', 'utf8');
+      await fs.promises.mkdir(nestedDir, { recursive: true });
+      await fs.promises.writeFile(bPath, '<B/>', 'utf8');
+      if (crashPoint === 'after-next-write-before-counter') {
+        await fs.promises.writeFile(cPath, '<C/>', 'utf8');
+      }
+
+      await new MutationPlanExecutor(root).recover();
+
+      assert.strictEqual(await calculateDirectoryFingerprint(targetDir), originalFingerprint, `rollback failed at ${crashPoint}`);
+      assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'old.xml'), 'utf8'), '<Old/>');
+      assert.strictEqual(fs.existsSync(path.join(targetDir, 'OldEmpty')), true);
+      assert.strictEqual(fs.existsSync(path.join(root, '.cdt-journal')), false);
+    }
+  });
+
+  test('#264: recovery preserves a real external edit after repeated ensure projection', async () => {
+    const targetDir = path.join(tempDir, 'Tree');
+    await fs.promises.mkdir(path.join(targetDir, 'OldEmpty'), { recursive: true });
+    await fs.promises.writeFile(path.join(targetDir, 'old.xml'), '<Old/>', 'utf8');
+    const originalFingerprint = await calculateDirectoryFingerprint(targetDir);
+    const originalRename = fs.promises.rename;
+    let externalEditAdded = false;
+    fs.promises.rename = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
+      if (path.basename(String(destination)) === 'B.xml' && !externalEditAdded) {
+        await originalRename.call(fs.promises, source, destination);
+        externalEditAdded = true;
+        await fs.promises.writeFile(path.join(targetDir, 'foreign.xml'), '<Foreign/>', 'utf8');
+        return;
+      }
+      if (path.basename(String(destination)) === 'C.xml') {
+        throw new Error('injected late write failure');
+      }
+      return originalRename.call(fs.promises, source, destination);
+    };
+
+    try {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).execute({
+          kind: 'test.repeatedEnsureExternalEdit',
+          steps: [
+            { type: 'deletePath', targetPath: targetDir, expected: { state: 'directory', fingerprint: originalFingerprint } },
+            { type: 'ensureDirectory', targetPath: targetDir },
+            { type: 'writeFile', targetPath: path.join(targetDir, 'A.xml'), content: '<A/>', encoding: 'utf8', expected: { state: 'missing' } },
+            { type: 'ensureDirectory', targetPath: targetDir },
+            { type: 'writeFile', targetPath: path.join(targetDir, 'B.xml'), content: '<B/>', encoding: 'utf8', expected: { state: 'missing' } },
+            { type: 'writeFile', targetPath: path.join(targetDir, 'C.xml'), content: '<C/>', encoding: 'utf8', expected: { state: 'missing' } },
+          ],
+          result: undefined,
+        }),
+        (error: MutationPlanError) => error.code === 'RECOVERY_REQUIRED',
+      );
+    } finally {
+      fs.promises.rename = originalRename;
+    }
+
+    assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'foreign.xml'), 'utf8'), '<Foreign/>');
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), true);
+  });
+
+  test('#264: crash recovery restores a reset subtree before recreation, after recreation, and after a child write', async () => {
+    for (const crashPoint of ['after-delete', 'after-recreate', 'after-child-write'] as const) {
+      const root = path.join(tempDir, crashPoint);
+      await fs.promises.mkdir(root, { recursive: true });
+      const targetDir = path.join(root, 'Resources');
+      const originalNested = path.join(targetDir, 'Forms', 'Nested');
+      await fs.promises.mkdir(path.join(originalNested, 'OldEmpty'), { recursive: true });
+      await fs.promises.mkdir(path.join(targetDir, 'OldRootEmpty'), { recursive: true });
+      await fs.promises.writeFile(path.join(targetDir, 'obsolete.xml'), '<Old/>', 'utf8');
+      await fs.promises.writeFile(path.join(targetDir, 'Forms', 'Form.xml'), '<OldForm/>', 'utf8');
+      await fs.promises.writeFile(path.join(originalNested, 'Preview.bin'), Buffer.from([3, 2, 1]));
+      const originalFingerprint = await calculateDirectoryFingerprint(targetDir);
+      const targetXml = path.join(targetDir, 'Forms', 'Form.xml');
+      const targetBinary = path.join(originalNested, 'Preview.bin');
+      const emptyDir = path.join(targetDir, 'Generated', 'Empty');
+      const plan = {
+        kind: 'test.subtreeResetCrashRecovery',
+        steps: [
+          {
+            type: 'deletePath' as const, targetPath: targetDir,
+            expected: { state: 'directory' as const, fingerprint: originalFingerprint },
+          },
+          { type: 'ensureDirectory' as const, targetPath: targetDir },
+          { type: 'ensureDirectory' as const, targetPath: path.join(targetDir, 'Forms') },
+          { type: 'ensureDirectory' as const, targetPath: originalNested },
+          { type: 'ensureDirectory' as const, targetPath: emptyDir },
+          { type: 'writeFile' as const, targetPath: targetXml, content: '<NewForm/>', encoding: 'utf8' as const, expected: { state: 'missing' as const } },
+          { type: 'writeFile' as const, targetPath: targetBinary, content: Buffer.from([0, 255]).toString('base64'), encoding: 'base64' as const, expected: { state: 'missing' as const } },
+        ],
+        result: null,
+      };
+      const appliedStepsByCrashPoint = {
+        'after-delete': 1,
+        'after-recreate': 5,
+        'after-child-write': 6,
+      };
+      const appliedSteps = appliedStepsByCrashPoint[crashPoint];
+      const interruptedOp = path.join(root, '.cdt-journal', `interrupted-${crashPoint}`);
+      const backupPath = path.join(interruptedOp, 'backups', '0');
+      await fs.promises.mkdir(path.dirname(backupPath), { recursive: true });
+      await fs.promises.cp(targetDir, backupPath, { recursive: true });
+      const snapshots = [
+        { targetPath: targetDir, state: 'directory', fingerprint: originalFingerprint, backupName: '0', contentsBackedUp: true },
+        { targetPath: path.join(targetDir, 'Forms'), state: 'directory', fingerprint: await calculateDirectoryFingerprint(path.join(targetDir, 'Forms')), contentsBackedUp: false },
+        { targetPath: originalNested, state: 'directory', fingerprint: await calculateDirectoryFingerprint(originalNested), contentsBackedUp: false },
+        { targetPath: emptyDir, state: 'missing', contentsBackedUp: false },
+        { targetPath: targetXml, state: 'file', hash: hashContent('<OldForm/>'), backupName: '1', contentsBackedUp: true },
+        { targetPath: targetBinary, state: 'file', hash: hashContent(Buffer.from([3, 2, 1])), backupName: '2', contentsBackedUp: true },
+      ];
+      await fs.promises.writeFile(path.join(interruptedOp, 'backups', '1'), '<OldForm/>', 'utf8');
+      await fs.promises.writeFile(path.join(interruptedOp, 'backups', '2'), Buffer.from([3, 2, 1]));
+      await fs.promises.writeFile(path.join(interruptedOp, 'owner.json'), JSON.stringify({ pid: 999999, createdAt: Date.now() - 10000 }), 'utf8');
+      await fs.promises.writeFile(path.join(interruptedOp, 'journal.json'), JSON.stringify({
+        version: 1,
+        operationId: `interrupted-${crashPoint}`,
+        plan,
+        state: 'applying',
+        appliedSteps,
+        snapshots,
+      }), 'utf8');
+
+      await fs.promises.rm(targetDir, { recursive: true, force: true });
+      if (appliedSteps >= 2) {
+        await fs.promises.mkdir(path.join(targetDir, 'Forms', 'Nested'), { recursive: true });
+        await fs.promises.mkdir(emptyDir, { recursive: true });
+      }
+      if (appliedSteps >= 6) {
+        await fs.promises.writeFile(targetXml, '<NewForm/>', 'utf8');
+      }
+
+      await new MutationPlanExecutor(root).recover();
+
+      assert.strictEqual(await calculateDirectoryFingerprint(targetDir), originalFingerprint, `rollback failed at ${crashPoint}`);
+      assert.strictEqual(await fs.promises.readFile(targetXml, 'utf8'), '<OldForm/>');
+      assert.deepStrictEqual(await fs.promises.readFile(targetBinary), Buffer.from([3, 2, 1]));
+      assert.strictEqual(fs.existsSync(path.join(targetDir, 'OldRootEmpty')), true);
+      assert.strictEqual(fs.existsSync(path.join(originalNested, 'OldEmpty')), true);
+      assert.strictEqual(fs.existsSync(path.join(root, '.cdt-journal')), false);
+    }
+  });
+
   test('serializes plans per root and reports a stale second writer as a typed conflict', async () => {
     const target = path.join(tempDir, 'Configuration.xml');
     await fs.promises.writeFile(target, 'original', 'utf8');
