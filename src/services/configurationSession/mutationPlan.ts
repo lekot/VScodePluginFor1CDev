@@ -1096,7 +1096,9 @@ function computeExpectedDirectoryFingerprint(
   }
 
   if (resetIndex < 0 && snapshot?.state === 'directory') {
-    return snapshot.fingerprint;
+    return hasDirectoryContentMutation(dirPath, snapshots, plan, 0, appliedSteps)
+      ? undefined
+      : snapshot.fingerprint;
   }
 
   const childPaths: string[] = [];
@@ -1149,6 +1151,54 @@ function computeExpectedDirectoryFingerprint(
   return calculateDirectoryFingerprintFromEntries(entries);
 }
 
+function hasDirectoryContentMutation(
+  dirPath: string,
+  snapshots: readonly PathSnapshot[],
+  plan: MutationPlan<unknown>,
+  startIndex: number,
+  appliedSteps: number,
+): boolean {
+  for (let index = startIndex; index < appliedSteps; index++) {
+    const step = plan.steps[index];
+    if (!step || isReadOnlyAssertionStep(step)) {
+      continue;
+    }
+    if (step.type === 'writeFile' || step.type === 'deletePath') {
+      if (isPathInside(dirPath, step.targetPath)) {
+        return true;
+      }
+      continue;
+    }
+    if (step.type === 'ensureDirectory') {
+      if (!isSamePath(dirPath, step.targetPath) && isPathInside(dirPath, step.targetPath)) {
+        const ensureSnapshot = snapshots.find((snapshot) => isSamePath(snapshot.targetPath, step.targetPath));
+        if (ensureSnapshot?.state !== 'directory') {
+          return true;
+        }
+      }
+      continue;
+    }
+
+    if (
+      isSamePath(dirPath, step.targetPath)
+      && snapshots.find((snapshot) => isSamePath(snapshot.targetPath, step.sourcePath))?.state === 'directory'
+    ) {
+      // A directory move preserves its captured tree fingerprint at the exact
+      // destination path. Descendant effects still make that fingerprint opaque.
+      continue;
+    }
+    if (
+      isPathInside(dirPath, step.sourcePath)
+      || isPathInside(step.sourcePath, dirPath)
+      || isPathInside(dirPath, step.targetPath)
+      || isPathInside(step.targetPath, dirPath)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function expectedPostState(
   targetPath: string,
   snapshots: readonly PathSnapshot[],
@@ -1174,9 +1224,41 @@ function expectedPostState(
       if (!beforeEnsure) {
         return undefined;
       }
-      if (beforeEnsure.state !== 'missing') {
+      if (beforeEnsure.state !== 'directory' && beforeEnsure.state !== 'missing') {
         return beforeEnsure;
       }
+
+      if (beforeEnsure.state === 'directory') {
+        let resetIndex = -1;
+        for (let priorIndex = 0; priorIndex < i; priorIndex++) {
+          const priorStep = plan.steps[priorIndex];
+          if (priorStep?.type === 'deletePath' && isPathInside(priorStep.targetPath, targetPath)) {
+            resetIndex = priorIndex;
+          }
+        }
+        if (resetIndex < 0) {
+          const targetSnapshot = snapshots.find((snapshot) => isSamePath(snapshot.targetPath, targetPath));
+          if (targetSnapshot?.state === 'directory') {
+            return hasDirectoryContentMutation(targetPath, snapshots, plan, 0, appliedSteps)
+              ? { state: 'directory' }
+              : beforeEnsure;
+          }
+
+          let exactMoveIndex = -1;
+          for (let priorIndex = 0; priorIndex < i; priorIndex++) {
+            const priorStep = plan.steps[priorIndex];
+            if (priorStep?.type === 'movePath' && isSamePath(priorStep.targetPath, targetPath)) {
+              exactMoveIndex = priorIndex;
+            }
+          }
+          if (exactMoveIndex >= 0) {
+            return hasDirectoryContentMutation(targetPath, snapshots, plan, exactMoveIndex + 1, appliedSteps)
+              ? { state: 'directory' }
+              : beforeEnsure;
+          }
+        }
+      }
+
       const fingerprint = computeExpectedDirectoryFingerprint(targetPath, snapshots, plan, appliedSteps);
       return fingerprint !== undefined ? { state: 'directory', fingerprint } : undefined;
     }
@@ -1200,10 +1282,16 @@ function expectedPostState(
     }
     if (step.type === 'movePath') {
       if (isSamePath(step.sourcePath, targetPath)) {
-        return { state: 'missing' };
+        return hasDirectoryContentMutation(targetPath, snapshots, plan, i + 1, appliedSteps)
+          ? undefined
+          : { state: 'missing' };
       }
       if (isSamePath(step.targetPath, targetPath)) {
-        return expectedPostState(step.sourcePath, snapshots, plan, i);
+        const sourceState = expectedPostState(step.sourcePath, snapshots, plan, i);
+        return sourceState?.state === 'directory'
+          && hasDirectoryContentMutation(targetPath, snapshots, plan, i + 1, appliedSteps)
+          ? { state: 'directory' }
+          : sourceState;
       }
       if (isPathInside(step.sourcePath, targetPath)) {
         return { state: 'missing' };
@@ -1229,6 +1317,9 @@ function expectedPostState(
     return { state: 'file', hash: snapshot.hash! };
   }
   if (snapshot.state === 'directory') {
+    if (hasDirectoryContentMutation(targetPath, snapshots, plan, 0, appliedSteps)) {
+      return { state: 'directory' };
+    }
     return { state: 'directory', fingerprint: snapshot.fingerprint };
   }
   return { state: snapshot.state };
@@ -1314,7 +1405,7 @@ async function assertRollbackExpectation(
   targetPath: string,
   expected: MutationExpectation | undefined,
 ): Promise<void> {
-  if (!expected) {
+  if (!expected || (expected.state === 'directory' && expected.fingerprint === undefined)) {
     throw new MutationPlanError(
       'RECOVERY_REQUIRED',
       `Cannot prove the projected post-state for ${targetPath}. Recovery aborted to protect external changes.`,
