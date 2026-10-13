@@ -166,6 +166,7 @@ export const coreSuiteFiles: string[] = [
   'suite/ibcmdInfobaseConfigArgs.test.js',
   'suite/cfConfigurationService.test.js',
   'suite/ibcmdVersionSupport.test.js',
+  'suite/ibcmdVersionSupport.incremental.test.js',
   'suite/ibcmdInfobaseOperationResult.test.js',
   'suite/ibcmdProcessRunner.test.js',
   'suite/ibcmdStreamingRunner.test.js',

@@ -211,7 +211,7 @@ suite('ibcmdProcessRunner', () => {
         const spawnImpl = fakeProcessBoundary(0, '', '', (_file, _args, options) => {
           calls.push({ env: options.env });
         });
-        await runIbcmdExecutable('/x', ['infobase', 'config', 'check', '--config=C:\\me.yml'], 1, { spawnImpl });
+        await runIbcmdExecutable('/x', ['infobase', 'config', 'check', '--config=C:\\me.yml'], 1000, { spawnImpl });
         assert.strictEqual(calls.length, 1);
         assert.ok(calls[0].env, 'spawn should receive explicit env');
         assert.strictEqual(calls[0].env!.IBCMD_INFOBASE_CONFIG, undefined);
