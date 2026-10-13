@@ -208,24 +208,7 @@ export class AgentDeployOperations {
                 return {
                     success: isDeploySummarySuccess(summary),
                     code: deploySummaryCode(summary),
-                    data: {
-                        summary: {
-                            success: summary.successCount,
-                            error: summary.errorCount,
-                            inDoubt: summary.inDoubtCount,
-                            skipped: summary.skippedCount,
-                            hasPartial: summary.hasPartial,
-                        },
-                        results: summary.results.map((r) => ({
-                            infobase: r.name || r.infobaseId,
-                            status: r.status,
-                            message: r.message,
-                            errorCode: r.errorCode,
-                            skippedFiles: r.skippedFiles,
-                            effectPossible: r.effectPossible,
-                            termination: r.termination,
-                        })),
-                    },
+                    data: projectDeployRunSummary(summary),
                     error: deploySummaryError(summary),
                 };
             } finally {
@@ -274,24 +257,7 @@ export class AgentDeployOperations {
                 return {
                     success: isDeploySummarySuccess(summary),
                     code: deploySummaryCode(summary),
-                    data: {
-                        summary: {
-                            success: summary.successCount,
-                            error: summary.errorCount,
-                            inDoubt: summary.inDoubtCount,
-                            skipped: summary.skippedCount,
-                            hasPartial: summary.hasPartial,
-                        },
-                        results: summary.results.map((r) => ({
-                            infobase: r.name || r.infobaseId,
-                            status: r.status,
-                            message: r.message,
-                            errorCode: r.errorCode,
-                            skippedFiles: r.skippedFiles,
-                            effectPossible: r.effectPossible,
-                            termination: r.termination,
-                        })),
-                    },
+                    data: projectDeployRunSummary(summary),
                     error: deploySummaryError(summary),
                 };
             } finally {
@@ -368,24 +334,7 @@ export class AgentDeployOperations {
                 return {
                     success: isDeploySummarySuccess(summary),
                     code: deploySummaryCode(summary),
-                    data: {
-                        summary: {
-                            success: summary.successCount,
-                            error: summary.errorCount,
-                            inDoubt: summary.inDoubtCount,
-                            skipped: summary.skippedCount,
-                            hasPartial: summary.hasPartial,
-                        },
-                        results: summary.results.map((r) => ({
-                            infobase: r.name || r.infobaseId,
-                            status: r.status,
-                            message: r.message,
-                            errorCode: r.errorCode,
-                            skippedFiles: r.skippedFiles,
-                            effectPossible: r.effectPossible,
-                            termination: r.termination,
-                        })),
-                    },
+                    data: projectDeployRunSummary(summary),
                     error: deploySummaryError(summary),
                 };
             } finally {
@@ -459,23 +408,7 @@ export class AgentDeployOperations {
                 return {
                     success: isDeploySummarySuccess(summary),
                     code: deploySummaryCode(summary),
-                    data: {
-                        summary: {
-                            success: summary.successCount,
-                            error: summary.errorCount,
-                            inDoubt: summary.inDoubtCount,
-                            skipped: summary.skippedCount,
-                            hasPartial: summary.hasPartial,
-                        },
-                        results: summary.results.map((r) => ({
-                            infobase: r.name || r.infobaseId,
-                            status: r.status,
-                            message: r.message,
-                            errorCode: r.errorCode,
-                            effectPossible: r.effectPossible,
-                            termination: r.termination,
-                        })),
-                    },
+                    data: projectDeployRunSummary(summary, false),
                     error: summary.errorCount > 0
                         ? `Выгрузка завершена с ошибками: ${summary.errorCount}`
                         : undefined,
@@ -559,6 +492,30 @@ function createAgentProgress(reportStage?: (message: string) => void): {
                 reportStage?.(message);
             }
         },
+    };
+}
+
+function projectDeployRunSummary(
+    summary: DeployRunSummary,
+    includeSkippedFiles = true,
+): DeployResultData {
+    return {
+        summary: {
+            success: summary.successCount,
+            error: summary.errorCount,
+            inDoubt: summary.inDoubtCount,
+            skipped: summary.skippedCount,
+            hasPartial: summary.hasPartial,
+        },
+        results: summary.results.map((result) => ({
+            infobase: result.name || result.infobaseId,
+            status: result.status,
+            message: result.message,
+            errorCode: result.errorCode,
+            ...(includeSkippedFiles ? { skippedFiles: result.skippedFiles } : {}),
+            effectPossible: result.effectPossible,
+            termination: result.termination,
+        })),
     };
 }
 

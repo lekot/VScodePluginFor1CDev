@@ -20,6 +20,7 @@ import {
   resolveDeployTargetsForBinding,
   vscodeSupportsDeployReadonlyLock,
   type DeploySupportContext,
+  type DeployRunSummary,
 } from './deployService';
 import { showIbcmdInfobaseOutputChannel, runInfobaseConfigExportStatus } from '../infobases/infobaseConfigCommands';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
@@ -267,24 +268,8 @@ export async function runDeployForConfigurationFromTree(
       }),
   );
 
-  const tail = summary.cancelledMidChain ? ' Часть баз пропущена (отмена).' : '';
-  const parts: string[] = [`${summary.successCount} успешно`];
-  if (summary.errorCount > 0) {
-    parts.push(`${summary.errorCount} с ошибками`);
-  }
-  if (summary.inDoubtCount > 0) {
-    parts.push(`${summary.inDoubtCount} с неопределённым результатом`);
-  }
-  if (summary.skippedCount > 0) {
-    parts.push(`${summary.skippedCount} пропущено`);
-  }
-  const msg = `Раскатка завершена: ${parts.join(', ')}.${tail}`;
+  const { message: msg, fullySuccessful } = formatDeployRunSummary(summary);
   const showOut = 'Показать вывод';
-  /** Expected target skips stay informational; omitted requested files are always a warning. */
-  const fullySuccessful = summary.errorCount === 0
-    && summary.inDoubtCount === 0
-    && !summary.cancelledMidChain
-    && !summary.hasPartial;
   if (summary.successCount > 0 && fullySuccessful) {
     const r = await vscode.window.showInformationMessage(msg, showOut);
     if (r === showOut) {
@@ -319,14 +304,14 @@ function resolveConfigRootFromAnyNode(
   return undefined;
 }
 
-function showDeployRunSummaryToast(summary: {
-  successCount: number;
-  errorCount: number;
-  inDoubtCount: number;
-  skippedCount: number;
-  hasPartial: boolean;
-  cancelledMidChain: boolean;
-}): void {
+type DeployRunSummaryPresentationInput = Pick<DeployRunSummary,
+  'successCount' | 'errorCount' | 'inDoubtCount' | 'skippedCount' | 'hasPartial' | 'cancelledMidChain'
+>;
+
+function formatDeployRunSummary(summary: DeployRunSummaryPresentationInput): {
+  message: string;
+  fullySuccessful: boolean;
+} {
   const tail = summary.cancelledMidChain ? ' Часть баз пропущена (отмена).' : '';
   const parts: string[] = [`${summary.successCount} успешно`];
   if (summary.errorCount > 0) {
@@ -338,12 +323,18 @@ function showDeployRunSummaryToast(summary: {
   if (summary.skippedCount > 0) {
     parts.push(`${summary.skippedCount} пропущено`);
   }
-  const msg = `Раскатка завершена: ${parts.join(', ')}.${tail}`;
+  return {
+    message: `Раскатка завершена: ${parts.join(', ')}.${tail}`,
+    fullySuccessful: summary.errorCount === 0
+      && summary.inDoubtCount === 0
+      && !summary.cancelledMidChain
+      && !summary.hasPartial,
+  };
+}
+
+function showDeployRunSummaryToast(summary: DeployRunSummaryPresentationInput): void {
+  const { message: msg, fullySuccessful } = formatDeployRunSummary(summary);
   const showOut = 'Показать вывод';
-  const fullySuccessful = summary.errorCount === 0
-    && summary.inDoubtCount === 0
-    && !summary.cancelledMidChain
-    && !summary.hasPartial;
   if (summary.successCount > 0 && fullySuccessful) {
     void vscode.window.showInformationMessage(msg, showOut).then((r) => {
       if (r === showOut) {
