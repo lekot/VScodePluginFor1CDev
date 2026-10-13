@@ -29,6 +29,7 @@ import { detectDeployGuards } from './deployPreflightGuards';
 import { expandBslSiblings } from './bslExpansion';
 import { checkRecentDeploy, computeFilesContentSignature, recordDeploy } from './deployDedupCache';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
+import type { ProcessTreeTerminationOutcome } from '../services/ibcmd/processTreeTermination';
 import {
   DeployLockedObjectsPlanner,
   type DeploySupportPlannerRequest,
@@ -47,21 +48,26 @@ import {
   validateWorkspaceRelativePath,
 } from '../services/configurationSession/pathBoundary';
 
-export type DeployItemStatus = 'success' | 'error' | 'skipped';
+export type DeployItemStatus = 'success' | 'error' | 'inDoubt' | 'skipped';
 
 export interface DeployItemResult {
   readonly infobaseId: string;
   readonly name: string;
   readonly status: DeployItemStatus;
   readonly message: string;
-  readonly errorCode?: DeploySupportErrorCode;
+  readonly errorCode?: DeployItemErrorCode;
   readonly skippedFiles?: readonly string[];
+  /** True when an import may have changed the target despite an uncertain outcome. */
+  readonly effectPossible?: boolean;
+  readonly termination?: ProcessTreeTerminationOutcome;
 }
 
 export interface DeployRunSummary {
   readonly results: DeployItemResult[];
   readonly successCount: number;
   readonly errorCount: number;
+  /** Imports whose effects may have occurred but could not be confirmed. */
+  readonly inDoubtCount: number;
   /** Предпролётные пропуски, веб-базы, отмена и т.п. */
   readonly skippedCount: number;
   /** At least one target omitted concrete requested files from its result. */
@@ -84,6 +90,8 @@ export type DeploySupportErrorCode =
   | 'SUPPORT_REPLICATION_FAILED'
   | 'SUPPORT_REPLICATION_INCOMPLETE'
   | 'SUPPORT_TARGET_SELECTION_REJECTED';
+
+export type DeployItemErrorCode = DeploySupportErrorCode | 'DEPLOY_OPERATION_IN_DOUBT';
 
 /** Exact support facade/identity pair supplied by UI and Agent composition roots. */
 export interface DeploySupportContext {
@@ -724,14 +732,24 @@ export class DeployService {
                 logExcerpt: '',
               };
             }
+            const inDoubt = preflight.code === 'IN_DOUBT';
             appendIbcmdOutputLine(
-              `[раскатка] ${entry.name}: preflight XML не пройден (${preflight.durationMs} мс) — ${preflight.message}`,
+              `[раскатка] ${entry.name}: ${inDoubt ? 'результат preflight XML неопределён' : 'preflight XML не пройден'} (${preflight.durationMs} мс) — ${preflight.message}`,
             );
             results.push({
               infobaseId: entry.id,
               name: entry.name,
-              status: 'error',
-              message: `Preflight XML не пройден: ${preflight.message}`,
+              status: inDoubt ? 'inDoubt' : 'error',
+              message: inDoubt
+                ? `Результат preflight XML неопределён: ${preflight.message}`
+                : `Preflight XML не пройден: ${preflight.message}`,
+              ...(inDoubt
+                ? {
+                    errorCode: 'DEPLOY_OPERATION_IN_DOUBT' as const,
+                    effectPossible: true,
+                    ...(preflight.termination ? { termination: preflight.termination } : {}),
+                  }
+                : {}),
             });
             for (let j = i + 1; j < entries.length; j++) {
               const e = entries[j]!;
@@ -739,7 +757,9 @@ export class DeployService {
                 infobaseId: e.id,
                 name: e.name,
                 status: 'skipped',
-                message: 'Пропущено: preflight XML завершился ошибкой на предыдущей базе.',
+                message: inDoubt
+                  ? 'Пропущено: результат preflight XML неопределён на предыдущей базе.'
+                  : 'Пропущено: preflight XML завершился ошибкой на предыдущей базе.',
               });
             }
             const s = summarizeDeployRun(results, false);
@@ -1777,6 +1797,7 @@ function partialDeployMessage(message: string, skippedFileCount: number): string
 function summarizeDeployRun(results: DeployItemResult[], cancelledMidChain: boolean): DeployRunSummary {
   let successCount = 0;
   let errorCount = 0;
+  let inDoubtCount = 0;
   let skippedCount = 0;
   let hasPartial = false;
   for (const r of results) {
@@ -1787,11 +1808,13 @@ function summarizeDeployRun(results: DeployItemResult[], cancelledMidChain: bool
       successCount += 1;
     } else if (r.status === 'error') {
       errorCount += 1;
+    } else if (r.status === 'inDoubt') {
+      inDoubtCount += 1;
     } else {
       skippedCount += 1;
     }
   }
-  return { results, successCount, errorCount, skippedCount, hasPartial, cancelledMidChain };
+  return { results, successCount, errorCount, inDoubtCount, skippedCount, hasPartial, cancelledMidChain };
 }
 
 /** Итог раскатки в Output (дизайн UC-12 §12.5). */
@@ -1800,6 +1823,9 @@ function appendDeployRunSummaryLine(summary: DeployRunSummary): void {
   const parts: string[] = [`${summary.successCount} успешно`];
   if (summary.errorCount > 0) {
     parts.push(`${summary.errorCount} с ошибками`);
+  }
+  if (summary.inDoubtCount > 0) {
+    parts.push(`${summary.inDoubtCount} с неопределённым результатом`);
   }
   if (summary.skippedCount > 0) {
     parts.push(`${summary.skippedCount} пропущено`);

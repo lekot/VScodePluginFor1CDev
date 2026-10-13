@@ -17,6 +17,89 @@ suite('Agent deploy partial result projection', () => {
 
   teardown(() => resetVscodeTestState());
 
+  test('full deploy Agent projection keeps inDoubt distinct and exposes effect and termination details', async () => {
+    const original = DeployService.prototype.deployBinding;
+    const termination = {
+      terminated: false,
+      hardKillUsed: true,
+      survivingPids: [7124],
+      errors: ['taskkill /T did not confirm exit'],
+    };
+    const summary = {
+      results: [{
+        infobaseId: 'ib-1',
+        name: 'Base',
+        status: 'inDoubt',
+        message: 'Импорт мог примениться; итог неопределён.',
+        errorCode: 'DEPLOY_OPERATION_IN_DOUBT',
+        effectPossible: true,
+        termination,
+      }],
+      successCount: 0,
+      errorCount: 0,
+      inDoubtCount: 1,
+      skippedCount: 2,
+      hasPartial: false,
+      cancelledMidChain: true,
+    } as unknown as DeployRunSummary;
+    DeployService.prototype.deployBinding = async () => summary;
+    try {
+      const { AgentDeployOperations } = await import('../../src/agent/agentDeployOperations');
+      const binding: ConfigurationBinding = {
+        workspaceFolder: 'ws',
+        configRelativePath: 'Configuration.xml',
+        infobaseIds: ['ib-1'],
+        massDeployment: false,
+      };
+      const catalog: InfobaseEntry[] = [{
+        id: 'ib-1',
+        name: 'Base',
+        type: 'file',
+        filePath: 'C:/base',
+        hasStoredPassword: false,
+        createdAt: '2026-07-29T00:00:00.000Z',
+      }];
+      const operations = new AgentDeployOperations({
+        bindingManager: {} as never,
+        infobaseStorage: {} as never,
+        getConfigPath: () => null,
+      });
+      Reflect.set(operations, 'resolveDeployContext', async () => ({
+        success: true,
+        data: {
+          configRoot: 'C:/configuration',
+          binding,
+          entries: catalog,
+          catalog,
+          workspaceFolderRoot: 'C:/workspace',
+        },
+      }));
+
+      const result = await operations.deploy({});
+
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(result.code, 'DEPLOY_OPERATION_IN_DOUBT');
+      assert.strictEqual(result.error, 'Раскатка завершена с неопределённым результатом: 1');
+      assert.ok(result.data);
+      assert.strictEqual(
+        (result.data?.summary as unknown as { inDoubt?: number }).inDoubt,
+        1,
+      );
+      assert.strictEqual(result.data?.summary.error, 0);
+      assert.strictEqual(result.data?.results[0]?.status, 'inDoubt');
+      assert.strictEqual(
+        (result.data?.results[0] as unknown as { effectPossible?: boolean }).effectPossible,
+        true,
+      );
+      assert.deepStrictEqual(
+        (result.data?.results[0] as unknown as { termination?: unknown }).termination,
+        termination,
+      );
+    } finally {
+      DeployService.prototype.deployBinding = original;
+    }
+  });
+
   test('partial UI summary stays unsuccessful and preserves skipped files in Agent data', async () => {
     const original = DeployService.prototype.deployChangedFiles;
     const summary: DeployRunSummary = {
@@ -29,6 +112,7 @@ suite('Agent deploy partial result projection', () => {
       }],
       successCount: 0,
       errorCount: 0,
+      inDoubtCount: 0,
       skippedCount: 1,
       hasPartial: true,
       cancelledMidChain: false,
@@ -91,6 +175,7 @@ suite('Agent deploy partial result projection', () => {
         results: [{ infobaseId: 'ib-1', name: 'Base', status: 'success', message: 'applied' }],
         successCount: 1,
         errorCount: 0,
+        inDoubtCount: 0,
         skippedCount: 1,
         hasPartial: false,
         cancelledMidChain: true,
@@ -101,6 +186,7 @@ suite('Agent deploy partial result projection', () => {
         }],
         successCount: 0,
         errorCount: 1,
+        inDoubtCount: 0,
         skippedCount: 1,
         hasPartial: false,
         cancelledMidChain: true,

@@ -11,8 +11,10 @@ import {
     resolveConfigurationXmlDirectory,
     resolveDeployTargetsForBinding,
     type DeploySupportContext,
+    type DeployItemStatus,
     type DeployRunSummary,
 } from '../bindings/deployService';
+import type { ProcessTreeTerminationOutcome } from '../services/ibcmd/processTreeTermination';
 import type { ConfigurationBinding } from '../bindings/models/configurationBinding';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import { MetadataType, type TreeNode } from '../models/treeNode';
@@ -45,15 +47,18 @@ export interface DeployResultData {
     summary: {
         success: number;
         error: number;
+        inDoubt: number;
         skipped: number;
         hasPartial: boolean;
     };
     results: Array<{
         infobase: string;
-        status: string;
+        status: DeployItemStatus;
         message: string;
         errorCode?: string;
         skippedFiles?: readonly string[];
+        effectPossible?: boolean;
+        termination?: ProcessTreeTerminationOutcome;
     }>;
 }
 
@@ -202,24 +207,8 @@ export class AgentDeployOperations {
 
                 return {
                     success: isDeploySummarySuccess(summary),
-                    code: summary.cancelledMidChain && summary.errorCount === 0
-                        ? 'REQUEST_CANCELLED'
-                        : summary.results.find((result) => result.errorCode)?.errorCode,
-                    data: {
-                        summary: {
-                            success: summary.successCount,
-                            error: summary.errorCount,
-                            skipped: summary.skippedCount,
-                            hasPartial: summary.hasPartial,
-                        },
-                        results: summary.results.map((r) => ({
-                            infobase: r.name || r.infobaseId,
-                            status: r.status,
-                            message: r.message,
-                            errorCode: r.errorCode,
-                            skippedFiles: r.skippedFiles,
-                        })),
-                    },
+                    code: deploySummaryCode(summary),
+                    data: projectDeployRunSummary(summary),
                     error: deploySummaryError(summary),
                 };
             } finally {
@@ -267,24 +256,8 @@ export class AgentDeployOperations {
 
                 return {
                     success: isDeploySummarySuccess(summary),
-                    code: summary.cancelledMidChain && summary.errorCount === 0
-                        ? 'REQUEST_CANCELLED'
-                        : summary.results.find((result) => result.errorCode)?.errorCode,
-                    data: {
-                        summary: {
-                            success: summary.successCount,
-                            error: summary.errorCount,
-                            skipped: summary.skippedCount,
-                            hasPartial: summary.hasPartial,
-                        },
-                        results: summary.results.map((r) => ({
-                            infobase: r.name || r.infobaseId,
-                            status: r.status,
-                            message: r.message,
-                            errorCode: r.errorCode,
-                            skippedFiles: r.skippedFiles,
-                        })),
-                    },
+                    code: deploySummaryCode(summary),
+                    data: projectDeployRunSummary(summary),
                     error: deploySummaryError(summary),
                 };
             } finally {
@@ -334,7 +307,7 @@ export class AgentDeployOperations {
                 return {
                     success: true,
                     data: {
-                        summary: { success: 0, error: 0, skipped: 0, hasPartial: false },
+                        summary: { success: 0, error: 0, inDoubt: 0, skipped: 0, hasPartial: false },
                         results: [],
                     },
                     error: 'Нет изменённых файлов.',
@@ -360,24 +333,8 @@ export class AgentDeployOperations {
 
                 return {
                     success: isDeploySummarySuccess(summary),
-                    code: summary.cancelledMidChain && summary.errorCount === 0
-                        ? 'REQUEST_CANCELLED'
-                        : summary.results.find((result) => result.errorCode)?.errorCode,
-                    data: {
-                        summary: {
-                            success: summary.successCount,
-                            error: summary.errorCount,
-                            skipped: summary.skippedCount,
-                            hasPartial: summary.hasPartial,
-                        },
-                        results: summary.results.map((r) => ({
-                            infobase: r.name || r.infobaseId,
-                            status: r.status,
-                            message: r.message,
-                            errorCode: r.errorCode,
-                            skippedFiles: r.skippedFiles,
-                        })),
-                    },
+                    code: deploySummaryCode(summary),
+                    data: projectDeployRunSummary(summary),
                     error: deploySummaryError(summary),
                 };
             } finally {
@@ -450,20 +407,8 @@ export class AgentDeployOperations {
 
                 return {
                     success: isDeploySummarySuccess(summary),
-                    code: summary.cancelledMidChain && summary.errorCount === 0 ? 'REQUEST_CANCELLED' : undefined,
-                    data: {
-                        summary: {
-                            success: summary.successCount,
-                            error: summary.errorCount,
-                            skipped: summary.skippedCount,
-                            hasPartial: summary.hasPartial,
-                        },
-                        results: summary.results.map((r) => ({
-                            infobase: r.name || r.infobaseId,
-                            status: r.status,
-                            message: r.message,
-                        })),
-                    },
+                    code: deploySummaryCode(summary),
+                    data: projectDeployRunSummary(summary, false),
                     error: summary.errorCount > 0
                         ? `Выгрузка завершена с ошибками: ${summary.errorCount}`
                         : undefined,
@@ -550,13 +495,53 @@ function createAgentProgress(reportStage?: (message: string) => void): {
     };
 }
 
+function projectDeployRunSummary(
+    summary: DeployRunSummary,
+    includeSkippedFiles = true,
+): DeployResultData {
+    return {
+        summary: {
+            success: summary.successCount,
+            error: summary.errorCount,
+            inDoubt: summary.inDoubtCount,
+            skipped: summary.skippedCount,
+            hasPartial: summary.hasPartial,
+        },
+        results: summary.results.map((result) => ({
+            infobase: result.name || result.infobaseId,
+            status: result.status,
+            message: result.message,
+            errorCode: result.errorCode,
+            ...(includeSkippedFiles ? { skippedFiles: result.skippedFiles } : {}),
+            effectPossible: result.effectPossible,
+            termination: result.termination,
+        })),
+    };
+}
+
 function isDeploySummarySuccess(summary: DeployRunSummary): boolean {
     return summary.errorCount === 0
+        && summary.inDoubtCount === 0
         && !summary.cancelledMidChain
         && !summary.hasPartial;
 }
 
+function deploySummaryCode(summary: DeployRunSummary): string | undefined {
+    if (summary.inDoubtCount > 0) {
+        return 'DEPLOY_OPERATION_IN_DOUBT';
+    }
+    if (summary.cancelledMidChain && summary.errorCount === 0) {
+        return 'REQUEST_CANCELLED';
+    }
+    return summary.results.find((result) => result.errorCode)?.errorCode;
+}
+
 function deploySummaryError(summary: DeployRunSummary): string | undefined {
+    if (summary.inDoubtCount > 0) {
+        return summary.errorCount > 0
+            ? `Раскатка завершена с неопределённым результатом: ${summary.inDoubtCount}; подтверждённых ошибок: ${summary.errorCount}`
+            : `Раскатка завершена с неопределённым результатом: ${summary.inDoubtCount}`;
+    }
     if (summary.errorCount > 0) {
         return `Раскатка завершена с ошибками: ${summary.errorCount}`;
     }

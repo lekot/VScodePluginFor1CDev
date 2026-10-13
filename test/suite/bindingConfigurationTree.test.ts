@@ -749,6 +749,86 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     );
   });
 
+  test('inDoubt deploy projection warns separately from confirmed errors', async () => {
+    const { DeployService } = await import('../../src/bindings/deployService');
+    const original = DeployService.prototype.deployBinding;
+    const termination = {
+      terminated: false,
+      hardKillUsed: true,
+      survivingPids: [7124],
+      errors: ['taskkill /T did not confirm exit'],
+    };
+    const summary = {
+      results: [
+        { infobaseId: 'ib1', name: 'Alpha', status: 'success', message: 'applied' },
+        {
+          infobaseId: 'ib2',
+          name: 'Beta',
+          status: 'inDoubt',
+          message: 'Импорт мог примениться; итог неопределён.',
+          errorCode: 'DEPLOY_OPERATION_IN_DOUBT',
+          effectPossible: true,
+          termination,
+        },
+      ],
+      successCount: 1,
+      errorCount: 0,
+      inDoubtCount: 1,
+      skippedCount: 0,
+      hasPartial: false,
+      cancelledMidChain: false,
+    };
+    DeployService.prototype.deployBinding = async () => summary as never;
+    try {
+      const wsRoot = fixtureSmallMatrixRoot();
+      vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
+      vscodeTestState.warningMessageReturnQueue = ['Продолжить'];
+      const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-indoubt-toast-'));
+      tempDirs.push(work);
+      const state = {
+        bindingManager: {
+          async get() {
+            return {
+              workspaceFolder: 'MyWs',
+              configRelativePath: 'Configuration.xml',
+              infobaseIds: ['ib1', 'ib2'],
+              massDeployment: true,
+            };
+          },
+        },
+        infobaseStorage: {
+          async load() {
+            return ['Alpha', 'Beta'].map((name, index) => ({
+              id: `ib${index + 1}`,
+              name,
+              type: 'file',
+              filePath: path.join(work, `${name}.1cd`),
+              hasStoredPassword: false,
+              createdAt: '2020-01-01T00:00:00.000Z',
+            }));
+          },
+          async readPasswordSecret(): Promise<string | undefined> {
+            return undefined;
+          },
+        },
+      } as unknown as ExtensionState;
+
+      await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+
+      const completionWarning = vscodeTestState.warningLog.find((message) =>
+        message.includes('Раскатка завершена:'),
+      );
+      assert.ok(completionWarning?.includes('1 с неопределённым результатом'), completionWarning);
+      assert.ok(!completionWarning?.includes('с ошибками'), completionWarning);
+      assert.ok(
+        !vscodeTestState.informationLog.some((message) => message.includes('Раскатка завершена:')),
+        'an inDoubt result must use the warning projection even when another base succeeded',
+      );
+    } finally {
+      DeployService.prototype.deployBinding = original;
+    }
+  });
+
   test('package.json: команды config.deploy / deployMultiple и контекстное меню', () => {
     const root = path.join(__dirname, '..', '..', '..');
     const raw = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
