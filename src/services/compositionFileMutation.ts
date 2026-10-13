@@ -2,6 +2,7 @@ import {
   getConfigurationMutationEngine,
   type SingleFileMutationChange,
 } from './configurationSession/ConfigurationMutationEngine';
+import { unwrapMutationReceipt } from './configurationSession/mutationReceiptError';
 
 export interface CompositionFileState {
   readonly exists: boolean;
@@ -45,16 +46,15 @@ export async function mutateCompositionFile<T>(
     },
   );
 
+  let failureMessage: string | undefined;
   if (receipt.status === 'conflict') {
     if (receipt.code === 'CONCURRENT_CREATE_COLLISION') {
-      throw new Error(
-        `Конфликт создания файла состава с параллельным процессом: ${filePath}. ${receipt.message}`
-      );
+      failureMessage = `Конфликт создания файла состава с параллельным процессом: ${filePath}. ${receipt.message}`;
+    } else {
+      failureMessage = `Конфликт обновления файла состава: ${filePath}. ${receipt.message}`;
     }
-    throw new Error(`Конфликт обновления файла состава: ${filePath}. ${receipt.message}`);
+  } else if (receipt.status !== 'committed') {
+    failureMessage = `Ошибка атомарной записи файла состава: ${filePath}. ${receipt.message}`;
   }
-  if (receipt.status !== 'committed') {
-    throw new Error(`Ошибка атомарной записи файла состава: ${filePath}. ${receipt.message}`);
-  }
-  return receipt.result!;
+  return unwrapMutationReceipt(receipt, failureMessage);
 }
