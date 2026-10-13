@@ -3,6 +3,7 @@
  */
 
 import { MetadataType } from '../../models/treeNode';
+import type { MutationFailureStatus } from '../../services/configurationSession/mutationReceiptError';
 import { RightType } from './roleModel';
 import type { MetadataObject } from './metadataObject';
 
@@ -139,7 +140,15 @@ export type ExtensionToWebviewMessage =
     }
   | { command: 'validationError'; data: { errors: string[] } }
   | { command: 'validationCancelled'; data?: { message?: string } }
-  | { command: 'saveError'; data: { message: string } }
+  | {
+      command: 'saveError';
+      data: {
+        message: string;
+        status?: MutationFailureStatus;
+        code?: string;
+        effectPossible?: boolean;
+      };
+    }
   | { command: 'error'; data: { message: string } };
 
 /**

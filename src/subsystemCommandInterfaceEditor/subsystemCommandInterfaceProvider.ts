@@ -5,6 +5,7 @@ import type { TreeNode } from '../models/treeNode';
 import { parseCommandInterface, serializeCommandInterface } from '../parsers/commandInterfaceParser';
 import { getConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
 import { hashContent } from '../services/configurationSession/atomicFileStorage';
+import { projectMutationFailure, unwrapMutationReceipt } from '../services/configurationSession/mutationReceiptError';
 import type { CommandInterfaceModel, CommandVisibilityEntry } from '../types/commandInterface';
 import { MESSAGES } from '../constants/messages';
 import { Logger } from '../utils/logger';
@@ -186,19 +187,21 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
         },
       );
 
+      let failureMessage: string | undefined;
       if (receipt.status === 'conflict') {
         if (receipt.code === 'STALE_TARGET_REVISION') {
-          throw new Error('Конфликт сохранения: файл интерфейса подсистемы был изменен другим процессом.');
+          failureMessage = 'Конфликт сохранения: файл интерфейса подсистемы был изменен другим процессом.';
+        } else {
+          failureMessage = `Конфликт сохранения интерфейса подсистемы: ${receipt.message}`;
         }
-        throw new Error(`Конфликт сохранения интерфейса подсистемы: ${receipt.message}`);
+      } else if (receipt.status !== 'committed') {
+        failureMessage = `Ошибка записи CommandInterface.xml: ${receipt.message}`;
       }
-      if (receipt.status !== 'committed') {
-        throw new Error(`Ошибка записи CommandInterface.xml: ${receipt.message}`);
-      }
+      const savedModel = unwrapMutationReceipt(receipt, failureMessage);
 
       if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
         this.sessionExpectedHash = receipt.newRevision;
-        this.currentModel = receipt.result;
+        this.currentModel = savedModel;
       }
 
       if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
@@ -211,11 +214,12 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
     } catch (err) {
       Logger.error('Failed to save CommandInterface.xml', err);
       if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
+        const failureProjection = projectMutationFailure(err);
         this.postMessage({
           type: 'saveError',
           filePath: targetFilePath,
           generation: targetGeneration,
-          message: MESSAGES.SUBSYSTEM_COMMAND_INTERFACE_WRITE_FAILED,
+          ...(failureProjection ?? { message: MESSAGES.SUBSYSTEM_COMMAND_INTERFACE_WRITE_FAILED }),
         });
       }
       throw err;

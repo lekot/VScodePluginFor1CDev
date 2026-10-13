@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
 import { hashContent } from '../services/configurationSession/atomicFileStorage';
+import { projectMutationFailure, unwrapMutationReceipt } from '../services/configurationSession/mutationReceiptError';
 import { randomUUID } from 'crypto';
 import { XMLValidator } from 'fast-xml-parser';
 import { RoleModel } from './models/roleModel';
@@ -681,6 +682,7 @@ export class RolesRightsEditorProvider {
         },
       );
 
+      let failureMessage: string | undefined;
       if (receipt.status === 'conflict') {
         if (receipt.code === 'STALE_TARGET_REVISION') {
           const kind = isCaseB ? 'файл роли' : 'файл прав роли';
@@ -689,13 +691,14 @@ export class RolesRightsEditorProvider {
             : receipt.oldRevision === undefined
               ? 'был удален другим процессом'
               : 'был изменен другим процессом';
-          throw new Error(`Конфликт сохранения: ${kind} "${targetPath}" ${reason}.`);
+          failureMessage = `Конфликт сохранения: ${kind} "${targetPath}" ${reason}.`;
+        } else {
+          failureMessage = `Конфликт сохранения прав роли: ${receipt.message ?? receipt.code ?? 'неизвестная причина'}`;
         }
-        throw new Error(`Конфликт сохранения прав роли: ${receipt.message ?? receipt.code ?? 'неизвестная причина'}`);
+      } else if (receipt.status !== 'committed') {
+        failureMessage = `Ошибка записи файла прав роли: ${receipt.message ?? receipt.code ?? receipt.status}`;
       }
-      if (receipt.status !== 'committed') {
-        throw new Error(`Ошибка записи файла прав роли: ${receipt.message ?? receipt.code ?? receipt.status}`);
-      }
+      unwrapMutationReceipt(receipt, failureMessage);
 
       if (this.sessionGeneration === targetGeneration) {
         this.sessionExpectedHash = receipt.newRevision;
@@ -725,14 +728,15 @@ export class RolesRightsEditorProvider {
         this.panel.dispose();
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const failureProjection = projectMutationFailure(error);
+      const message = failureProjection?.message ?? (error instanceof Error ? error.message : String(error));
       const stack = error instanceof Error ? error.stack : undefined;
       Logger.error(`Failed to save rights: ${message}`, stack ? { stack } : error);
       vscode.window.showErrorMessage(`Failed to save rights: ${message}`);
       if (this.sessionGeneration === targetGeneration) {
         this.sendMessageToWebview({
         command: 'saveError',
-        data: { message },
+        data: failureProjection ?? { message },
       });
       }
       throw error;
