@@ -16,6 +16,16 @@ function extensionRoot(): string {
   return path.resolve(__dirname, '../../..');
 }
 
+async function linkSqlJsDist(extensionPath: string): Promise<void> {
+  const sqlJsDirectory = path.join(extensionPath, 'node_modules', 'sql.js');
+  await fs.promises.mkdir(sqlJsDirectory, { recursive: true });
+  await fs.promises.symlink(
+    path.join(extensionRoot(), 'node_modules', 'sql.js', 'dist'),
+    path.join(sqlJsDirectory, 'dist'),
+    'junction',
+  );
+}
+
 function dataOf<T>(result: { success: boolean; data?: T; code?: string }): T {
   assert.strictEqual(result.success, true, result.code ?? 'expected successful syntax-help result');
   return result.data as T;
@@ -38,14 +48,9 @@ async function createSyntaxHelpFixture(articles: readonly FixtureArticle[] = [])
   try {
     const helpPath = path.join(extensionPath, 'resources', 'help');
     const standardsPath = path.join(extensionPath, 'resources', 'standards');
-    const wasmPath = path.join(extensionPath, 'node_modules', 'sql.js', 'dist');
     await fs.promises.mkdir(helpPath, { recursive: true });
     await fs.promises.mkdir(standardsPath, { recursive: true });
-    await fs.promises.mkdir(wasmPath, { recursive: true });
-    await fs.promises.copyFile(
-      path.join(extensionRoot(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
-      path.join(wasmPath, 'sql-wasm.wasm'),
-    );
+    await linkSqlJsDist(extensionPath);
     await fs.promises.writeFile(path.join(standardsPath, 'manifest.json'), JSON.stringify({
       version: 1,
       entries: [{ slug: 'fixture-standard', name: 'Fixture standard', path: 'fixture.md', summary: 'Fixture content.' }],
@@ -520,14 +525,15 @@ suite('AgentSyntaxHelpOperations', function () {
 
   test('reports malformed SQLite resource with a typed error and without exposing local paths', async () => {
     const temporaryRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'syntax-help-invalid-'));
+    const bundledWasmPath = path.join(extensionRoot(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm');
     try {
       const databaseDirectory = path.join(temporaryRoot, 'resources', 'help');
       const wasmDirectory = path.join(temporaryRoot, 'node_modules', 'sql.js', 'dist');
       await fs.promises.mkdir(databaseDirectory, { recursive: true });
-      await fs.promises.mkdir(wasmDirectory, { recursive: true });
-      await fs.promises.copyFile(
-        path.join(extensionRoot(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
-        path.join(wasmDirectory, 'sql-wasm.wasm'),
+      await linkSqlJsDist(temporaryRoot);
+      assert.ok(
+        (await fs.promises.lstat(wasmDirectory)).isSymbolicLink(),
+        'The SQL.js dist folder must be a junction so fixture cleanup does not traverse package files.',
       );
       await fs.promises.writeFile(path.join(databaseDirectory, 'shcntx_help.db'), 'not sqlite');
 
@@ -537,6 +543,7 @@ suite('AgentSyntaxHelpOperations', function () {
       assert.ok(!JSON.stringify(result).includes(temporaryRoot));
     } finally {
       await fs.promises.rm(temporaryRoot, { recursive: true, force: true });
+      assert.ok((await fs.promises.stat(bundledWasmPath)).isFile(), 'Fixture cleanup must preserve the bundled SQL.js WASM file.');
     }
   });
 });
