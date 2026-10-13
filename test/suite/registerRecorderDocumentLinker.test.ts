@@ -205,4 +205,31 @@ suite('registerRecorderDocumentLinker', () => {
     assert.match(result, /<Wrapper><xr:Item[^>]*>AccumulationRegister\.Target<\/xr:Item><\/Wrapper>/);
     assert.strictEqual(remove(result, 'AccumulationRegister', 'Target'), result);
   });
+
+  test('decodes hexadecimal and decimal entities while preserving adjacent and nested references', () => {
+    const candidate = (registerRecorderDocumentLinker as unknown as Record<string, unknown>)[
+      'removeRegisterReferenceFromRecorderDocumentXml'
+    ];
+    assert.strictEqual(typeof candidate, 'function');
+    const remove = candidate as (xml: string, kind: 'AccumulationRegister', name: string) => string;
+    const xml = `<MetaDataObject xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<Document><Properties><Name>Recorder</Name>
+<RegisterRecords>
+<xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister&#x2E;Target</xr:Item>
+<xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister&#46;Target</xr:Item>
+<xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister&#x2e;TargetExtra</xr:Item>
+<xr:Item xsi:type="xr:MDObjectRef">InformationRegister&#x2e;Target</xr:Item>
+</RegisterRecords>
+</Properties>
+<ChildObjects><Wrapper><xr:Item xsi:type="xr:MDObjectRef">AccumulationRegister&#46;Target</xr:Item></Wrapper></ChildObjects>
+</Document></MetaDataObject>`;
+
+    const result = remove(xml, 'AccumulationRegister', 'Target');
+    const records = result.match(/<RegisterRecords>([\s\S]*?)<\/RegisterRecords>/)?.[1] ?? '';
+    assert.doesNotMatch(records, /AccumulationRegister&#(?:x2E|46);Target/);
+    assert.match(records, /AccumulationRegister&#x2e;TargetExtra/);
+    assert.match(records, /InformationRegister&#x2e;Target/);
+    assert.match(result, /<Wrapper><xr:Item[^>]*>AccumulationRegister&#46;Target<\/xr:Item><\/Wrapper>/);
+    assert.strictEqual(remove(result, 'AccumulationRegister', 'Target'), result);
+  });
 });

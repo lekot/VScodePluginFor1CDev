@@ -23,6 +23,32 @@ export interface DiffSide {
   uri: vscode.Uri;
 }
 
+interface GitApi {
+  git: { path?: string };
+}
+
+interface GitExtensionExports {
+  getAPI(version: 1): GitApi;
+}
+
+async function resolveGitExecutable(): Promise<string> {
+  const gitExtension = vscode.extensions.getExtension<GitExtensionExports>('vscode.git');
+  if (!gitExtension) {
+    throw new Error('Встроенное расширение Git в VS Code недоступно.');
+  }
+
+  let gitPath: string | undefined;
+  try {
+    gitPath = (await gitExtension.activate()).getAPI(1).git.path;
+  } catch {
+    throw new Error('Не удалось активировать встроенное расширение Git в VS Code.');
+  }
+  if (!gitPath || !path.isAbsolute(gitPath)) {
+    throw new Error('Встроенное расширение Git в VS Code не предоставило абсолютный путь к Git.');
+  }
+  return gitPath;
+}
+
 /** Holds compared revisions so that vscode.diff can open them as documents. */
 export class TemplateRevisionContentProvider implements vscode.TextDocumentContentProvider {
   private readonly texts = new Map<string, string>();
@@ -43,12 +69,13 @@ export class TemplateRevisionContentProvider implements vscode.TextDocumentConte
 }
 
 /** Text of `file` at git HEAD; '' when the file is not in HEAD. Rejects outside a repository. */
-export function readGitHead(file: string): Promise<string> {
+export async function readGitHead(file: string): Promise<string> {
+  const gitPath = await resolveGitExecutable();
   const cwd = path.dirname(file);
   const spec = `HEAD:./${path.basename(file)}`;
   return new Promise((resolve, reject) => {
     execFile(
-      'git',
+      gitPath,
       ['-c', 'core.quotepath=off', 'show', spec],
       { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, windowsHide: true },
       (err, stdout, stderr) => {

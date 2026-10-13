@@ -1,9 +1,9 @@
 import * as assert from 'assert';
 import { parseSdbl } from '../../../src/queryBuilder/sdbl/sdblParser';
 import { formatSdbl } from '../../../src/queryBuilder/sdbl/sdblFormatter';
-import { semanticallyEqual } from '../../../src/queryBuilder/sdbl/sdblAstEquivalence';
+import { semanticAst, semanticKey, semanticallyEqual } from '../../../src/queryBuilder/sdbl/sdblAstEquivalence';
 import { alignUnionColumns } from '../../../src/queryBuilder/sdbl/sdblUnionAlign';
-import { SelectStatement } from '../../../src/queryBuilder/sdbl/sdblAst';
+import { QueryPackage, SelectStatement } from '../../../src/queryBuilder/sdbl/sdblAst';
 
 interface SdblError extends Error {
   sdblLine: number;
@@ -54,6 +54,60 @@ suite('SDBL round trip: comments, errors, unions', () => {
     const c = parseSdbl('ВЫБРАТЬ Т.А ИЗ Т КАК Т ГДЕ Т.Б = НЕОПРЕДЕЛЕНО И Т.В В (1, 2)');
     assert.ok(semanticallyEqual(a, b));
     assert.ok(!semanticallyEqual(a, c));
+  });
+
+  test('canonicalizes nested Unicode keys in locale-independent UTF-16 order', () => {
+    const left = {
+      'я': { '𐐷': 'supplementary', 'Ё': { 'ключ': true, a: 1 }, a: 2 },
+      a: { z: 3, 'ё': 4 },
+    };
+    const right = {
+      a: { 'ё': 4, z: 3 },
+      'я': { a: 2, 'Ё': { a: 1, 'ключ': true }, '𐐷': 'supplementary' },
+    };
+
+    assert.deepStrictEqual(Object.keys(semanticAst(left)), ['a', 'я']);
+    assert.deepStrictEqual(Object.keys(semanticAst(left)['я']), ['a', 'Ё', '𐐷']);
+    assert.strictEqual(
+      semanticKey(left),
+      '{"a":{"z":3,"ё":4},"я":{"a":2,"Ё":{"a":1,"ключ":true},"𐐷":"supplementary"}}'
+    );
+    assert.strictEqual(semanticKey(left), semanticKey(right));
+    assert.ok(semanticallyEqual(left, right));
+  });
+
+  test('keeps repeated joins separate for runtime substitutions and merges ordinary sources', () => {
+    const substitutions = ['&Таблица', 'Имя%Шаблон', 'Имя#Шаблон'];
+    const joins = [
+      ...substitutions.flatMap((name, index) => [name, name].map((source, copy) => ({
+        joinType: 'Left' as const,
+        source: { type: 'Table' as const, name: source },
+        alias: `S${index}`,
+        on: { type: 'Identifier' as const, name: `Condition${index}_${copy}` },
+      }))),
+      ...['Справочник.Обычная', 'Имя&Внутренняя'].flatMap((name, index) => [name, name].map((source, copy) => ({
+        joinType: 'Left' as const,
+        source: { type: 'Table' as const, name: source },
+        alias: `N${index}`,
+        on: { type: 'Identifier' as const, name: `Ordinary${index}_${copy}` },
+      }))),
+    ];
+    const pkg: QueryPackage = {
+      queries: [{
+        type: 'Select',
+        fields: [{ expression: { type: 'Identifier', name: 'Поле' } }],
+        from: [{ source: { type: 'Table', name: 'Источник' }, joins }],
+      }],
+    };
+
+    const formatted = formatSdbl(pkg);
+    const count = (value: string): number => formatted.split(`ЛЕВОЕ СОЕДИНЕНИЕ ${value} КАК`).length - 1;
+    assert.strictEqual(count('&Таблица'), 2);
+    assert.strictEqual(count('Имя%Шаблон'), 2);
+    assert.strictEqual(count('Имя#Шаблон'), 2);
+    assert.strictEqual(count('Справочник.Обычная'), 1);
+    assert.strictEqual(count('Имя&Внутренняя'), 1);
+    assert.ok(formatted.includes('Ordinary1_0 И Ordinary1_1'), formatted);
   });
 
   test('ВЫБОР of a selected field is laid out one КОГДА, ТОГДА, ИНАЧЕ per line', () => {

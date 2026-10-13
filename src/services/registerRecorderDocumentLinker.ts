@@ -182,8 +182,8 @@ function findMarkupEnd(xml: string, start: number): number {
 
 function decodeXmlText(value: string): string {
   return value
-    .replace(/&#x([0-9a-f]+);/gi, (_, codePoint: string) => String.fromCodePoint(parseInt(codePoint, 16)))
-    .replace(/&#([0-9]+);/g, (_, codePoint: string) => String.fromCodePoint(parseInt(codePoint, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, codePoint: string) => String.fromCodePoint(Number.parseInt(codePoint, 16)))
+    .replace(/&#([0-9]+);/g, (_, codePoint: string) => String.fromCodePoint(Number.parseInt(codePoint, 10)))
     .replace(/&(amp|lt|gt|quot|apos);/g, (_, entity: string) => ({
       amp: '&',
       lt: '<',
