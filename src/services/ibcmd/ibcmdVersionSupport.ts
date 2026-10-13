@@ -6,10 +6,10 @@
  * @see docs/WOW/ibcmd-api-reference.md (минимальная платформа для YAML)
  */
 
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-
-const execFileAsync = promisify(execFile);
+import {
+  runIbcmdExecutable,
+  type IbcmdExecutableProcessOptions,
+} from './IbcmdProcessRunner';
 
 /** Минимальная версия платформы 1С для YAML-подключения в режиме infobase config (Administrator Guide / ibcmd). */
 export const IBCMD_MIN_YAML_INFOBASE_PATCH = 27 as const;
@@ -23,6 +23,35 @@ export interface ParsedIbcmdVersion {
 }
 
 const versionQueryByPath = new Map<string, Promise<ParsedIbcmdVersion | undefined>>();
+
+function awaitVersionQuery(
+  pending: Promise<ParsedIbcmdVersion | undefined>,
+  cancellation: IbcmdExecutableProcessOptions['cancellation'],
+): Promise<ParsedIbcmdVersion | undefined> {
+  if (!cancellation) {
+    return pending;
+  }
+  if (cancellation.isCancellationRequested) {
+    return Promise.resolve(undefined);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const subscription: { current?: { dispose(): void } } = {};
+    const finish = (value: ParsedIbcmdVersion | undefined): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      subscription.current?.dispose();
+      resolve(value);
+    };
+    subscription.current = cancellation.onCancellationRequested(() => finish(undefined));
+    void pending.then(finish, () => finish(undefined));
+    if (cancellation.isCancellationRequested) {
+      finish(undefined);
+    }
+  });
+}
 
 /** Сброс кэша версий (например после смены пути к ibcmd). */
 export function invalidateIbcmdVersionQueryCache(): void {
@@ -75,38 +104,49 @@ export function ibcmdYamlInfobaseTooOldUserMessage(detectedRaw: string): string 
   );
 }
 
-export type IbcmdVersionExecFn = (
-  file: string,
-  args: readonly string[],
-  options: { timeout: number; windowsHide: boolean; maxBuffer: number },
-) => Promise<{ stdout: string | Buffer; stderr: string | Buffer }>;
+export interface IbcmdVersionProcessOptions extends IbcmdExecutableProcessOptions {
+  timeoutMs?: number;
+}
 
 /**
  * Запрашивает `ibcmd --version` (с кэшем на путь к exe).
  */
 export async function queryParsedIbcmdVersion(
   executablePath: string,
-  execImpl: IbcmdVersionExecFn = execFileAsync as IbcmdVersionExecFn,
+  processOptions: IbcmdVersionProcessOptions = {},
 ): Promise<ParsedIbcmdVersion | undefined> {
+  if (processOptions.cancellation?.isCancellationRequested) {
+    return undefined;
+  }
   const pending = versionQueryByPath.get(executablePath);
   if (pending) {
-    return pending;
+    return awaitVersionQuery(pending, processOptions.cancellation);
   }
   const run = (async (): Promise<ParsedIbcmdVersion | undefined> => {
     try {
-      const { stdout } = await execImpl(executablePath, ['--version'], {
-        timeout: 15_000,
-        windowsHide: true,
-        maxBuffer: 64 * 1024,
-      });
-      const text = typeof stdout === 'string' ? stdout : stdout.toString('utf8');
-      return tryParseIbcmdVersionOutput(text);
+      const { stdout } = await runIbcmdExecutable(
+        executablePath,
+        ['--version'],
+        processOptions.timeoutMs ?? 15_000,
+        { ...processOptions, maxBuffer: processOptions.maxBuffer ?? 64 * 1024 },
+      );
+      return tryParseIbcmdVersionOutput(stdout);
     } catch {
       return undefined;
     }
   })();
   versionQueryByPath.set(executablePath, run);
-  return run;
+  if (processOptions.cancellation) {
+    void run.then(() => {
+      if (
+        processOptions.cancellation?.isCancellationRequested
+        && versionQueryByPath.get(executablePath) === run
+      ) {
+        versionQueryByPath.delete(executablePath);
+      }
+    });
+  }
+  return awaitVersionQuery(run, processOptions.cancellation);
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +173,7 @@ export function invalidateIncrementalSupportProbeCache(): void {
  */
 export async function probeIncrementalSupport(
   executablePath: string,
-  execImpl: IbcmdVersionExecFn = execFileAsync as IbcmdVersionExecFn,
+  processOptions: IbcmdVersionProcessOptions = {},
 ): Promise<IncrementalSupportProbe> {
   const pending = incrementalProbeByPath.get(executablePath);
   if (pending) {
@@ -141,12 +181,6 @@ export async function probeIncrementalSupport(
   }
 
   const run = (async (): Promise<IncrementalSupportProbe> => {
-    const execOpts = {
-      timeout: 10_000,
-      windowsHide: true,
-      maxBuffer: 64 * 1024,
-    };
-
     /**
      * Проверяет поддержку подкоманды, подавая фейковый --db-path.
      *
@@ -157,17 +191,22 @@ export async function probeIncrementalSupport(
      */
     async function isSubcommandSupported(args: readonly string[]): Promise<boolean> {
       try {
-        await execImpl(executablePath, args, execOpts);
+        await runIbcmdExecutable(
+          executablePath,
+          [...args],
+          processOptions.timeoutMs ?? 10_000,
+          { ...processOptions, maxBuffer: processOptions.maxBuffer ?? 64 * 1024 },
+        );
         return true;
       } catch (e: unknown) {
         if (e && typeof e === 'object') {
-          const ex = e as { code?: number | null; killed?: boolean };
+          const ex = e as { code?: string | number | null; killed?: boolean; status?: number };
           // killed === true → ibcmd завис и убит по таймауту → подкоманда не существует
           if (ex.killed) {
             return false;
           }
           // числовой code (включая 4294967295) → ibcmd распознал подкоманду, но упал на подключении
-          return typeof ex.code === 'number';
+          return typeof ex.code === 'number' || typeof ex.status === 'number';
         }
         return false;
       }
@@ -196,9 +235,9 @@ export async function probeIncrementalSupport(
  */
 export async function getIbcmdYamlInfobaseConfigUnsupportedMessage(
   executablePath: string,
-  execImpl?: IbcmdVersionExecFn,
+  processOptions?: IbcmdVersionProcessOptions,
 ): Promise<string | undefined> {
-  const parsed = await queryParsedIbcmdVersion(executablePath, execImpl);
+  const parsed = await queryParsedIbcmdVersion(executablePath, processOptions);
   if (!parsed) {
     return undefined;
   }

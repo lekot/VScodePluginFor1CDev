@@ -7,6 +7,8 @@ import type { IbcmdStreamingRawOutcome } from '../../src/services/ibcmd/IbcmdStr
 
 function baseRaw(over: Partial<IbcmdStreamingRawOutcome> = {}): IbcmdStreamingRawOutcome {
   return {
+    started: false,
+    effectPossible: false,
     exitCode: 0,
     signal: null,
     combinedLog: '',

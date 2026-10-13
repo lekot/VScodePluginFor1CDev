@@ -22,6 +22,7 @@ import { resetIbcmdServiceSingletonForTests } from '../../src/services/ibcmd/ibc
 import { MetadataType } from '../../src/models/treeNode';
 import type { TreeNode } from '../../src/models/treeNode';
 import type { IbcmdInfobaseOperationResult } from '../../src/services/ibcmd/ibcmdInfobaseOperationResult';
+import type { IbcmdXmlPreflightResult } from '../../src/services/ibcmdXmlPreflightService';
 import type { IncrementalImportParams } from '../../src/infobases/infobaseConfigCommands';
 
 function fixtureSmallRoot(): string {
@@ -858,6 +859,54 @@ suite('DeployService.deployBinding', () => {
       assert.strictEqual(summary.errorCount, 1);
       assert.strictEqual(summary.skippedCount, 1);
       assert.ok(summary.results[0]!.message.includes('Preflight XML'));
+    } finally {
+      rmDirQuiet(work);
+    }
+  });
+
+  test('inDoubt XML preflight receives the deploy token and blocks the import phase', async () => {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['deploy.precheckXmlBeforeImport'] = true;
+    resetIbcmdServiceSingletonForTests();
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-indoubt-'));
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
+      const token = {
+        isCancellationRequested: false,
+        onCancellationRequested: () => ({ dispose: () => undefined }),
+      };
+      let preflightToken: unknown;
+      let progressCalls = 0;
+      const doubtful = {
+        ok: false,
+        code: 'IN_DOUBT',
+        effectPossible: true,
+        message: 'ibcmd import outcome is uncertain after cancellation.',
+        durationMs: 5,
+      } as unknown as IbcmdXmlPreflightResult;
+      const svc = new DeployService({
+        runXmlPreflight: async (params) => {
+          preflightToken = (params as typeof params & { token?: unknown }).token;
+          return doubtful;
+        },
+      });
+
+      const summary = await svc.deployBinding({
+        binding: baseBinding({ infobaseIds: ['a'], massDeployment: false }),
+        workspaceFolderRoot: fixtureSmallRoot(),
+        storage: mockStorage,
+        catalog: [fileEntry('a', 'Alpha', ibPath)],
+        progress: { report: () => { progressCalls += 1; } },
+        token,
+      });
+
+      assert.strictEqual(preflightToken, token);
+      assert.strictEqual(progressCalls, 0, 'an inDoubt preflight must not advance into import');
+      assert.strictEqual(summary.errorCount, 1);
+      assert.ok(summary.results[0]!.message.includes('uncertain'));
     } finally {
       rmDirQuiet(work);
     }

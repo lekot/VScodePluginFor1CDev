@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as iconv from 'iconv-lite';
 import { runIbcmdConfigCheckGate } from '../../src/services/ibcmdConfigCheckGate';
 import { resetIbcmdServiceSingletonForTests } from '../../src/services/ibcmd/ibcmdServiceSingleton';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
@@ -99,6 +100,28 @@ suiteOrSkip('ibcmdConfigCheckGate', () => {
     assert.ok(result.message.includes('ibcmd config check failed'));
     assert.ok(result.message.includes('exitCode=17'));
     assert.ok(result.message.includes('validation failed'));
+  });
+
+  test('preserves decoded CP866 diagnostics on runner errors', async () => {
+    const diagnostic = 'Ошибка проверки';
+    const encodedDiagnostic = Array.from(iconv.encode(diagnostic, 'cp866'))
+      .map((byte) => `\\x${byte.toString(16).padStart(2, '0')}`)
+      .join('');
+    const scriptPath = path.join(tempDir, 'fake-ibcmd-cp866-fail.sh');
+    fs.writeFileSync(
+      scriptPath,
+      `#!/usr/bin/env bash\nprintf '%b' '${encodedDiagnostic}' >&2\nexit 17\n`,
+      'utf-8',
+    );
+    fs.chmodSync(scriptPath, 0o755);
+    process.env.IBCMD_PATH = scriptPath;
+    process.env.IBCMD_INFOBASE_CONFIG = path.join(tempDir, 'ib.yml');
+    fs.writeFileSync(process.env.IBCMD_INFOBASE_CONFIG, 'kind: fake\n', 'utf-8');
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.consoleOutputEncoding'] = 'oem866';
+
+    const result = await runIbcmdConfigCheckGate();
+    assert.strictEqual(result.ok, false);
+    assert.ok(result.message.includes(diagnostic), result.message);
   });
 
   test('appends --force when IBCMD_CONFIG_CHECK_FORCE=1', async () => {
@@ -229,5 +252,63 @@ exit 2
     const result = await runIbcmdConfigCheckGate();
     assert.strictEqual(result.ok, true);
     assert.ok(result.message.includes('ws ok'));
+  });
+});
+
+suite('ibcmdConfigCheckGate decoded process diagnostics', () => {
+  const envKeys = ['IBCMD_PATH', 'IBCMD_INFOBASE_CONFIG', 'IBCMD_TIMEOUT_MS'] as const;
+  let savedEnv: Record<string, string | undefined>;
+  let tempDir: string;
+
+  setup(() => {
+    resetVscodeTestState();
+    resetIbcmdServiceSingletonForTests();
+    savedEnv = {};
+    for (const key of envKeys) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ibcmd-gate-decoded-'));
+  });
+
+  teardown(() => {
+    resetVscodeTestState();
+    resetIbcmdServiceSingletonForTests();
+    for (const key of envKeys) {
+      const value = savedEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('does not decode already-decoded CP866 error text a second time', async () => {
+    const diagnostic = 'Ошибка проверки';
+    const diagnosticBytes = Array.from(iconv.encode(diagnostic, 'cp866'));
+    fs.writeFileSync(
+      path.join(tempDir, 'infobase.js'),
+      `process.stderr.write(Buffer.from(${JSON.stringify(diagnosticBytes)})); process.exitCode = 17;\n`,
+      'utf-8',
+    );
+    const configPath = path.join(tempDir, 'ib.yml');
+    fs.writeFileSync(configPath, 'kind: fake\n', 'utf-8');
+    process.env.IBCMD_PATH = process.execPath;
+    process.env.IBCMD_INFOBASE_CONFIG = configPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.consoleOutputEncoding'] = 'oem866';
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(tempDir);
+      const result = await runIbcmdConfigCheckGate();
+      assert.strictEqual(result.ok, false);
+      assert.ok(result.message.includes(diagnostic), result.message);
+    } finally {
+      process.chdir(previousCwd);
+    }
   });
 });

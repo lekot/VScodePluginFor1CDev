@@ -198,6 +198,7 @@ export const coreSuiteFiles: string[] = [
   'suite/formEventHandlerCreator.test.js',
   'suite/extensionSupport.test.js',
   'suite/ibcmdXmlPreflightService.test.js',
+  'suite/infobaseConfigurationOperationQueue.test.js',
   'suite/formTreePreservation.test.js',
   'suite/designerTemplateServices.test.js',
   'suite/servicesCoverage.test.js',

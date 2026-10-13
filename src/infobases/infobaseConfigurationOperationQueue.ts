@@ -8,6 +8,18 @@ import {
 
 export type InfobaseConfigurationQueueIdentity = InfobaseCanonicalIdentity | string;
 
+export interface InfobaseConfigurationQueueCancellation {
+  readonly isCancellationRequested: boolean;
+  onCancellationRequested(listener: () => void): { dispose(): void };
+}
+
+export class InfobaseConfigurationOperationCancelledError extends Error {
+  constructor() {
+    super('Configuration operation was cancelled before it acquired its queue lease.');
+    this.name = 'InfobaseConfigurationOperationCancelledError';
+  }
+}
+
 export interface InfobaseConfigurationOperationLease {
   readonly canonicalTargetIds: readonly string[];
   owns(identity: InfobaseConfigurationQueueIdentity): boolean;
@@ -99,14 +111,19 @@ export class InfobaseConfigurationOperationQueue {
   runExclusive<T>(
     identity: InfobaseConfigurationQueueIdentity,
     operation: (lease: InfobaseConfigurationOperationLease) => Promise<T>,
+    cancellation?: InfobaseConfigurationQueueCancellation,
   ): Promise<T> {
-    return this.runComposite([identity], operation);
+    return this.runComposite([identity], operation, cancellation);
   }
 
   async runComposite<T>(
     identities: readonly InfobaseConfigurationQueueIdentity[],
     operation: (lease: InfobaseConfigurationOperationLease) => Promise<T>,
+    cancellation?: InfobaseConfigurationQueueCancellation,
   ): Promise<T> {
+    if (cancellation?.isCancellationRequested) {
+      throw new InfobaseConfigurationOperationCancelledError();
+    }
     const requestedKeys = [...new Set(identities.map(identityKey))].sort(compareCodeUnits);
     const current = this.ownership.getStore();
     if (current?.active) {
@@ -131,17 +148,55 @@ export class InfobaseConfigurationOperationQueue {
     for (const key of requestedKeys) {
       this.tails.set(key, gate);
     }
-    await Promise.all(predecessors);
-    try {
-      this.assertNotQuarantined(requestedKeys);
-    } catch (error) {
+
+    let gateReleased = false;
+    const releaseQueueGate = (): void => {
+      if (gateReleased) {
+        return;
+      }
+      gateReleased = true;
       releaseGate?.();
       for (const key of requestedKeys) {
         if (this.tails.get(key) === gate) {
           this.tails.delete(key);
         }
       }
+    };
+
+    const predecessorsCompleted = Promise.all(predecessors).then(() => undefined);
+    if (cancellation) {
+      let signalCancellation!: () => void;
+      const cancellationRequested = new Promise<'cancelled'>((resolve) => {
+        signalCancellation = () => resolve('cancelled');
+      });
+      const disposable = cancellation.onCancellationRequested(signalCancellation);
+      if (cancellation.isCancellationRequested) {
+        signalCancellation();
+      }
+      const waitResult = await Promise.race([
+        predecessorsCompleted.then(() => 'ready' as const),
+        cancellationRequested,
+      ]);
+      disposable.dispose();
+      if (waitResult === 'cancelled' || cancellation.isCancellationRequested) {
+        // Keep the FIFO gate in place until every predecessor has released its lease.
+        void predecessorsCompleted.then(releaseQueueGate);
+        throw new InfobaseConfigurationOperationCancelledError();
+      }
+    } else {
+      await predecessorsCompleted;
+    }
+
+    try {
+      this.assertNotQuarantined(requestedKeys);
+    } catch (error) {
+      releaseQueueGate();
       throw error;
+    }
+
+    if (cancellation?.isCancellationRequested) {
+      releaseQueueGate();
+      throw new InfobaseConfigurationOperationCancelledError();
     }
 
     const context: OwnershipContext = { keys: new Set(requestedKeys), active: true };
@@ -149,12 +204,7 @@ export class InfobaseConfigurationOperationQueue {
       return await this.ownership.run(context, () => operation(this.createLease(context)));
     } finally {
       context.active = false;
-      releaseGate?.();
-      for (const key of requestedKeys) {
-        if (this.tails.get(key) === gate) {
-          this.tails.delete(key);
-        }
-      }
+      releaseQueueGate();
     }
   }
 
@@ -183,15 +233,29 @@ export const sharedInfobaseConfigurationOperationQueue = new InfobaseConfigurati
 export async function runInfobaseConfigurationOperation<T>(
   entry: InfobaseEntry,
   operation: (lease: InfobaseConfigurationOperationLease) => Promise<T>,
+  cancellation?: InfobaseConfigurationQueueCancellation,
 ): Promise<T> {
+  if (cancellation?.isCancellationRequested) {
+    throw new InfobaseConfigurationOperationCancelledError();
+  }
   const identity = await resolveInfobaseCanonicalIdentity(entry);
-  return sharedInfobaseConfigurationOperationQueue.runExclusive(identity, operation);
+  if (cancellation?.isCancellationRequested) {
+    throw new InfobaseConfigurationOperationCancelledError();
+  }
+  return sharedInfobaseConfigurationOperationQueue.runExclusive(identity, operation, cancellation);
 }
 
 export async function runCompositeInfobaseConfigurationOperation<T>(
   entries: readonly InfobaseEntry[],
   operation: (lease: InfobaseConfigurationOperationLease) => Promise<T>,
+  cancellation?: InfobaseConfigurationQueueCancellation,
 ): Promise<T> {
+  if (cancellation?.isCancellationRequested) {
+    throw new InfobaseConfigurationOperationCancelledError();
+  }
   const identities = await Promise.all(entries.map(resolveInfobaseCanonicalIdentity));
-  return sharedInfobaseConfigurationOperationQueue.runComposite(identities, operation);
+  if (cancellation?.isCancellationRequested) {
+    throw new InfobaseConfigurationOperationCancelledError();
+  }
+  return sharedInfobaseConfigurationOperationQueue.runComposite(identities, operation, cancellation);
 }
