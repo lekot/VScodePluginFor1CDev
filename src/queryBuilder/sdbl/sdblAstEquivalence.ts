@@ -1,5 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- walks AST nodes of every shape as plain JSON */
 
+function compareUtf16(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** Canonical semantics, excluding editor state and literal spelling. */
 export function semanticAst(value: any): any {
   if (Array.isArray(value)) {return value.map(semanticAst);}
@@ -11,7 +15,7 @@ export function semanticAst(value: any): any {
       omitted: value.raw === '' ? true : undefined };
   }
   const result: any = {};
-  for (const key of Object.keys(value).sort()) {
+  for (const key of Object.keys(value).sort(compareUtf16)) {
     if (key.startsWith('_') || ['whereConditions', 'havingConditions', 't1', 'isCustom', 'isVirtual'].includes(key)
         || key === 'raw' && (value.type === 'Literal' || !value.type && 'expression' in value)) {continue;}
     if (Array.isArray(value[key]) && !value[key].length
@@ -41,5 +45,5 @@ export function semanticallyEqual(left: any, right: any): boolean {
 
 export function semanticKey(value: any): string {
   return JSON.stringify(semanticAst(value), (_, item) => item && typeof item === 'object' && !Array.isArray(item)
-    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+    ? Object.fromEntries(Object.keys(item).sort(compareUtf16).map(key => [key, item[key]])) : item);
 }

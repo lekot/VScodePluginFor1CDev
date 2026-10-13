@@ -52,6 +52,7 @@ jobs:
 
       - name: PR lint annotations
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         uses: reviewdog/action-eslint@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

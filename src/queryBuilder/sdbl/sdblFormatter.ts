@@ -224,7 +224,7 @@ function formatSelect(
           // Rows of one join to a table are merged. A parameter or a
           // substitution (&Текст, %1, #Имя) is replaced by its own text at
           // run time, so two joins to it stay two joins.
-          const substituted = /^&|[%#]/.test(joinSrc);
+          const substituted = /(?:^&|[%#])/.test(joinSrc);
           const existing = substituted ? undefined : groupedJoins.find(
             (g) =>
               g.joinKw === joinKw &&

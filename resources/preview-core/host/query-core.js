@@ -969,6 +969,9 @@ var BslQueryBuilderCore = (() => {
   }
 
   // src/queryBuilder/sdbl/sdblAstEquivalence.ts
+  function compareUtf16(a, b) {
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
   function semanticAst(value) {
     if (Array.isArray(value)) {
       return value.map(semanticAst);
@@ -985,7 +988,7 @@ var BslQueryBuilderCore = (() => {
       };
     }
     const result = {};
-    for (const key of Object.keys(value).sort()) {
+    for (const key of Object.keys(value).sort(compareUtf16)) {
       if (key.startsWith("_") || ["whereConditions", "havingConditions", "t1", "isCustom", "isVirtual"].includes(key) || key === "raw" && (value.type === "Literal" || !value.type && "expression" in value)) {
         continue;
       }
@@ -1022,7 +1025,7 @@ var BslQueryBuilderCore = (() => {
     return result;
   }
   function semanticKey(value) {
-    return JSON.stringify(semanticAst(value), (_, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item);
+    return JSON.stringify(semanticAst(value), (_, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort(compareUtf16).map((key) => [key, item[key]])) : item);
   }
 
   // src/queryBuilder/sdbl/sdblComments.ts

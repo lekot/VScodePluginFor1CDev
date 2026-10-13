@@ -3319,6 +3319,9 @@ var SdblAstVisitor = (() => {
   }
 
   // src/queryBuilder/sdbl/sdblAstEquivalence.ts
+  function compareUtf16(a, b) {
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
   function semanticAst(value) {
     if (Array.isArray(value)) {
       return value.map(semanticAst);
@@ -3335,7 +3338,7 @@ var SdblAstVisitor = (() => {
       };
     }
     const result = {};
-    for (const key of Object.keys(value).sort()) {
+    for (const key of Object.keys(value).sort(compareUtf16)) {
       if (key.startsWith("_") || ["whereConditions", "havingConditions", "t1", "isCustom", "isVirtual"].includes(key) || key === "raw" && (value.type === "Literal" || !value.type && "expression" in value)) {
         continue;
       }
@@ -3375,7 +3378,7 @@ var SdblAstVisitor = (() => {
     return semanticKey(left) === semanticKey(right);
   }
   function semanticKey(value) {
-    return JSON.stringify(semanticAst(value), (_, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item);
+    return JSON.stringify(semanticAst(value), (_, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort(compareUtf16).map((key) => [key, item[key]])) : item);
   }
 
   // src/queryBuilder/sdbl/sdblComments.ts
@@ -5097,7 +5100,7 @@ var SdblAstVisitor = (() => {
             const joinSrc = formatTableOrSubquery(join.source, indent, newline);
             const joinAlias = join.alias ? ` \u041A\u0410\u041A ${join.alias}` : "";
             const condStr = formatExpression(join.on, indent, newline);
-            const substituted = /^&|[%#]/.test(joinSrc);
+            const substituted = /(?:^&|[%#])/.test(joinSrc);
             const existing = substituted ? void 0 : groupedJoins.find(
               (g) => g.joinKw === joinKw && g.joinSrc === joinSrc && g.joinAlias === joinAlias
             );
