@@ -211,6 +211,25 @@ export async function runIbcmdXmlImportPreflight(params: {
       return inDoubtResult(startedAt, details, outcome.termination);
     }
 
+    if (outcome.outputTruncated) {
+      const truncationDetails = `stdout/stderr обрезаны по лимиту ${outcome.processMaxBuffer} байт; результат импорта нельзя подтвердить.`;
+      if (outcome.effectPossible) {
+        return inDoubtResult(
+          startedAt,
+          [details, truncationDetails].filter(Boolean).join('\n'),
+          outcome.termination,
+        );
+      }
+      return {
+        ok: false,
+        code: 'IMPORT_FAILED',
+        durationMs: Date.now() - startedAt,
+        effectPossible: false,
+        message: `ibcmd config import preflight не подтверждён: ${truncationDetails}${details ? `\n${details}` : ''}`,
+        ...(outcome.termination ? { termination: outcome.termination } : {}),
+      };
+    }
+
     if (outcome.exitCode === 0 && !outcome.spawnErrorCode && !outcome.timedOut && !outcome.cancelled) {
       return {
         ok: true,

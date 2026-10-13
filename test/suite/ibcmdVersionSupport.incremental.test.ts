@@ -6,12 +6,15 @@ import {
   invalidateIncrementalSupportProbeCache,
   probeIncrementalSupport,
 } from '../../src/services/ibcmd/ibcmdVersionSupport';
+import type { IbcmdStreamCancellation, IbcmdStreamingRunnerOptions } from '../../src/services/ibcmd/IbcmdStreamingRunner';
 
 const FAKE_PATH = 'C:/fake/ibcmd.exe';
 
 interface ProbeProcessOptions {
   spawnImpl?: typeof spawn;
   timeoutMs?: number;
+  cancellation?: IbcmdStreamCancellation;
+  terminateProcessTreeImpl?: IbcmdStreamingRunnerOptions['terminateProcessTreeImpl'];
 }
 
 const probeIncrementalSupportWithProcessBoundary = probeIncrementalSupport as unknown as (
@@ -19,7 +22,7 @@ const probeIncrementalSupportWithProcessBoundary = probeIncrementalSupport as un
   options?: ProbeProcessOptions,
 ) => ReturnType<typeof probeIncrementalSupport>;
 
-function spawnWithExit(code: number | 'hang', count?: () => void): typeof spawn {
+function spawnWithExit(code: number | 'hang', count?: () => void, delayMs = 0): typeof spawn {
   return ((_executable: string, _args: readonly string[], _options: SpawnOptions): ChildProcess => {
     count?.();
     const stdout = new PassThrough();
@@ -33,13 +36,50 @@ function spawnWithExit(code: number | 'hang', count?: () => void): typeof spawn 
     setImmediate(() => {
       child.emit('spawn');
       if (code === 'hang') return;
-      stderr.write('db not found');
-      stdout.end();
-      stderr.end();
-      child.emit('close', code, null);
+      const finish = (): void => {
+        stderr.write('db not found');
+        stdout.end();
+        stderr.end();
+        child.emit('close', code, null);
+      };
+      if (delayMs > 0) {
+        setTimeout(finish, delayMs);
+      } else {
+        finish();
+      }
     });
     return child;
   }) as typeof spawn;
+}
+
+function cancellable(): IbcmdStreamCancellation & { cancel(): void } {
+  let requested = false;
+  const listeners = new Set<() => void>();
+  return {
+    get isCancellationRequested() { return requested; },
+    onCancellationRequested(listener) {
+      if (requested) {
+        listener();
+        return { dispose: () => undefined };
+      }
+      listeners.add(listener);
+      return { dispose: () => listeners.delete(listener) };
+    },
+    cancel() {
+      if (requested) return;
+      requested = true;
+      listeners.forEach((listener) => listener());
+    },
+  };
+}
+
+function assertUnsupported(probe: Awaited<ReturnType<typeof probeIncrementalSupport>>): void {
+  assert.deepStrictEqual(probe, {
+    importFiles: false,
+    exportStatus: false,
+    exportSync: false,
+    exportObjects: false,
+  });
 }
 
 function makeCountingOptions(): { options: ProbeProcessOptions; callCount: () => number } {
@@ -96,6 +136,105 @@ suite('ibcmdVersionSupport — incremental probe', () => {
     assert.strictEqual(probe.exportStatus, false);
     assert.strictEqual(probe.exportSync, false);
     assert.strictEqual(probe.exportObjects, false);
+  });
+
+  test('a pre-cancelled capability probe does not cache false support for the executable path', async () => {
+    const token = cancellable();
+    token.cancel();
+    let processStarts = 0;
+
+    const cancelled = await probeIncrementalSupportWithProcessBoundary(FAKE_PATH, {
+      cancellation: token,
+      spawnImpl: spawnWithExit(2, () => { processStarts += 1; }),
+    });
+    assertUnsupported(cancelled);
+    assert.strictEqual(processStarts, 0);
+
+    const retried = await probeIncrementalSupportWithProcessBoundary(FAKE_PATH, {
+      spawnImpl: spawnWithExit(2, () => { processStarts += 1; }),
+      timeoutMs: 1000,
+    });
+    assert.strictEqual(retried.importFiles, true);
+    assert.strictEqual(retried.exportStatus, true);
+    assert.strictEqual(retried.exportSync, true);
+    assert.strictEqual(retried.exportObjects, true);
+    assert.strictEqual(processStarts, 4);
+  });
+
+  test('an active cancelled capability probe is retried instead of caching false support', async () => {
+    const token = cancellable();
+    let processStarts = 0;
+    const cancelledRun = probeIncrementalSupportWithProcessBoundary(FAKE_PATH, {
+      cancellation: token,
+      spawnImpl: spawnWithExit('hang', () => { processStarts += 1; }),
+      timeoutMs: 1000,
+      terminateProcessTreeImpl: async () => ({
+        terminated: true,
+        hardKillUsed: false,
+        survivingPids: [],
+        errors: [],
+      }),
+    });
+
+    const deadline = Date.now() + 1000;
+    while (processStarts < 4 && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    }
+    assert.strictEqual(processStarts, 4, 'all four child processes should start before cancellation');
+    token.cancel();
+    assertUnsupported(await cancelledRun);
+
+    const retried = await probeIncrementalSupportWithProcessBoundary(FAKE_PATH, {
+      spawnImpl: spawnWithExit(2, () => { processStarts += 1; }),
+      timeoutMs: 1000,
+    });
+    assert.strictEqual(retried.importFiles, true);
+    assert.strictEqual(retried.exportStatus, true);
+    assert.strictEqual(retried.exportSync, true);
+    assert.strictEqual(retried.exportObjects, true);
+    assert.strictEqual(processStarts, 8, 'the retry should launch fresh probes after cancellation');
+  });
+
+  test('cancelling one waiter does not poison a shared in-flight capability probe or its cache', async () => {
+    const token = cancellable();
+    let processStarts = 0;
+    const first = probeIncrementalSupportWithProcessBoundary(FAKE_PATH, {
+      cancellation: token,
+      spawnImpl: spawnWithExit(2, () => { processStarts += 1; }, 100),
+      timeoutMs: 1000,
+      terminateProcessTreeImpl: async () => ({
+        terminated: true,
+        hardKillUsed: false,
+        survivingPids: [],
+        errors: [],
+      }),
+    });
+
+    const deadline = Date.now() + 1000;
+    while (processStarts < 4 && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    }
+    assert.strictEqual(processStarts, 4, 'all four probes should be pending before the second waiter joins');
+
+    const shared = probeIncrementalSupportWithProcessBoundary(FAKE_PATH, {
+      spawnImpl: spawnWithExit(2, () => { processStarts += 1; }),
+      timeoutMs: 1000,
+    });
+    token.cancel();
+
+    assertUnsupported(await first);
+    const sharedResult = await shared;
+    assert.strictEqual(sharedResult.importFiles, true);
+    assert.strictEqual(sharedResult.exportStatus, true);
+    assert.strictEqual(sharedResult.exportSync, true);
+    assert.strictEqual(sharedResult.exportObjects, true);
+
+    const cached = await probeIncrementalSupportWithProcessBoundary(FAKE_PATH, {
+      spawnImpl: spawnWithExit(2, () => { processStarts += 1; }),
+      timeoutMs: 1000,
+    });
+    assert.strictEqual(cached.importFiles, true);
+    assert.strictEqual(processStarts, 4, 'successful shared probes should remain cached');
   });
 
   // 4 ─────────────────────────────────────────────────────────────────────────

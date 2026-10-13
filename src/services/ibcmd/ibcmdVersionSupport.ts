@@ -160,7 +160,110 @@ export interface IncrementalSupportProbe {
   exportObjects: boolean;
 }
 
-const incrementalProbeByPath = new Map<string, Promise<IncrementalSupportProbe>>();
+type IncrementalProbeCancellation = NonNullable<IbcmdExecutableProcessOptions['cancellation']>;
+
+interface IncrementalProbeCacheEntry {
+  promise: Promise<IncrementalSupportProbe | undefined>;
+  cancel: () => void;
+  waiters: number;
+  settled: boolean;
+}
+
+const incrementalProbeByPath = new Map<string, IncrementalProbeCacheEntry>();
+
+function noIncrementalSupport(): IncrementalSupportProbe {
+  return {
+    importFiles: false,
+    exportStatus: false,
+    exportSync: false,
+    exportObjects: false,
+  };
+}
+
+const INCREMENTAL_PROBE_CANCELLED = Symbol('incremental probe cancelled');
+
+function createIncrementalProbeCancellation(): {
+  token: IncrementalProbeCancellation;
+  cancel: () => void;
+} {
+  let requested = false;
+  const listeners = new Set<() => void>();
+  return {
+    token: {
+      get isCancellationRequested() { return requested; },
+      onCancellationRequested(listener) {
+        if (requested) {
+          listener();
+          return { dispose: () => undefined };
+        }
+        listeners.add(listener);
+        return { dispose: () => listeners.delete(listener) };
+      },
+    },
+    cancel() {
+      if (requested) {
+        return;
+      }
+      requested = true;
+      listeners.forEach((listener) => listener());
+    },
+  };
+}
+
+function awaitIncrementalProbe(
+  executablePath: string,
+  entry: IncrementalProbeCacheEntry,
+  cancellation: IncrementalProbeCancellation | undefined,
+): Promise<IncrementalSupportProbe> {
+  if (cancellation?.isCancellationRequested) {
+    return Promise.resolve(noIncrementalSupport());
+  }
+  entry.waiters += 1;
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    let cancellationSubscription: { dispose(): void } | undefined;
+    const releaseWaiter = (): void => {
+      entry.waiters -= 1;
+      if (entry.waiters === 0 && !entry.settled) {
+        entry.cancel();
+        if (incrementalProbeByPath.get(executablePath) === entry) {
+          incrementalProbeByPath.delete(executablePath);
+        }
+      }
+    };
+    const finish = (probe: IncrementalSupportProbe | undefined): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cancellationSubscription?.dispose();
+      cancellationSubscription = undefined;
+      releaseWaiter();
+      resolve(probe ?? noIncrementalSupport());
+    };
+    const fail = (error: unknown): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cancellationSubscription?.dispose();
+      cancellationSubscription = undefined;
+      releaseWaiter();
+      reject(error);
+    };
+
+    if (cancellation) {
+      cancellationSubscription = cancellation.onCancellationRequested(() => finish(undefined));
+      if (finished) {
+        cancellationSubscription.dispose();
+        cancellationSubscription = undefined;
+      } else if (cancellation.isCancellationRequested) {
+        finish(undefined);
+      }
+    }
+    void entry.promise.then(finish, fail);
+  });
+}
 
 /** Сброс кэша проверки инкрементальных команд (например после смены пути к ibcmd). */
 export function invalidateIncrementalSupportProbeCache(): void {
@@ -175,12 +278,22 @@ export async function probeIncrementalSupport(
   executablePath: string,
   processOptions: IbcmdVersionProcessOptions = {},
 ): Promise<IncrementalSupportProbe> {
+  if (processOptions.cancellation?.isCancellationRequested) {
+    return noIncrementalSupport();
+  }
   const pending = incrementalProbeByPath.get(executablePath);
   if (pending) {
-    return pending;
+    return awaitIncrementalProbe(executablePath, pending, processOptions.cancellation);
   }
 
-  const run = (async (): Promise<IncrementalSupportProbe> => {
+  const probeCancellation = createIncrementalProbeCancellation();
+  const entry: IncrementalProbeCacheEntry = {
+    promise: Promise.resolve(undefined),
+    cancel: probeCancellation.cancel,
+    waiters: 0,
+    settled: false,
+  };
+  const run = Promise.resolve().then(async (): Promise<IncrementalSupportProbe | undefined> => {
     /**
      * Проверяет поддержку подкоманды, подавая фейковый --db-path.
      *
@@ -195,12 +308,24 @@ export async function probeIncrementalSupport(
           executablePath,
           [...args],
           processOptions.timeoutMs ?? 10_000,
-          { ...processOptions, maxBuffer: processOptions.maxBuffer ?? 64 * 1024 },
+          {
+            ...processOptions,
+            cancellation: probeCancellation.token,
+            maxBuffer: processOptions.maxBuffer ?? 64 * 1024,
+          },
         );
         return true;
       } catch (e: unknown) {
         if (e && typeof e === 'object') {
-          const ex = e as { code?: string | number | null; killed?: boolean; status?: number };
+          const ex = e as {
+            code?: string | number | null;
+            killed?: boolean;
+            status?: number;
+            processOutcome?: { cancelled?: boolean };
+          };
+          if (probeCancellation.token.isCancellationRequested || ex.processOutcome?.cancelled) {
+            throw INCREMENTAL_PROBE_CANCELLED;
+          }
           // killed === true → ibcmd завис и убит по таймауту → подкоманда не существует
           if (ex.killed) {
             return false;
@@ -214,18 +339,41 @@ export async function probeIncrementalSupport(
 
     const fakeDb = '--db-path=C:\\__ibcmd_probe_nonexistent__';
 
-    const [importFiles, exportStatus, exportSync, exportObjects] = await Promise.all([
-      isSubcommandSupported(['infobase', 'config', 'import', 'files', fakeDb, '--base-dir=.', 'probe.xml']),
-      isSubcommandSupported(['infobase', 'config', 'export', 'status', fakeDb, '--base=.']),
-      isSubcommandSupported(['infobase', 'config', 'export', 'sync', fakeDb]),
-      isSubcommandSupported(['infobase', 'config', 'export', 'objects', fakeDb, '--out=.', 'Probe.Test']),
-    ]);
+    try {
+      const [importFiles, exportStatus, exportSync, exportObjects] = await Promise.all([
+        isSubcommandSupported(['infobase', 'config', 'import', 'files', fakeDb, '--base-dir=.', 'probe.xml']),
+        isSubcommandSupported(['infobase', 'config', 'export', 'status', fakeDb, '--base=.']),
+        isSubcommandSupported(['infobase', 'config', 'export', 'sync', fakeDb]),
+        isSubcommandSupported(['infobase', 'config', 'export', 'objects', fakeDb, '--out=.', 'Probe.Test']),
+      ]);
 
-    return { importFiles, exportStatus, exportSync, exportObjects };
-  })();
+      return { importFiles, exportStatus, exportSync, exportObjects };
+    } catch (error) {
+      if (error === INCREMENTAL_PROBE_CANCELLED || probeCancellation.token.isCancellationRequested) {
+        return undefined;
+      }
+      throw error;
+    }
+  });
 
-  incrementalProbeByPath.set(executablePath, run);
-  return run;
+  entry.promise = run.then(
+    (result) => {
+      entry.settled = true;
+      if (!result && incrementalProbeByPath.get(executablePath) === entry) {
+        incrementalProbeByPath.delete(executablePath);
+      }
+      return result;
+    },
+    (error: unknown) => {
+      entry.settled = true;
+      if (incrementalProbeByPath.get(executablePath) === entry) {
+        incrementalProbeByPath.delete(executablePath);
+      }
+      throw error;
+    },
+  );
+  incrementalProbeByPath.set(executablePath, entry);
+  return awaitIncrementalProbe(executablePath, entry, processOptions.cancellation);
 }
 
 // ---------------------------------------------------------------------------

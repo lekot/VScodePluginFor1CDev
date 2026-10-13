@@ -188,6 +188,28 @@ suite('ibcmdXmlPreflightService', () => {
     assert.strictEqual(r.ok, true);
   });
 
+  test('successful exit with truncated output is typed inDoubt and cannot validate the import', async () => {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    const dbDir = fs.mkdtempSync(path.join(tempDir, 'db-truncated-'));
+    const srcDir = fs.mkdtempSync(path.join(tempDir, 'src-truncated-'));
+    const r = await runPreflightWithLifecycle({
+      entry: fileEntry('truncated-output', dbDir),
+      storage: makeStorage(),
+      absoluteSourceDir: srcDir,
+      spawnImpl: lifecycleSpawn({
+        exitCode: 0,
+        stdout: 'valid prefix\n'.repeat(350_000),
+        stayOpen: false,
+      }).spawnImpl,
+    });
+
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.code, 'IN_DOUBT');
+    assert.strictEqual(r.effectPossible, true);
+    assert.ok(r.message.includes('обрезаны'));
+  });
+
   test('returns failure details when exec runner exits non-zero', async () => {
     vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
     vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;

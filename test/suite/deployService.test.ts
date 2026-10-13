@@ -912,6 +912,44 @@ suite('DeployService.deployBinding', () => {
     }
   });
 
+  test('truncated XML preflight output blocks the following deploy import', async () => {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['deploy.precheckXmlBeforeImport'] = true;
+    resetIbcmdServiceSingletonForTests();
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-truncated-preflight-'));
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
+      let progressCalls = 0;
+      const svc = new DeployService({
+        runXmlPreflight: async () => ({
+          ok: false,
+          code: 'IN_DOUBT',
+          effectPossible: true,
+          message: 'Preflight output truncated; result is uncertain.',
+          durationMs: 5,
+        }),
+      });
+
+      const summary = await svc.deployBinding({
+        binding: baseBinding({ infobaseIds: ['a'], massDeployment: false }),
+        workspaceFolderRoot: fixtureSmallRoot(),
+        storage: mockStorage,
+        catalog: [fileEntry('a', 'Alpha', ibPath)],
+        progress: { report: () => { progressCalls += 1; } },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+
+      assert.strictEqual(progressCalls, 0, 'a doubtful preflight must not advance into import');
+      assert.strictEqual(summary.errorCount, 1);
+      assert.ok(summary.results[0]!.message.includes('output truncated'));
+    } finally {
+      rmDirQuiet(work);
+    }
+  });
+
   test('copy mode logs snapshot line and completes (fake ibcmd)', async () => {
     vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
     vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
