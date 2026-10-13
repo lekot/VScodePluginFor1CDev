@@ -1,7 +1,13 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { execFile } from 'child_process';
 import { Logger } from '../utils/logger';
+import {
+  GitHeadReadError,
+  LinkedCancellation,
+  readGitHeadProcess,
+  type GitHeadReadDependencies,
+  type GitHeadReadOptions,
+} from './gitHeadReader';
 import {
   buildPreviewCoreHtml,
   DCS_CORE_SCRIPTS,
@@ -11,6 +17,13 @@ import {
   TEMPLATE_CORE_SCRIPTS,
   TEMPLATE_CORE_STYLES,
 } from './previewCoreHtml';
+
+export { GitHeadReadError } from './gitHeadReader';
+export type {
+  GitHeadReadDependencies,
+  GitHeadReadErrorCode,
+  GitHeadReadOptions,
+} from './gitHeadReader';
 
 /** Scheme of the read-only documents that hold a compared revision for the XML diff. */
 export const TEMPLATE_REVISION_SCHEME = '1c-template-revision';
@@ -69,28 +82,20 @@ export class TemplateRevisionContentProvider implements vscode.TextDocumentConte
 }
 
 /** Text of `file` at git HEAD; '' when the file is not in HEAD. Rejects outside a repository. */
-export async function readGitHead(file: string): Promise<string> {
-  const gitPath = await resolveGitExecutable();
-  const cwd = path.dirname(file);
-  const spec = `HEAD:./${path.basename(file)}`;
-  return new Promise((resolve, reject) => {
-    execFile(
-      gitPath,
-      ['-c', 'core.quotepath=off', 'show', spec],
-      { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, windowsHide: true },
-      (err, stdout, stderr) => {
-        if (!err) {
-          resolve(stripBom(stdout));
-          return;
-        }
-        if (/exists on disk, but not in|does not exist in/.test(stderr)) {
-          resolve('');
-          return;
-        }
-        reject(new Error(stderr.trim() || err.message));
-      }
-    );
-  });
+export async function readGitHead(
+  file: string,
+  options: GitHeadReadOptions = {},
+  dependencies: GitHeadReadDependencies = {}
+): Promise<string> {
+  const cancellation = new LinkedCancellation(options.token);
+  try {
+    return await readGitHeadProcess(file, options, {
+      ...dependencies,
+      resolveGitExecutable: dependencies.resolveGitExecutable ?? resolveGitExecutable,
+    }, cancellation);
+  } finally {
+    cancellation.dispose();
+  }
 }
 
 function stripBom(text: string): string {
@@ -175,21 +180,55 @@ export function registerTemplateDiffCommands(context: vscode.ExtensionContext): 
         void vscode.window.showWarningMessage('Выберите файл макета Template.xml.');
         return;
       }
-      try {
-        const [base, current] = await Promise.all([readGitHead(uri.fsPath), readCurrent(uri)]);
-        const name = path.basename(uri.fsPath);
-        showTemplateDiff(
-          context.extensionUri,
-          `${relativeName(uri)} ↔ HEAD`,
-          { text: base, label: 'HEAD', uri: revisions.remember(base, name) },
-          { text: current, label: 'текущее состояние', uri }
-        );
-      } catch (err) {
-        Logger.error('Template diff: git HEAD is not available', err);
-        void vscode.window.showErrorMessage(
-          `Не удалось получить версию из git: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'Сравнение макета с HEAD',
+          cancellable: true,
+        },
+        async (_progress, token) => {
+          const operationCancellation = new LinkedCancellation(token);
+          const headPromise = readGitHead(uri.fsPath, { token: operationCancellation });
+          try {
+            const [base, current] = await Promise.all([
+              headPromise,
+              readCurrent(uri),
+            ]);
+            if (token.isCancellationRequested) {
+              return;
+            }
+            const name = path.basename(uri.fsPath);
+            showTemplateDiff(
+              context.extensionUri,
+              `${relativeName(uri)} ↔ HEAD`,
+              { text: base, label: 'HEAD', uri: revisions.remember(base, name) },
+              { text: current, label: 'текущее состояние', uri }
+            );
+          } catch (err) {
+            let displayError = err;
+            operationCancellation.cancel();
+            const headError = await headPromise.then(
+              () => undefined,
+              (headErr: unknown) => headErr
+            );
+            if (headError instanceof GitHeadReadError && headError.code === 'TERMINATION_FAILED') {
+              displayError = headError;
+            } else if (
+              token.isCancellationRequested &&
+              headError instanceof GitHeadReadError &&
+              headError.code === 'CANCELLED'
+            ) {
+              return;
+            }
+            Logger.error('Template diff: git HEAD is not available', displayError);
+            void vscode.window.showErrorMessage(
+              `Не удалось получить версию из git: ${displayError instanceof Error ? displayError.message : String(displayError)}`
+            );
+          } finally {
+            operationCancellation.dispose();
+          }
+        }
+      );
     })
   );
 
