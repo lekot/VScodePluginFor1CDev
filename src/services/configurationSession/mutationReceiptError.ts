@@ -1,4 +1,5 @@
 import type { MutationOutcomeStatus, MutationReceipt } from './ConfigurationMutationEngine';
+import { MutationPlanError } from './mutationPlan';
 
 export type MutationFailureStatus = Exclude<MutationOutcomeStatus, 'committed'>;
 
@@ -27,6 +28,12 @@ const DEFAULT_MESSAGES: Record<MutationFailureStatus, string> = {
 };
 const UNCERTAIN_EFFECT_WARNING =
   'Изменения могли сохраниться; требуется проверка состояния и при необходимости восстановление конфигурации.';
+
+const PLAN_ERROR_STATUS: Record<MutationPlanError['code'], MutationFailureStatus> = {
+  PLAN_CONFLICT: 'conflict',
+  PLAN_FAILED: 'rolledBack',
+  RECOVERY_REQUIRED: 'recoveryRequired',
+};
 
 function buildErrorMessage(receipt: NonCommittedMutationReceipt<unknown>, message?: string): string {
   const context = message ?? receipt.message ?? DEFAULT_MESSAGES[receipt.status];
@@ -65,14 +72,41 @@ export function unwrapMutationReceipt<T>(receipt: MutationReceipt<T>, message?: 
 
 /** Build user-facing text and machine fields only for a typed mutation failure. */
 export function projectMutationFailure(error: unknown): MutationFailureProjection | undefined {
-  if (!(error instanceof MutationReceiptError)) {
-    return undefined;
+  const visited = new Set<unknown>();
+  let current: unknown = error;
+  let status: MutationFailureStatus | undefined;
+  let code: string | undefined;
+  let effectPossible = false;
+
+  while (current instanceof Error && !visited.has(current)) {
+    visited.add(current);
+    if (current instanceof MutationReceiptError) {
+      status = current.status;
+      code = current.code;
+      effectPossible = current.effectPossible;
+      break;
+    }
+    if (current instanceof MutationPlanError) {
+      status = PLAN_ERROR_STATUS[current.code];
+      code = current.code;
+      effectPossible = status === 'recoveryRequired';
+      break;
+    }
+    current = (current as Error & { cause?: unknown }).cause;
   }
 
+  if (!status || !code) { return undefined; }
+
+  const outerMessage = error instanceof Error && error.message.trim() ? error.message : undefined;
+  const message = outerMessage ?? DEFAULT_MESSAGES[status];
+  const userMessage = effectPossible && !message.includes(UNCERTAIN_EFFECT_WARNING)
+    ? `${message} ${UNCERTAIN_EFFECT_WARNING}`
+    : message;
+
   return {
-    status: error.status,
-    code: error.code,
-    effectPossible: error.effectPossible,
-    message: error.message,
+    status,
+    code,
+    effectPossible,
+    message: userMessage,
   };
 }

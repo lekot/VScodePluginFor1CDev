@@ -18,8 +18,16 @@ export class XmlParseError extends Error {
 }
 
 export class XmlWriteError extends Error {
-  constructor(message: string) {
+  constructor(message: string, cause?: unknown) {
     super(message);
     this.name = 'XmlWriteError';
+    if (arguments.length > 1) {
+      Object.defineProperty(this, 'cause', {
+        configurable: true,
+        enumerable: false,
+        value: cause,
+        writable: true,
+      });
+    }
   }
 }

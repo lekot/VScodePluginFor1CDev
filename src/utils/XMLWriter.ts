@@ -5,6 +5,11 @@ import {
   type SingleFileMutationChange,
   type SingleFileMutationState,
 } from '../services/configurationSession/ConfigurationMutationEngine';
+import {
+  MutationReceiptError,
+  projectMutationFailure,
+  type NonCommittedMutationReceipt,
+} from '../services/configurationSession/mutationReceiptError';
 import { xmlParser } from './xml/xmlCore';
 import { XmlReadError, XmlParseError, XmlWriteError } from './xml/xmlErrors';
 import { buildXmlString, writeUtf8FileWithBackup } from './xml/xmlFileIo';
@@ -483,6 +488,13 @@ export class XMLWriter {
         throw transformFailure;
       }
       const detail = error instanceof Error ? error.message : String(error);
+      const mutationFailure = projectMutationFailure(error);
+      if (mutationFailure) {
+        throw new XmlWriteError(
+          `Unable to write file: ${filePath}. ${mutationFailure.message}`,
+          error,
+        );
+      }
       if (!transformStarted) {
         Logger.error(`Failed to read file for writing: ${filePath}`, error);
         throw new XmlReadError(`Unable to read file for updating: ${filePath}. ${detail}`);
@@ -494,16 +506,18 @@ export class XMLWriter {
       throw transformFailure;
     }
     if (receipt.status !== 'committed') {
-      const message = receipt.message ?? `Mutation failed with status '${receipt.status}'.`;
+      const receiptMessage = receipt.message ?? `Mutation failed with status '${receipt.status}'.`;
+      let message = receiptMessage;
       if (receipt.code === 'STALE_TARGET_REVISION') {
-        throw new XmlWriteError(`Concurrent modification detected: ${filePath}. ${message}`);
+        message = `Concurrent modification detected: ${filePath}. ${receiptMessage}`;
+      } else if (receipt.code === 'WRITE_FAILED') {
+        message = `Unable to write to file. Check file permissions and disk space. ${receiptMessage}`;
       }
-      if (receipt.code === 'WRITE_FAILED') {
-        throw new XmlWriteError(
-          `Unable to write to file. Check file permissions and disk space. ${message}`
-        );
-      }
-      throw new XmlWriteError(message);
+      const cause = new MutationReceiptError(
+        receipt as NonCommittedMutationReceipt,
+        message,
+      );
+      throw new XmlWriteError(cause.message, cause);
     }
     return receipt.result as T;
   }
