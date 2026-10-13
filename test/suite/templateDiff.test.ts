@@ -17,6 +17,7 @@ const processTreeTermination = require('../../src/services/ibcmd/processTreeTerm
     options: { graceMs: number }
   ) => Promise<{ terminated: boolean; hardKillUsed: boolean; survivingPids: number[]; errors: string[] }>;
 };
+const fakeGitExecutable = path.join(os.tmpdir(), 'git.exe');
 
 function setGitApiPath(gitPath: string): void {
   vscodeExtensionsTestState.getExtensionImpl = (id) => id === 'vscode.git'
@@ -270,7 +271,7 @@ suite('templateDiff readGitHead', () => {
 
     await assert.rejects(
       readGitHead(file, { token }, {
-        resolveGitExecutable: async () => { resolveCalls += 1; return 'C:\\tools\\git.exe'; },
+        resolveGitExecutable: async () => { resolveCalls += 1; return fakeGitExecutable; },
         spawnImpl: (() => { spawnCalls += 1; return fake.child; }) as unknown as typeof spawn,
       }),
       (error: unknown) => (error as { code?: string }).code === 'CANCELLED'
@@ -284,7 +285,7 @@ suite('templateDiff readGitHead', () => {
       readGitHead(file, { token: activatedToken }, {
         resolveGitExecutable: async () => {
           activatedToken.cancel();
-          return 'C:\\tools\\git.exe';
+          return fakeGitExecutable;
         },
         spawnImpl: (() => { secondSpawnCalls += 1; return fake.child; }) as unknown as typeof spawn,
       }),
@@ -300,7 +301,7 @@ suite('templateDiff readGitHead', () => {
 
     const result = await Promise.race([
       readGitHead(file, { timeoutMs: 20 }, {
-        resolveGitExecutable: async () => 'C:\\tools\\git.exe',
+        resolveGitExecutable: async () => fakeGitExecutable,
         spawnImpl: fake.spawnImpl,
         terminateProcessTreeImpl: async () => {
           terminations += 1;
@@ -325,7 +326,7 @@ suite('templateDiff readGitHead', () => {
 
     await assert.rejects(
       readGitHead(file, { timeoutMs: 20 }, {
-        resolveGitExecutable: async () => 'C:\\tools\\git.exe',
+        resolveGitExecutable: async () => fakeGitExecutable,
         spawnImpl: fake.spawnImpl,
         terminateProcessTreeImpl: async () => ({
           terminated: true,
@@ -345,7 +346,7 @@ suite('templateDiff readGitHead', () => {
 
     await assert.rejects(
       readGitHead(file, {}, {
-        resolveGitExecutable: async () => 'C:\\tools\\git.exe',
+        resolveGitExecutable: async () => fakeGitExecutable,
         spawnImpl: fake.spawnImpl,
         terminateProcessTreeImpl: async () => {
           terminations += 1;
@@ -369,7 +370,7 @@ suite('templateDiff readGitHead', () => {
 
     await assert.rejects(
       readGitHead(file, {}, {
-        resolveGitExecutable: async () => 'C:\\tools\\git.exe',
+        resolveGitExecutable: async () => fakeGitExecutable,
         spawnImpl: fake.spawnImpl,
         terminateProcessTreeImpl: async () => {
           terminations += 1;
@@ -391,7 +392,7 @@ suite('templateDiff readGitHead', () => {
 
     await assert.rejects(
       readGitHead(file, {}, {
-        resolveGitExecutable: async () => 'C:\\tools\\git.exe',
+        resolveGitExecutable: async () => fakeGitExecutable,
         spawnImpl,
       }),
       (error: unknown) => {
@@ -414,7 +415,7 @@ suite('templateDiff readGitHead', () => {
 
     const result = await Promise.race([
       readGitHead(file, { token }, {
-        resolveGitExecutable: async () => 'C:\\tools\\git.exe',
+        resolveGitExecutable: async () => fakeGitExecutable,
         spawnImpl: fake.spawnImpl,
         terminateProcessTreeImpl: async () => ({
           terminated: false,
