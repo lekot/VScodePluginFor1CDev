@@ -395,7 +395,15 @@ export class FormsOperations {
                 });
                 return { success: true, data: { file: result.file } };
             } catch (err) {
-                const failure = err as Error & { code?: string };
+                const failure = err as Error & { code?: string; inDoubt?: boolean };
+                if (failure.inDoubt) {
+                    return {
+                        success: false,
+                        code: 'FORMS_OPERATION_IN_DOUBT',
+                        data: { status: 'inDoubt', effectPossible: true },
+                        error: failure.message ?? String(err),
+                    };
+                }
                 if (token?.isCancellationRequested || failure.code === 'NATIVE_SCREENSHOT_CANCELLED') {
                     return cancelledBeforeStart('Снятие скриншота TestClient отменено.');
                 }

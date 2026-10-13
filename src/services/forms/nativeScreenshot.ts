@@ -1,12 +1,20 @@
 import { spawn } from 'child_process';
 import * as net from 'net';
 import * as path from 'path';
+import type { ProcessTreeTerminationOutcome } from '../ibcmd/processTreeTermination';
+import {
+  runStreamingProcess,
+  type DisposableLike,
+  type StreamCancellation,
+  type StreamingProcessRawOutcome,
+} from '../process/streamingProcessRunner';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_TIMEOUT_MS = 60_000;
 const MAX_CAPTURE_PIXELS = 16_777_216;
 const MAX_PNG_BYTES = 64 * 1024 * 1024;
 const MAX_PROCESS_OUTPUT_BYTES = 2 * 1024 * 1024;
+const PROCESS_OUTPUT_BLOCK_BYTES = 64 * 1024;
 
 export interface NativeTestClientScreenshotOptions {
   host: string;
@@ -67,7 +75,12 @@ interface NativeTestClientProcessDiscovery {
 }
 
 export class NativeScreenshotError extends Error {
-  public constructor(public readonly code: string, message: string) {
+  public constructor(
+    public readonly code: string,
+    message: string,
+    public readonly processOutcome?: StreamingProcessRawOutcome,
+    public readonly inDoubt = false,
+  ) {
     super(message);
     this.name = 'NativeScreenshotError';
   }
@@ -76,6 +89,11 @@ export class NativeScreenshotError extends Error {
 export interface NativeScreenshotDependencies {
   platform?: NodeJS.Platform;
   runPowerShell?: (script: string, timeoutMs: number, signal?: AbortSignal) => Promise<string>;
+  spawnImpl?: typeof spawn;
+  terminateProcessTreeImpl?: (
+    child: import('child_process').ChildProcess,
+    graceMs: number,
+  ) => Promise<ProcessTreeTerminationOutcome>;
 }
 
 /** Lists local Windows TestClient listeners without returning their command lines. */
@@ -104,7 +122,8 @@ export async function inspectNativeTestClientPortOwnersWithDependencies(
   if (targetPort !== undefined && (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535)) {
     throw new NativeScreenshotError('NATIVE_TESTCLIENT_INVALID_PORT', 'TCP-порт TestClient должен быть от 1 до 65535.');
   }
-  const runner = dependencies.runPowerShell ?? runPowerShell;
+  const runner = dependencies.runPowerShell ?? ((script, timeout, cancellation) =>
+    runPowerShell(script, timeout, cancellation, dependencies));
   const output = await runner(buildProcessDiscoveryScript(targetPort), timeoutMs, signal);
   const discovery = parseProcessDiscovery(output);
   const endpoints = new Map<string, NativeTestClientPortOwner>();
@@ -134,7 +153,8 @@ export async function captureNativeTestClientScreenshotWithDependencies(
 ): Promise<NativeTestClientScreenshotResult> {
   const platform = dependencies.platform ?? process.platform;
   const validated = validateOptions(options, platform);
-  const runner = dependencies.runPowerShell ?? runPowerShell;
+  const runner = dependencies.runPowerShell ?? ((script, timeout, cancellation) =>
+    runPowerShell(script, timeout, cancellation, dependencies));
   const deadline = Date.now() + validated.timeoutMs;
 
   throwIfAborted(options.signal);
@@ -402,84 +422,183 @@ function remainingTime(deadline: number): number {
   return remaining;
 }
 
-function runPowerShell(script: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+async function runPowerShell(
+  script: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  dependencies: NativeScreenshotDependencies = {},
+): Promise<string> {
   const bootstrap = "$source = [System.IO.StreamReader]::new([System.Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8).ReadToEnd(); Invoke-Expression $source";
   const encodedCommand = Buffer.from(bootstrap, 'utf16le').toString('base64');
-  return new Promise((resolve, reject) => {
-    const systemRoot = process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows';
-    const powershellExe = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    const child = spawn(
-      powershellExe,
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodedCommand],
-      { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
-    );
-    let settled = false;
-    let timedOut = false;
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, timeoutMs);
-    const cancel = (): void => { child.kill(); };
-    const cleanup = (): void => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', cancel);
-    };
-    const fail = (error: NativeScreenshotError): void => {
-      if (settled) {return;}
-      settled = true;
-      cleanup();
-      reject(error);
-    };
-    if (signal?.aborted) {
-      child.kill();
-      fail(new NativeScreenshotError('NATIVE_SCREENSHOT_CANCELLED', 'Создание снимка TestClient отменено.'));
+  const systemRoot = process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows';
+  const powershellExe = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const cancellationController = new AbortController();
+  const forwardCancellation = (): void => cancellationController.abort();
+  if (signal?.aborted) {
+    cancellationController.abort();
+  } else {
+    signal?.addEventListener('abort', forwardCancellation, { once: true });
+  }
+
+  const stdout = new BoundedProcessPayload(MAX_PROCESS_OUTPUT_BYTES);
+  const stderr = new BoundedProcessPayload(MAX_PROCESS_OUTPUT_BYTES);
+  let oversizedStream: 'stdout' | 'stderr' | undefined;
+  const collectPayload = (chunk: string, stream: 'stdout' | 'stderr'): void => {
+    if (oversizedStream) {
       return;
     }
-    signal?.addEventListener('abort', cancel, { once: true });
-    child.stdout.on('data', (chunk: Buffer) => {
-      stdoutBytes += chunk.length;
-      if (stdoutBytes > MAX_PROCESS_OUTPUT_BYTES) {
-        child.kill();
-        fail(new NativeScreenshotError('NATIVE_SCREENSHOT_OUTPUT_TOO_LARGE', 'Windows вернула слишком большой ответ при создании снимка.'));
-      } else {stdout.push(Buffer.from(chunk));}
+    const payload = stream === 'stdout' ? stdout : stderr;
+    if (!payload.append(chunk)) {
+      oversizedStream = stream;
+      stdout.clear();
+      stderr.clear();
+      cancellationController.abort();
+    }
+  };
+
+  try {
+    const outcome = await runStreamingProcess({
+      executablePath: powershellExe,
+      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodedCommand],
+      timeoutMs,
+      cancellation: createStreamCancellation(cancellationController.signal),
+      stdinInput: script,
+      onStreamChunk: collectPayload,
+      spawnImpl: dependencies.spawnImpl,
+      terminateProcessTreeImpl: dependencies.terminateProcessTreeImpl,
     });
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderrBytes += chunk.length;
-      if (stderrBytes > MAX_PROCESS_OUTPUT_BYTES) {
-        child.kill();
-        fail(new NativeScreenshotError('NATIVE_SCREENSHOT_OUTPUT_TOO_LARGE', 'Windows вернула слишком большой диагностический ответ при создании снимка.'));
-      } else {stderr.push(Buffer.from(chunk));}
-    });
-    child.once('error', (error: NodeJS.ErrnoException) => {
-      fail(new NativeScreenshotError('NATIVE_SCREENSHOT_FAILED', `Не удалось запустить Windows PowerShell: ${error.message}`));
-    });
-    child.once('close', (code) => {
-      if (settled) {return;}
-      if (signal?.aborted) {
-        fail(new NativeScreenshotError('NATIVE_SCREENSHOT_CANCELLED', 'Создание снимка TestClient отменено.'));
-      } else if (timedOut) {
-        fail(new NativeScreenshotError('NATIVE_SCREENSHOT_TIMEOUT', 'Истёк таймаут создания снимка TestClient.'));
-      } else if (code !== 0) {
-        const detail = Buffer.concat(stderr).toString('utf8').trim();
-        fail(new NativeScreenshotError(
-          'NATIVE_SCREENSHOT_FAILED',
-          `Не удалось выполнить захват окна TestClient средствами Windows${detail ? `: ${detail}` : '.'}`,
-        ));
-      } else {
-        settled = true;
-        cleanup();
-        resolve(Buffer.concat(stdout).toString('utf8'));
+
+    if (outcome.spawnErrorCode === 'PROCESS_TREE_TERMINATION_FAILED') {
+      const cause = oversizedStream === 'stdout'
+        ? 'Windows вернула слишком большой ответ при создании снимка.'
+        : oversizedStream === 'stderr'
+          ? 'Windows вернула слишком большой диагностический ответ при создании снимка.'
+          : outcome.timedOut
+            ? 'Истёк таймаут создания снимка TestClient.'
+            : outcome.cancelled
+              ? 'Создание снимка TestClient отменено.'
+              : 'Не удалось завершить Windows PowerShell.';
+      const survivors = outcome.termination?.survivingPids.length
+        ? ` Выжившие PID: ${outcome.termination.survivingPids.join(', ')}.`
+        : '';
+      const terminationErrors = outcome.termination?.errors.length
+        ? ` ${outcome.termination.errors.join('; ')}`
+        : '';
+      throw new NativeScreenshotError(
+        'PROCESS_TREE_TERMINATION_FAILED',
+        `${cause} Не удалось подтвердить остановку Windows PowerShell; результат операции не определён.${survivors}${terminationErrors}`,
+        outcome,
+        outcome.effectPossible,
+      );
+    }
+    if (oversizedStream) {
+      const detail = oversizedStream === 'stdout'
+        ? 'Windows вернула слишком большой ответ при создании снимка.'
+        : 'Windows вернула слишком большой диагностический ответ при создании снимка.';
+      throw new NativeScreenshotError('NATIVE_SCREENSHOT_OUTPUT_TOO_LARGE', detail, outcome);
+    }
+    if (outcome.cancelled) {
+      throw new NativeScreenshotError('NATIVE_SCREENSHOT_CANCELLED', 'Создание снимка TestClient отменено.', outcome);
+    }
+    if (outcome.timedOut) {
+      throw new NativeScreenshotError('NATIVE_SCREENSHOT_TIMEOUT', 'Истёк таймаут создания снимка TestClient.', outcome);
+    }
+    if (outcome.stdinErrorCode) {
+      throw new NativeScreenshotError(
+        'NATIVE_SCREENSHOT_FAILED',
+        `Не удалось передать скрипт Windows PowerShell: ${outcome.stdinErrorMessage ?? outcome.stdinErrorCode}`,
+        outcome,
+      );
+    }
+    if (outcome.spawnErrorCode) {
+      const message = outcome.started
+        ? `Не удалось выполнить захват окна TestClient средствами Windows: ${outcome.spawnErrorMessage ?? outcome.spawnErrorCode}`
+        : `Не удалось запустить Windows PowerShell: ${outcome.spawnErrorMessage ?? outcome.spawnErrorCode}`;
+      throw new NativeScreenshotError('NATIVE_SCREENSHOT_FAILED', message, outcome);
+    }
+    if (outcome.exitCode !== 0) {
+      const detail = stderr.toBuffer().toString('utf8').trim();
+      throw new NativeScreenshotError(
+        'NATIVE_SCREENSHOT_FAILED',
+        `Не удалось выполнить захват окна TestClient средствами Windows${detail ? `: ${detail}` : '.'}`,
+        outcome,
+      );
+    }
+    return stdout.toBuffer().toString('utf8');
+  } finally {
+    signal?.removeEventListener('abort', forwardCancellation);
+  }
+}
+
+class BoundedProcessPayload {
+  private readonly blocks: Buffer[] = [];
+  private byteLength = 0;
+  private allocatedBytes = 0;
+  private tailBytes = 0;
+
+  public constructor(private readonly maxBytes: number) {}
+
+  public append(text: string): boolean {
+    const inputBytes = Buffer.byteLength(text, 'utf8');
+    if (this.byteLength + inputBytes > this.maxBytes) {
+      return false;
+    }
+    if (inputBytes === 0) {
+      return true;
+    }
+
+    const input = Buffer.from(text, 'utf8');
+    let inputOffset = 0;
+    while (inputOffset < input.length) {
+      if (this.blocks.length === 0 || this.tailBytes === this.blocks[this.blocks.length - 1].length) {
+        const blockBytes = Math.min(PROCESS_OUTPUT_BLOCK_BYTES, this.maxBytes - this.allocatedBytes);
+        this.blocks.push(Buffer.allocUnsafe(blockBytes));
+        this.allocatedBytes += blockBytes;
+        this.tailBytes = 0;
       }
-    });
-    child.stdin.once('error', (error: NodeJS.ErrnoException) => {
-      if (!settled) {fail(new NativeScreenshotError('NATIVE_SCREENSHOT_FAILED', `Не удалось передать скрипт Windows PowerShell: ${error.message}`));}
-    });
-    child.stdin.end(script, 'utf8');
-  });
+      const tail = this.blocks[this.blocks.length - 1];
+      const copiedBytes = Math.min(tail.length - this.tailBytes, input.length - inputOffset);
+      input.copy(tail, this.tailBytes, inputOffset, inputOffset + copiedBytes);
+      inputOffset += copiedBytes;
+      this.tailBytes += copiedBytes;
+      this.byteLength += copiedBytes;
+    }
+    return true;
+  }
+
+  public toBuffer(): Buffer {
+    const output = Buffer.allocUnsafe(this.byteLength);
+    let outputOffset = 0;
+    for (const block of this.blocks) {
+      const copiedBytes = Math.min(block.length, this.byteLength - outputOffset);
+      block.copy(output, outputOffset, 0, copiedBytes);
+      outputOffset += copiedBytes;
+    }
+    return output;
+  }
+
+  public clear(): void {
+    this.blocks.length = 0;
+    this.byteLength = 0;
+    this.allocatedBytes = 0;
+    this.tailBytes = 0;
+  }
+}
+
+function createStreamCancellation(signal: AbortSignal): StreamCancellation {
+  return {
+    get isCancellationRequested(): boolean {
+      return signal.aborted;
+    },
+    onCancellationRequested(listener): DisposableLike {
+      if (signal.aborted) {
+        listener();
+        return { dispose: () => undefined };
+      }
+      signal.addEventListener('abort', listener, { once: true });
+      return { dispose: () => signal.removeEventListener('abort', listener) };
+    },
+  };
 }
 
 function buildDiscoveryScript(port: number): string {

@@ -294,6 +294,26 @@ suite('FormsOperations — native TestClient contract', () => {
         assert.strictEqual(captureCalled, false);
     });
 
+    test('shot maps a surviving PowerShell process to typed inDoubt', async () => {
+        const context = new FormsContext();
+        context.setNativeSession(nativeSession('localhost', 32143));
+        const failure = Object.assign(new Error('Ответ был слишком большим; PowerShell не остановлен.'), {
+            code: 'PROCESS_TREE_TERMINATION_FAILED',
+            inDoubt: true,
+        });
+        const operations = new FormsOperations({
+            context,
+            captureNativeScreenshot: async () => { throw failure; },
+        });
+
+        assert.deepStrictEqual(await operations.formsShot({ file: 'C:/temp/uncertain.png' }), {
+            success: false,
+            code: 'FORMS_OPERATION_IN_DOUBT',
+            data: { status: 'inDoubt', effectPossible: true },
+            error: failure.message,
+        });
+    });
+
     test('native actions forward typed parameters and report uncertain mutations', async () => {
         const context = new FormsContext();
         let receivedAction: NativeFormsAction | undefined;
