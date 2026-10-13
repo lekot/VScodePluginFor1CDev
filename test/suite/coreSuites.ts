@@ -81,6 +81,7 @@ export const coreSuiteFiles: string[] = [
   'suite/templateEditor.test.js',
   'suite/templateDiff.test.js',
   'suite/dcsEditor.test.js',
+  'suite/buildDistCleanup.test.js',
   'suite/coreSuiteRegistration.test.js',
   'suite/extensionManifestContracts.test.js',
   'suite/extensionActivationLifecycle.test.js',
