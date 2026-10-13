@@ -15,6 +15,8 @@ const TOKEN = {
 };
 
 const OK: IbcmdStreamingRawOutcome = {
+  started: false,
+  effectPossible: false,
   exitCode: 0,
   signal: null,
   combinedLog: '',

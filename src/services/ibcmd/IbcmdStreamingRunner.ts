@@ -40,6 +40,8 @@ export interface IbcmdStreamingRunnerOptions {
 }
 
 export interface IbcmdStreamingRawOutcome {
+  started: boolean;
+  effectPossible: boolean;
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   combinedLog: string;
@@ -86,10 +88,5 @@ export async function runIbcmdStreaming(
       ? { spawnOptions: { env: envForIbcmdExplicitConfigSpawn() } }
       : {}),
   });
-  const {
-    started: _started,
-    effectPossible: _effectPossible,
-    ...publicOutcome
-  } = outcome;
-  return publicOutcome;
+  return outcome;
 }

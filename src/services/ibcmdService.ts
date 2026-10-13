@@ -13,7 +13,9 @@ export {
   IBCMD_EXEC_MAX_BUFFER,
   resolveIbcmdTimeoutMs,
   runIbcmdExecutable,
-  type ExecFileFn,
+  runIbcmdExecutableRaw,
+  type IbcmdExecutableProcessOptions,
+  type IbcmdExecutableRawOutcome,
 } from './ibcmd/IbcmdProcessRunner';
 export type { IbcmdConsoleOutputEncoding, IbcmdRunOutcome, IbcmdStreamEncodingMode } from './ibcmd/ibcmdConsoleEncodingTypes';
 export { decodeConsoleStream, decodeConsoleStreamAuto, decodeIbcmdProcessStreams } from './ibcmd/consoleStreamDecoder';

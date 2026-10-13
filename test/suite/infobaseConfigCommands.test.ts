@@ -112,6 +112,8 @@ suite('infobaseConfigCommands explicit ibcmd output redaction', () => {
     runnerModule.runIbcmdStreaming = async (runOptions) => {
       options.push(runOptions);
       return {
+        started: true,
+        effectPossible: true,
         exitCode: 0,
         signal: null,
         combinedLog: '',

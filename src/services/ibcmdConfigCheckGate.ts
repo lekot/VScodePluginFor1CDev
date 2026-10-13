@@ -84,8 +84,7 @@ export async function runIbcmdConfigCheckGate(): Promise<IbcmdConfigCheckResult>
       pathResult.path,
       args,
       ibcmdService.getTimeoutMs(),
-      undefined,
-      consoleEncoding,
+      { consoleOutputEncoding: consoleEncoding },
     );
     return {
       ok: true,
@@ -99,6 +98,7 @@ export async function runIbcmdConfigCheckGate(): Promise<IbcmdConfigCheckResult>
       stdout?: string | Buffer;
       stderr?: string | Buffer;
       message?: string;
+      processOutcome?: { stdout?: string; stderr?: string };
     };
     if (e.code === 'ENOENT') {
       ibcmdService.invalidatePathCache();
@@ -113,7 +113,12 @@ export async function runIbcmdConfigCheckGate(): Promise<IbcmdConfigCheckResult>
             : 'failed';
     const rawOut = e.stdout != null ? e.stdout : Buffer.alloc(0);
     const rawErr = e.stderr != null ? e.stderr : Buffer.alloc(0);
-    const { stdout: decOut, stderr: decErr } = decodeIbcmdProcessStreams(rawOut, rawErr, consoleEncoding);
+    const { stdout: decOut, stderr: decErr } = e.processOutcome
+      ? {
+          stdout: e.processOutcome.stdout ?? '',
+          stderr: e.processOutcome.stderr ?? '',
+        }
+      : decodeIbcmdProcessStreams(rawOut, rawErr, consoleEncoding);
     const details = trimLog(decOut, decErr);
     const tail = details ? `\n${details}` : e.message ? `\n${e.message}` : '';
     return {

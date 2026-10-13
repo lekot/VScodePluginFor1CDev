@@ -115,6 +115,8 @@ suite('configCompareService runCompareInfobaseConfigurations (Phase 4 #62)', () 
       await fs.mkdir(outputDirectory, { recursive: true });
       await fs.writeFile(path.join(outputDirectory, 'Configuration.xml'), '<Configuration/>', 'utf8');
       return {
+        started: true,
+        effectPossible: true,
         exitCode: 0,
         signal: null,
         combinedLog: '',

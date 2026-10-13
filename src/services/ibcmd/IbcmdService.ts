@@ -5,7 +5,11 @@ import {
   type IbcmdPathResolveResult,
   type IbcmdPathResolverDeps,
 } from './IbcmdPathResolver';
-import { resolveIbcmdTimeoutMs, runIbcmdExecutable, type ExecFileFn } from './IbcmdProcessRunner';
+import {
+  resolveIbcmdTimeoutMs,
+  runIbcmdExecutable,
+  type IbcmdExecutableProcessOptions,
+} from './IbcmdProcessRunner';
 import {
   getIbcmdAutoDetectSetting,
   getIbcmdConsoleOutputEncodingSetting,
@@ -113,7 +117,10 @@ export class IbcmdService {
     return resolveIbcmdTimeoutMs(ibcmdTimeoutMs, process.env.IBCMD_TIMEOUT_MS);
   }
 
-  async run(args: string[], execImpl?: ExecFileFn): Promise<{ stdout: string; stderr: string }> {
+  async run(
+    args: string[],
+    processOptions: IbcmdExecutableProcessOptions = {},
+  ): Promise<{ stdout: string; stderr: string }> {
     const resolved = await this.resolveExecutablePathAsync();
     if (resolved.kind !== 'resolved') {
       throw Object.assign(new Error('ibcmd path not resolved'), { code: 'IBCMD_NOT_RESOLVED' });
@@ -122,17 +129,22 @@ export class IbcmdService {
       resolved.path,
       args,
       this.getTimeoutMs(),
-      execImpl,
-      getIbcmdConsoleOutputEncodingSetting(),
+      {
+        ...processOptions,
+        consoleOutputEncoding: processOptions.consoleOutputEncoding ?? getIbcmdConsoleOutputEncodingSetting(),
+      },
     );
   }
 
   /**
    * WOW plan §3A #47 — файловая ИБ: `ibcmd infobase create --db-path=<abs>` (см. docs/WOW/ibcmd-api-reference.md).
    */
-  async runInfobaseCreateFileDb(dbPath: string, execImpl?: ExecFileFn): Promise<{ stdout: string; stderr: string }> {
+  async runInfobaseCreateFileDb(
+    dbPath: string,
+    processOptions: IbcmdExecutableProcessOptions = {},
+  ): Promise<{ stdout: string; stderr: string }> {
     const abs = path.resolve(dbPath);
-    return this.run(['infobase', 'create', `--db-path=${abs}`], execImpl);
+    return this.run(['infobase', 'create', `--db-path=${abs}`], processOptions);
   }
 
   private createResolutionInput(): {

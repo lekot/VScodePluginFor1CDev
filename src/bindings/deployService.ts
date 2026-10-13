@@ -18,7 +18,10 @@ import {
   runInfobaseConfigIncrementalImport,
   runInfobaseConfigExportObjects,
 } from '../infobases/infobaseConfigCommands';
-import { runInfobaseConfigurationOperation } from '../infobases/infobaseConfigurationOperationQueue';
+import {
+  InfobaseConfigurationOperationCancelledError,
+  runInfobaseConfigurationOperation,
+} from '../infobases/infobaseConfigurationOperationQueue';
 import { resolveInfobaseCanonicalIdentity } from '../infobases/infobaseCanonicalIdentity';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { collectFilesForSelection, resolveIbcmdObjectId } from '../services/ibcmd/objectFileCollector';
@@ -710,8 +713,17 @@ export class DeployService {
             storage: params.storage,
             absoluteSourceDir: sourceDir,
             ibcmdExtensionName: params.binding.ibcmdExtensionName,
+            token: params.token,
           });
           if (!preflight.ok) {
+            if (preflight.code === 'CANCELLED') {
+              return {
+                status: 'cancelled' as const,
+                exitCode: null,
+                userMessage: preflight.message,
+                logExcerpt: '',
+              };
+            }
             appendIbcmdOutputLine(
               `[раскатка] ${entry.name}: preflight XML не пройден (${preflight.durationMs} мс) — ${preflight.message}`,
             );
@@ -752,6 +764,16 @@ export class DeployService {
             ibcmdExtensionName: params.binding.ibcmdExtensionName,
             onOutput: params.onOutput,
           });
+        }, params.token).catch((error: unknown) => {
+          if (!(error instanceof InfobaseConfigurationOperationCancelledError)) {
+            throw error;
+          }
+          return {
+            status: 'cancelled' as const,
+            exitCode: null,
+            userMessage: 'Пропущено: отмена до начала операции.',
+            logExcerpt: '',
+          };
         });
         if (isSupportGateFailure(preflightAndImport)) {
           results.push(targetSupportGateFailure(entry, preflightAndImport));

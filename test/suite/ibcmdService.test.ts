@@ -1,11 +1,37 @@
 import * as assert from 'assert';
+import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
+import { PassThrough } from 'stream';
 import { IbcmdService } from '../../src/services/ibcmd/IbcmdService';
 import { resetIbcmdServiceSingletonForTests } from '../../src/services/ibcmd/ibcmdServiceSingleton';
-import type { ExecFileFn } from '../../src/services/ibcmd/IbcmdProcessRunner';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
+
+function fakeSpawn(
+  stdoutText: string,
+  onSpawn: (file: string, args: readonly string[], options: SpawnOptions) => void,
+): typeof spawn {
+  return ((file: string, args: readonly string[], options: SpawnOptions): ChildProcess => {
+    onSpawn(file, args, options);
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const child = new EventEmitter() as ChildProcess;
+    (child as unknown as { stdout: PassThrough }).stdout = stdout;
+    (child as unknown as { stderr: PassThrough }).stderr = stderr;
+    (child as unknown as { exitCode: number | null }).exitCode = null;
+    (child as unknown as { killed: boolean }).killed = false;
+    (child as unknown as { kill: () => boolean }).kill = () => true;
+    setImmediate(() => {
+      child.emit('spawn');
+      stdout.end(stdoutText);
+      stderr.end();
+      child.emit('close', 0, null);
+    });
+    return child;
+  }) as typeof spawn;
+}
 
 suite('IbcmdService', () => {
   let savedIbcmdPath: string | undefined;
@@ -190,36 +216,34 @@ suite('IbcmdService', () => {
     }
   });
 
-  test('run delegates to exec implementation with resolved path', async () => {
+  test('run delegates to the shared process boundary with resolved path', async () => {
     const exe = path.join(tempDir, 'run-ibcmd');
     fs.writeFileSync(exe, '', 'utf-8');
     process.env.IBCMD_PATH = exe;
     const svc = new IbcmdService();
     const seen: string[] = [];
-    const execImpl: ExecFileFn = async (file, args, _opts) => {
+    const spawnImpl = fakeSpawn('done', (file, args) => {
       seen.push(file);
       seen.push(...args);
-      return { stdout: 'done', stderr: '' };
-    };
-    const out = await svc.run(['infobase', 'info'], execImpl);
+    });
+    const out = await svc.run(['infobase', 'info'], { spawnImpl });
     assert.strictEqual(out.stdout, 'done');
     assert.strictEqual(seen[0], exe);
     assert.deepStrictEqual(seen.slice(1), ['infobase', 'info']);
   });
 
-  test('runInfobaseCreateFileDb passes resolved absolute path to infobase create', async () => {
+  test('runInfobaseCreateFileDb passes resolved absolute path to the shared runner', async () => {
     const exe = path.join(tempDir, 'ibcmd-infobase-create');
     fs.writeFileSync(exe, '', 'utf-8');
     process.env.IBCMD_PATH = exe;
     const svc = new IbcmdService();
     const seen: string[] = [];
-    const execImpl: ExecFileFn = async (file, args) => {
+    const spawnImpl = fakeSpawn('', (file, args) => {
       seen.push(file, ...args);
-      return { stdout: '', stderr: '' };
-    };
+    });
     const rel = path.join('rel-segment', 'db-folder');
     const absExpected = path.resolve(rel);
-    await svc.runInfobaseCreateFileDb(rel, execImpl);
+    await svc.runInfobaseCreateFileDb(rel, { spawnImpl });
     assert.strictEqual(seen[0], exe);
     assert.deepStrictEqual(seen.slice(1), ['infobase', 'create', `--db-path=${absExpected}`]);
   });

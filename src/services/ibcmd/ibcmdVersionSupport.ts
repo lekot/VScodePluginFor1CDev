@@ -6,10 +6,10 @@
  * @see docs/WOW/ibcmd-api-reference.md (минимальная платформа для YAML)
  */
 
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-
-const execFileAsync = promisify(execFile);
+import {
+  runIbcmdExecutable,
+  type IbcmdExecutableProcessOptions,
+} from './IbcmdProcessRunner';
 
 /** Минимальная версия платформы 1С для YAML-подключения в режиме infobase config (Administrator Guide / ibcmd). */
 export const IBCMD_MIN_YAML_INFOBASE_PATCH = 27 as const;
@@ -22,7 +22,103 @@ export interface ParsedIbcmdVersion {
   readonly raw: string;
 }
 
-const versionQueryByPath = new Map<string, Promise<ParsedIbcmdVersion | undefined>>();
+type IbcmdQueryCancellation = NonNullable<IbcmdExecutableProcessOptions['cancellation']>;
+
+interface VersionQueryCacheEntry {
+  promise: Promise<ParsedIbcmdVersion | undefined>;
+  cancel: () => void;
+  waiters: number;
+  settled: boolean;
+}
+
+const versionQueryByPath = new Map<string, VersionQueryCacheEntry>();
+
+function createIbcmdQueryCancellation(): { token: IbcmdQueryCancellation; cancel: () => void } {
+  let requested = false;
+  const listeners = new Set<() => void>();
+  return {
+    token: {
+      get isCancellationRequested() { return requested; },
+      onCancellationRequested(listener) {
+        if (requested) {
+          listener();
+          return { dispose: () => undefined };
+        }
+        listeners.add(listener);
+        return { dispose: () => { listeners.delete(listener); } };
+      },
+    },
+    cancel() {
+      if (requested) {
+        return;
+      }
+      requested = true;
+      listeners.forEach((listener) => listener());
+    },
+  };
+}
+
+function awaitVersionQuery(
+  executablePath: string,
+  entry: VersionQueryCacheEntry,
+  cancellation: IbcmdExecutableProcessOptions['cancellation'],
+): Promise<ParsedIbcmdVersion | undefined> {
+  if (cancellation?.isCancellationRequested) {
+    if (entry.waiters === 0 && !entry.settled) {
+      entry.cancel();
+      if (versionQueryByPath.get(executablePath) === entry) {
+        versionQueryByPath.delete(executablePath);
+      }
+    }
+    return Promise.resolve(undefined);
+  }
+
+  entry.waiters += 1;
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    let cancellationSubscription: { dispose(): void } | undefined;
+    const releaseWaiter = (): void => {
+      entry.waiters -= 1;
+      if (entry.waiters === 0 && !entry.settled) {
+        entry.cancel();
+        if (versionQueryByPath.get(executablePath) === entry) {
+          versionQueryByPath.delete(executablePath);
+        }
+      }
+    };
+    const finish = (value: ParsedIbcmdVersion | undefined): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cancellationSubscription?.dispose();
+      cancellationSubscription = undefined;
+      releaseWaiter();
+      resolve(value);
+    };
+    const fail = (error: unknown): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cancellationSubscription?.dispose();
+      cancellationSubscription = undefined;
+      releaseWaiter();
+      reject(error);
+    };
+
+    if (cancellation) {
+      cancellationSubscription = cancellation.onCancellationRequested(() => finish(undefined));
+      if (finished) {
+        cancellationSubscription.dispose();
+        cancellationSubscription = undefined;
+      } else if (cancellation.isCancellationRequested) {
+        finish(undefined);
+      }
+    }
+    void entry.promise.then(finish, fail);
+  });
+}
 
 /** Сброс кэша версий (например после смены пути к ibcmd). */
 export function invalidateIbcmdVersionQueryCache(): void {
@@ -75,38 +171,68 @@ export function ibcmdYamlInfobaseTooOldUserMessage(detectedRaw: string): string 
   );
 }
 
-export type IbcmdVersionExecFn = (
-  file: string,
-  args: readonly string[],
-  options: { timeout: number; windowsHide: boolean; maxBuffer: number },
-) => Promise<{ stdout: string | Buffer; stderr: string | Buffer }>;
+export interface IbcmdVersionProcessOptions extends IbcmdExecutableProcessOptions {
+  timeoutMs?: number;
+}
 
 /**
  * Запрашивает `ibcmd --version` (с кэшем на путь к exe).
  */
 export async function queryParsedIbcmdVersion(
   executablePath: string,
-  execImpl: IbcmdVersionExecFn = execFileAsync as IbcmdVersionExecFn,
+  processOptions: IbcmdVersionProcessOptions = {},
 ): Promise<ParsedIbcmdVersion | undefined> {
+  if (processOptions.cancellation?.isCancellationRequested) {
+    return undefined;
+  }
   const pending = versionQueryByPath.get(executablePath);
   if (pending) {
-    return pending;
+    return awaitVersionQuery(executablePath, pending, processOptions.cancellation);
   }
-  const run = (async (): Promise<ParsedIbcmdVersion | undefined> => {
+  const queryCancellation = createIbcmdQueryCancellation();
+  const entry: VersionQueryCacheEntry = {
+    promise: Promise.resolve(undefined),
+    cancel: queryCancellation.cancel,
+    waiters: 0,
+    settled: false,
+  };
+  const run = Promise.resolve().then(async (): Promise<ParsedIbcmdVersion | undefined> => {
     try {
-      const { stdout } = await execImpl(executablePath, ['--version'], {
-        timeout: 15_000,
-        windowsHide: true,
-        maxBuffer: 64 * 1024,
-      });
-      const text = typeof stdout === 'string' ? stdout : stdout.toString('utf8');
-      return tryParseIbcmdVersionOutput(text);
+      const { stdout } = await runIbcmdExecutable(
+        executablePath,
+        ['--version'],
+        processOptions.timeoutMs ?? 15_000,
+        {
+          ...processOptions,
+          cancellation: queryCancellation.token,
+          maxBuffer: processOptions.maxBuffer ?? 64 * 1024,
+        },
+      );
+      return tryParseIbcmdVersionOutput(stdout);
     } catch {
       return undefined;
     }
-  })();
-  versionQueryByPath.set(executablePath, run);
-  return run;
+  });
+  entry.promise = run.then(
+    (version) => {
+      entry.settled = true;
+      if (!version && queryCancellation.token.isCancellationRequested) {
+        if (versionQueryByPath.get(executablePath) === entry) {
+          versionQueryByPath.delete(executablePath);
+        }
+      }
+      return version;
+    },
+    (error: unknown) => {
+      entry.settled = true;
+      if (versionQueryByPath.get(executablePath) === entry) {
+        versionQueryByPath.delete(executablePath);
+      }
+      throw error;
+    },
+  );
+  versionQueryByPath.set(executablePath, entry);
+  return awaitVersionQuery(executablePath, entry, processOptions.cancellation);
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +246,82 @@ export interface IncrementalSupportProbe {
   exportObjects: boolean;
 }
 
-const incrementalProbeByPath = new Map<string, Promise<IncrementalSupportProbe>>();
+type IncrementalProbeCancellation = IbcmdQueryCancellation;
+
+interface IncrementalProbeCacheEntry {
+  promise: Promise<IncrementalSupportProbe | undefined>;
+  cancel: () => void;
+  waiters: number;
+  settled: boolean;
+}
+
+const incrementalProbeByPath = new Map<string, IncrementalProbeCacheEntry>();
+
+function noIncrementalSupport(): IncrementalSupportProbe {
+  return {
+    importFiles: false,
+    exportStatus: false,
+    exportSync: false,
+    exportObjects: false,
+  };
+}
+
+const INCREMENTAL_PROBE_CANCELLED = Symbol('incremental probe cancelled');
+
+function awaitIncrementalProbe(
+  executablePath: string,
+  entry: IncrementalProbeCacheEntry,
+  cancellation: IncrementalProbeCancellation | undefined,
+): Promise<IncrementalSupportProbe> {
+  if (cancellation?.isCancellationRequested) {
+    return Promise.resolve(noIncrementalSupport());
+  }
+  entry.waiters += 1;
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    let cancellationSubscription: { dispose(): void } | undefined;
+    const releaseWaiter = (): void => {
+      entry.waiters -= 1;
+      if (entry.waiters === 0 && !entry.settled) {
+        entry.cancel();
+        if (incrementalProbeByPath.get(executablePath) === entry) {
+          incrementalProbeByPath.delete(executablePath);
+        }
+      }
+    };
+    const finish = (probe: IncrementalSupportProbe | undefined): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cancellationSubscription?.dispose();
+      cancellationSubscription = undefined;
+      releaseWaiter();
+      resolve(probe ?? noIncrementalSupport());
+    };
+    const fail = (error: unknown): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cancellationSubscription?.dispose();
+      cancellationSubscription = undefined;
+      releaseWaiter();
+      reject(error);
+    };
+
+    if (cancellation) {
+      cancellationSubscription = cancellation.onCancellationRequested(() => finish(undefined));
+      if (finished) {
+        cancellationSubscription.dispose();
+        cancellationSubscription = undefined;
+      } else if (cancellation.isCancellationRequested) {
+        finish(undefined);
+      }
+    }
+    void entry.promise.then(finish, fail);
+  });
+}
 
 /** Сброс кэша проверки инкрементальных команд (например после смены пути к ibcmd). */
 export function invalidateIncrementalSupportProbeCache(): void {
@@ -133,20 +334,24 @@ export function invalidateIncrementalSupportProbeCache(): void {
  */
 export async function probeIncrementalSupport(
   executablePath: string,
-  execImpl: IbcmdVersionExecFn = execFileAsync as IbcmdVersionExecFn,
+  processOptions: IbcmdVersionProcessOptions = {},
 ): Promise<IncrementalSupportProbe> {
+  if (processOptions.cancellation?.isCancellationRequested) {
+    return noIncrementalSupport();
+  }
   const pending = incrementalProbeByPath.get(executablePath);
   if (pending) {
-    return pending;
+    return awaitIncrementalProbe(executablePath, pending, processOptions.cancellation);
   }
 
-  const run = (async (): Promise<IncrementalSupportProbe> => {
-    const execOpts = {
-      timeout: 10_000,
-      windowsHide: true,
-      maxBuffer: 64 * 1024,
-    };
-
+  const probeCancellation = createIbcmdQueryCancellation();
+  const entry: IncrementalProbeCacheEntry = {
+    promise: Promise.resolve(undefined),
+    cancel: probeCancellation.cancel,
+    waiters: 0,
+    settled: false,
+  };
+  const run = Promise.resolve().then(async (): Promise<IncrementalSupportProbe | undefined> => {
     /**
      * Проверяет поддержку подкоманды, подавая фейковый --db-path.
      *
@@ -157,17 +362,34 @@ export async function probeIncrementalSupport(
      */
     async function isSubcommandSupported(args: readonly string[]): Promise<boolean> {
       try {
-        await execImpl(executablePath, args, execOpts);
+        await runIbcmdExecutable(
+          executablePath,
+          [...args],
+          processOptions.timeoutMs ?? 10_000,
+          {
+            ...processOptions,
+            cancellation: probeCancellation.token,
+            maxBuffer: processOptions.maxBuffer ?? 64 * 1024,
+          },
+        );
         return true;
       } catch (e: unknown) {
         if (e && typeof e === 'object') {
-          const ex = e as { code?: number | null; killed?: boolean };
+          const ex = e as {
+            code?: string | number | null;
+            killed?: boolean;
+            status?: number;
+            processOutcome?: { cancelled?: boolean };
+          };
+          if (probeCancellation.token.isCancellationRequested || ex.processOutcome?.cancelled) {
+            throw INCREMENTAL_PROBE_CANCELLED;
+          }
           // killed === true → ibcmd завис и убит по таймауту → подкоманда не существует
           if (ex.killed) {
             return false;
           }
           // числовой code (включая 4294967295) → ibcmd распознал подкоманду, но упал на подключении
-          return typeof ex.code === 'number';
+          return typeof ex.code === 'number' || typeof ex.status === 'number';
         }
         return false;
       }
@@ -175,18 +397,41 @@ export async function probeIncrementalSupport(
 
     const fakeDb = '--db-path=C:\\__ibcmd_probe_nonexistent__';
 
-    const [importFiles, exportStatus, exportSync, exportObjects] = await Promise.all([
-      isSubcommandSupported(['infobase', 'config', 'import', 'files', fakeDb, '--base-dir=.', 'probe.xml']),
-      isSubcommandSupported(['infobase', 'config', 'export', 'status', fakeDb, '--base=.']),
-      isSubcommandSupported(['infobase', 'config', 'export', 'sync', fakeDb]),
-      isSubcommandSupported(['infobase', 'config', 'export', 'objects', fakeDb, '--out=.', 'Probe.Test']),
-    ]);
+    try {
+      const [importFiles, exportStatus, exportSync, exportObjects] = await Promise.all([
+        isSubcommandSupported(['infobase', 'config', 'import', 'files', fakeDb, '--base-dir=.', 'probe.xml']),
+        isSubcommandSupported(['infobase', 'config', 'export', 'status', fakeDb, '--base=.']),
+        isSubcommandSupported(['infobase', 'config', 'export', 'sync', fakeDb]),
+        isSubcommandSupported(['infobase', 'config', 'export', 'objects', fakeDb, '--out=.', 'Probe.Test']),
+      ]);
 
-    return { importFiles, exportStatus, exportSync, exportObjects };
-  })();
+      return { importFiles, exportStatus, exportSync, exportObjects };
+    } catch (error) {
+      if (error === INCREMENTAL_PROBE_CANCELLED || probeCancellation.token.isCancellationRequested) {
+        return undefined;
+      }
+      throw error;
+    }
+  });
 
-  incrementalProbeByPath.set(executablePath, run);
-  return run;
+  entry.promise = run.then(
+    (result) => {
+      entry.settled = true;
+      if (!result && incrementalProbeByPath.get(executablePath) === entry) {
+        incrementalProbeByPath.delete(executablePath);
+      }
+      return result;
+    },
+    (error: unknown) => {
+      entry.settled = true;
+      if (incrementalProbeByPath.get(executablePath) === entry) {
+        incrementalProbeByPath.delete(executablePath);
+      }
+      throw error;
+    },
+  );
+  incrementalProbeByPath.set(executablePath, entry);
+  return awaitIncrementalProbe(executablePath, entry, processOptions.cancellation);
 }
 
 // ---------------------------------------------------------------------------
@@ -196,9 +441,9 @@ export async function probeIncrementalSupport(
  */
 export async function getIbcmdYamlInfobaseConfigUnsupportedMessage(
   executablePath: string,
-  execImpl?: IbcmdVersionExecFn,
+  processOptions?: IbcmdVersionProcessOptions,
 ): Promise<string | undefined> {
-  const parsed = await queryParsedIbcmdVersion(executablePath, execImpl);
+  const parsed = await queryParsedIbcmdVersion(executablePath, processOptions);
   if (!parsed) {
     return undefined;
   }
