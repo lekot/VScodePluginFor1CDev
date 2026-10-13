@@ -1,5 +1,6 @@
 import type { TreeNode } from '../../models/treeNode';
 import type { InfobaseEntry } from '../../infobases/models/infobaseEntry';
+import type { ProcessTreeTerminationOutcome } from '../ibcmd/processTreeTermination';
 import type { ConfiguratorCredentials } from '../configurator/configuratorBatchArgs';
 
 export type RepositoryConfigurationKind = 'cf' | 'cfe';
@@ -101,4 +102,6 @@ export interface RepositoryServiceResult {
   readonly target: RepositoryTarget;
   readonly affectedFullNames: readonly string[];
   readonly synchronizedFiles?: readonly string[];
+  readonly effectPossible?: boolean;
+  readonly termination?: ProcessTreeTerminationOutcome;
 }

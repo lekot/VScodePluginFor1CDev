@@ -25,6 +25,37 @@ import type { TreeNode } from '../../src/models/treeNode';
 import type { IbcmdInfobaseOperationResult } from '../../src/services/ibcmd/ibcmdInfobaseOperationResult';
 import type { IbcmdXmlPreflightResult } from '../../src/services/ibcmdXmlPreflightService';
 import type { IncrementalImportParams } from '../../src/infobases/infobaseConfigCommands';
+import type {
+  IbcmdStreamingRawOutcome,
+  IbcmdStreamingRunnerOptions,
+} from '../../src/services/ibcmd/IbcmdStreamingRunner';
+import type { IbcmdService } from '../../src/services/ibcmd/IbcmdService';
+
+interface MutableIbcmdRunnerModule {
+  runIbcmdStreaming(options: IbcmdStreamingRunnerOptions): Promise<IbcmdStreamingRawOutcome>;
+}
+
+interface MutableIbcmdServiceModule {
+  getIbcmdService(): IbcmdService;
+}
+
+interface MutableIbcmdVersionSupportModule {
+  getIbcmdYamlInfobaseConfigUnsupportedMessage(executablePath: string): Promise<string | undefined>;
+  probeIncrementalSupport(executablePath: string): Promise<{
+    importFiles: boolean;
+    exportStatus: boolean;
+    exportSync: boolean;
+    exportObjects: boolean;
+  }>;
+}
+
+const ibcmdRunnerModule = module.require('../../src/services/ibcmd/IbcmdStreamingRunner') as MutableIbcmdRunnerModule;
+const ibcmdServiceModule = module.require('../../src/services/ibcmd/ibcmdServiceSingleton') as MutableIbcmdServiceModule;
+const ibcmdVersionSupportModule = module.require('../../src/services/ibcmd/ibcmdVersionSupport') as MutableIbcmdVersionSupportModule;
+const originalRunIbcmdStreaming = ibcmdRunnerModule.runIbcmdStreaming;
+const originalGetIbcmdService = ibcmdServiceModule.getIbcmdService;
+const originalGetYamlUnsupportedMessage = ibcmdVersionSupportModule.getIbcmdYamlInfobaseConfigUnsupportedMessage;
+const originalProbeIncrementalSupport = ibcmdVersionSupportModule.probeIncrementalSupport;
 
 function fixtureSmallRoot(): string {
   return path.resolve(__dirname, '../fixtures/matrix/small');
@@ -531,9 +562,27 @@ suite('deployService resolveDeployTargetsForBinding', () => {
 
 suite('DeployService.deployBinding', () => {
   teardown(() => {
+    ibcmdRunnerModule.runIbcmdStreaming = originalRunIbcmdStreaming;
+    ibcmdServiceModule.getIbcmdService = originalGetIbcmdService;
+    ibcmdVersionSupportModule.getIbcmdYamlInfobaseConfigUnsupportedMessage = originalGetYamlUnsupportedMessage;
+    ibcmdVersionSupportModule.probeIncrementalSupport = originalProbeIncrementalSupport;
     resetIbcmdServiceSingletonForTests();
     resetVscodeTestState();
   });
+
+  function configureIbcmdMocks(): void {
+    ibcmdServiceModule.getIbcmdService = () => ({
+      resolveExecutablePathAsync: async () => ({ kind: 'resolved', path: 'ibcmd-test' }),
+      getTimeoutMs: () => 30_000,
+    } as unknown as IbcmdService);
+    ibcmdVersionSupportModule.getIbcmdYamlInfobaseConfigUnsupportedMessage = async () => undefined;
+    ibcmdVersionSupportModule.probeIncrementalSupport = async () => ({
+      importFiles: true,
+      exportStatus: false,
+      exportSync: false,
+      exportObjects: false,
+    });
+  }
 
   test('returns configuration error without calling ibcmd when xml path invalid', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-miss-'));
@@ -860,6 +909,205 @@ suite('DeployService.deployBinding', () => {
       assert.strictEqual(summary.errorCount, 1);
       assert.strictEqual(summary.skippedCount, 1);
       assert.ok(summary.results[0]!.message.includes('Preflight XML'));
+    } finally {
+      rmDirQuiet(work);
+    }
+  });
+
+  test('post-spawn import cancellation becomes one inDoubt target and skips the rest of the chain', async () => {
+    configureIbcmdMocks();
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-in-doubt-'));
+    const ibPath = path.join(work, 'placeholder.1cd');
+    fs.writeFileSync(ibPath, '');
+    const termination = {
+      terminated: false,
+      hardKillUsed: true,
+      survivingPids: [7124],
+      errors: ['tree stop not confirmed'],
+    };
+    let runnerCalls = 0;
+    ibcmdRunnerModule.runIbcmdStreaming = async () => {
+      runnerCalls += 1;
+      return {
+        started: true,
+        effectPossible: true,
+        exitCode: null,
+        signal: 'SIGTERM',
+        combinedLog: 'ibcmd interrupted during import',
+        logTruncated: false,
+        cancelled: true,
+        timedOut: false,
+        termination,
+      };
+    };
+
+    try {
+      const summary = await new DeployService().deployBinding({
+        binding: baseBinding({ infobaseIds: ['a', 'b'], massDeployment: true }),
+        workspaceFolderRoot: fixtureSmallRoot(),
+        storage: mockStorage,
+        catalog: [fileEntry('a', 'Alpha', ibPath), fileEntry('b', 'Beta', ibPath)],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+
+      assert.strictEqual(runnerCalls, 1, 'neither apply nor the next base may start');
+      assert.strictEqual(summary.successCount, 0);
+      assert.strictEqual(summary.errorCount, 0);
+      assert.strictEqual(summary.inDoubtCount, 1);
+      assert.strictEqual(summary.skippedCount, 1);
+      assert.deepStrictEqual(summary.results.map((result) => result.status), ['inDoubt', 'skipped']);
+      assert.strictEqual(summary.results[0]!.effectPossible, true);
+      assert.deepStrictEqual(summary.results[0]!.termination, termination);
+      assert.ok(summary.results[0]!.message.toLowerCase().includes('неопредел'));
+    } finally {
+      rmDirQuiet(work);
+    }
+  });
+
+  test('uncertain incremental imports stop both selected-object and changed-file multi-base chains', async () => {
+    configureIbcmdMocks();
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-incremental-indoubt-'));
+    try {
+      const configRoot = path.join(work, 'config');
+      const catalogsRoot = path.join(configRoot, 'Catalogs');
+      fs.mkdirSync(catalogsRoot, { recursive: true });
+      fs.writeFileSync(path.join(configRoot, 'Configuration.xml'), '<Configuration/>');
+      const objectPath = path.join(catalogsRoot, 'Products.xml');
+      fs.writeFileSync(objectPath, '<Catalog/>');
+      const alphaPath = path.join(work, 'Alpha.1cd');
+      const betaPath = path.join(work, 'Beta.1cd');
+      fs.writeFileSync(alphaPath, '');
+      fs.writeFileSync(betaPath, '');
+      const catalog = [fileEntry('a', 'Alpha', alphaPath), fileEntry('b', 'Beta', betaPath)];
+      const binding = baseBinding({
+        configRelativePath: 'config/Configuration.xml',
+        infobaseIds: ['a', 'b'],
+        massDeployment: true,
+      });
+      const termination = {
+        terminated: false,
+        hardKillUsed: true,
+        survivingPids: [7125],
+        errors: ['tree stop not confirmed'],
+      };
+      let runnerCalls = 0;
+      ibcmdRunnerModule.runIbcmdStreaming = async () => {
+        runnerCalls += 1;
+        return {
+          started: true,
+          effectPossible: true,
+          exitCode: null,
+          signal: 'SIGTERM',
+          combinedLog: 'ibcmd interrupted during incremental import',
+          logTruncated: false,
+          cancelled: true,
+          timedOut: false,
+          termination,
+        };
+      };
+      const service = new DeployService();
+      const token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) };
+      const progress = { report: () => undefined };
+      const selectedSummary = await service.deploySelectedObjects({
+        binding,
+        workspaceFolderRoot: work,
+        storage: mockStorage,
+        catalog,
+        selectedNodes: [{
+          id: 'Catalog.Products',
+          name: 'Products',
+          type: MetadataType.Catalog,
+          properties: {},
+          filePath: objectPath,
+        }],
+        progress,
+        token,
+      });
+      assert.strictEqual(runnerCalls, 1, 'selected-object chain must stop after the first uncertain process');
+      assert.deepStrictEqual(selectedSummary.results.map((result) => result.status), ['inDoubt', 'skipped']);
+      assert.strictEqual(selectedSummary.inDoubtCount, 1);
+      assert.strictEqual(selectedSummary.errorCount, 0);
+      assert.strictEqual(selectedSummary.results[0]!.effectPossible, true);
+      assert.deepStrictEqual(selectedSummary.results[0]!.termination, termination);
+
+      runnerCalls = 0;
+      const changedSummary = await service.deployChangedFiles({
+        binding,
+        workspaceFolderRoot: work,
+        storage: mockStorage,
+        catalog,
+        relativeFiles: ['Catalogs/Products.xml'],
+        progress,
+        token,
+      });
+      assert.strictEqual(runnerCalls, 1, 'changed-file chain must stop after the first uncertain process');
+      assert.deepStrictEqual(changedSummary.results.map((result) => result.status), ['inDoubt', 'skipped']);
+      assert.strictEqual(changedSummary.inDoubtCount, 1);
+      assert.strictEqual(changedSummary.errorCount, 0);
+      assert.strictEqual(changedSummary.results[0]!.effectPossible, true);
+      assert.deepStrictEqual(changedSummary.results[0]!.termination, termination);
+    } finally {
+      rmDirQuiet(work);
+    }
+  });
+
+  test('uncertain object export preserves its process receipt in the deploy summary', async () => {
+    configureIbcmdMocks();
+    ibcmdVersionSupportModule.probeIncrementalSupport = async () => ({
+      importFiles: false,
+      exportStatus: false,
+      exportSync: false,
+      exportObjects: true,
+    });
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-pull-indoubt-'));
+    try {
+      fs.writeFileSync(path.join(work, 'Configuration.xml'), '<Configuration/>');
+      const ibPath = path.join(work, 'Base.1cd');
+      fs.writeFileSync(ibPath, '');
+      const termination = {
+        terminated: false,
+        hardKillUsed: true,
+        survivingPids: [7188],
+        errors: ['tree stop not confirmed'],
+      };
+      let runnerCalls = 0;
+      ibcmdRunnerModule.runIbcmdStreaming = async () => {
+        runnerCalls += 1;
+        return {
+          started: true,
+          effectPossible: true,
+          exitCode: null,
+          signal: 'SIGTERM',
+          combinedLog: 'ibcmd interrupted during object export',
+          logTruncated: false,
+          cancelled: true,
+          timedOut: false,
+          termination,
+        };
+      };
+
+      const summary = await new DeployService().pullSelectedObjects({
+        binding: baseBinding({ configRelativePath: 'Configuration.xml', infobaseIds: ['base'] }),
+        workspaceFolderRoot: work,
+        storage: mockStorage,
+        entry: fileEntry('base', 'Base', ibPath),
+        selectedNodes: [{
+          id: 'Catalog.Products',
+          name: 'Products',
+          type: MetadataType.Catalog,
+          properties: {},
+        }],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+
+      assert.strictEqual(runnerCalls, 1);
+      assert.strictEqual(summary.inDoubtCount, 1);
+      assert.strictEqual(summary.errorCount, 0);
+      assert.strictEqual(summary.results[0]!.status, 'inDoubt');
+      assert.strictEqual(summary.results[0]!.effectPossible, true);
+      assert.deepStrictEqual(summary.results[0]!.termination, termination);
     } finally {
       rmDirQuiet(work);
     }

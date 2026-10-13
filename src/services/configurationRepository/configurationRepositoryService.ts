@@ -15,6 +15,7 @@ import {
   type InfobaseConfigurationOperationQueue,
 } from '../../infobases/infobaseConfigurationOperationQueue';
 import type { TreeNode } from '../../models/treeNode';
+import type { IbcmdInfobaseOperationResult } from '../ibcmd/ibcmdInfobaseOperationResult';
 import {
   ConfigurationRepositoryTransport,
   type ConfigurationRepositoryTransportDeps,
@@ -269,7 +270,7 @@ export class ConfigurationRepositoryService {
         onOutput,
       });
       if (imported.status !== 'success') {
-        return this.fromIbcmd(imported.status, target, reference.relativeFiles, imported.userMessage);
+        return this.fromIbcmd(imported, target, reference.relativeFiles, imported.userMessage);
       }
       const objects = await writeRepositoryObjectsFile(target, [reference], options.recursive !== false);
       try {
@@ -346,7 +347,7 @@ export class ConfigurationRepositoryService {
         onOutput,
       });
       if (exported.status !== 'success') {
-        return this.fromIbcmd(exported.status, target, [], `Хранилище обновлено, но выгрузка файлов не выполнена: ${exported.userMessage}`);
+        return this.fromIbcmd(exported, target, [], `Хранилище обновлено, но выгрузка файлов не выполнена: ${exported.userMessage}`);
       }
       try {
         await this.updateConnectionAck(target);
@@ -459,7 +460,7 @@ export class ConfigurationRepositoryService {
           onOutput,
         });
         if (exported.status !== 'success') {
-          return this.fromIbcmd(exported.status, target, reference.relativeFiles, `Хранилище обновлено, но выгрузка объекта не выполнена: ${exported.userMessage}`);
+          return this.fromIbcmd(exported, target, reference.relativeFiles, `Хранилище обновлено, но выгрузка объекта не выполнена: ${exported.userMessage}`);
         }
         try {
           await this.updateConnectionAck(target);
@@ -695,17 +696,23 @@ export class ConfigurationRepositoryService {
   }
 
   private fromIbcmd(
-    status: 'success' | 'cancelled' | 'error',
+    operation: IbcmdInfobaseOperationResult,
     target: RepositoryTarget,
     files: readonly string[],
     message: string,
   ): RepositoryServiceResult {
     return {
-      status: status === 'success' ? 'acknowledged' : status === 'cancelled' ? 'cancelled' : 'failed',
+      status: operation.status === 'success'
+        ? 'acknowledged'
+        : operation.status === 'cancelled'
+          ? 'cancelled'
+          : operation.status === 'inDoubt' ? 'inDoubt' : 'failed',
       target,
       affectedFullNames: [],
       synchronizedFiles: files,
       message,
+      effectPossible: operation.effectPossible,
+      termination: operation.termination,
     };
   }
 

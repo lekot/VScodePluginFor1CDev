@@ -117,12 +117,152 @@ suite('ibcmdInfobaseOperationResult', () => {
   test('cancelled', () => {
     const r = interpretIbcmdInfobaseOutcome('import', baseRaw({ cancelled: true, exitCode: null }));
     assert.strictEqual(r.status, 'cancelled');
+    assert.strictEqual(
+      (r as unknown as { effectPossible?: boolean }).effectPossible,
+      false,
+      'pre-spawn cancellation must preserve the receipt that no effect was possible',
+    );
+  });
+
+  test('child handle before spawn event is inDoubt when the runner says effects are possible', () => {
+    const r = interpretIbcmdInfobaseOutcome('import', baseRaw({
+      started: false,
+      effectPossible: true,
+      exitCode: null,
+      cancelled: true,
+    }));
+    assert.strictEqual(r.status as string, 'inDoubt');
+    assert.strictEqual((r as unknown as { effectPossible?: boolean }).effectPossible, true);
+  });
+
+  test('failed process-tree termination is inDoubt even without cancel or timeout flags', () => {
+    const termination = {
+      terminated: false,
+      hardKillUsed: true,
+      survivingPids: [9002],
+      errors: ['termination confirmation unavailable'],
+    };
+    const r = interpretIbcmdInfobaseOutcome('apply', baseRaw({
+      started: false,
+      effectPossible: true,
+      exitCode: null,
+      spawnErrorCode: 'PROCESS_TREE_TERMINATION_FAILED',
+      termination,
+    }));
+    assert.strictEqual(r.status as string, 'inDoubt');
+    assert.strictEqual((r as unknown as { effectPossible?: boolean }).effectPossible, true);
+    assert.deepStrictEqual((r as unknown as { termination?: unknown }).termination, termination);
   });
 
   test('timedOut', () => {
     const r = interpretIbcmdInfobaseOutcome('export', baseRaw({ timedOut: true, exitCode: null }));
     assert.strictEqual(r.status, 'error');
     assert.ok(r.userMessage.includes('таймаут') || r.userMessage.includes('ожидания'));
+  });
+
+  test('post-spawn import cancellation is inDoubt and preserves effect and termination', () => {
+    const termination = {
+      terminated: true,
+      hardKillUsed: false,
+      survivingPids: [],
+      errors: [],
+    };
+    const r = interpretIbcmdInfobaseOutcome('import', baseRaw({
+      started: true,
+      effectPossible: true,
+      exitCode: null,
+      signal: 'SIGTERM',
+      cancelled: true,
+      termination,
+    }));
+    const receipt = r as unknown as { status: string; effectPossible?: boolean; termination?: unknown };
+    assert.strictEqual(receipt.status, 'inDoubt');
+    assert.strictEqual(receipt.effectPossible, true);
+    assert.deepStrictEqual(receipt.termination, termination);
+    assert.ok(r.userMessage.toLowerCase().includes('неопредел'));
+  });
+
+  test('post-spawn cancellation of every mutating operation is inDoubt', () => {
+    for (const op of ['import', 'apply', 'export'] as const) {
+      const r = interpretIbcmdInfobaseOutcome(op, baseRaw({
+        started: true,
+        effectPossible: true,
+        exitCode: null,
+        cancelled: true,
+      }));
+      assert.strictEqual(r.status as string, 'inDoubt', `${op} cancellation after spawn`);
+      assert.strictEqual((r as unknown as { effectPossible?: boolean }).effectPossible, true);
+    }
+  });
+
+  test('post-spawn timeout is inDoubt even when process-tree termination leaves survivors', () => {
+    const termination = {
+      terminated: false,
+      hardKillUsed: true,
+      survivingPids: [7124],
+      errors: ['taskkill did not confirm exit'],
+    };
+    const r = interpretIbcmdInfobaseOutcome('apply', baseRaw({
+      started: true,
+      effectPossible: true,
+      exitCode: null,
+      signal: 'SIGTERM',
+      timedOut: true,
+      termination,
+    }));
+    const receipt = r as unknown as { status: string; effectPossible?: boolean; termination?: unknown };
+    assert.strictEqual(receipt.status, 'inDoubt');
+    assert.strictEqual(receipt.effectPossible, true);
+    assert.deepStrictEqual(receipt.termination, termination);
+  });
+
+  test('an unconfirmed process-tree stop is inDoubt for a started mutating export', () => {
+    const termination = {
+      terminated: false,
+      hardKillUsed: true,
+      survivingPids: [9001],
+      errors: ['kill failed'],
+    };
+    const r = interpretIbcmdInfobaseOutcome('export', baseRaw({
+      started: true,
+      effectPossible: true,
+      exitCode: 1,
+      termination,
+    }));
+    assert.strictEqual(r.status as string, 'inDoubt');
+    assert.deepStrictEqual(
+      (r as unknown as { termination?: unknown }).termination,
+      termination,
+    );
+  });
+
+  test('read-only check cancellation stays cancelled and preserves process lifecycle details', () => {
+    const termination = {
+      terminated: true,
+      hardKillUsed: false,
+      survivingPids: [],
+      errors: [],
+    };
+    const r = interpretIbcmdInfobaseOutcome('check', baseRaw({
+      started: true,
+      effectPossible: true,
+      exitCode: null,
+      cancelled: true,
+      termination,
+    }));
+    assert.strictEqual(r.status, 'cancelled');
+    assert.strictEqual((r as unknown as { effectPossible?: boolean }).effectPossible, true);
+    assert.deepStrictEqual((r as unknown as { termination?: unknown }).termination, termination);
+  });
+
+  test('confirmed nonzero exit remains an ordinary error even though the process started', () => {
+    const r = interpretIbcmdInfobaseOutcome('import', baseRaw({
+      started: true,
+      effectPossible: true,
+      exitCode: 2,
+    }));
+    assert.strictEqual(r.status, 'error');
+    assert.strictEqual(r.exitCode, 2);
   });
 
   test('ENOENT spawn', () => {

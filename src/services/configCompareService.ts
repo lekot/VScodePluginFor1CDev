@@ -33,6 +33,9 @@ function vscodeCancellation(token: vscode.CancellationToken): IbcmdStreamCancell
 interface InfobaseConfigExportResult {
   readonly ok: boolean;
   readonly message: string;
+  readonly status?: 'success' | 'cancelled' | 'inDoubt' | 'error';
+  readonly effectPossible?: boolean;
+  readonly termination?: import('./ibcmd/processTreeTermination').ProcessTreeTerminationOutcome;
 }
 
 type PreparedInfobaseConfigExport =
@@ -106,6 +109,9 @@ async function prepareInfobaseConfigExport(params: {
         return {
           ok: interpreted.status === 'success',
           message: interpreted.userMessage,
+          status: interpreted.status,
+          effectPossible: interpreted.effectPossible,
+          termination: interpreted.termination,
         };
       },
       dispose: prep.dispose,
@@ -208,13 +214,13 @@ export async function runCompareInfobaseConfigurations(params: {
       }
 
       if (!r1 || !r1.ok) {
-        void vscode.window.showErrorMessage(`Выгрузка «${entryA.name}»: ${r1?.message ?? 'не выполнена'}`);
+        showComparisonExportFailure(entryA.name, r1);
         showIbcmdInfobaseOutputChannel();
         scheduleCleanup();
         return;
       }
       if (!r2 || !r2.ok) {
-        void vscode.window.showErrorMessage(`Выгрузка «${entryB.name}»: ${r2?.message ?? 'не выполнена'}`);
+        showComparisonExportFailure(entryB.name, r2);
         showIbcmdInfobaseOutputChannel();
         scheduleCleanup();
         return;
@@ -243,4 +249,16 @@ export async function runCompareInfobaseConfigurations(params: {
       scheduleCleanup();
     },
   );
+}
+
+function showComparisonExportFailure(
+  entryName: string,
+  result: InfobaseConfigExportResult | undefined,
+): void {
+  const message = `Выгрузка «${entryName}»: ${result?.message ?? 'не выполнена'}`;
+  if (result?.status === 'inDoubt') {
+    void vscode.window.showWarningMessage(message);
+  } else {
+    void vscode.window.showErrorMessage(message);
+  }
 }
