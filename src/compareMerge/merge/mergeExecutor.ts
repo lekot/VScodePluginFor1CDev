@@ -1,7 +1,6 @@
-import { createHash } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 
 import { parseBslRoutines } from '../../bsl/routineRangeProvider';
 import type { BslRoutineInfo, BslTextRange } from '../../bsl/bslRoutineTypes';
@@ -18,6 +17,23 @@ import type {
 } from '../bsl/bslRoutineMergePlanTypes';
 import type { CompareMessage } from '../domain/compareContracts';
 import type { CompareSession } from '../domain/compareSession';
+import {
+  ConfigurationMutationEngine,
+  getConfigurationMutationEngine,
+  type MutationReceipt,
+} from '../../services/configurationSession/ConfigurationMutationEngine';
+import type { ConfigurationId } from '../../services/configurationSession/types';
+import { MutationPlanError } from '../../services/configurationSession/mutationPlan';
+import {
+  MutationReceiptError,
+  projectMutationFailure,
+  type MutationFailureProjection,
+  type NonCommittedMutationReceipt,
+} from '../../services/configurationSession/mutationReceiptError';
+import { assertJournalNamespace, assertNoSymlinkSegments, assertPathWithinRoot, canonicalizePathWithMissingSuffix, isPathInside, isSamePath, PathBoundaryError } from '../../services/configurationSession/pathBoundary';
+import { exportMergeBackupArtifacts, MergeBackupArtifactExportError } from './mergeBackupArtifacts';
+import { buildMergeMutationPlan, type PreparedMergeAction } from './mergeMutationPlan';
+import { captureMergePath, mergeSnapshotHash, type MergePathSnapshot, type MergeSnapshotDirectory } from './mergeSnapshot';
 import { applyXmlPatch as applyDomXmlPatch } from '../xml/xmlPatch';
 import {
   materializeTrustedPreflight,
@@ -28,15 +44,13 @@ import {
   type MergePreview,
   type PreflightResult,
 } from './mergePlanner';
-import { writeAtomicWithBackup, type AtomicWriteFileSystem } from './atomicFileWriter';
 
 export interface MergeExecutorInput {
   session: CompareSession;
   preflight: PreflightResult;
-  fileSystem?: MergeExecutorFileSystem;
+  mutationEngine?: ConfigurationMutationEngine;
+  configurationId?: ConfigurationId;
 }
-
-export type MergeExecutorFileSystem = AtomicWriteFileSystem;
 
 export interface MergeExecutionOperationResult {
   operationId: string;
@@ -55,6 +69,8 @@ export interface MergeExecutionResult {
   failed: MergeExecutionOperationResult[];
   backupPaths: string[];
   diagnostics: CompareMessage[];
+  receipt?: MutationReceipt<unknown>;
+  mutationFailure?: MutationFailureProjection;
 }
 
 type ResolvedOperation =
@@ -73,6 +89,7 @@ interface ResolvedTextWriteOperation {
   rootUri?: string;
   currentSource: string;
   nextSource: string;
+  before: MergePathSnapshot;
 }
 
 interface ResolvedXmlTextWriteGroup {
@@ -83,6 +100,7 @@ interface ResolvedXmlTextWriteGroup {
   rootUri?: string;
   currentSource: string;
   nextSource: string;
+  before: MergePathSnapshot;
 }
 
 interface ResolvedFileDeleteOperation {
@@ -91,6 +109,7 @@ interface ResolvedFileDeleteOperation {
   targetPath: string;
   backupPath: string;
   expectedOldHash: string;
+  before: MergePathSnapshot;
 }
 
 interface ResolvedFileCopyOperation {
@@ -102,6 +121,8 @@ interface ResolvedFileCopyOperation {
   backupPath: string;
   expectedOldHash: string;
   sourceHash: string;
+  sourceContentBase64: string;
+  before: MergePathSnapshot;
 }
 
 interface ResolvedFolderOperation {
@@ -113,31 +134,9 @@ interface ResolvedFolderOperation {
   backupPath: string;
   expectedOldHash: string;
   sourceHash?: string;
+  sourceSnapshot?: MergeSnapshotDirectory;
+  before: MergePathSnapshot;
 }
-
-const nodeFileSystem: MergeExecutorFileSystem = {
-  async mkdir(directoryPath, options) {
-    await fs.mkdir(directoryPath, options);
-  },
-  realpath(filePath) {
-    return fs.realpath(filePath);
-  },
-  readFile(filePath, encoding) {
-    return fs.readFile(filePath, encoding);
-  },
-  open(filePath, flags) {
-    return fs.open(filePath, flags);
-  },
-  rename(oldPath, newPath) {
-    return fs.rename(oldPath, newPath);
-  },
-  copyFile(sourcePath, targetPath) {
-    return fs.copyFile(sourcePath, targetPath);
-  },
-  async rm(filePath, options) {
-    await fs.rm(filePath, options);
-  },
-};
 
 export async function executeBslMergePreview(
   input: MergeExecutorInput
@@ -209,7 +208,6 @@ export async function executeBslMergePreview(
     return result;
   }
 
-  const fileSystem = input.fileSystem ?? nodeFileSystem;
   const rootUri = targetRootUriFor(input.session, trustedPreview.targetSourceId);
   if (!rootUri) {
     result.failed.push(
@@ -222,15 +220,39 @@ export async function executeBslMergePreview(
     return result;
   }
 
+  const rootPath = uriToPath(rootUri);
+  if (!rootPath) {
+    result.failed.push(
+      failureForPreview(
+        input.preflight.approvedPreviewId,
+        'MERGE_TARGET_ROOT_MISSING',
+        'Left configuration root is not a local filesystem path.'
+      )
+    );
+    return result;
+  }
+  let capturedCanonicalRoot: string;
+  try {
+    capturedCanonicalRoot = await fs.realpath(rootPath);
+  } catch (error) {
+    result.failed.push(failureForPreview(
+      input.preflight.approvedPreviewId,
+      'MERGE_TARGET_ROOT_MISSING',
+      `Left configuration root cannot be canonicalized: ${errorMessage(error)}`
+    ));
+    return result;
+  }
+
   const resolvedOperations: ResolvedOperation[] = [];
+  const canonicalRootUri = pathToFileURL(capturedCanonicalRoot).toString();
 
   for (const operation of trustedOperations) {
     const sourceRootUri = sourceRootUriFor(input.session, operation.sourceId, operation.snapshotId);
     const resolved = await resolveOperation(
       operation,
       trustedPreflight.backupPlan,
-      fileSystem,
-      rootUri,
+      canonicalRootUri,
+      capturedCanonicalRoot,
       sourceRootUri
     );
     if ('failure' in resolved) {
@@ -246,69 +268,290 @@ export async function executeBslMergePreview(
   }
 
   const executionUnits = buildExecutionUnits(resolvedOperations);
-  const appliedOperations: ResolvedExecutionUnit[] = [];
-  for (const resolved of executionUnits) {
-    const applyResult = await applyResolvedOperation(resolved, fileSystem, rootUri);
-    result.diagnostics.push(...applyResult.diagnostics.map(cloneCompareMessage));
-    if (!applyResult.ok) {
-      const failedOperation = firstOperationOf(resolved);
-      result.failed.push(
-        failure(
-          failedOperation,
-          applyResult.code,
-          applyResult.message,
-          applyResult.backupPath ?? resolved.backupPath
-        )
-      );
-      const rollbackResult = await rollbackAppliedOperations(appliedOperations, fileSystem);
-      result.failed.push(...rollbackResult.failed);
-      result.diagnostics.push(...rollbackResult.diagnostics);
+  const actions: PreparedMergeAction[] = [];
+  for (const unit of executionUnits) {
+    const action = await prepareMutationAction(unit);
+    if ('failure' in action) {
+      result.failed.push(action.failure);
       return result;
     }
-
-    for (const operation of operationsOf(resolved)) {
-      result.applied.push({
-        operationId: operation.operationId,
-        kind: operation.kind,
-        targetUri: operation.targetUri,
-        backupPath: resolved.backupPath,
-      });
-    }
-    result.backupPaths.push(resolved.backupPath);
-    appliedOperations.push(resolved);
+    actions.push(action.action);
   }
 
-  if (result.failed.length === 0 && result.skipped.length === 0) {
+  const overlapFailures = validateTargetOverlaps(actions);
+  if (overlapFailures.length > 0) {
+    result.failed.push(...overlapFailures);
+    return result;
+  }
+
+  const rightRootUri = input.session.state.sources.find((source) => source.side === 'right')?.rootUri;
+  const rightRootPath = rightRootUri ? uriToPath(rightRootUri) : undefined;
+  if (!rightRootPath) {
+    result.failed.push(failureForPreview(
+      input.preflight.approvedPreviewId,
+      'MERGE_SOURCE_ROOT_MISSING',
+      'Right configuration root is not available for backup boundary checks.'
+    ));
+    return result;
+  }
+
+  let exportedBackups: readonly { operationId: string; backupPath: string }[] = [];
+  const engine = input.mutationEngine ?? getConfigurationMutationEngine();
+  const receipt = await engine.executePlan(
+    capturedCanonicalRoot,
+    {
+      kind: 'configuration-compare-merge',
+      resourcePath: rootPath,
+      expectedConfigurationId: input.configurationId,
+    },
+    async (snapshot) => {
+      const resolvedRoot = await fs.realpath(snapshot.rootPath);
+      if (!isSamePath(capturedCanonicalRoot, resolvedRoot)) {
+        throw new MutationPlanError(
+          'PLAN_CONFLICT',
+          'Merge target root changed after the compare snapshot was captured.'
+        );
+      }
+      if (
+        input.configurationId !== undefined &&
+        snapshot.configurationId !== input.configurationId
+      ) {
+        throw new MutationPlanError(
+          'PLAN_CONFLICT',
+          'Merge target configuration identity changed after the compare snapshot was captured.'
+        );
+      }
+
+      const snapshotsByOperationId = new Map<string, MergePathSnapshot>();
+      for (const action of actions) {
+        for (const operation of action.operations) {
+          snapshotsByOperationId.set(operation.operationId, action.before);
+        }
+      }
+      try {
+        exportedBackups = await exportMergeBackupArtifacts({
+          backupPlan: trustedPreflight.backupPlan,
+          leftRootPath: capturedCanonicalRoot,
+          rightRootPath,
+          snapshotsByOperationId,
+        });
+      } catch (error) {
+        if (error instanceof MergeBackupArtifactExportError) {
+          exportedBackups = error.createdArtifacts;
+        }
+        throw error;
+      }
+      const backupPathsByOperationId = new Map(
+        exportedBackups.map((artifact) => [artifact.operationId, artifact.backupPath])
+      );
+      const actionsWithBackups = actions.map((action) => ({
+        ...action,
+        backupPaths: action.operations
+          .map((operation) => backupPathsByOperationId.get(operation.operationId))
+          .filter((backupPath): backupPath is string => backupPath !== undefined),
+      }));
+      return buildMergeMutationPlan(capturedCanonicalRoot, actionsWithBackups);
+    }
+  );
+
+  result.receipt = receipt;
+  result.backupPaths = exportedBackups.map((artifact) => artifact.backupPath);
+  if (receipt.status !== 'committed') {
+    const projectedFailure = projectMutationFailure(
+      new MutationReceiptError(receipt as NonCommittedMutationReceipt)
+    );
+    if (projectedFailure) {
+      result.mutationFailure = projectedFailure;
+    }
+    result.failed.push(...actions.flatMap((action) => action.operations.map((operation) =>
+      failure(
+        operation,
+        projectedFailure?.code ?? receipt.code ?? receipt.status.toUpperCase(),
+        projectedFailure?.message ?? receipt.message ?? 'Merge plan could not be applied.',
+        exportedBackups.find((backup) => backup.operationId === operation.operationId)?.backupPath
+      )
+    )));
+    if (receipt.status === 'recoveryRequired' || receipt.status === 'inDoubt') {
+      result.diagnostics.push({
+        severity: 'error',
+        code: receipt.code ?? 'MERGE_RECOVERY_REQUIRED',
+        phase: 'execute',
+        sourceId: trustedPreview.targetSourceId,
+        blocking: true,
+        suggestedAction: projectedFailure?.message ?? 'Проверьте состояние конфигурации и журнал перед повторным запуском.',
+      });
+    }
+    return result;
+  }
+
+  result.applied = [...(receipt.result?.applied ?? [])];
+  result.backupPaths = [...(receipt.result?.backupPaths ?? result.backupPaths)];
+  try {
     input.session.markPreviewExecuted(input.preflight.approvedPreviewId);
+  } catch (error) {
+    result.diagnostics.push({
+      severity: 'warning',
+      code: 'MERGE_PREVIEW_BOOKKEEPING_FAILED',
+      phase: 'execute',
+      sourceId: trustedPreview.targetSourceId,
+      blocking: false,
+      suggestedAction: `Изменения сохранены, но состояние preview не обновлено: ${errorMessage(error)}`,
+    });
   }
 
   return result;
 }
 
+async function prepareMutationAction(
+  resolved: ResolvedExecutionUnit,
+): Promise<{ action: PreparedMergeAction } | { failure: MergeExecutionOperationResult }> {
+  if (resolved.type === 'xmlTextWriteGroup') {
+    const next = applyXmlTextWriteGroup(resolved);
+    if (!next.ok) {
+      return {
+        failure: failure(firstOperationOf(resolved), next.code, next.message, resolved.backupPath),
+      };
+    }
+    return {
+      action: {
+        targetPath: resolved.targetPath,
+        targetUri: firstOperationOf(resolved).targetUri!,
+        operations: operationsOf(resolved),
+        before: resolved.before,
+        kind: 'writeFile',
+        contentBase64: Buffer.from(next.source, 'utf8').toString('base64'),
+        backupPaths: [],
+      },
+    };
+  }
+  if (resolved.type === 'textWrite') {
+    return {
+      action: {
+        targetPath: resolved.targetPath,
+        targetUri: resolved.operation.targetUri!,
+        operations: [resolved.operation],
+        before: resolved.before,
+        kind: 'writeFile',
+        contentBase64: Buffer.from(resolved.nextSource, 'utf8').toString('base64'),
+        backupPaths: [],
+      },
+    };
+  }
+  if (resolved.type === 'fileCopy') {
+    return {
+      action: {
+        targetPath: resolved.targetPath,
+        targetUri: resolved.operation.targetUri!,
+        operations: [resolved.operation],
+        before: resolved.before,
+        kind: 'writeFile',
+        contentBase64: resolved.sourceContentBase64,
+        backupPaths: [],
+      },
+    };
+  }
+  if (resolved.type === 'fileDelete') {
+    return {
+      action: {
+        targetPath: resolved.targetPath,
+        targetUri: resolved.operation.targetUri!,
+        operations: [resolved.operation],
+        before: resolved.before,
+        kind: 'deleteFile',
+        backupPaths: [],
+      },
+    };
+  }
+  if (resolved.operation.kind === 'folderDelete') {
+    return {
+      action: {
+        targetPath: resolved.targetPath,
+        targetUri: resolved.operation.targetUri!,
+        operations: [resolved.operation],
+        before: resolved.before,
+        kind: 'deleteDirectory',
+        backupPaths: [],
+      },
+    };
+  }
+  if (!resolved.sourceSnapshot) {
+    return {
+      failure: failure(resolved.operation, 'MERGE_SOURCE_SNAPSHOT_MISSING', 'Folder source snapshot is missing.'),
+    };
+  }
+  return {
+    action: {
+      targetPath: resolved.targetPath,
+      targetUri: resolved.operation.targetUri!,
+      operations: [resolved.operation],
+      before: resolved.before,
+      kind: 'replaceDirectory',
+      directory: resolved.sourceSnapshot,
+      backupPaths: [],
+    },
+  };
+}
+
+function validateTargetOverlaps(actions: readonly PreparedMergeAction[]): MergeExecutionOperationResult[] {
+  const failures: MergeExecutionOperationResult[] = [];
+  for (let leftIndex = 0; leftIndex < actions.length; leftIndex += 1) {
+    const left = actions[leftIndex]!;
+    for (let rightIndex = leftIndex + 1; rightIndex < actions.length; rightIndex += 1) {
+      const right = actions[rightIndex]!;
+      if (
+        isSamePath(left.targetPath, right.targetPath) ||
+        isPathInside(left.targetPath, right.targetPath) ||
+        isPathInside(right.targetPath, left.targetPath)
+      ) {
+        for (const operation of [...left.operations, ...right.operations]) {
+          failures.push(failure(
+            operation,
+            'MERGE_OVERLAPPING_TARGETS',
+            'Merge preview contains overlapping target paths.'
+          ));
+        }
+      }
+    }
+  }
+  return failures;
+}
+
 async function resolveOperation(
   operation: MergeOperation,
   backupPlan: BackupPlan,
-  fileSystem: MergeExecutorFileSystem,
   rootUri: string,
+  canonicalRootPath: string,
   sourceRootUri: string | undefined
 ): Promise<{ resolved: ResolvedOperation } | { failure: MergeExecutionOperationResult }> {
+  let canonicalTargetPath: string | undefined;
+  if (operation.targetUri) {
+    const targetPath = uriToPath(operation.targetUri);
+    if (!targetPath) {
+      return { failure: failure(operation, 'MERGE_TARGET_GUARD_MISSING', 'Target uri is not a local file uri.') };
+    }
+    const targetBoundary = await resolvePathBoundary(canonicalRootPath, targetPath, false);
+    if ('failure' in targetBoundary) {
+      return { failure: failure(operation, targetBoundary.failure.code, targetBoundary.failure.message) };
+    }
+    canonicalTargetPath = targetBoundary.canonicalTarget;
+  }
   if (operation.kind === 'bslLogicalRoutineMerge') {
-    return resolveLogicalOperation(operation, backupPlan, fileSystem, rootUri);
+    return resolveLogicalOperation(operation, backupPlan, rootUri, canonicalTargetPath);
   }
   if (operation.kind === 'bslRoutineInsert' || operation.kind === 'bslRoutineDelete') {
-    return resolveBslRoutineOperation(operation, backupPlan, fileSystem, rootUri);
+    return resolveBslRoutineOperation(operation, backupPlan, rootUri, canonicalTargetPath);
   }
   if (operation.kind === 'xmlNodeReplace' || operation.kind === 'xmlNodeInsert' || operation.kind === 'xmlNodeDelete') {
-    return resolveXmlOperation(operation, backupPlan, fileSystem, rootUri);
+    return resolveXmlOperation(operation, backupPlan, rootUri, canonicalTargetPath);
   }
   if (operation.kind === 'fileCopy') {
-    return resolveFileCopyOperation(operation, backupPlan, fileSystem, rootUri, sourceRootUri);
+    return resolveFileCopyOperation(operation, backupPlan, rootUri, sourceRootUri, canonicalTargetPath);
   }
   if (operation.kind === 'fileDelete') {
-    return resolveFileDeleteOperation(operation, backupPlan, fileSystem, rootUri);
+    return resolveFileDeleteOperation(operation, backupPlan, rootUri, canonicalTargetPath);
   }
   if (operation.kind === 'folderCopy' || operation.kind === 'folderDelete') {
-    return resolveFolderOperation(operation, backupPlan, rootUri, sourceRootUri);
+    return resolveFolderOperation(operation, backupPlan, rootUri, sourceRootUri, canonicalTargetPath);
   }
 
   return {
@@ -323,8 +566,8 @@ async function resolveOperation(
 async function resolveLogicalOperation(
   operation: MergeOperation,
   backupPlan: BackupPlan,
-  fileSystem: MergeExecutorFileSystem,
-  rootUri: string
+  rootUri: string,
+  canonicalTargetPath?: string,
 ): Promise<{ resolved: ResolvedTextWriteOperation } | { failure: MergeExecutionOperationResult }> {
   if (!operation.targetUri || !operation.expectedOldHash || !operation.logicalRoutine) {
     return {
@@ -352,16 +595,16 @@ async function resolveLogicalOperation(
     };
   }
 
-  const targetPath = uriToPath(operation.targetUri);
+  const targetPath = canonicalTargetPath ?? uriToPath(operation.targetUri);
   if (!targetPath) {
     return {
       failure: failure(operation, 'MERGE_TARGET_GUARD_MISSING', 'Target uri is not a file uri.'),
     };
   }
 
-  let currentSource: string;
+  let before: MergePathSnapshot;
   try {
-    currentSource = await fileSystem.readFile(targetPath, 'utf8');
+    before = await captureMergePath(targetPath);
   } catch (error) {
     return {
       failure: failure(
@@ -371,6 +614,10 @@ async function resolveLogicalOperation(
       ),
     };
   }
+  if (before.state === 'missing' || before.type !== 'file' || before.contentBase64 === undefined) {
+    return { failure: failure(operation, 'MERGE_TARGET_READ_FAILED', 'Target file is unavailable for merge materialization.') };
+  }
+  const currentSource = Buffer.from(before.contentBase64, 'base64').toString('utf8');
   if (hashText(currentSource) !== operation.expectedOldHash) {
     return {
       failure: failure(
@@ -426,6 +673,7 @@ async function resolveLogicalOperation(
       rootUri,
       currentSource,
       nextSource,
+      before,
     },
   };
 }
@@ -433,8 +681,8 @@ async function resolveLogicalOperation(
 async function resolveXmlOperation(
   operation: MergeOperation,
   backupPlan: BackupPlan,
-  fileSystem: MergeExecutorFileSystem,
-  rootUri: string
+  rootUri: string,
+  canonicalTargetPath?: string,
 ): Promise<{ resolved: ResolvedTextWriteOperation } | { failure: MergeExecutionOperationResult }> {
   if (!operation.targetUri || !operation.expectedOldHash || !operation.newHash || !operation.xmlPatch) {
     return {
@@ -449,21 +697,25 @@ async function resolveXmlOperation(
     };
   }
 
-  const targetPath = uriToPath(operation.targetUri);
+  const targetPath = canonicalTargetPath ?? uriToPath(operation.targetUri);
   if (!targetPath) {
     return {
       failure: failure(operation, 'MERGE_TARGET_GUARD_MISSING', 'Target uri is not a file uri.'),
     };
   }
 
-  let currentSource: string;
+  let before: MergePathSnapshot;
   try {
-    currentSource = await fileSystem.readFile(targetPath, 'utf8');
+    before = await captureMergePath(targetPath);
   } catch (error) {
     return {
       failure: failure(operation, 'MERGE_TARGET_READ_FAILED', `Failed to read target file: ${errorMessage(error)}`),
     };
   }
+  if (before.state === 'missing' || before.type !== 'file' || before.contentBase64 === undefined) {
+    return { failure: failure(operation, 'MERGE_TARGET_READ_FAILED', 'Target XML file is unavailable for merge materialization.') };
+  }
+  const currentSource = Buffer.from(before.contentBase64, 'base64').toString('utf8');
   if (hashText(currentSource) !== operation.expectedOldHash) {
     return {
       failure: failure(operation, 'MERGE_STALE_TARGET_HASH', 'Target XML file hash changed before execution.'),
@@ -492,6 +744,7 @@ async function resolveXmlOperation(
       rootUri,
       currentSource,
       nextSource,
+      before,
     },
   };
 }
@@ -499,8 +752,8 @@ async function resolveXmlOperation(
 async function resolveBslRoutineOperation(
   operation: MergeOperation,
   backupPlan: BackupPlan,
-  fileSystem: MergeExecutorFileSystem,
-  rootUri: string
+  rootUri: string,
+  canonicalTargetPath?: string,
 ): Promise<{ resolved: ResolvedTextWriteOperation } | { failure: MergeExecutionOperationResult }> {
   const payload = operation.bslRoutine;
   if (!operation.targetUri || !operation.expectedOldHash || !operation.newHash || !payload) {
@@ -530,21 +783,25 @@ async function resolveBslRoutineOperation(
     };
   }
 
-  const targetPath = uriToPath(operation.targetUri);
+  const targetPath = canonicalTargetPath ?? uriToPath(operation.targetUri);
   if (!targetPath) {
     return {
       failure: failure(operation, 'MERGE_TARGET_GUARD_MISSING', 'Target uri is not a file uri.'),
     };
   }
 
-  let currentSource: string;
+  let before: MergePathSnapshot;
   try {
-    currentSource = await fileSystem.readFile(targetPath, 'utf8');
+    before = await captureMergePath(targetPath);
   } catch (error) {
     return {
       failure: failure(operation, 'MERGE_TARGET_READ_FAILED', `Failed to read target file: ${errorMessage(error)}`),
     };
   }
+  if (before.state === 'missing' || before.type !== 'file' || before.contentBase64 === undefined) {
+    return { failure: failure(operation, 'MERGE_TARGET_READ_FAILED', 'Target BSL file is unavailable for merge materialization.') };
+  }
+  const currentSource = Buffer.from(before.contentBase64, 'base64').toString('utf8');
   if (hashText(currentSource) !== operation.expectedOldHash) {
     return {
       failure: failure(operation, 'MERGE_STALE_TARGET_HASH', 'Target BSL file hash changed before execution.'),
@@ -583,6 +840,7 @@ async function resolveBslRoutineOperation(
       rootUri,
       currentSource,
       nextSource,
+      before,
     },
   };
 }
@@ -590,9 +848,9 @@ async function resolveBslRoutineOperation(
 async function resolveFileCopyOperation(
   operation: MergeOperation,
   backupPlan: BackupPlan,
-  fileSystem: MergeExecutorFileSystem,
   rootUri: string,
-  sourceRootUri: string | undefined
+  sourceRootUri: string | undefined,
+  canonicalTargetPath?: string,
 ): Promise<{ resolved: ResolvedFileCopyOperation } | { failure: MergeExecutionOperationResult }> {
   const payload = operation.fileOperation;
   if (
@@ -615,7 +873,7 @@ async function resolveFileCopyOperation(
   }
 
   const sourcePath = uriToPath(payload.sourcePath) ?? payload.sourcePath;
-  const targetPath = uriToPath(operation.targetUri);
+  const targetPath = canonicalTargetPath ?? uriToPath(operation.targetUri);
   if (!targetPath) {
     return {
       failure: failure(operation, 'MERGE_TARGET_GUARD_MISSING', 'Target uri is not a file uri.'),
@@ -626,26 +884,36 @@ async function resolveFileCopyOperation(
   if (boundaryFailure) {
     return { failure: failure(operation, boundaryFailure.code, boundaryFailure.message) };
   }
-  const sourceBoundaryFailure = await ensureSourceInsideRoot(sourceRootUri, sourcePath);
+  const sourceBoundaryFailure = await ensureSourceInsideRoot(sourceRootUri, sourcePath, rootUri);
   if (sourceBoundaryFailure) {
     return { failure: failure(operation, sourceBoundaryFailure.code, sourceBoundaryFailure.message) };
   }
 
-  let sourceHash: string;
+  let sourceSnapshot: MergePathSnapshot;
   try {
-    sourceHash = hashBuffer(await readBinaryFile(sourcePath, fileSystem));
+    sourceSnapshot = await captureMergePath(sourcePath);
   } catch (error) {
     return {
       failure: failure(operation, 'MERGE_TARGET_READ_FAILED', `Failed to read source file: ${errorMessage(error)}`),
     };
   }
+  if (sourceSnapshot.state === 'missing' || sourceSnapshot.type !== 'file' || sourceSnapshot.contentBase64 === undefined) {
+    return { failure: failure(operation, 'MERGE_SOURCE_HASH_MISMATCH', 'Source file snapshot is unavailable.') };
+  }
+  const sourceHash = mergeSnapshotHash(sourceSnapshot);
   if (sourceHash !== payload.sourceHash || sourceHash !== operation.newHash) {
     return {
       failure: failure(operation, 'MERGE_SOURCE_HASH_MISMATCH', 'Source file hash does not match merge preview.'),
     };
   }
 
-  const currentHash = await hashFileOrMissing(targetPath, fileSystem);
+  let before: MergePathSnapshot;
+  try {
+    before = await captureMergePath(targetPath);
+  } catch (error) {
+    return { failure: failure(operation, 'MERGE_TARGET_READ_FAILED', `Failed to read target file: ${errorMessage(error)}`) };
+  }
+  const currentHash = before.state === 'missing' ? MISSING_TARGET_HASH : before.type === 'file' ? before.hash : undefined;
   if (currentHash !== operation.expectedOldHash) {
     return {
       failure: failure(operation, 'MERGE_STALE_TARGET_HASH', 'Target file hash changed before execution.'),
@@ -662,6 +930,8 @@ async function resolveFileCopyOperation(
       backupPath: backup.backupPath,
       expectedOldHash: operation.expectedOldHash,
       sourceHash,
+      sourceContentBase64: sourceSnapshot.contentBase64,
+      before,
     },
   };
 }
@@ -669,8 +939,8 @@ async function resolveFileCopyOperation(
 async function resolveFileDeleteOperation(
   operation: MergeOperation,
   backupPlan: BackupPlan,
-  fileSystem: MergeExecutorFileSystem,
-  rootUri: string
+  rootUri: string,
+  canonicalTargetPath?: string,
 ): Promise<{ resolved: ResolvedFileDeleteOperation } | { failure: MergeExecutionOperationResult }> {
   if (!operation.targetUri || !operation.expectedOldHash) {
     return {
@@ -679,7 +949,7 @@ async function resolveFileDeleteOperation(
   }
 
   const backup = backupItemFor(operation, backupPlan);
-  const targetPath = uriToPath(operation.targetUri);
+  const targetPath = canonicalTargetPath ?? uriToPath(operation.targetUri);
   if (!backup || !targetPath) {
     return {
       failure: failure(operation, 'MERGE_BACKUP_PLAN_INCOMPLETE', 'Backup plan or target uri is missing for operation.'),
@@ -691,14 +961,15 @@ async function resolveFileDeleteOperation(
     return { failure: failure(operation, boundaryFailure.code, boundaryFailure.message) };
   }
 
-  let currentHash: string;
+  let before: MergePathSnapshot;
   try {
-    currentHash = hashBuffer(await readBinaryFile(targetPath, fileSystem));
+    before = await captureMergePath(targetPath);
   } catch (error) {
     return {
       failure: failure(operation, 'MERGE_TARGET_READ_FAILED', `Failed to read target file: ${errorMessage(error)}`),
     };
   }
+  const currentHash = before.state === 'missing' ? MISSING_TARGET_HASH : before.type === 'file' ? before.hash : undefined;
   if (currentHash !== operation.expectedOldHash) {
     return {
       failure: failure(operation, 'MERGE_STALE_TARGET_HASH', 'Target file hash changed before execution.'),
@@ -712,6 +983,7 @@ async function resolveFileDeleteOperation(
       targetPath,
       backupPath: backup.backupPath,
       expectedOldHash: operation.expectedOldHash,
+      before,
     },
   };
 }
@@ -720,7 +992,8 @@ async function resolveFolderOperation(
   operation: MergeOperation,
   backupPlan: BackupPlan,
   rootUri: string,
-  sourceRootUri: string | undefined
+  sourceRootUri: string | undefined,
+  canonicalTargetPath?: string,
 ): Promise<{ resolved: ResolvedFolderOperation } | { failure: MergeExecutionOperationResult }> {
   const payload = operation.fileOperation;
   if (!payload || !operation.targetUri || !operation.expectedOldHash) {
@@ -730,7 +1003,7 @@ async function resolveFolderOperation(
   }
 
   const backup = backupItemFor(operation, backupPlan);
-  const targetPath = uriToPath(operation.targetUri);
+  const targetPath = canonicalTargetPath ?? uriToPath(operation.targetUri);
   const sourcePath = payload.sourcePath ? uriToPath(payload.sourcePath) ?? payload.sourcePath : undefined;
   if (!backup || !targetPath) {
     return {
@@ -743,23 +1016,40 @@ async function resolveFolderOperation(
     return { failure: failure(operation, boundaryFailure.code, boundaryFailure.message) };
   }
 
-  const currentHash = await hashDirectoryOrMissing(targetPath);
+  let before: MergePathSnapshot;
+  try {
+    before = await captureMergePath(targetPath);
+  } catch (error) {
+    return { failure: failure(operation, 'MERGE_TARGET_READ_FAILED', `Failed to read target folder: ${errorMessage(error)}`) };
+  }
+  const currentHash = before.state === 'missing' ? MISSING_TARGET_HASH : before.type === 'directory' ? mergeSnapshotHash(before) : undefined;
   if (currentHash !== operation.expectedOldHash) {
     return {
       failure: failure(operation, 'MERGE_STALE_TARGET_HASH', 'Target folder hash changed before execution.'),
     };
   }
+  let sourceSnapshot: MergeSnapshotDirectory | undefined;
   if (operation.kind === 'folderCopy') {
     if (!sourcePath || !payload.sourceHash) {
       return {
         failure: failure(operation, 'MERGE_FILE_OPERATION_SOURCE_MISSING', 'Folder copy source is missing.'),
       };
     }
-    const sourceBoundaryFailure = await ensureSourceInsideRoot(sourceRootUri, sourcePath);
+    const sourceBoundaryFailure = await ensureSourceInsideRoot(sourceRootUri, sourcePath, rootUri);
     if (sourceBoundaryFailure) {
       return { failure: failure(operation, sourceBoundaryFailure.code, sourceBoundaryFailure.message) };
     }
-    const sourceHash = await hashDirectory(sourcePath);
+    let capturedSource: MergePathSnapshot;
+    try {
+      capturedSource = await captureMergePath(sourcePath);
+    } catch (error) {
+      return { failure: failure(operation, 'MERGE_SOURCE_HASH_MISMATCH', `Failed to capture source folder: ${errorMessage(error)}`) };
+    }
+    if (capturedSource.state === 'missing' || capturedSource.type !== 'directory') {
+      return { failure: failure(operation, 'MERGE_SOURCE_HASH_MISMATCH', 'Folder source is not a directory.') };
+    }
+    sourceSnapshot = capturedSource;
+    const sourceHash = mergeSnapshotHash(capturedSource);
     if (sourceHash !== payload.sourceHash || (operation.newHash && sourceHash !== operation.newHash)) {
       return {
         failure: failure(operation, 'MERGE_SOURCE_HASH_MISMATCH', 'Source folder hash does not match merge preview.'),
@@ -777,139 +1067,10 @@ async function resolveFolderOperation(
       backupPath: backup.backupPath,
       expectedOldHash: operation.expectedOldHash,
       sourceHash: operation.kind === 'folderCopy' ? payload.sourceHash : undefined,
+      sourceSnapshot,
+      before,
     },
   };
-}
-
-async function applyResolvedOperation(
-  resolved: ResolvedExecutionUnit,
-  fileSystem: MergeExecutorFileSystem,
-  rootUri: string
-): Promise<{ ok: true; backupPath: string; diagnostics: [] } | { ok: false; code: string; message: string; backupPath?: string; diagnostics: CompareMessage[] }> {
-  if (resolved.type === 'textWrite' || resolved.type === 'xmlTextWriteGroup') {
-    const operation = firstOperationOf(resolved);
-    const nextContentResult =
-      resolved.type === 'xmlTextWriteGroup'
-        ? applyXmlTextWriteGroup(resolved)
-        : { ok: true as const, source: resolved.nextSource };
-    if (!nextContentResult.ok) {
-      return {
-        ok: false,
-        code: nextContentResult.code,
-        message: nextContentResult.message,
-        backupPath: resolved.backupPath,
-        diagnostics: [executeDiagnostic(operation, nextContentResult.code, nextContentResult.message)],
-      };
-    }
-    const writeResult = await writeAtomicWithBackup({
-      rootUri: resolved.rootUri,
-      targetUri: operation.targetUri ?? '',
-      backupPath: resolved.backupPath,
-      expectedOldHash: operation.expectedOldHash ?? '',
-      nextContent: nextContentResult.source,
-      newHash: hashText(nextContentResult.source),
-      sourceId: operation.sourceId,
-      nodeId: operation.nodeId,
-      fileSystem,
-    });
-    if (!writeResult.ok) {
-      return writeResult;
-    }
-
-    return { ok: true, backupPath: writeResult.backupPath, diagnostics: [] };
-  }
-
-  if (resolved.type === 'fileCopy') {
-    return applyFileCopy(resolved, fileSystem, rootUri);
-  }
-
-  if (resolved.type === 'fileDelete') {
-    return applyFileDelete(resolved, fileSystem, rootUri);
-  }
-
-  return applyFolderOperation(resolved, rootUri);
-}
-
-async function rollbackAppliedOperations(
-  appliedOperations: readonly ResolvedExecutionUnit[],
-  fileSystem: MergeExecutorFileSystem
-): Promise<{ failed: MergeExecutionOperationResult[]; diagnostics: CompareMessage[] }> {
-  const failed: MergeExecutionOperationResult[] = [];
-  const diagnostics: CompareMessage[] = [];
-
-  for (const resolved of [...appliedOperations].reverse()) {
-    const rollback = await rollbackResolvedOperation(resolved, fileSystem);
-    if (!rollback.ok) {
-      const operation = firstOperationOf(resolved);
-      failed.push(
-        failure(
-          operation,
-          rollback.code,
-          rollback.message,
-          resolved.backupPath
-        )
-      );
-      diagnostics.push(executeDiagnostic(operation, rollback.code, rollback.message));
-    }
-  }
-
-  return { failed, diagnostics };
-}
-
-async function rollbackResolvedOperation(
-  resolved: ResolvedExecutionUnit,
-  fileSystem: MergeExecutorFileSystem
-): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
-  try {
-    if (resolved.type === 'xmlTextWriteGroup') {
-      await fileSystem.mkdir(path.dirname(resolved.targetPath), { recursive: true });
-      await fileSystem.copyFile(resolved.backupPath, resolved.targetPath);
-      return { ok: true };
-    }
-
-    if (resolved.type === 'folderCopy' || resolved.type === 'folderDelete') {
-      await rollbackFolderOperation(resolved);
-      return { ok: true };
-    }
-
-    if (isMissingTargetRollback(resolved)) {
-      await fileSystem.rm(resolved.targetPath, { force: true });
-      return { ok: true };
-    }
-
-    await fileSystem.mkdir(path.dirname(resolved.targetPath), { recursive: true });
-    await fileSystem.copyFile(resolved.backupPath, resolved.targetPath);
-    return { ok: true };
-  } catch (error) {
-    const operation = firstOperationOf(resolved);
-    return {
-      ok: false,
-      code: 'MERGE_ROLLBACK_FAILED',
-      message: `Rollback failed for ${operation.kind} operation ${operation.operationId}: ${errorMessage(error)}`,
-    };
-  }
-}
-
-async function rollbackFolderOperation(resolved: ResolvedFolderOperation): Promise<void> {
-  if (resolved.expectedOldHash === MISSING_TARGET_HASH) {
-    await fs.rm(resolved.targetPath, { recursive: true, force: true });
-    return;
-  }
-
-  await fs.rm(resolved.targetPath, { recursive: true, force: true });
-  await fs.mkdir(path.dirname(resolved.targetPath), { recursive: true });
-  await fs.cp(resolved.backupPath, resolved.targetPath, {
-    recursive: true,
-    errorOnExist: true,
-    force: false,
-  });
-}
-
-function isMissingTargetRollback(resolved: ResolvedOperation): boolean {
-  return (
-    (resolved.type === 'fileCopy' || resolved.type === 'folderCopy') &&
-    resolved.expectedOldHash === MISSING_TARGET_HASH
-  );
 }
 
 function buildExecutionUnits(
@@ -932,7 +1093,7 @@ function buildExecutionUnits(
     const group = [resolved];
     for (let nextIndex = index + 1; nextIndex < resolvedOperations.length; nextIndex += 1) {
       const next = resolvedOperations[nextIndex]!;
-      if (isXmlTextWrite(next) && next.targetPath === resolved.targetPath) {
+      if (isXmlTextWrite(next) && isSamePath(next.targetPath, resolved.targetPath)) {
         group.push(next);
         groupedIndexes.add(nextIndex);
       }
@@ -956,6 +1117,7 @@ function buildXmlTextWriteGroup(
     rootUri: first.rootUri,
     currentSource: first.currentSource,
     nextSource: first.currentSource,
+    before: first.before,
   };
 }
 
@@ -1022,7 +1184,7 @@ function validateExecutableOperations(
     );
   const logicalOperations = operations.filter((operation) => operation.kind === 'bslLogicalRoutineMerge');
   if (logicalOperations.length > 1) {
-    const logicalTargetCount = new Set(logicalOperations.map(targetKeyForOperation)).size;
+    const logicalTargetCount = uniqueOperationTargets(logicalOperations).length;
     const code =
       logicalTargetCount > 1 ? 'MERGE_MULTIPLE_TARGET_FILES' : 'MERGE_MULTIPLE_EXECUTABLE_OPERATIONS';
     const message =
@@ -1039,14 +1201,17 @@ function validateExecutableOperations(
       )
     );
   }
-  const bslTextWritesByTarget = new Map<string, MergeOperation[]>();
+  const bslTextWriteGroups: MergeOperation[][] = [];
   for (const operation of operations.filter(isBslTextWriteOperation)) {
-    const targetKey = targetKeyForOperation(operation);
-    const targetOperations = bslTextWritesByTarget.get(targetKey) ?? [];
-    targetOperations.push(operation);
-    bslTextWritesByTarget.set(targetKey, targetOperations);
+    const targetPath = operation.targetUri ? uriToPath(operation.targetUri) ?? operation.targetUri : undefined;
+    const group = bslTextWriteGroups.find((existing) => {
+      const existingPath = existing[0]?.targetUri;
+      return targetPath !== undefined && existingPath !== undefined
+        && isSamePath(uriToPath(existingPath) ?? existingPath, targetPath);
+    });
+    (group ?? bslTextWriteGroups[bslTextWriteGroups.push([]) - 1]!).push(operation);
   }
-  for (const targetOperations of bslTextWritesByTarget.values()) {
+  for (const targetOperations of bslTextWriteGroups) {
     if (
       targetOperations.length > 1 &&
       targetOperations.some((operation) => operation.kind !== 'bslLogicalRoutineMerge')
@@ -1066,12 +1231,17 @@ function validateExecutableOperations(
   return failures;
 }
 
-function targetKeyForOperation(operation: MergeOperation): string {
-  if (!operation.targetUri) {
-    return operation.operationId;
+function uniqueOperationTargets(operations: readonly MergeOperation[]): string[] {
+  const targets: string[] = [];
+  for (const operation of operations) {
+    const target = operation.targetUri
+      ? uriToPath(operation.targetUri) ?? operation.targetUri
+      : operation.operationId;
+    if (!targets.some((existing) => isSamePath(existing, target))) {
+      targets.push(target);
+    }
   }
-
-  return normalizeBoundaryPath(uriToPath(operation.targetUri) ?? operation.targetUri);
+  return targets;
 }
 
 function isExecutorSupportedOperation(kind: MergeOperation['kind']): boolean {
@@ -1115,374 +1285,33 @@ function backupItemFor(
   return { backupPath };
 }
 
-async function applyFileDelete(
-  resolved: ResolvedFileDeleteOperation,
-  fileSystem: MergeExecutorFileSystem,
-  rootUri: string
-): Promise<{ ok: true; backupPath: string; diagnostics: [] } | { ok: false; code: string; message: string; backupPath?: string; diagnostics: CompareMessage[] }> {
-  const boundaryFailure = await ensureTargetInsideRoot(rootUri, resolved.targetPath);
-  if (boundaryFailure) {
-    return {
-      ok: false,
-      ...boundaryFailure,
-      diagnostics: [executeDiagnostic(resolved.operation, boundaryFailure.code, boundaryFailure.message)],
-    };
-  }
-
-  try {
-    const current = await readBinaryFile(resolved.targetPath, fileSystem);
-    if (hashBuffer(current) !== resolved.expectedOldHash) {
-      return {
-        ok: false,
-        code: 'MERGE_STALE_TARGET_HASH',
-        message: 'Target file hash changed immediately before deletion.',
-        diagnostics: [
-          executeDiagnostic(
-            resolved.operation,
-            'MERGE_STALE_TARGET_HASH',
-            'Target file hash changed immediately before deletion.'
-          ),
-        ],
-      };
-    }
-    await fileSystem.mkdir(path.dirname(resolved.backupPath), { recursive: true });
-    await fileSystem.copyFile(resolved.targetPath, resolved.backupPath);
-    await fileSystem.rm(resolved.targetPath, { force: true });
-    return { ok: true, backupPath: resolved.backupPath, diagnostics: [] };
-  } catch (error) {
-    return {
-      ok: false,
-      code: 'MERGE_FILE_DELETE_FAILED',
-      message: `File delete failed: ${errorMessage(error)}`,
-      backupPath: resolved.backupPath,
-      diagnostics: [
-        executeDiagnostic(
-          resolved.operation,
-          'MERGE_FILE_DELETE_FAILED',
-          `File delete failed: ${errorMessage(error)}`
-        ),
-      ],
-    };
-  }
-}
-
-async function applyFileCopy(
-  resolved: ResolvedFileCopyOperation,
-  fileSystem: MergeExecutorFileSystem,
-  rootUri: string
-): Promise<{ ok: true; backupPath: string; diagnostics: [] } | { ok: false; code: string; message: string; backupPath?: string; diagnostics: CompareMessage[] }> {
-  const boundaryFailure = await ensureTargetInsideRootAllowMissing(rootUri, resolved.targetPath);
-  if (boundaryFailure) {
-    return {
-      ok: false,
-      ...boundaryFailure,
-      diagnostics: [executeDiagnostic(resolved.operation, boundaryFailure.code, boundaryFailure.message)],
-    };
-  }
-  const sourceBoundaryFailure = await ensureSourceInsideRoot(resolved.sourceRootUri, resolved.sourcePath);
-  if (sourceBoundaryFailure) {
-    return {
-      ok: false,
-      ...sourceBoundaryFailure,
-      diagnostics: [executeDiagnostic(resolved.operation, sourceBoundaryFailure.code, sourceBoundaryFailure.message)],
-    };
-  }
-
-  let targetMutationStarted = false;
-  try {
-    const sourceHash = hashBuffer(await readBinaryFile(resolved.sourcePath, fileSystem));
-    if (sourceHash !== resolved.sourceHash || sourceHash !== resolved.operation.newHash) {
-      return {
-        ok: false,
-        code: 'MERGE_SOURCE_HASH_MISMATCH',
-        message: 'Source file hash changed immediately before copy.',
-        diagnostics: [
-          executeDiagnostic(
-            resolved.operation,
-            'MERGE_SOURCE_HASH_MISMATCH',
-            'Source file hash changed immediately before copy.'
-          ),
-        ],
-      };
-    }
-
-    const currentHash = await hashFileOrMissing(resolved.targetPath, fileSystem);
-    if (currentHash !== resolved.expectedOldHash) {
-      return {
-        ok: false,
-        code: 'MERGE_STALE_TARGET_HASH',
-        message: 'Target file hash changed immediately before copy.',
-        diagnostics: [
-          executeDiagnostic(
-            resolved.operation,
-            'MERGE_STALE_TARGET_HASH',
-            'Target file hash changed immediately before copy.'
-          ),
-        ],
-      };
-    }
-
-    await fileSystem.mkdir(path.dirname(resolved.targetPath), { recursive: true });
-    if (resolved.expectedOldHash !== MISSING_TARGET_HASH) {
-      await fileSystem.mkdir(path.dirname(resolved.backupPath), { recursive: true });
-      await fileSystem.copyFile(resolved.targetPath, resolved.backupPath);
-    }
-    targetMutationStarted = true;
-    await fileSystem.copyFile(resolved.sourcePath, resolved.targetPath);
-    return { ok: true, backupPath: resolved.backupPath, diagnostics: [] };
-  } catch (error) {
-    const diagnostics = [
-      executeDiagnostic(
-        resolved.operation,
-        'MERGE_FILE_COPY_FAILED',
-        `File copy failed: ${errorMessage(error)}`
-      ),
-    ];
-    if (targetMutationStarted) {
-      const restoreFailure = await restoreFileCopyAfterFailure(resolved, fileSystem);
-      if (restoreFailure) {
-        diagnostics.push(executeDiagnostic(resolved.operation, restoreFailure.code, restoreFailure.message));
-      }
-    }
-    return {
-      ok: false,
-      code: 'MERGE_FILE_COPY_FAILED',
-      message: `File copy failed: ${errorMessage(error)}`,
-      backupPath: resolved.backupPath,
-      diagnostics,
-    };
-  }
-}
-
-async function applyFolderOperation(
-  resolved: ResolvedFolderOperation,
-  rootUri: string
-): Promise<{ ok: true; backupPath: string; diagnostics: [] } | { ok: false; code: string; message: string; backupPath?: string; diagnostics: CompareMessage[] }> {
-  const boundaryFailure = await ensureTargetInsideRootAllowMissing(rootUri, resolved.targetPath);
-  if (boundaryFailure) {
-    return {
-      ok: false,
-      ...boundaryFailure,
-      diagnostics: [executeDiagnostic(resolved.operation, boundaryFailure.code, boundaryFailure.message)],
-    };
-  }
-
-  let targetMutationStarted = false;
-  try {
-    const currentHash = await hashDirectoryOrMissing(resolved.targetPath);
-    if (currentHash !== resolved.expectedOldHash) {
-      return {
-        ok: false,
-        code: 'MERGE_STALE_TARGET_HASH',
-        message: 'Target folder hash changed immediately before folder operation.',
-        diagnostics: [
-          executeDiagnostic(
-            resolved.operation,
-            'MERGE_STALE_TARGET_HASH',
-            'Target folder hash changed immediately before folder operation.'
-          ),
-        ],
-      };
-    }
-    if (resolved.expectedOldHash !== MISSING_TARGET_HASH) {
-      await fs.mkdir(path.dirname(resolved.backupPath), { recursive: true });
-      await fs.cp(resolved.targetPath, resolved.backupPath, {
-        recursive: true,
-        errorOnExist: true,
-        force: false,
-      });
-      targetMutationStarted = true;
-      await fs.rm(resolved.targetPath, { recursive: true, force: true });
-    }
-    if (resolved.type === 'folderCopy' && resolved.sourcePath) {
-      const sourceBoundaryFailure = await ensureSourceInsideRoot(resolved.sourceRootUri, resolved.sourcePath);
-      if (sourceBoundaryFailure) {
-        const diagnostics = [
-          executeDiagnostic(resolved.operation, sourceBoundaryFailure.code, sourceBoundaryFailure.message),
-        ];
-        if (targetMutationStarted) {
-          const restoreFailure = await restoreFolderOperationAfterFailure(resolved);
-          if (restoreFailure) {
-            diagnostics.push(executeDiagnostic(resolved.operation, restoreFailure.code, restoreFailure.message));
-          }
-        }
-        return {
-          ok: false,
-          ...sourceBoundaryFailure,
-          backupPath: resolved.backupPath,
-          diagnostics,
-        };
-      }
-      const sourceHash = await hashDirectory(resolved.sourcePath);
-      if (
-        sourceHash !== resolved.sourceHash ||
-        (resolved.operation.newHash && sourceHash !== resolved.operation.newHash)
-      ) {
-        const diagnostics = [
-          executeDiagnostic(
-            resolved.operation,
-            'MERGE_SOURCE_HASH_MISMATCH',
-            'Source folder changed immediately before copy.'
-          ),
-        ];
-        if (targetMutationStarted) {
-          const restoreFailure = await restoreFolderOperationAfterFailure(resolved);
-          if (restoreFailure) {
-            diagnostics.push(executeDiagnostic(resolved.operation, restoreFailure.code, restoreFailure.message));
-          }
-        }
-        return {
-          ok: false,
-          code: 'MERGE_SOURCE_HASH_MISMATCH',
-          message: 'Source folder changed immediately before copy.',
-          backupPath: resolved.backupPath,
-          diagnostics,
-        };
-      }
-      await fs.mkdir(path.dirname(resolved.targetPath), { recursive: true });
-      targetMutationStarted = true;
-      await fs.cp(resolved.sourcePath, resolved.targetPath, {
-        recursive: true,
-        errorOnExist: true,
-        force: false,
-      });
-    }
-
-    return { ok: true, backupPath: resolved.backupPath, diagnostics: [] };
-  } catch (error) {
-    const diagnostics = [
-      executeDiagnostic(
-        resolved.operation,
-        'MERGE_FOLDER_OPERATION_FAILED',
-        `Folder operation failed: ${errorMessage(error)}`
-      ),
-    ];
-    if (targetMutationStarted) {
-      const restoreFailure = await restoreFolderOperationAfterFailure(resolved);
-      if (restoreFailure) {
-        diagnostics.push(executeDiagnostic(resolved.operation, restoreFailure.code, restoreFailure.message));
-      }
-    }
-    return {
-      ok: false,
-      code: 'MERGE_FOLDER_OPERATION_FAILED',
-      message: `Folder operation failed: ${errorMessage(error)}`,
-      backupPath: resolved.backupPath,
-      diagnostics,
-    };
-  }
-}
-
-async function restoreFileCopyAfterFailure(
-  resolved: ResolvedFileCopyOperation,
-  fileSystem: MergeExecutorFileSystem
+async function ensureSourceInsideRoot(
+  sourceRootUri: string | undefined,
+  sourcePath: string,
+  targetRootUri?: string,
 ): Promise<{ code: string; message: string } | undefined> {
-  try {
-    if (resolved.expectedOldHash === MISSING_TARGET_HASH) {
-      await fileSystem.rm(resolved.targetPath, { force: true });
+  const candidateRootUris = [sourceRootUri, targetRootUri].filter(
+    (rootUri): rootUri is string => rootUri !== undefined
+  );
+  if (candidateRootUris.length === 0) {
+    return {
+      code: 'MERGE_SOURCE_ROOT_MISSING',
+      message: 'Source root uri is not available for copy operation.',
+    };
+  }
+  let lastMessage = 'Merge source path is outside all captured roots.';
+  for (const rootUri of candidateRootUris) {
+    const rootPath = uriToPath(rootUri);
+    if (!rootPath) {
+      continue;
+    }
+    const boundaryFailure = await validatePathBoundary(rootPath, sourcePath, true);
+    if (!boundaryFailure) {
       return undefined;
     }
-
-    await fileSystem.mkdir(path.dirname(resolved.targetPath), { recursive: true });
-    await fileSystem.copyFile(resolved.backupPath, resolved.targetPath);
-    return undefined;
-  } catch (error) {
-    return {
-      code: 'MERGE_ROLLBACK_FAILED',
-      message: `Failed to restore file target after copy failure: ${errorMessage(error)}`,
-    };
+    lastMessage = boundaryFailure.message;
   }
-}
-
-async function restoreFolderOperationAfterFailure(
-  resolved: ResolvedFolderOperation
-): Promise<{ code: string; message: string } | undefined> {
-  try {
-    await fs.rm(resolved.targetPath, { recursive: true, force: true });
-    if (resolved.expectedOldHash !== MISSING_TARGET_HASH) {
-      await fs.mkdir(path.dirname(resolved.targetPath), { recursive: true });
-      await fs.cp(resolved.backupPath, resolved.targetPath, {
-        recursive: true,
-        errorOnExist: true,
-        force: false,
-      });
-    }
-    return undefined;
-  } catch (error) {
-    return {
-      code: 'MERGE_ROLLBACK_FAILED',
-      message: `Failed to restore folder target after operation failure: ${errorMessage(error)}`,
-    };
-  }
-}
-
-async function ensureTargetInsideRoot(
-  rootUri: string,
-  targetPath: string
-): Promise<{ code: string; message: string } | undefined> {
-  const rootPath = uriToPath(rootUri);
-  if (!rootPath) {
-    return {
-      code: 'MERGE_TARGET_ROOT_MISSING',
-      message: 'Left configuration root uri is not a file uri.',
-    };
-  }
-
-  try {
-    const canonicalRoot = await fs.realpath(rootPath);
-    const canonicalTarget = await fs.realpath(targetPath);
-    if (!isPathInsideRoot(canonicalRoot, canonicalTarget)) {
-      return {
-        code: 'MERGE_TARGET_OUTSIDE_ROOT',
-        message: 'Merge target path is outside the left configuration root.',
-      };
-    }
-  } catch (error) {
-    return {
-      code: 'MERGE_TARGET_READ_FAILED',
-      message: `Failed to canonicalize merge target path: ${errorMessage(error)}`,
-    };
-  }
-
-  return undefined;
-}
-
-async function ensureSourceInsideRoot(
-  rootUri: string | undefined,
-  sourcePath: string
-): Promise<{ code: string; message: string } | undefined> {
-  if (!rootUri) {
-    return {
-      code: 'MERGE_SOURCE_ROOT_MISSING',
-      message: 'Right source root uri is not available for copy operation.',
-    };
-  }
-
-  const rootPath = uriToPath(rootUri);
-  if (!rootPath) {
-    return {
-      code: 'MERGE_SOURCE_ROOT_MISSING',
-      message: 'Right source root uri is not a file uri.',
-    };
-  }
-
-  try {
-    const canonicalRoot = await fs.realpath(rootPath);
-    const canonicalSource = await fs.realpath(sourcePath);
-    if (!isPathInsideRoot(canonicalRoot, canonicalSource)) {
-      return {
-        code: 'MERGE_SOURCE_OUTSIDE_ROOT',
-        message: 'Merge source path is outside the right source root.',
-      };
-    }
-  } catch (error) {
-    return {
-      code: 'MERGE_SOURCE_READ_FAILED',
-      message: `Failed to canonicalize merge source path: ${errorMessage(error)}`,
-    };
-  }
-
-  return undefined;
+  return { code: 'MERGE_SOURCE_OUTSIDE_ROOT', message: lastMessage };
 }
 
 async function ensureTargetInsideRootAllowMissing(
@@ -1497,111 +1326,99 @@ async function ensureTargetInsideRootAllowMissing(
     };
   }
 
+  return validatePathBoundary(rootPath, targetPath, false);
+}
+
+async function validatePathBoundary(
+  rootPath: string,
+  targetPath: string,
+  allowRootTarget: boolean,
+): Promise<{ code: string; message: string } | undefined> {
+  const resolved = await resolvePathBoundary(rootPath, targetPath, allowRootTarget);
+  return 'failure' in resolved ? resolved.failure : undefined;
+}
+
+async function resolvePathBoundary(
+  rootPath: string,
+  targetPath: string,
+  allowRootTarget: boolean,
+): Promise<
+  | { canonicalRoot: string; canonicalTarget: string }
+  | { failure: { code: string; message: string } }
+> {
   try {
     const canonicalRoot = await fs.realpath(rootPath);
-    const canonicalTarget = await realpathIfExists(targetPath);
-    const targetForCheck = canonicalTarget ?? await canonicalizeMissingPath(targetPath);
-    if (!isPathInsideRoot(canonicalRoot, targetForCheck)) {
-      return {
-        code: 'MERGE_TARGET_OUTSIDE_ROOT',
-        message: 'Merge target path is outside the left configuration root.',
-      };
+    await assertNoRawSymlinkSegments(targetPath);
+    const candidatePath = await canonicalizePathWithMissingSuffix(targetPath);
+    const { canonicalRoot: assertedRoot, canonicalTarget } = await assertPathWithinRoot(
+      canonicalRoot,
+      candidatePath,
+    );
+    if (!isSamePath(canonicalRoot, assertedRoot)) {
+      throw new Error('Configuration root changed while resolving merge target.');
     }
-  } catch (error) {
-    return {
-      code: 'MERGE_TARGET_READ_FAILED',
-      message: `Failed to canonicalize merge target path: ${errorMessage(error)}`,
-    };
-  }
-
-  return undefined;
-}
-
-async function realpathIfExists(filePath: string): Promise<string | undefined> {
-  try {
-    return await fs.realpath(filePath);
-  } catch (error) {
-    if (isNotFoundError(error)) {
-      return undefined;
+    if (!allowRootTarget && isSamePath(canonicalRoot, canonicalTarget)) {
+      return { failure: { code: 'MERGE_TARGET_ROOT_FORBIDDEN', message: 'Merge target cannot be the configuration root.' } };
     }
-    throw error;
-  }
-}
-
-async function canonicalizeMissingPath(filePath: string): Promise<string> {
-  const absolutePath = path.resolve(filePath);
-  const parsed = path.parse(absolutePath);
-  let current = absolutePath;
-  const missingParts: string[] = [];
-
-  while (current !== parsed.root) {
+    const journal = await assertJournalNamespace(canonicalRoot);
+    if (
+      isPathInside(journal.canonicalJournalRoot, canonicalTarget)
+      || isPathInside(canonicalTarget, journal.canonicalJournalRoot)
+    ) {
+      return { failure: { code: 'MERGE_JOURNAL_NAMESPACE_FORBIDDEN', message: 'Merge path overlaps the configuration journal namespace.' } };
+    }
+    await assertNoSymlinkSegments(canonicalRoot, canonicalTarget);
     try {
-      const canonicalExisting = await fs.realpath(current);
-      return path.join(canonicalExisting, ...missingParts.reverse());
+      const targetStat = await fs.lstat(canonicalTarget);
+      if (targetStat.isSymbolicLink()) {
+        return { failure: { code: 'MERGE_LINK_UNSUPPORTED', message: 'Merge does not accept symbolic link targets or sources.' } };
+      }
     } catch (error) {
       if (!isNotFoundError(error)) {
         throw error;
       }
-      missingParts.push(path.basename(current));
-      current = path.dirname(current);
     }
-  }
-
-  return absolutePath;
-}
-
-async function hashDirectory(directoryPath: string): Promise<string> {
-  const entries = await fs.readdir(directoryPath, { withFileTypes: true });
-  const parts: string[] = [];
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    const entryPath = path.join(directoryPath, entry.name);
-    if (entry.isDirectory()) {
-      parts.push(`dir:${entry.name}:${await hashDirectory(entryPath)}`);
-    } else if (entry.isFile()) {
-      parts.push(`file:${entry.name}:${hashBuffer(await fs.readFile(entryPath))}`);
-    }
-  }
-
-  return hashText(parts.join('\n'));
-}
-
-async function hashDirectoryOrMissing(directoryPath: string): Promise<string> {
-  try {
-    return await hashDirectory(directoryPath);
+    return { canonicalRoot, canonicalTarget };
   } catch (error) {
-    if (isNotFoundError(error)) {
-      return MISSING_TARGET_HASH;
+    if (error instanceof PathBoundaryError && error.code === 'PATH_OUTSIDE_ROOT') {
+      return {
+        failure: {
+          code: 'MERGE_TARGET_OUTSIDE_ROOT',
+          message: error.message,
+        },
+      };
     }
-    throw error;
+    return {
+      failure: {
+        code: 'MERGE_PATH_BOUNDARY_FAILED',
+        message: `Merge path boundary check failed: ${errorMessage(error)}`,
+      },
+    };
   }
 }
 
-async function hashFileOrMissing(
-  filePath: string,
-  fileSystem: MergeExecutorFileSystem
-): Promise<string> {
-  try {
-    return hashBuffer(await readBinaryFile(filePath, fileSystem));
-  } catch (error) {
-    if (isNotFoundError(error)) {
-      return MISSING_TARGET_HASH;
+async function assertNoRawSymlinkSegments(targetPath: string): Promise<void> {
+  const absolutePath = path.resolve(targetPath);
+  const parsed = path.parse(absolutePath);
+  const segments = path.relative(parsed.root, absolutePath).split(path.sep).filter(Boolean);
+  let cursor = parsed.root;
+  for (let index = 0; index < segments.length; index += 1) {
+    cursor = path.join(cursor, segments[index]!);
+    try {
+      const stat = await fs.lstat(cursor);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`Merge path contains a symbolic link: ${cursor}`);
+      }
+      if (index < segments.length - 1 && !stat.isDirectory()) {
+        throw new Error(`Merge path contains a non-directory parent: ${cursor}`);
+      }
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        return;
+      }
+      throw error;
     }
-    throw error;
   }
-}
-
-async function readBinaryFile(
-  filePath: string,
-  fileSystem: MergeExecutorFileSystem
-): Promise<Buffer> {
-  const content = await (fileSystem.readFile as unknown as (path: string) => Promise<Buffer | string>)(
-    filePath
-  );
-  return Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
-}
-
-function hashBuffer(content: Buffer): string {
-  return createHash('sha256').update(content).digest('hex');
 }
 
 function isNotFoundError(error: unknown): boolean {
@@ -1778,19 +1595,6 @@ function trimTrailingLineBreaks(source: string): string {
   return end === source.length ? source : source.slice(0, end);
 }
 
-function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
-  const root = normalizeBoundaryPath(rootPath);
-  const target = normalizeBoundaryPath(targetPath);
-  return (
-    target === root || target.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`)
-  );
-}
-
-function normalizeBoundaryPath(filePath: string): string {
-  const normalized = path.normalize(filePath);
-  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-}
-
 function currentSnapshotFor(
   operation: MergeOperation,
   source: string
@@ -1914,23 +1718,6 @@ function failure(
     backupPath,
     code,
     message,
-  };
-}
-
-function executeDiagnostic(
-  operation: MergeOperation,
-  code: string,
-  message: string
-): CompareMessage {
-  return {
-    severity: 'error',
-    code,
-    phase: 'execute',
-    sourceId: operation.sourceId,
-    nodeId: operation.nodeId,
-    path: operation.targetUri,
-    blocking: true,
-    suggestedAction: message,
   };
 }
 

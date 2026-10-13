@@ -3,6 +3,9 @@ import * as path from 'path';
 import { createHash } from 'crypto';
 import { pathToFileURL } from 'url';
 
+import type { ConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
+import type { ConfigurationId } from '../services/configurationSession/types';
+
 import { compareCodeUnits } from '../utils/compareCodeUnits';
 import {
   buildBslModuleIndex,
@@ -127,6 +130,8 @@ export interface ConfigurationCompareInput {
   leftRootPath: string;
   rightRootPath: string;
   backupRootPath: string;
+  mutationEngine?: ConfigurationMutationEngine;
+  configurationId?: ConfigurationId;
   createdAt?: Date;
   cancellation?: CompareCancellationToken;
   limits?: ConfigurationCompareLimits;
@@ -164,6 +169,8 @@ export async function buildConfigurationCompare(
     rightRootPath: path.normalize(input.rightRootPath),
     createdAt: input.createdAt,
     backupRootPath: input.backupRootPath,
+    mutationEngine: input.mutationEngine,
+    configurationId: input.configurationId,
     refreshWorkspace: (strategy) => buildConfigurationCompareState(refreshInput, strategy),
   });
 

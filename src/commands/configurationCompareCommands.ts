@@ -75,9 +75,19 @@ export async function executeConfigurationCompareCommand(
   try {
     const progressTitle = 'Сравнение конфигураций';
     await withConfigurationCompareProgress(deps, progressTitle, async (token) => {
+      let configurationId;
+      try {
+        configurationId = await deps.state.configurationContextResolver
+          ?.resolveFromResource(leftRootPath)
+          .then((context) => context.configurationId);
+      } catch {
+        // Keep comparison available in view-only contexts without a registered write identity.
+      }
       const result = await (deps.buildCompare ?? buildConfigurationCompare)({
         leftRootPath,
         rightRootPath,
+        configurationId,
+        mutationEngine: deps.state.configurationMutationEngine ?? undefined,
         backupRootPath: createConfigurationCompareBackupRootPath(
           deps.context,
           leftRootPath,

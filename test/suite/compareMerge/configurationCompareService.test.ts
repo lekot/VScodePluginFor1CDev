@@ -4,10 +4,20 @@ import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
-import { buildConfigurationCompare } from '../../../src/compareMerge/configurationCompareService';
+import {
+  buildConfigurationCompare as buildConfigurationCompareWithoutMutationRuntime,
+  type ConfigurationCompareInput,
+} from '../../../src/compareMerge/configurationCompareService';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
+import { createMergeMutationTestRuntime } from './mergeMutationTestSupport';
+
+const mutationCoordinators: Array<{ dispose(): Promise<void> }> = [];
 
 suite('ConfigurationCompareService', () => {
+  suiteTeardown(async () => {
+    await Promise.all(mutationCoordinators.splice(0).map((coordinator) => coordinator.dispose()));
+  });
+
   test('cancellation before compare stops before filesystem work', async () => {
     await assert.rejects(
       buildConfigurationCompare({
@@ -557,7 +567,7 @@ suite('ConfigurationCompareService', () => {
       assert.notStrictEqual(backupPath, deterministicBackupPath);
       assert.strictEqual(
         path.dirname(backupPath),
-        path.join(backupRoot, preview.preview.previewId)
+        path.join(await fs.realpath(backupRoot), preview.preview.previewId)
       );
       assert.notStrictEqual(path.basename(backupPath), 'operation-0.bak');
       assert.strictEqual(await readText(backupPath), logicalBaseRoutine());
@@ -1179,6 +1189,29 @@ suite('ConfigurationCompareService', () => {
     }
   });
 });
+
+async function buildConfigurationCompare(input: ConfigurationCompareInput) {
+  if (input.cancellation?.isCancellationRequested || input.mutationEngine) {
+    return buildConfigurationCompareWithoutMutationRuntime(input);
+  }
+
+  try {
+    await fs.realpath(input.leftRootPath);
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 'ENOENT') {
+      return buildConfigurationCompareWithoutMutationRuntime(input);
+    }
+    throw error;
+  }
+
+  const runtime = await createMergeMutationTestRuntime(input.leftRootPath);
+  mutationCoordinators.push(runtime.coordinator);
+  return buildConfigurationCompareWithoutMutationRuntime({
+    ...input,
+    mutationEngine: runtime.engine,
+    configurationId: input.configurationId ?? runtime.configurationId,
+  });
+}
 
 async function writeCatalog(root: string, name: string, uuid: string): Promise<void> {
   await writeFile(

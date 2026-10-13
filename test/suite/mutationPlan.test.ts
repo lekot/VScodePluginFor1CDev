@@ -9,6 +9,7 @@ import { MutationPlanExecutor, MutationPlanError, calculateDirectoryFingerprint 
 import {
   assertJournalNamespace,
   assertLexicallyInside,
+  canonicalizePathWithMissingSuffix,
   isSamePath,
   PathBoundaryError,
 } from '../../src/services/configurationSession/pathBoundary';
@@ -2683,6 +2684,21 @@ suite('MutationPlanExecutor', () => {
     assert.throws(
       () => assertLexicallyInside(path.join(tempDir, 'sub'), tempDir),
       (err: PathBoundaryError) => err.code === 'PATH_OUTSIDE_ROOT',
+    );
+  });
+
+  test('shared missing-suffix canonicalizer normalizes relative targets from the nearest existing ancestor', async () => {
+    const canonicalRoot = await fs.promises.realpath(tempDir);
+    const relativeSuffix = path.join('missing', 'nested', 'target.xml');
+    const expectedPath = path.join(canonicalRoot, relativeSuffix);
+
+    assert.strictEqual(
+      await canonicalizePathWithMissingSuffix(path.join(tempDir, relativeSuffix)),
+      expectedPath,
+    );
+    assert.strictEqual(
+      await canonicalizePathWithMissingSuffix(path.relative(process.cwd(), path.join(tempDir, relativeSuffix))),
+      expectedPath,
     );
   });
 

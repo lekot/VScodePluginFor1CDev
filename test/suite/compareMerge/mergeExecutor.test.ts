@@ -15,11 +15,8 @@ import type {
   BslRoutineLogicalSnapshot,
 } from '../../../src/compareMerge/bsl/bslRoutineMergePlanTypes';
 import { CompareSession } from '../../../src/compareMerge/domain/compareSession';
-import {
-  writeAtomicWithBackup,
-  type AtomicWriteFileSystem,
-} from '../../../src/compareMerge/merge/atomicFileWriter';
-import { executeBslMergePreview } from '../../../src/compareMerge/merge/mergeExecutor';
+import type { MergeExecutorInput } from '../../../src/compareMerge/merge/mergeExecutor';
+import { executeMergeInputWithRuntime } from './mergeMutationTestSupport';
 import {
   createMergePreview,
   validateMergePreflight,
@@ -30,204 +27,9 @@ import {
   type RollbackPlan,
 } from '../../../src/compareMerge/merge/mergePlanner';
 
-suite('AtomicFileWriter', () => {
-  const tempDirs: string[] = [];
-
-  teardown(async () => {
-    await Promise.all(
-      tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }))
-    );
-  });
-
-  test('writeAtomicWithBackup creates exclusive backup and atomically changes target', async () => {
-    const context = await createAtomicContext(tempDirs);
-
-    const result = await writeAtomicWithBackup({
-      rootUri: pathToFileURL(context.rootDir).toString(),
-      targetUri: pathToFileURL(context.targetPath).toString(),
-      expectedOldHash: hashText(context.oldSource),
-      nextContent: context.nextSource,
-      newHash: hashText(context.nextSource),
-      backupPath: context.backupPath,
-    });
-
-    assert.strictEqual(result.ok, true);
-    assert.strictEqual(result.backupPath, context.backupPath);
-    assert.strictEqual(await readText(context.backupPath), context.oldSource);
-    assert.strictEqual(await readText(context.targetPath), context.nextSource);
-  });
-
-  test('writeAtomicWithBackup rejects stale target before creating backup', async () => {
-    const context = await createAtomicContext(tempDirs);
-    const changedSource = context.oldSource.replace('A = 1;', 'A = 2;');
-    await fs.writeFile(context.targetPath, changedSource, 'utf8');
-
-    const result = await writeAtomicWithBackup({
-      rootUri: pathToFileURL(context.rootDir).toString(),
-      targetUri: pathToFileURL(context.targetPath).toString(),
-      expectedOldHash: hashText(context.oldSource),
-      nextContent: context.nextSource,
-      newHash: hashText(context.nextSource),
-      backupPath: context.backupPath,
-    });
-
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.code, 'MERGE_STALE_TARGET_HASH');
-    assert.strictEqual(await readText(context.targetPath), changedSource);
-    await assertFileMissing(context.backupPath);
-  });
-
-  test('writeAtomicWithBackup blocks prefix-trick target outside root', async () => {
-    const context = await createAtomicContext(tempDirs);
-    const outsideRoot = `${context.rootDir}-prefix`;
-    tempDirs.push(outsideRoot);
-    const outsideTarget = path.join(outsideRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
-    await fs.mkdir(path.dirname(outsideTarget), { recursive: true });
-    await fs.writeFile(outsideTarget, context.oldSource, 'utf8');
-
-    const result = await writeAtomicWithBackup({
-      rootUri: pathToFileURL(context.rootDir).toString(),
-      targetUri: pathToFileURL(outsideTarget).toString(),
-      expectedOldHash: hashText(context.oldSource),
-      nextContent: context.nextSource,
-      newHash: hashText(context.nextSource),
-      backupPath: context.backupPath,
-    });
-
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.code, 'MERGE_TARGET_OUTSIDE_ROOT');
-    assert.strictEqual(await readText(outsideTarget), context.oldSource);
-    await assertFileMissing(context.backupPath);
-  });
-
-  test('writeAtomicWithBackup fails safely when backup already exists', async () => {
-    const context = await createAtomicContext(tempDirs);
-    await fs.mkdir(path.dirname(context.backupPath), { recursive: true });
-    await fs.writeFile(context.backupPath, 'existing backup', 'utf8');
-
-    const result = await writeAtomicWithBackup({
-      rootUri: pathToFileURL(context.rootDir).toString(),
-      targetUri: pathToFileURL(context.targetPath).toString(),
-      expectedOldHash: hashText(context.oldSource),
-      nextContent: context.nextSource,
-      newHash: hashText(context.nextSource),
-      backupPath: context.backupPath,
-    });
-
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.code, 'MERGE_BACKUP_EXISTS');
-    assert.strictEqual(await readText(context.backupPath), 'existing backup');
-    assert.strictEqual(await readText(context.targetPath), context.oldSource);
-  });
-
-  test('writeAtomicWithBackup fails safely when same-directory temp already exists', async () => {
-    const context = await createAtomicContext(tempDirs);
-    const tempName = '.merge-fixed.tmp';
-    await fs.writeFile(
-      path.join(path.dirname(context.targetPath), tempName),
-      'existing temp',
-      'utf8'
-    );
-
-    const result = await writeAtomicWithBackup({
-      rootUri: pathToFileURL(context.rootDir).toString(),
-      targetUri: pathToFileURL(context.targetPath).toString(),
-      expectedOldHash: hashText(context.oldSource),
-      nextContent: context.nextSource,
-      newHash: hashText(context.nextSource),
-      backupPath: context.backupPath,
-      tempNameFactory: () => tempName,
-    });
-
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.code, 'MERGE_TEMP_EXISTS');
-    assert.strictEqual(result.restore?.ok, true);
-    assert.strictEqual(await readText(context.targetPath), context.oldSource);
-  });
-
-  test('writeAtomicWithBackup restores from backup when replace fails after backup', async () => {
-    const context = await createAtomicContext(tempDirs);
-    const fileSystem: AtomicWriteFileSystem = {
-      ...nodeAtomicFileSystem(),
-      rename: async (oldPath, newPath) => {
-        if (newPath === context.targetPath) {
-          throw new Error('replace denied');
-        }
-        await fs.rename(oldPath, newPath);
-      },
-    };
-
-    const result = await writeAtomicWithBackup({
-      rootUri: pathToFileURL(context.rootDir).toString(),
-      targetUri: pathToFileURL(context.targetPath).toString(),
-      expectedOldHash: hashText(context.oldSource),
-      nextContent: context.nextSource,
-      newHash: hashText(context.nextSource),
-      backupPath: context.backupPath,
-      fileSystem,
-    });
-
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.code, 'MERGE_WRITE_FAILED');
-    assert.strictEqual(result.restore?.ok, true);
-    assert.strictEqual(await readText(context.targetPath), context.oldSource);
-  });
-
-  test('writeAtomicWithBackup reports high-severity restore failure diagnostic', async () => {
-    const context = await createAtomicContext(tempDirs);
-    const fileSystem: AtomicWriteFileSystem = {
-      ...nodeAtomicFileSystem(),
-      rename: async (_oldPath, newPath) => {
-        if (newPath === context.targetPath) {
-          throw new Error('replace denied');
-        }
-      },
-      copyFile: async (sourcePath, targetPath) => {
-        if (sourcePath === context.backupPath && targetPath === context.targetPath) {
-          throw new Error('restore denied');
-        }
-        await fs.copyFile(sourcePath, targetPath);
-      },
-    };
-
-    const result = await writeAtomicWithBackup({
-      rootUri: pathToFileURL(context.rootDir).toString(),
-      targetUri: pathToFileURL(context.targetPath).toString(),
-      expectedOldHash: hashText(context.oldSource),
-      nextContent: context.nextSource,
-      newHash: hashText(context.nextSource),
-      backupPath: context.backupPath,
-      fileSystem,
-    });
-
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.restore?.ok, false);
-    assert.ok(
-      result.diagnostics.some(
-        (diagnostic) =>
-          diagnostic.severity === 'error' && diagnostic.code === 'MERGE_RESTORE_FAILED'
-      )
-    );
-  });
-
-  test('writeAtomicWithBackup restores from backup when post-write hash mismatches', async () => {
-    const context = await createAtomicContext(tempDirs);
-
-    const result = await writeAtomicWithBackup({
-      rootUri: pathToFileURL(context.rootDir).toString(),
-      targetUri: pathToFileURL(context.targetPath).toString(),
-      expectedOldHash: hashText(context.oldSource),
-      nextContent: context.nextSource,
-      newHash: 'sha256:not-the-next-content',
-      backupPath: context.backupPath,
-    });
-
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.code, 'MERGE_POST_WRITE_HASH_MISMATCH');
-    assert.strictEqual(result.restore?.ok, true);
-    assert.strictEqual(await readText(context.targetPath), context.oldSource);
-  });
-});
+async function executeBslMergePreview(input: MergeExecutorInput) {
+  return executeMergeInputWithRuntime(input);
+}
 
 suite('MergeExecutor approved BSL logical operations', () => {
   const tempDirs: string[] = [];
@@ -359,7 +161,7 @@ suite('MergeExecutor approved BSL logical operations', () => {
     });
 
     assert.strictEqual(result.applied.length, 1, JSON.stringify(result));
-    assert.deepStrictEqual(result.backupPaths, [context.backupPath]);
+    assert.deepStrictEqual(result.backupPaths, [await fs.realpath(context.backupPath)]);
     assert.strictEqual(await readText(context.backupPath), context.targetSource);
   });
 
@@ -417,7 +219,7 @@ suite('MergeExecutor approved BSL logical operations', () => {
 
     assert.strictEqual(await readText(forgedBackupPath), forgedBackupSource);
     if (result.applied.length > 0) {
-      assert.strictEqual(result.applied[0].backupPath, context.backupPath);
+      assert.strictEqual(result.applied[0].backupPath, await fs.realpath(context.backupPath));
       assert.strictEqual(await readText(context.backupPath), context.targetSource);
     }
   });
@@ -498,32 +300,6 @@ suite('MergeExecutor approved BSL logical operations', () => {
     await assertFileMissing(context.backupPath);
   });
 
-  test('write failure reports created backup path', async () => {
-    const context = await createExecutionContext();
-    const preflight = createPreflight(context, { approve: true });
-
-    const result = await executeBslMergePreview({
-      session: context.session,
-      preflight,
-      fileSystem: {
-        ...nodeAtomicFileSystem(),
-        rename: async (oldPath, newPath) => {
-          if (newPath === context.targetPath) {
-            throw new Error('target write denied');
-          }
-          await fs.rename(oldPath, newPath);
-        },
-      },
-    });
-
-    assert.strictEqual(result.applied.length, 0);
-    assert.strictEqual(result.failed.length, 1);
-    assert.strictEqual(result.failed[0].code, 'MERGE_WRITE_FAILED');
-    assert.strictEqual(result.failed[0].backupPath, context.backupPath);
-    assert.strictEqual(await readText(context.backupPath), context.targetSource);
-    assert.strictEqual(await readText(context.targetPath), context.targetSource);
-  });
-
   test('mixed unsupported and logical operations fail without writes', async () => {
     const context = await createExecutionContext({ storedOperationMode: 'logicalAndLeaf' });
     const preflight = createPreflight(context, { approve: true });
@@ -572,6 +348,9 @@ suite('MergeExecutor approved BSL logical operations', () => {
   async function createExecutionContext(options: Partial<ExecutionContextInput> = {}) {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bsl-merge-executor-'));
     tempDirs.push(tempDir);
+    const snapshotRoot = path.join(path.dirname(tempDir), `${path.basename(tempDir)}-snapshot`);
+    tempDirs.push(snapshotRoot);
+    await fs.mkdir(snapshotRoot, { recursive: true });
     const targetPath = path.join(tempDir, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
     const secondTargetPath = path.join(tempDir, 'Catalogs', 'Products', 'Ext', 'ManagerModule.bsl');
     const outsideRoot = `${tempDir}-prefix`;
@@ -583,7 +362,9 @@ suite('MergeExecutor approved BSL logical operations', () => {
       'Ext',
       'ObjectModule.bsl'
     );
-    const backupPath = path.join(tempDir, 'backups', 'ObjectModule.bsl.bak');
+    const backupRoot = path.join(path.dirname(tempDir), `${path.basename(tempDir)}-backups`);
+    tempDirs.push(backupRoot);
+    const backupPath = path.join(backupRoot, 'ObjectModule.bsl.bak');
     const targetSource = options.targetSource ?? defaultTargetSource();
     const plannedCurrentSource = options.plannedCurrentSource ?? targetSource;
     const incomingSource = options.incomingSource ?? defaultIncomingSource();
@@ -595,7 +376,7 @@ suite('MergeExecutor approved BSL logical operations', () => {
     await fs.mkdir(path.dirname(outsideTargetPath), { recursive: true });
     await fs.writeFile(outsideTargetPath, targetSource, 'utf8');
 
-    const session = makeSession(tempDir);
+    const session = makeSession(tempDir, snapshotRoot);
     const plannedCurrent = snapshot(plannedCurrentSource, targetPath, tempDir);
     const plan = createBslRoutineLogicalMergePlan({
       moduleId: 'Catalog.Products.Object',
@@ -894,7 +675,7 @@ function makeIdentity(filePath: string, configRoot: string): BslModuleIdentity {
   };
 }
 
-function makeSession(rootUri: string): CompareSession {
+function makeSession(rootUri: string, rightRootPath: string): CompareSession {
   const session = CompareSession.create({
     sessionId: 'session-1',
     createdAt: '2026-05-30T10:00:00.000Z',
@@ -912,7 +693,7 @@ function makeSession(rootUri: string): CompareSession {
         side: 'right',
         kind: 'snapshot',
         displayName: 'Incoming snapshot',
-        rootUri: 'file:///snapshots/right',
+        rootUri: pathToFileURL(rightRootPath).toString(),
         writable: false,
       },
     ],
@@ -933,8 +714,8 @@ function makeSession(rootUri: string): CompareSession {
   session.registerSnapshot({
     snapshotId: 'snapshot-right-1',
     sourceId: 'right-source',
-    snapshotRoot: 'file:///tmp/compare/session-1/right',
-    origin: 'file:///snapshots/right',
+    snapshotRoot: pathToFileURL(rightRootPath).toString(),
+    origin: pathToFileURL(rightRootPath).toString(),
     createdAt: '2026-05-30T10:01:00.000Z',
     retentionUntil: '2026-05-30T12:01:00.000Z',
     sourceRevision: 'snapshot:42',
@@ -987,38 +768,6 @@ function defaultIncomingLines(): string[] {
 
 function moduleSource(lines: readonly string[], eol = '\n'): string {
   return lines.join(eol);
-}
-
-async function createAtomicContext(tempDirs: string[]) {
-  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atomic-bsl-merge-'));
-  tempDirs.push(rootDir);
-  const targetPath = path.join(rootDir, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
-  const backupPath = path.join(rootDir, 'backups', 'ObjectModule.bsl.bak');
-  const oldSource = defaultTargetSource();
-  const nextSource = defaultIncomingSource();
-
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await fs.writeFile(targetPath, oldSource, 'utf8');
-
-  return {
-    rootDir,
-    targetPath,
-    backupPath,
-    oldSource,
-    nextSource,
-  };
-}
-
-function nodeAtomicFileSystem(): AtomicWriteFileSystem {
-  return {
-    mkdir: fs.mkdir,
-    realpath: fs.realpath,
-    readFile: fs.readFile,
-    open: fs.open,
-    rename: fs.rename,
-    copyFile: fs.copyFile,
-    rm: fs.rm,
-  };
 }
 
 async function readText(filePath: string): Promise<string> {

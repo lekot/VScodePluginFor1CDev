@@ -1,6 +1,8 @@
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { fileURLToPath, pathToFileURL } from 'url';
+import type { ConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
+import type { ConfigurationId } from '../services/configurationSession/types';
 
 import { compareCodeUnits } from '../utils/compareCodeUnits';
 import type { CompareTreeNode, CompareTreeStats } from './compareTreeTypes';
@@ -150,6 +152,8 @@ export interface ConfigurationCompareWorkspaceInput extends ConfigurationCompare
   rightRootPath: string;
   createdAt?: Date;
   backupRootPath: string;
+  mutationEngine?: ConfigurationMutationEngine;
+  configurationId?: ConfigurationId;
   refreshWorkspace?: (strategy: CompareJoinStrategy) => Promise<ConfigurationCompareWorkspaceState>;
   createPreview?: typeof createMergePreview;
   validatePreflight?: typeof validateMergePreflight;
@@ -169,6 +173,8 @@ export class ConfigurationCompareWorkspace {
   private readonly rightRootPath: string;
   private readonly createdAt: Date;
   private readonly backupRootPath: string;
+  private readonly mutationEngine?: ConfigurationMutationEngine;
+  private readonly configurationId?: ConfigurationId;
   private readonly refreshWorkspace?: (strategy: CompareJoinStrategy) => Promise<ConfigurationCompareWorkspaceState>;
   private readonly createPreview: typeof createMergePreview;
   private readonly validatePreflight: typeof validateMergePreflight;
@@ -187,6 +193,8 @@ export class ConfigurationCompareWorkspace {
     this.rightRootPath = input.rightRootPath;
     this.createdAt = input.createdAt ?? new Date();
     this.backupRootPath = input.backupRootPath;
+    this.mutationEngine = input.mutationEngine;
+    this.configurationId = input.configurationId;
     this.refreshWorkspace = input.refreshWorkspace;
     this.createPreview = input.createPreview ?? createMergePreview;
     this.validatePreflight = input.validatePreflight ?? validateMergePreflight;
@@ -444,10 +452,19 @@ export class ConfigurationCompareWorkspace {
     const result = await this.executeMerge({
       session: this.session,
       preflight,
+      mutationEngine: this.mutationEngine,
+      configurationId: this.configurationId,
     });
     const executionDiagnostics = result.diagnostics.map(redactDiagnostic);
-    const ok = result.failed.length === 0;
+    const ok = result.receipt
+      ? result.receipt.status === 'committed'
+      : result.failed.length === 0;
     if (!ok) {
+      const mutationStatus = result.receipt?.status ?? result.mutationFailure?.status;
+      if (mutationStatus === 'recoveryRequired' || mutationStatus === 'inDoubt') {
+        this.locked = true;
+        this.invalidateVolatileState();
+      }
       const backupPaths = result.backupPaths.length > 0
         ? result.backupPaths
         : result.failed.map((failure) => failure.backupPath).filter(isDefined);

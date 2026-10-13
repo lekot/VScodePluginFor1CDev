@@ -5,6 +5,7 @@ import type {
   WorkspacePreviewDto,
   WorkspacePreviewItemDto,
 } from './configurationCompareWorkspace';
+import type { MutationFailureProjection } from '../services/configurationSession/mutationReceiptError';
 
 export type ConfigCompareWebviewToHostMessage =
   | { type: 'ready' }
@@ -68,4 +69,5 @@ export type ConfigCompareHostToWebviewMessage =
       diagnostics: CompareMessage[];
       locked: boolean;
       backupPaths?: string[];
+      mutationFailure?: MutationFailureProjection;
     };
