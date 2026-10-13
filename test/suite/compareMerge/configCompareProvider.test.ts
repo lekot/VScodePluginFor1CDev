@@ -235,6 +235,12 @@ suite('ConfigCompareProvider', () => {
     assert.deepStrictEqual(error.backupPaths, [
       'C:\\extension\\storage\\merge-backups\\preview-1\\4b42f7ce-8a2a-4a7d-87cc-9f934dd44d8e.bak',
     ]);
+    assert.deepStrictEqual(error.mutationFailure, {
+      status: 'recoveryRequired',
+      code: 'RECOVERY_REQUIRED',
+      effectPossible: true,
+      message: 'Операция требует проверки после частичного эффекта.',
+    });
   });
 
   test('disposes workspace with panel', () => {
@@ -360,6 +366,12 @@ function makeWorkspace(options: {
               'C:\\extension\\storage\\merge-backups\\preview-1\\4b42f7ce-8a2a-4a7d-87cc-9f934dd44d8e.bak',
             ],
             diagnostics: [],
+            mutationFailure: {
+              status: 'recoveryRequired',
+              code: 'RECOVERY_REQUIRED',
+              effectPossible: true,
+              message: 'Операция требует проверки после частичного эффекта.',
+            },
           },
         };
       }

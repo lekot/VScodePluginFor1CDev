@@ -234,6 +234,7 @@ export const coreSuiteFiles: string[] = [
   'suite/compareMerge/mergePlanner.bulk.test.js',
   'suite/compareMerge/mergeExecutor.test.js',
   'suite/compareMerge/mergeExecutor.xmlFileOps.test.js',
+  'suite/compareMerge/mergeMutationEngine.test.js',
   'suite/compareMerge/metadataMatcher.test.js',
   'suite/compareMerge/compareTreeProjection.test.js',
   'suite/compareMerge/configurationCompareWorkspace.test.js',

@@ -178,6 +178,34 @@ suite('ConfigurationCompareWorkspace', () => {
     assert.strictEqual(executeCalls, 1);
   });
 
+  test('treats a noncommitted receipt as failure even when legacy failures are empty', async () => {
+    const workspace = makeWorkspace({
+      executeMerge: async (input) => ({
+        ...emptyExecutionResult(input.preflight.previewId),
+        receipt: {
+          status: 'recoveryRequired',
+          code: 'RECOVERY_REQUIRED',
+          message: 'Injected recovery uncertainty.',
+          kind: 'configuration-compare-merge',
+          resourcePath: path.join('repo', 'left'),
+        },
+      }),
+    });
+    const preview = await workspace.createPreviewForNodeIds(['bsl:routine:Catalog.Products.Object:run']);
+    assert.strictEqual(preview.ok, true);
+    workspace.approvePreview(preview.preview.previewId);
+
+    const execution = await workspace.executeApprovedPreview(preview.preview.previewId);
+    const afterRecovery = await workspace.createPreviewForNodeIds(['bsl:routine:Catalog.Products.Object:run']);
+
+    assert.strictEqual(execution.ok, false);
+    assert.strictEqual(execution.locked, true);
+    assert.strictEqual(execution.result?.failed.length, 0);
+    assert.strictEqual(execution.result?.receipt?.status, 'recoveryRequired');
+    assert.strictEqual(afterRecovery.ok, false);
+    assert.strictEqual(afterRecovery.diagnostics[0]?.code, 'CONFIG_COMPARE_WORKSPACE_LOCKED');
+  });
+
   test('refresh and dispose invalidate stale previews safely', async () => {
     const workspace = makeWorkspace();
     const preview = await workspace.createPreviewForNodeIds(['bsl:routine:Catalog.Products.Object:run']);

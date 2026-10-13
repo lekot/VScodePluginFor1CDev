@@ -67,7 +67,7 @@ export async function assertPathWithinRoot(
     );
   }
 
-  const canonicalTarget = await canonicalizeTarget(absoluteTarget);
+  const canonicalTarget = await canonicalizePathWithMissingSuffix(absoluteTarget);
   if (!isPathInside(canonicalRoot, canonicalTarget)) {
     throw new PathBoundaryError(
       'PATH_OUTSIDE_ROOT',
@@ -153,6 +153,11 @@ export function assertExistingPathWithinRootSync(
 export function isPathInside(rootPath: string, targetPath: string): boolean {
   const relative = path.relative(path.resolve(rootPath), path.resolve(targetPath));
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+/** Resolves an existing path or its nearest existing ancestor, preserving a missing suffix. */
+export function canonicalizePathWithMissingSuffix(targetPath: string): Promise<string> {
+  return canonicalizeTarget(path.resolve(targetPath));
 }
 
 async function canonicalizeTarget(targetPath: string): Promise<string> {

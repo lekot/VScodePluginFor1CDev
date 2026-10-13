@@ -350,9 +350,9 @@
       if (message.type === 'mergeError') {
         state.locked = message.locked;
         state.diagnostics = message.diagnostics ?? [];
-        state.notice = message.message;
-        if (message.backupPaths && message.backupPaths.length > 0) {
-          renderFailureBackups(message.backupPaths);
+        state.notice = message.mutationFailure?.message ?? message.message;
+        if ((message.backupPaths && message.backupPaths.length > 0) || message.mutationFailure) {
+          renderFailureBackups(message.backupPaths ?? [], message.mutationFailure);
         }
         render();
       }
@@ -482,15 +482,27 @@
       elements.result.replaceChildren(title, applied, backups);
     }
 
-    function renderFailureBackups(backupPaths) {
+    function renderFailureBackups(backupPaths, mutationFailure) {
       const title = document.createElement('strong');
       title.className = 'error';
-      title.textContent = 'Merge не выполнен, backup доступен';
-      const backups = document.createElement('div');
-      backups.className = 'result-list';
-      backups.textContent = `Backup-файлы: ${backupPaths.join(', ')}`;
+      title.textContent = mutationFailure?.effectPossible
+        ? 'Результат merge не подтверждён'
+        : backupPaths.length > 0 ? 'Merge не выполнен, backup доступен' : 'Merge не выполнен';
+      const details = [];
+      if (mutationFailure?.effectPossible) {
+        const warning = document.createElement('div');
+        warning.className = 'error';
+        warning.textContent = mutationFailure.message;
+        details.push(warning);
+      }
+      if (backupPaths.length > 0) {
+        const backups = document.createElement('div');
+        backups.className = 'result-list';
+        backups.textContent = `Backup-файлы: ${backupPaths.join(', ')}`;
+        details.push(backups);
+      }
       elements.result.classList.remove('hidden');
-      elements.result.replaceChildren(title, backups);
+      elements.result.replaceChildren(title, ...details);
     }
 
     function filterNode(node) {

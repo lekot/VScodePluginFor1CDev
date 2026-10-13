@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
@@ -6,6 +5,7 @@ import { pathToFileURL } from 'url';
 import { compareCodeUnits } from '../../utils/compareCodeUnits';
 import type { CompareTreeNode } from '../compareTreeTypes';
 import { MISSING_TARGET_HASH, type MergeCandidate } from '../merge/mergePreview';
+import { captureMergePath, mergeSnapshotHash } from '../merge/mergeSnapshot';
 import type {
   AdapterCompareInput,
   AdapterCompareResult,
@@ -329,31 +329,6 @@ function mergeHash(contentHash: string): string {
   return contentHash.startsWith('sha256:') ? contentHash.slice('sha256:'.length) : contentHash;
 }
 
-async function hashDirectory(directoryPath: string): Promise<string> {
-  const entries = await fs.readdir(directoryPath, { withFileTypes: true });
-  const parts: string[] = [];
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    const entryPath = path.join(directoryPath, entry.name);
-    if (entry.isDirectory()) {
-      parts.push(`dir:${entry.name}:${await hashDirectory(entryPath)}`);
-    } else if (entry.isFile()) {
-      parts.push(`file:${entry.name}:${await hashFileBytes(entryPath)}`);
-    }
-  }
-
-  return hashText(parts.join('\n'));
-}
-
-async function hashFileBytes(filePath: string): Promise<string> {
-  return createHash('sha256')
-    .update(await fs.readFile(filePath))
-    .digest('hex');
-}
-
-function hashText(content: string): string {
-  return createHash('sha256').update(content, 'utf8').digest('hex');
-}
-
 async function objectCopySourcePath(object: MetadataObjectUnit): Promise<string> {
   if (samePath(path.dirname(object.descriptorPath), object.containerPath)) {
     return object.containerPath;
@@ -372,9 +347,15 @@ async function hashOperationPath(
   kind: FileOperationPayload['kind'],
   targetPath: string
 ): Promise<string> {
-  return kind === 'folderCopy' || kind === 'folderDelete'
-    ? await hashDirectory(targetPath)
-    : await hashFileBytes(targetPath);
+  const snapshot = await captureMergePath(targetPath, { retainContent: false });
+  if (snapshot.state === 'missing') {
+    throw new Error(`Merge source path does not exist: ${targetPath}`);
+  }
+  const isFolderOperation = kind === 'folderCopy' || kind === 'folderDelete';
+  if (isFolderOperation !== (snapshot.type === 'directory')) {
+    throw new Error(`Merge operation kind does not match path type: ${targetPath}`);
+  }
+  return mergeSnapshotHash(snapshot);
 }
 
 async function directoryExists(folderPath: string): Promise<boolean> {

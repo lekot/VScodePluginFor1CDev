@@ -7,6 +7,10 @@ import { pathToFileURL } from 'url';
 
 const fsPromises = require('fs/promises') as typeof import('fs/promises');
 
+async function executeBslMergePreview(input: MergeExecutorInput) {
+  return executeMergeInputWithRuntime(input);
+}
+
 import {
   indexBslModuleSource,
   type BslModuleIdentity,
@@ -21,7 +25,8 @@ import type {
 import { CompareSession } from '../../../src/compareMerge/domain/compareSession';
 import { metadataXmlAdapter } from '../../../src/compareMerge/adapters/xmlMetadataAdapter';
 import type { AdapterCompareInput } from '../../../src/compareMerge/adapters/mergeAdapter';
-import { executeBslMergePreview } from '../../../src/compareMerge/merge/mergeExecutor';
+import type { MergeExecutorInput } from '../../../src/compareMerge/merge/mergeExecutor';
+import { executeMergeInputWithRuntime } from './mergeMutationTestSupport';
 import {
   createMergePreview,
   validateMergePreflight,
@@ -66,7 +71,8 @@ suite('MergeExecutor XML and file operations', () => {
     const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-adapter-xml-'));
     tempDirs.push(rootDir);
     const snapshotDir = path.join(rootDir, 'snapshot');
-    const backupDir = path.join(rootDir, 'backups');
+    const backupDir = path.join(path.dirname(rootDir), `${path.basename(rootDir)}-backups`);
+    tempDirs.push(backupDir);
     const xmlPath = path.join(rootDir, 'Catalogs', 'Products.xml');
     const backupPath = path.join(backupDir, 'Products.xml.bak');
     const leftXml = [
@@ -100,7 +106,7 @@ suite('MergeExecutor XML and file operations', () => {
     await fs.mkdir(path.dirname(xmlPath), { recursive: true });
     await fs.writeFile(xmlPath, leftXml, 'utf8');
 
-    const session = makeSession(rootDir, snapshotDir);
+    const session = await makeSession(rootDir, snapshotDir);
     const adapterResult = await metadataXmlAdapter.compare(
       makeXmlAdapterInput(session, rootDir, snapshotDir, xmlPath, leftXml, rightXml)
     );
@@ -171,7 +177,8 @@ suite('MergeExecutor XML and file operations', () => {
     const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-adapter-xml-bulk-'));
     tempDirs.push(rootDir);
     const snapshotDir = path.join(rootDir, 'snapshot');
-    const backupDir = path.join(rootDir, 'backups');
+    const backupDir = path.join(path.dirname(rootDir), `${path.basename(rootDir)}-backups`);
+    tempDirs.push(backupDir);
     const xmlPath = path.join(rootDir, 'Catalogs', 'Products.xml');
     const firstBackupPath = path.join(backupDir, 'Products.first.xml.bak');
     const secondBackupPath = path.join(backupDir, 'Products.second.xml.bak');
@@ -197,7 +204,7 @@ suite('MergeExecutor XML and file operations', () => {
     await fs.mkdir(path.dirname(xmlPath), { recursive: true });
     await fs.writeFile(xmlPath, leftXml, 'utf8');
 
-    const session = makeSession(rootDir, snapshotDir);
+    const session = await makeSession(rootDir, snapshotDir);
     const adapterResult = await metadataXmlAdapter.compare(
       makeXmlAdapterInput(session, rootDir, snapshotDir, xmlPath, leftXml, rightXml)
     );
@@ -293,183 +300,6 @@ suite('MergeExecutor XML and file operations', () => {
     assert.deepStrictEqual(result.applied.map((item) => item.kind), ['bslRoutineDelete']);
     assert.strictEqual(await readText(context.bslPath), context.nextBsl);
     assert.strictEqual(await readText(context.bslBackupPath), context.oldBsl);
-  });
-
-  test('rolls back already applied bulk operation when a later apply fails', async () => {
-    const context = await createBulkRollbackContext(tempDirs);
-    const preflight = createApprovedBulkRollbackPreflight(context);
-    let firstCopyApplied = false;
-
-    const result = await executeBslMergePreview({
-      session: context.session,
-      preflight,
-      fileSystem: {
-        ...nodeTestFileSystem(),
-        copyFile: async (sourcePath, targetPath) => {
-          await fs.copyFile(sourcePath, targetPath);
-          if (sourcePath === context.firstSourcePath && targetPath === context.firstTargetPath) {
-            firstCopyApplied = true;
-            await fs.writeFile(context.secondTargetPath, 'changed during apply', 'utf8');
-          }
-        },
-      },
-    });
-
-    assert.strictEqual(firstCopyApplied, true);
-    assert.deepStrictEqual(result.applied.map((item) => item.operationId), [
-      context.firstOperationId,
-    ]);
-    assert.strictEqual(result.failed.length, 1, JSON.stringify(result.failed));
-    assert.strictEqual(result.failed[0].operationId, context.secondOperationId);
-    assert.strictEqual(result.failed[0].code, 'MERGE_STALE_TARGET_HASH');
-    assert.strictEqual(result.failed[0].backupPath, context.secondBackupPath);
-    assert.ok(
-      result.diagnostics.some(
-        (diagnostic) =>
-          diagnostic.code === 'MERGE_STALE_TARGET_HASH' &&
-          diagnostic.suggestedAction?.includes('immediately before copy')
-      ),
-      JSON.stringify(result.diagnostics)
-    );
-    assert.deepStrictEqual(result.backupPaths, [context.firstBackupPath]);
-    assert.strictEqual(await readText(context.firstTargetPath), context.firstTargetOld);
-    assert.strictEqual(await readText(context.firstBackupPath), context.firstTargetOld);
-    assert.strictEqual(await readText(context.secondTargetPath), 'changed during apply');
-  });
-
-  test('reports rollback failure without hiding the original apply failure', async () => {
-    const context = await createBulkRollbackContext(tempDirs);
-    const preflight = createApprovedBulkRollbackPreflight(context);
-
-    const result = await executeBslMergePreview({
-      session: context.session,
-      preflight,
-      fileSystem: {
-        ...nodeTestFileSystem(),
-        copyFile: async (sourcePath, targetPath) => {
-          if (sourcePath === context.firstBackupPath && targetPath === context.firstTargetPath) {
-            throw new Error('restore denied');
-          }
-          await fs.copyFile(sourcePath, targetPath);
-          if (sourcePath === context.firstSourcePath && targetPath === context.firstTargetPath) {
-            await fs.writeFile(context.secondTargetPath, 'changed during apply', 'utf8');
-          }
-        },
-      },
-    });
-
-    assert.deepStrictEqual(
-      result.failed.map((item) => item.code),
-      ['MERGE_STALE_TARGET_HASH', 'MERGE_ROLLBACK_FAILED']
-    );
-    assert.strictEqual(result.failed[0].operationId, context.secondOperationId);
-    assert.strictEqual(result.failed[1].operationId, context.firstOperationId);
-    assert.strictEqual(result.failed[1].backupPath, context.firstBackupPath);
-    assert.ok(
-      result.failed[1].message?.includes('restore denied'),
-      JSON.stringify(result.failed[1])
-    );
-    assert.ok(
-      result.diagnostics.some(
-        (diagnostic) =>
-          diagnostic.code === 'MERGE_ROLLBACK_FAILED' &&
-          diagnostic.suggestedAction?.includes('restore denied')
-      ),
-      JSON.stringify(result.diagnostics)
-    );
-    assert.strictEqual(await readText(context.firstTargetPath), context.firstSource);
-    assert.strictEqual(await readText(context.firstBackupPath), context.firstTargetOld);
-  });
-
-  test('restores current fileCopy target when source copy fails after backup', async () => {
-    const context = await createFileCopyOnlyContext(tempDirs);
-    const preflight = createApprovedFileCopyOnlyPreflight(context);
-
-    const result = await executeBslMergePreview({
-      session: context.session,
-      preflight,
-      fileSystem: {
-        ...nodeTestFileSystem(),
-        copyFile: async (sourcePath, targetPath) => {
-          if (sourcePath === context.fileSourcePath && targetPath === context.fileTargetPath) {
-            await fs.writeFile(targetPath, 'partial incoming bytes', 'utf8');
-            throw new Error('copy interrupted');
-          }
-          await fs.copyFile(sourcePath, targetPath);
-        },
-      },
-    });
-
-    assert.strictEqual(result.applied.length, 0);
-    assert.strictEqual(result.failed.length, 1, JSON.stringify(result.failed));
-    assert.strictEqual(result.failed[0].operationId, context.operationId);
-    assert.strictEqual(result.failed[0].code, 'MERGE_FILE_COPY_FAILED');
-    assert.strictEqual(await readText(context.fileTargetPath), context.fileTargetOld);
-    assert.strictEqual(await readText(context.fileBackupPath), context.fileTargetOld);
-  });
-
-  test('restores current folderCopy target when folder copy fails after target removal', async () => {
-    const context = await createFolderCopyOnlyContext(tempDirs);
-    const preflight = await createApprovedFolderCopyOnlyPreflight(context);
-    const originalCp = fsPromises.cp;
-    let targetWasRemoved = false;
-
-    try {
-      fsPromises.cp = async (sourcePath, targetPath, options) => {
-        if (sourcePath === context.folderSourcePath && targetPath === context.folderTargetPath) {
-          targetWasRemoved = !(await exists(path.join(context.folderTargetPath, 'old.txt')));
-          await fs.mkdir(context.folderTargetPath, { recursive: true });
-          await fs.writeFile(path.join(context.folderTargetPath, 'partial.txt'), 'partial', 'utf8');
-          throw new Error('folder copy interrupted');
-        }
-        return originalCp(sourcePath, targetPath, options);
-      };
-
-      const result = await executeBslMergePreview({
-        session: context.session,
-        preflight,
-      });
-
-      assert.strictEqual(targetWasRemoved, true);
-      assert.strictEqual(result.applied.length, 0);
-      assert.strictEqual(result.failed.length, 1, JSON.stringify(result.failed));
-      assert.strictEqual(result.failed[0].operationId, context.operationId);
-      assert.strictEqual(result.failed[0].code, 'MERGE_FOLDER_OPERATION_FAILED');
-      assert.strictEqual(await readText(path.join(context.folderTargetPath, 'old.txt')), 'old folder file');
-      assert.strictEqual(await exists(path.join(context.folderTargetPath, 'partial.txt')), false);
-      assert.strictEqual(await readText(path.join(context.folderBackupPath, 'old.txt')), 'old folder file');
-    } finally {
-      fsPromises.cp = originalCp;
-    }
-  });
-
-  test('rejects folderCopy when source folder hash changes immediately before copy', async () => {
-    const context = await createFolderCopyOnlyContext(tempDirs);
-    const preflight = await createApprovedFolderCopyOnlyPreflight(context);
-    const originalRm = fsPromises.rm;
-
-    try {
-      fsPromises.rm = async (targetPath, options) => {
-        const result = await originalRm(targetPath, options);
-        if (targetPath === context.folderTargetPath) {
-          await fs.writeFile(path.join(context.folderSourcePath, 'incoming.txt'), 'changed source', 'utf8');
-        }
-        return result;
-      };
-
-      const result = await executeBslMergePreview({
-        session: context.session,
-        preflight,
-      });
-
-      assert.strictEqual(result.applied.length, 0);
-      assert.strictEqual(result.failed.length, 1, JSON.stringify(result.failed));
-      assert.strictEqual(result.failed[0].operationId, context.operationId);
-      assert.strictEqual(result.failed[0].code, 'MERGE_SOURCE_HASH_MISMATCH');
-      assert.strictEqual(await readText(path.join(context.folderTargetPath, 'old.txt')), 'old folder file');
-    } finally {
-      fsPromises.rm = originalRm;
-    }
   });
 
   test('rejects fileCopy source outside the right source root', async () => {
@@ -580,7 +410,8 @@ async function createContext(tempDirs: string[]): Promise<ExecutionContext> {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-xml-file-bsl-'));
   tempDirs.push(rootDir);
   const snapshotDir = path.join(rootDir, 'snapshot');
-  const backupDir = path.join(rootDir, 'backups');
+  const backupDir = path.join(path.dirname(rootDir), `${path.basename(rootDir)}-backups`);
+  tempDirs.push(backupDir);
   const xmlPath = path.join(rootDir, 'Catalogs', 'Products.xml');
   const fileTargetPath = path.join(rootDir, 'Templates', 'Print.mxl');
   const fileSourcePath = path.join(snapshotDir, 'Templates', 'Print.mxl');
@@ -604,7 +435,7 @@ async function createContext(tempDirs: string[]): Promise<ExecutionContext> {
   await fs.mkdir(path.dirname(bslPath), { recursive: true });
   await fs.writeFile(bslPath, oldBsl, 'utf8');
 
-  const session = makeSession(rootDir, snapshotDir);
+  const session = await makeSession(rootDir, snapshotDir);
   const plan = createPlan(oldBsl, nextBsl, bslPath, rootDir);
   const previewId = 'preview-bulk-execute';
   const candidates: MergeCandidate[] = [
@@ -671,7 +502,8 @@ async function createRoutineChangeContext(
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-bsl-routine-'));
   tempDirs.push(rootDir);
   const snapshotDir = path.join(rootDir, 'snapshot');
-  const backupDir = path.join(rootDir, 'backups');
+  const backupDir = path.join(path.dirname(rootDir), `${path.basename(rootDir)}-backups`);
+  tempDirs.push(backupDir);
   const bslPath = path.join(rootDir, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
   const bslBackupPath = path.join(backupDir, `${kind}.bsl.bak`);
   const targetUri = pathToFileURL(bslPath).toString();
@@ -687,7 +519,7 @@ async function createRoutineChangeContext(
   await fs.mkdir(path.dirname(bslPath), { recursive: true });
   await fs.writeFile(bslPath, oldBsl, 'utf8');
 
-  const session = makeSession(rootDir, snapshotDir);
+  const session = await makeSession(rootDir, snapshotDir);
   const previewId = `preview-${kind}`;
   const preview = createMergePreview({
     session,
@@ -756,7 +588,8 @@ async function createBulkRollbackContext(tempDirs: string[]): Promise<BulkRollba
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-bulk-rollback-'));
   tempDirs.push(rootDir);
   const snapshotDir = path.join(rootDir, 'snapshot');
-  const backupDir = path.join(rootDir, 'backups');
+  const backupDir = path.join(path.dirname(rootDir), `${path.basename(rootDir)}-backups`);
+  tempDirs.push(backupDir);
   const firstSourcePath = path.join(snapshotDir, 'Templates', 'First.mxl');
   const firstTargetPath = path.join(rootDir, 'Templates', 'First.mxl');
   const secondSourcePath = path.join(snapshotDir, 'Templates', 'Second.mxl');
@@ -775,7 +608,7 @@ async function createBulkRollbackContext(tempDirs: string[]): Promise<BulkRollba
   await fs.writeFile(secondSourcePath, secondSource, 'utf8');
   await fs.writeFile(secondTargetPath, secondTargetOld, 'utf8');
 
-  const session = makeSession(rootDir, snapshotDir);
+  const session = await makeSession(rootDir, snapshotDir);
   const previewId = 'preview-bulk-rollback';
   const candidates: MergeCandidate[] = [
     fileCopyCandidate(firstSourcePath, firstTargetPath, firstTargetOld, firstSource),
@@ -873,7 +706,8 @@ async function createFileCopyOnlyContext(
   const snapshotDir = path.join(rootDir, 'snapshot');
   const outsideDir = path.join(rootDir, '..', `${path.basename(rootDir)}-outside`);
   tempDirs.push(outsideDir);
-  const backupDir = path.join(rootDir, 'backups');
+  const backupDir = path.join(path.dirname(rootDir), `${path.basename(rootDir)}-backups`);
+  tempDirs.push(backupDir);
   const fileSourcePath = path.join(
     options.sourceOutsideRightRoot ? outsideDir : snapshotDir,
     'Templates',
@@ -890,7 +724,7 @@ async function createFileCopyOnlyContext(
   await fs.writeFile(fileSourcePath, fileSource, 'utf8');
   await fs.writeFile(fileTargetPath, fileTargetOld, 'utf8');
 
-  const session = makeSession(rootDir, snapshotDir);
+  const session = await makeSession(rootDir, snapshotDir);
   const previewId = options.sourceOutsideRightRoot
     ? 'preview-file-copy-outside-source'
     : 'preview-file-copy-only';
@@ -968,7 +802,8 @@ async function createFolderCopyOnlyContext(
   const snapshotDir = path.join(rootDir, 'snapshot');
   const outsideDir = path.join(rootDir, '..', `${path.basename(rootDir)}-outside`);
   tempDirs.push(outsideDir);
-  const backupDir = path.join(rootDir, 'backups');
+  const backupDir = path.join(path.dirname(rootDir), `${path.basename(rootDir)}-backups`);
+  tempDirs.push(backupDir);
   const folderSourcePath = path.join(
     options.sourceOutsideRightRoot ? outsideDir : snapshotDir,
     'Catalogs',
@@ -985,7 +820,7 @@ async function createFolderCopyOnlyContext(
 
   const sourceHash = await hashTestDirectory(folderSourcePath);
   const targetHash = await hashTestDirectory(folderTargetPath);
-  const session = makeSession(rootDir, snapshotDir);
+  const session = await makeSession(rootDir, snapshotDir);
   const previewId = options.sourceOutsideRightRoot
     ? 'preview-folder-copy-outside-source'
     : 'preview-folder-copy-only';
@@ -1294,7 +1129,8 @@ function makeIdentity(filePath: string, configRoot: string): BslModuleIdentity {
   };
 }
 
-function makeSession(rootDir: string, snapshotDir: string): CompareSession {
+async function makeSession(rootDir: string, snapshotDir: string): Promise<CompareSession> {
+  await fs.mkdir(snapshotDir, { recursive: true });
   const session = CompareSession.create({
     sessionId: 'session-1',
     createdAt: '2026-05-30T10:00:00.000Z',

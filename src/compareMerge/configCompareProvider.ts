@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 import { Logger } from '../utils/logger';
+import type { MutationFailureProjection } from '../services/configurationSession/mutationReceiptError';
 import type { CompareTreeNode } from './compareTreeTypes';
 import type { CompareMessage } from './domain/compareContracts';
 import type {
@@ -308,7 +309,8 @@ async function executeMerge(
       'Не удалось выполнить merge.',
       result.diagnostics,
       result.locked,
-      result.result?.backupPaths
+      result.result?.backupPaths,
+      result.result?.mutationFailure
     );
     await postState(webview, workspace, title, state);
     return;
@@ -403,7 +405,8 @@ async function postError(
   message: string,
   diagnostics: readonly CompareMessage[],
   locked: boolean,
-  backupPaths?: readonly string[]
+  backupPaths?: readonly string[],
+  mutationFailure?: MutationFailureProjection
 ): Promise<void> {
   await postMessage(webview, {
     type: 'mergeError',
@@ -411,6 +414,7 @@ async function postError(
     diagnostics: [...diagnostics],
     locked,
     backupPaths: backupPaths ? [...backupPaths] : undefined,
+    mutationFailure,
   });
 }
 
