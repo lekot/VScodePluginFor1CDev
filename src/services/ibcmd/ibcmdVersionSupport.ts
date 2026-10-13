@@ -22,34 +22,101 @@ export interface ParsedIbcmdVersion {
   readonly raw: string;
 }
 
-const versionQueryByPath = new Map<string, Promise<ParsedIbcmdVersion | undefined>>();
+type IbcmdQueryCancellation = NonNullable<IbcmdExecutableProcessOptions['cancellation']>;
 
-function awaitVersionQuery(
-  pending: Promise<ParsedIbcmdVersion | undefined>,
-  cancellation: IbcmdExecutableProcessOptions['cancellation'],
-): Promise<ParsedIbcmdVersion | undefined> {
-  if (!cancellation) {
-    return pending;
-  }
-  if (cancellation.isCancellationRequested) {
-    return Promise.resolve(undefined);
-  }
-  return new Promise((resolve) => {
-    let settled = false;
-    const subscription: { current?: { dispose(): void } } = {};
-    const finish = (value: ParsedIbcmdVersion | undefined): void => {
-      if (settled) {
+interface VersionQueryCacheEntry {
+  promise: Promise<ParsedIbcmdVersion | undefined>;
+  cancel: () => void;
+  waiters: number;
+  settled: boolean;
+}
+
+const versionQueryByPath = new Map<string, VersionQueryCacheEntry>();
+
+function createIbcmdQueryCancellation(): { token: IbcmdQueryCancellation; cancel: () => void } {
+  let requested = false;
+  const listeners = new Set<() => void>();
+  return {
+    token: {
+      get isCancellationRequested() { return requested; },
+      onCancellationRequested(listener) {
+        if (requested) {
+          listener();
+          return { dispose: () => undefined };
+        }
+        listeners.add(listener);
+        return { dispose: () => { listeners.delete(listener); } };
+      },
+    },
+    cancel() {
+      if (requested) {
         return;
       }
-      settled = true;
-      subscription.current?.dispose();
+      requested = true;
+      listeners.forEach((listener) => listener());
+    },
+  };
+}
+
+function awaitVersionQuery(
+  executablePath: string,
+  entry: VersionQueryCacheEntry,
+  cancellation: IbcmdExecutableProcessOptions['cancellation'],
+): Promise<ParsedIbcmdVersion | undefined> {
+  if (cancellation?.isCancellationRequested) {
+    if (entry.waiters === 0 && !entry.settled) {
+      entry.cancel();
+      if (versionQueryByPath.get(executablePath) === entry) {
+        versionQueryByPath.delete(executablePath);
+      }
+    }
+    return Promise.resolve(undefined);
+  }
+
+  entry.waiters += 1;
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    let cancellationSubscription: { dispose(): void } | undefined;
+    const releaseWaiter = (): void => {
+      entry.waiters -= 1;
+      if (entry.waiters === 0 && !entry.settled) {
+        entry.cancel();
+        if (versionQueryByPath.get(executablePath) === entry) {
+          versionQueryByPath.delete(executablePath);
+        }
+      }
+    };
+    const finish = (value: ParsedIbcmdVersion | undefined): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cancellationSubscription?.dispose();
+      cancellationSubscription = undefined;
+      releaseWaiter();
       resolve(value);
     };
-    subscription.current = cancellation.onCancellationRequested(() => finish(undefined));
-    void pending.then(finish, () => finish(undefined));
-    if (cancellation.isCancellationRequested) {
-      finish(undefined);
+    const fail = (error: unknown): void => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cancellationSubscription?.dispose();
+      cancellationSubscription = undefined;
+      releaseWaiter();
+      reject(error);
+    };
+
+    if (cancellation) {
+      cancellationSubscription = cancellation.onCancellationRequested(() => finish(undefined));
+      if (finished) {
+        cancellationSubscription.dispose();
+        cancellationSubscription = undefined;
+      } else if (cancellation.isCancellationRequested) {
+        finish(undefined);
+      }
     }
+    void entry.promise.then(finish, fail);
   });
 }
 
@@ -120,33 +187,52 @@ export async function queryParsedIbcmdVersion(
   }
   const pending = versionQueryByPath.get(executablePath);
   if (pending) {
-    return awaitVersionQuery(pending, processOptions.cancellation);
+    return awaitVersionQuery(executablePath, pending, processOptions.cancellation);
   }
-  const run = (async (): Promise<ParsedIbcmdVersion | undefined> => {
+  const queryCancellation = createIbcmdQueryCancellation();
+  const entry: VersionQueryCacheEntry = {
+    promise: Promise.resolve(undefined),
+    cancel: queryCancellation.cancel,
+    waiters: 0,
+    settled: false,
+  };
+  const run = Promise.resolve().then(async (): Promise<ParsedIbcmdVersion | undefined> => {
     try {
       const { stdout } = await runIbcmdExecutable(
         executablePath,
         ['--version'],
         processOptions.timeoutMs ?? 15_000,
-        { ...processOptions, maxBuffer: processOptions.maxBuffer ?? 64 * 1024 },
+        {
+          ...processOptions,
+          cancellation: queryCancellation.token,
+          maxBuffer: processOptions.maxBuffer ?? 64 * 1024,
+        },
       );
       return tryParseIbcmdVersionOutput(stdout);
     } catch {
       return undefined;
     }
-  })();
-  versionQueryByPath.set(executablePath, run);
-  if (processOptions.cancellation) {
-    void run.then(() => {
-      if (
-        processOptions.cancellation?.isCancellationRequested
-        && versionQueryByPath.get(executablePath) === run
-      ) {
+  });
+  entry.promise = run.then(
+    (version) => {
+      entry.settled = true;
+      if (!version && queryCancellation.token.isCancellationRequested) {
+        if (versionQueryByPath.get(executablePath) === entry) {
+          versionQueryByPath.delete(executablePath);
+        }
+      }
+      return version;
+    },
+    (error: unknown) => {
+      entry.settled = true;
+      if (versionQueryByPath.get(executablePath) === entry) {
         versionQueryByPath.delete(executablePath);
       }
-    });
-  }
-  return awaitVersionQuery(run, processOptions.cancellation);
+      throw error;
+    },
+  );
+  versionQueryByPath.set(executablePath, entry);
+  return awaitVersionQuery(executablePath, entry, processOptions.cancellation);
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +246,7 @@ export interface IncrementalSupportProbe {
   exportObjects: boolean;
 }
 
-type IncrementalProbeCancellation = NonNullable<IbcmdExecutableProcessOptions['cancellation']>;
+type IncrementalProbeCancellation = IbcmdQueryCancellation;
 
 interface IncrementalProbeCacheEntry {
   promise: Promise<IncrementalSupportProbe | undefined>;
@@ -181,34 +267,6 @@ function noIncrementalSupport(): IncrementalSupportProbe {
 }
 
 const INCREMENTAL_PROBE_CANCELLED = Symbol('incremental probe cancelled');
-
-function createIncrementalProbeCancellation(): {
-  token: IncrementalProbeCancellation;
-  cancel: () => void;
-} {
-  let requested = false;
-  const listeners = new Set<() => void>();
-  return {
-    token: {
-      get isCancellationRequested() { return requested; },
-      onCancellationRequested(listener) {
-        if (requested) {
-          listener();
-          return { dispose: () => undefined };
-        }
-        listeners.add(listener);
-        return { dispose: () => listeners.delete(listener) };
-      },
-    },
-    cancel() {
-      if (requested) {
-        return;
-      }
-      requested = true;
-      listeners.forEach((listener) => listener());
-    },
-  };
-}
 
 function awaitIncrementalProbe(
   executablePath: string,
@@ -286,7 +344,7 @@ export async function probeIncrementalSupport(
     return awaitIncrementalProbe(executablePath, pending, processOptions.cancellation);
   }
 
-  const probeCancellation = createIncrementalProbeCancellation();
+  const probeCancellation = createIbcmdQueryCancellation();
   const entry: IncrementalProbeCacheEntry = {
     promise: Promise.resolve(undefined),
     cancel: probeCancellation.cancel,

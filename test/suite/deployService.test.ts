@@ -18,6 +18,7 @@ import {
 import type { ConfigurationBinding } from '../../src/bindings/models/configurationBinding';
 import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
 import type { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
+import { runInfobaseConfigurationOperation } from '../../src/infobases/infobaseConfigurationOperationQueue';
 import { resetIbcmdServiceSingletonForTests } from '../../src/services/ibcmd/ibcmdServiceSingleton';
 import { MetadataType } from '../../src/models/treeNode';
 import type { TreeNode } from '../../src/models/treeNode';
@@ -860,6 +861,117 @@ suite('DeployService.deployBinding', () => {
       assert.strictEqual(summary.skippedCount, 1);
       assert.ok(summary.results[0]!.message.includes('Preflight XML'));
     } finally {
+      rmDirQuiet(work);
+    }
+  });
+
+  test('cancelled XML preflight marks the deploy chain cancelled without entering import', async () => {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['deploy.precheckXmlBeforeImport'] = true;
+    resetIbcmdServiceSingletonForTests();
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-preflight-cancelled-'));
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
+      let preflightCalls = 0;
+      let progressCalls = 0;
+      const svc = new DeployService({
+        runXmlPreflight: async () => {
+          preflightCalls += 1;
+          return { ok: false, code: 'CANCELLED', message: 'Отменено до запуска.', durationMs: 1 };
+        },
+      });
+
+      const summary = await svc.deployBinding({
+        binding: baseBinding({ infobaseIds: ['a', 'b'], massDeployment: true }),
+        workspaceFolderRoot: fixtureSmallRoot(),
+        storage: mockStorage,
+        catalog: [fileEntry('a', 'Alpha', ibPath), fileEntry('b', 'Beta', ibPath)],
+        progress: { report: () => { progressCalls += 1; } },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+
+      assert.strictEqual(preflightCalls, 1);
+      assert.strictEqual(progressCalls, 0);
+      assert.strictEqual(summary.cancelledMidChain, true);
+      assert.strictEqual(summary.errorCount, 0);
+      assert.strictEqual(summary.skippedCount, 2);
+      assert.ok(summary.results.every((result) => result.status === 'skipped'));
+    } finally {
+      rmDirQuiet(work);
+    }
+  });
+
+  test('cancellation while queued returns a cancelled deploy result before XML preflight', async () => {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['deploy.precheckXmlBeforeImport'] = true;
+    vscodeTestState.workspaceConfig['deploy.mode'] = 'block';
+    resetIbcmdServiceSingletonForTests();
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-queued-cancel-'));
+    const ibPath = path.join(work, 'p.1cd');
+    fs.writeFileSync(ibPath, '');
+    const entry = fileEntry('queued', 'Queued', ibPath);
+    let releaseOwner!: () => void;
+    let signalOwnerEntered!: () => void;
+    const holdOwner = new Promise<void>((resolve) => { releaseOwner = resolve; });
+    const ownerEntered = new Promise<void>((resolve) => { signalOwnerEntered = resolve; });
+    const owner = runInfobaseConfigurationOperation(entry, async () => {
+      signalOwnerEntered();
+      await holdOwner;
+    });
+    await ownerEntered;
+
+    let cancellationRequested = false;
+    const cancellationListeners = new Set<() => void>();
+    const token = {
+      get isCancellationRequested() { return cancellationRequested; },
+      onCancellationRequested(listener: () => void) {
+        cancellationListeners.add(listener);
+        return { dispose: () => cancellationListeners.delete(listener) };
+      },
+    };
+    const cancel = (): void => {
+      cancellationRequested = true;
+      cancellationListeners.forEach((listener) => listener());
+    };
+    let preflightCalls = 0;
+    let progressCalls = 0;
+    const svc = new DeployService({
+      runXmlPreflight: async () => {
+        preflightCalls += 1;
+        return { ok: true, message: 'ok', durationMs: 1 };
+      },
+    });
+    const deployment = svc.deployBinding({
+      binding: baseBinding({ infobaseIds: ['queued'], massDeployment: false }),
+      workspaceFolderRoot: fixtureSmallRoot(),
+      storage: mockStorage,
+      catalog: [entry],
+      progress: { report: () => { progressCalls += 1; } },
+      token: token as import('vscode').CancellationToken,
+    });
+
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      cancel();
+      const summary = await Promise.race([
+        deployment,
+        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 250)),
+      ]);
+      assert.ok(summary, 'queue cancellation should settle before the owner releases its lease');
+      assert.strictEqual(summary.cancelledMidChain, true);
+      assert.strictEqual(summary.errorCount, 0);
+      assert.strictEqual(summary.skippedCount, 1);
+      assert.strictEqual(preflightCalls, 0);
+      assert.strictEqual(progressCalls, 0);
+    } finally {
+      releaseOwner();
+      await owner;
+      await deployment;
       rmDirQuiet(work);
     }
   });

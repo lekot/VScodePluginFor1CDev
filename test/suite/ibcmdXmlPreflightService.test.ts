@@ -71,6 +71,7 @@ interface LifecycleSpawn {
   readonly spawnImpl: typeof spawn;
   readonly importStarted: Promise<ChildProcess>;
   readonly importCalls: () => number;
+  readonly importArgs: () => readonly string[] | undefined;
 }
 
 function lifecycleSpawn(importBehavior: {
@@ -78,10 +79,12 @@ function lifecycleSpawn(importBehavior: {
   stdout?: string;
   stderr?: string;
   stayOpen?: boolean;
+  versionOutput?: string;
 } = {}): LifecycleSpawn {
   let resolveImport!: (child: ChildProcess) => void;
   const importStarted = new Promise<ChildProcess>((resolve) => { resolveImport = resolve; });
   let importCalls = 0;
+  let lastImportArgs: readonly string[] | undefined;
   const spawnImpl = ((_executable: string, args: readonly string[], _options: SpawnOptions): ChildProcess => {
     const stdout = new PassThrough();
     const stderr = new PassThrough();
@@ -95,12 +98,13 @@ function lifecycleSpawn(importBehavior: {
     setImmediate(() => {
       child.emit('spawn');
       if (args[0] === '--version') {
-        stdout.end('8.3.27.1\n');
+        stdout.end(importBehavior.versionOutput ?? '8.3.27.1\n');
         child.emit('close', 0, null);
         return;
       }
       if (args[0] === 'infobase' && args[1] === 'config' && args[2] === 'import') {
         importCalls += 1;
+        lastImportArgs = [...args];
         resolveImport(child);
         if (importBehavior.stdout) stdout.write(importBehavior.stdout);
         if (importBehavior.stderr) stderr.write(importBehavior.stderr);
@@ -116,7 +120,12 @@ function lifecycleSpawn(importBehavior: {
     return child;
   }) as typeof spawn;
 
-  return { spawnImpl, importStarted, importCalls: () => importCalls };
+  return {
+    spawnImpl,
+    importStarted,
+    importCalls: () => importCalls,
+    importArgs: () => lastImportArgs,
+  };
 }
 
 async function within<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
@@ -186,6 +195,49 @@ suite('ibcmdXmlPreflightService', () => {
       spawnImpl: lifecycleSpawn({ exitCode: 0, stdout: 'ok', stayOpen: false }).spawnImpl,
     });
     assert.strictEqual(r.ok, true);
+  });
+
+  test('blocks preflight on an unsupported ibcmd version before starting import', async () => {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    const dbDir = fs.mkdtempSync(path.join(tempDir, 'db-old-version-'));
+    const srcDir = fs.mkdtempSync(path.join(tempDir, 'src-old-version-'));
+    const processBoundary = lifecycleSpawn({ versionOutput: '8.3.23.2157\n' });
+    const result = await runIbcmdXmlImportPreflight({
+      entry: fileEntry('old-version', dbDir),
+      storage: makeStorage(),
+      absoluteSourceDir: srcDir,
+      spawnImpl: processBoundary.spawnImpl,
+    });
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.code, 'UNSUPPORTED_VERSION');
+    assert.strictEqual(result.effectPossible, false);
+    assert.ok(result.message.includes('8.3.23.2157'));
+    assert.strictEqual(processBoundary.importCalls(), 0);
+  });
+
+  test('passes trimmed credentials and extension to the preflight import', async () => {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    const dbDir = fs.mkdtempSync(path.join(tempDir, 'db-credentials-'));
+    const srcDir = fs.mkdtempSync(path.join(tempDir, 'src-credentials-'));
+    const processBoundary = lifecycleSpawn({ exitCode: 0, stayOpen: false });
+    const storage = {
+      async readPasswordSecret(): Promise<string | undefined> { return 'secret'; },
+    } as unknown as InfobaseStorageService;
+    const result = await runIbcmdXmlImportPreflight({
+      entry: { ...fileEntry('with-credentials', dbDir), user: '  operator  ', hasStoredPassword: true },
+      storage,
+      absoluteSourceDir: srcDir,
+      ibcmdExtensionName: '  Retail  ',
+      spawnImpl: processBoundary.spawnImpl,
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.ok(processBoundary.importArgs()?.includes('--user=operator'));
+    assert.ok(processBoundary.importArgs()?.includes('--password=secret'));
+    assert.ok(processBoundary.importArgs()?.includes('--extension=Retail'));
   });
 
   test('successful exit with truncated output is typed inDoubt and cannot validate the import', async () => {

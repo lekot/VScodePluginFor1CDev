@@ -171,7 +171,7 @@ suite('ibcmdProcessRunner', () => {
         await runIbcmdExecutable(
           '/x',
           ['infobase', 'config', 'check', '--db-path=C:\\ib', '--data=C:\\d'],
-          1,
+          15_000,
           { spawnImpl },
         );
         assert.strictEqual(calls.length, 1);
