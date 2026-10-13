@@ -31,6 +31,7 @@ import {
     isReadOnlyAssertionStep,
     type MutationPlan,
 } from '../services/configurationSession/mutationPlan';
+import { projectMutationFailure } from '../services/configurationSession/mutationReceiptError';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
 import { getIdentitySensitiveMetadataPropertyNames } from '../domain/metadataPropertyClassifier';
 
@@ -148,10 +149,14 @@ function externalDataSourceTableNames(root: Record<string, unknown>): string[] {
 const cfeReadPolicyResolver = new CfeFilesystemMutationPolicyResolver();
 
 function mutationFailure(error: unknown): AgentResult<never> {
+    const mutationProjection = projectMutationFailure(error);
     return {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
-        ...(error instanceof CfeOwnershipError || error instanceof AgentPathError ? { code: error.code } : {}),
+        error: mutationProjection?.message ?? (error instanceof Error ? error.message : String(error)),
+        ...(mutationProjection ? { code: mutationProjection.code, mutationFailure: mutationProjection } : {}),
+        ...(!mutationProjection && (error instanceof CfeOwnershipError || error instanceof AgentPathError)
+            ? { code: error.code }
+            : {}),
     };
 }
 

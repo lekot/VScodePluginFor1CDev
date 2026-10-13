@@ -16,6 +16,7 @@ import type {
     ChartOfAccountsCreateOptions,
     FilterCriterionCreateOptions,
 } from '../services/metadataCrudService';
+import type { MutationFailureProjection } from '../services/configurationSession/mutationReceiptError';
 
 export interface MutationResultData {
     filePath?: string;
@@ -43,6 +44,7 @@ export interface AgentResult<T = void> {
     currentRev?: string;
     target?: string;
     plannedChanges?: import('./agentRevision').MutationPlannedChanges;
+    mutationFailure?: MutationFailureProjection;
 }
 
 export type AgentExternalProcessorContext = ExternalProcessorExecutionContext;
