@@ -9,7 +9,10 @@ import { publishConfigurationTree } from '../../src/infobases/infobaseConfigComm
 import {
   ConfigurationRepositoryTransport,
 } from '../../src/services/configurationRepository/configurationRepositoryTransport';
-import { ConfigurationRepositoryService } from '../../src/services/configurationRepository/configurationRepositoryService';
+import {
+  ConfigurationRepositoryService,
+  type ConfigurationRepositoryServiceDeps,
+} from '../../src/services/configurationRepository/configurationRepositoryService';
 import { InfobaseConfigurationOperationQueue } from '../../src/infobases/infobaseConfigurationOperationQueue';
 import { resolveInfobaseCanonicalIdentity } from '../../src/infobases/infobaseCanonicalIdentity';
 import { MetadataType, type TreeNode } from '../../src/models/treeNode';
@@ -31,6 +34,7 @@ import {
   repositoryTargetKey,
 } from '../../src/services/configurationRepository/repositoryStores';
 import { XmlParser } from '../../src/parsers/xmlParser';
+import type { IbcmdInfobaseOperationResult } from '../../src/services/ibcmd/ibcmdInfobaseOperationResult';
 
 suite('Configuration Repository phase 1', () => {
   test('Configurator batch builder keeps repository and infobase passwords separate and redacted', () => {
@@ -450,6 +454,46 @@ suite('Configuration Repository phase 1', () => {
     }
   });
 
+  test('repository commit preserves typed inDoubt receipt from its pre-commit import', async () => {
+    const termination = {
+      terminated: false,
+      hardKillUsed: true,
+      survivingPids: [8831],
+      errors: ['tree stop not confirmed'],
+    };
+    const harness = await createServiceHarness(
+      () => acknowledgedOutcome('bind'),
+      undefined,
+      {
+        importFiles: async (): Promise<IbcmdInfobaseOperationResult> => ({
+          status: 'inDoubt',
+          exitCode: null,
+          userMessage: 'Import result is uncertain.',
+          logExcerpt: '',
+          effectPossible: true,
+          termination,
+        }),
+      },
+    );
+    try {
+      await harness.service.connect(harness.target, harness.entry, {
+        repositoryPath: 'repo',
+        repositoryUser: 'u',
+        executionInfobaseId: harness.entry.id,
+      }, neverCancelled());
+      harness.calls.length = 0;
+
+      const result = await harness.service.commit(harness.catalog, neverCancelled());
+
+      assert.strictEqual(result.status, 'inDoubt');
+      assert.strictEqual(result.effectPossible, true);
+      assert.deepStrictEqual(result.termination, termination);
+      assert.strictEqual(harness.calls.length, 0, 'repository transport must not run after an uncertain import');
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   test('bind inDoubt keeps candidate binding/secret, marks unknown and quarantines physical IB', async () => {
     const harness = await createServiceHarness(() => ({
       status: 'inDoubt' as const,
@@ -621,6 +665,7 @@ function acknowledgedOutcome(operation: 'bind' | 'lock' | 'unlock' | 'commit' | 
 async function createServiceHarness(
   outcome: (operation: string) => unknown,
   reloadConfiguration?: () => Promise<void>,
+  extraDeps: Partial<Pick<ConfigurationRepositoryServiceDeps, 'importFiles'>> = {},
 ) {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-service-'));
   await fs.mkdir(path.join(rootPath, 'Catalogs'), { recursive: true });
@@ -660,6 +705,7 @@ async function createServiceHarness(
     transport,
     queue,
     ...(reloadConfiguration ? { reloadConfiguration } : {}),
+    ...extraDeps,
   });
   return {
     rootPath,

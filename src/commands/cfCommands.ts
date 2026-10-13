@@ -138,6 +138,10 @@ async function showOperationResult(result: CfConfigurationOperationResult): Prom
     await showIbcmdNotFoundDialog();
     return;
   }
+  if (result.status === 'inDoubt') {
+    void vscode.window.showWarningMessage(result.userMessage);
+    return;
+  }
   void vscode.window.showErrorMessage(result.userMessage);
 }
 

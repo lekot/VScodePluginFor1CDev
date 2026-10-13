@@ -11,11 +11,46 @@ import type { ConfigurationBinding } from '../../src/bindings/models/configurati
 import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
 import { findBinding } from '../../src/agent/agentBindingResolver';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
+import { resetIbcmdServiceSingletonForTests } from '../../src/services/ibcmd/ibcmdServiceSingleton';
+import type {
+  IbcmdStreamingRawOutcome,
+  IbcmdStreamingRunnerOptions,
+} from '../../src/services/ibcmd/IbcmdStreamingRunner';
+import type { IbcmdService } from '../../src/services/ibcmd/IbcmdService';
+
+interface MutableIbcmdRunnerModule {
+  runIbcmdStreaming(options: IbcmdStreamingRunnerOptions): Promise<IbcmdStreamingRawOutcome>;
+}
+
+interface MutableIbcmdServiceModule {
+  getIbcmdService(): IbcmdService;
+}
+
+interface MutableIbcmdVersionSupportModule {
+  getIbcmdYamlInfobaseConfigUnsupportedMessage(executablePath: string): Promise<string | undefined>;
+}
+
+const ibcmdRunnerModule = module.require('../../src/services/ibcmd/IbcmdStreamingRunner') as MutableIbcmdRunnerModule;
+const ibcmdServiceModule = module.require('../../src/services/ibcmd/ibcmdServiceSingleton') as MutableIbcmdServiceModule;
+const ibcmdVersionSupportModule = module.require('../../src/services/ibcmd/ibcmdVersionSupport') as MutableIbcmdVersionSupportModule;
+const originalRunIbcmdStreaming = ibcmdRunnerModule.runIbcmdStreaming;
+const originalGetIbcmdService = ibcmdServiceModule.getIbcmdService;
+const originalGetYamlUnsupportedMessage = ibcmdVersionSupportModule.getIbcmdYamlInfobaseConfigUnsupportedMessage;
+
+function fixtureSmallRoot(): string {
+  return path.resolve(__dirname, '../fixtures/matrix/small');
+}
 
 suite('Agent deploy partial result projection', () => {
   setup(() => resetVscodeTestState());
 
-  teardown(() => resetVscodeTestState());
+  teardown(() => {
+    ibcmdRunnerModule.runIbcmdStreaming = originalRunIbcmdStreaming;
+    ibcmdServiceModule.getIbcmdService = originalGetIbcmdService;
+    ibcmdVersionSupportModule.getIbcmdYamlInfobaseConfigUnsupportedMessage = originalGetYamlUnsupportedMessage;
+    resetIbcmdServiceSingletonForTests();
+    resetVscodeTestState();
+  });
 
   test('full deploy Agent projection keeps inDoubt distinct and exposes effect and termination details', async () => {
     const original = DeployService.prototype.deployBinding;
@@ -97,6 +132,83 @@ suite('Agent deploy partial result projection', () => {
       );
     } finally {
       DeployService.prototype.deployBinding = original;
+    }
+  });
+
+  test('Agent public receipt keeps runtime process uncertainty typed across a multi-base deploy', async () => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deploy-runtime-indoubt-'));
+    const ibPath = path.join(work, 'base.1cd');
+    fs.writeFileSync(ibPath, '');
+    const termination = {
+      terminated: false,
+      hardKillUsed: true,
+      survivingPids: [7124],
+      errors: ['tree stop not confirmed'],
+    };
+    let runnerCalls = 0;
+    ibcmdServiceModule.getIbcmdService = () => ({
+      resolveExecutablePathAsync: async () => ({ kind: 'resolved', path: 'ibcmd-test' }),
+      getTimeoutMs: () => 30_000,
+    } as unknown as IbcmdService);
+    ibcmdVersionSupportModule.getIbcmdYamlInfobaseConfigUnsupportedMessage = async () => undefined;
+    ibcmdRunnerModule.runIbcmdStreaming = async () => {
+      runnerCalls += 1;
+      return {
+        started: true,
+        effectPossible: true,
+        exitCode: null,
+        signal: 'SIGTERM',
+        combinedLog: 'import was interrupted after spawn',
+        logTruncated: false,
+        cancelled: true,
+        timedOut: false,
+        termination,
+      };
+    };
+
+    const binding: ConfigurationBinding = {
+      workspaceFolder: 'ws',
+      configRelativePath: 'Configuration.xml',
+      infobaseIds: ['ib-1', 'ib-2'],
+      massDeployment: true,
+    };
+    const catalog: InfobaseEntry[] = ['Alpha', 'Beta'].map((name, index) => ({
+      id: `ib-${index + 1}`,
+      name,
+      type: 'file',
+      filePath: ibPath,
+      hasStoredPassword: false,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }));
+    const operations = new (await import('../../src/agent/agentDeployOperations')).AgentDeployOperations({
+      bindingManager: {} as never,
+      infobaseStorage: {} as never,
+      getConfigPath: () => null,
+    });
+    Reflect.set(operations, 'resolveDeployContext', async () => ({
+      success: true,
+      data: {
+        configRoot: fixtureSmallRoot(),
+        binding,
+        entries: catalog,
+        catalog,
+        workspaceFolderRoot: fixtureSmallRoot(),
+      },
+    }));
+
+    try {
+      const result = await operations.deploy({});
+      assert.strictEqual(runnerCalls, 1, 'the Agent path must not run apply or the next base');
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(result.code, 'DEPLOY_OPERATION_IN_DOUBT');
+      assert.ok(result.error?.toLowerCase().includes('неопредел'));
+      assert.strictEqual(result.data?.summary.inDoubt, 1);
+      assert.strictEqual(result.data?.summary.error, 0);
+      assert.deepStrictEqual(result.data?.results.map((item) => item.status), ['inDoubt', 'skipped']);
+      assert.strictEqual(result.data?.results[0]?.effectPossible, true);
+      assert.deepStrictEqual(result.data?.results[0]?.termination, termination);
+    } finally {
+      fs.rmSync(work, { recursive: true, force: true });
     }
   });
 
@@ -340,6 +452,12 @@ suite('Agent deploy partial result projection', () => {
     const original = commands.runInfobaseConfigExportStatus;
     let operationStatus: 'success' | 'cancelled' = 'success';
     let passedExtensionName: string | undefined;
+    const termination = {
+      terminated: true,
+      hardKillUsed: false,
+      survivingPids: [],
+      errors: [],
+    };
     const stub: typeof original = async (params) => {
       passedExtensionName = params.ibcmdExtensionName;
       return {
@@ -347,6 +465,7 @@ suite('Agent deploy partial result projection', () => {
         exitCode: operationStatus === 'success' ? 0 : null,
         userMessage: operationStatus === 'success' ? 'ok' : 'Операция отменена.',
         logExcerpt: '',
+        ...(operationStatus === 'cancelled' ? { effectPossible: true, termination } : {}),
       };
     };
     (commands as { runInfobaseConfigExportStatus: typeof original }).runInfobaseConfigExportStatus = stub;
@@ -388,6 +507,9 @@ suite('Agent deploy partial result projection', () => {
       assert.strictEqual(cancelled.success, false);
       assert.strictEqual(cancelled.code, 'REQUEST_CANCELLED');
       assert.strictEqual(cancelled.error, 'Операция отменена.');
+      assert.strictEqual(cancelled.data?.status, 'cancelled');
+      assert.strictEqual(cancelled.data?.effectPossible, true);
+      assert.deepStrictEqual(cancelled.data?.termination, termination);
     } finally {
       (commands as { runInfobaseConfigExportStatus: typeof original }).runInfobaseConfigExportStatus = original;
       await fs.promises.rm(root, { recursive: true, force: true });

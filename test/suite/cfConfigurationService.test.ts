@@ -96,4 +96,42 @@ suite('cfConfigurationService', () => {
       path.join(nativeTempRoot, 'xml'),
     ]);
   });
+
+  test('buildCfFromXmlConfiguration preserves inDoubt process receipt after a started import', async () => {
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-cf-indoubt-'));
+    const configRoot = path.join(tempRoot, 'xml');
+    const outFile = path.join(tempRoot, '1Cv8.cf');
+    const calls: string[][] = [];
+    const termination = {
+      terminated: false,
+      hardKillUsed: true,
+      survivingPids: [4042],
+      errors: ['tree stop not confirmed'],
+    };
+    let runCount = 0;
+    await fs.promises.mkdir(configRoot);
+    await fs.promises.writeFile(path.join(configRoot, 'Configuration.xml'), '<Configuration/>', 'utf-8');
+    const deps = makeDeps(tempRoot, calls);
+    deps.runStreaming = async (options) => {
+      calls.push(options.args);
+      runCount += 1;
+      return runCount === 1
+        ? OK
+        : {
+            ...OK,
+            started: true,
+            effectPossible: true,
+            exitCode: null,
+            signal: 'SIGTERM',
+            cancelled: true,
+            termination,
+          };
+    };
+
+    const result = await buildCfFromXmlConfiguration({ configRoot, outFile, token: TOKEN }, deps);
+
+    assert.strictEqual(result.status, 'inDoubt');
+    assert.strictEqual(result.effectPossible, true);
+    assert.deepStrictEqual(result.termination, termination);
+  });
 });

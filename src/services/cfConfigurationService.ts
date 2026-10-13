@@ -30,11 +30,13 @@ export interface CfConfigurationServiceDeps {
 }
 
 export interface CfConfigurationOperationResult {
-  status: 'success' | 'cancelled' | 'error';
+  status: 'success' | 'cancelled' | 'inDoubt' | 'error';
   userMessage: string;
   logExcerpt: string;
   exitCode: number | null;
   code?: 'IBCMD_NOT_FOUND';
+  effectPossible?: boolean;
+  termination?: IbcmdStreamingRawOutcome['termination'];
 }
 
 export interface DecomposeCfToXmlDirectoryParams {
@@ -242,6 +244,8 @@ export async function decomposeCfToXmlDirectory(
       userMessage: interpreted.userMessage,
       logExcerpt: interpreted.logExcerpt,
       exitCode: interpreted.exitCode,
+      effectPossible: interpreted.effectPossible,
+      termination: interpreted.termination,
     };
   } finally {
     await cleanupTempRoot(tempRoot);
@@ -286,6 +290,8 @@ export async function buildCfFromXmlConfiguration(
       userMessage: interpreted.userMessage,
       logExcerpt: interpreted.logExcerpt,
       exitCode: interpreted.exitCode,
+      effectPossible: interpreted.effectPossible,
+      termination: interpreted.termination,
     };
   } finally {
     await cleanupTempRoot(tempRoot);

@@ -42,6 +42,8 @@ function makeEntry(partial: Partial<InfobaseEntry> & Pick<InfobaseEntry, 'id' | 
 }
 
 suite('configCompareService runCompareInfobaseConfigurations (Phase 4 #62)', () => {
+  setup(() => resetVscodeTestState());
+
   teardown(() => {
     runnerModule.runIbcmdStreaming = originalRunIbcmdStreaming;
     ibcmdServiceModule.getIbcmdService = originalGetIbcmdService;
@@ -144,6 +146,56 @@ suite('configCompareService runCompareInfobaseConfigurations (Phase 4 #62)', () 
       ]);
     } finally {
       global.setTimeout = originalSetTimeout;
+    }
+  });
+
+  test('post-start export uncertainty produces a warning and prevents the second database export', async () => {
+    const storage = { readPasswordSecret: async () => undefined } as unknown as InfobaseStorageService;
+    const a = makeEntry({ id: 'compare-a', name: 'A', type: 'server', server: 'localhost', database: 'db-a' });
+    const b = makeEntry({ id: 'compare-b', name: 'B', type: 'server', server: 'localhost', database: 'db-b' });
+    const termination = {
+      terminated: false,
+      hardKillUsed: true,
+      survivingPids: [3344],
+      errors: ['tree stop not confirmed'],
+    };
+    const outputDirs: string[] = [];
+    let calls = 0;
+    runnerModule.runIbcmdStreaming = async (options) => {
+      calls += 1;
+      outputDirs.push(options.args.at(-1)!);
+      return {
+        started: true,
+        effectPossible: true,
+        exitCode: null,
+        signal: 'SIGTERM',
+        combinedLog: '',
+        logTruncated: false,
+        cancelled: true,
+        timedOut: false,
+        termination,
+      };
+    };
+    ibcmdServiceModule.getIbcmdService = () => ({
+      resolveExecutablePathAsync: async () => ({ kind: 'resolved', path: 'ibcmd-test' }),
+      getTimeoutMs: () => 30_000,
+    } as unknown as IbcmdService);
+    versionSupportModule.getIbcmdYamlInfobaseConfigUnsupportedMessage = async () => undefined;
+    const originalSetTimeout = global.setTimeout;
+    global.setTimeout = ((callback: (...args: unknown[]) => void, _delay?: number, ...args: unknown[]) =>
+      originalSetTimeout(callback, 0, ...args)) as typeof global.setTimeout;
+
+    try {
+      await runCompareInfobaseConfigurations({ storage, entryA: a, entryB: b });
+
+      assert.strictEqual(calls, 1, 'an uncertain first export must prevent starting the second');
+      assert.ok(vscodeTestState.warningLog.some((message) => message.toLowerCase().includes('неопредел')));
+      assert.ok(!vscodeTestState.errorLog.some((message) => message.toLowerCase().includes('неопредел')));
+    } finally {
+      global.setTimeout = originalSetTimeout;
+      for (const outputDir of outputDirs) {
+        await fs.rm(path.dirname(outputDir), { recursive: true, force: true });
+      }
     }
   });
 });

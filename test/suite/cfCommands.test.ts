@@ -90,7 +90,7 @@ suite('cfCommands', () => {
     try {
       const cfPath = path.join(tempRoot, '1Cv8.cf');
       await fs.writeFile(cfPath, Buffer.from([1]));
-      for (const status of ['error', 'cancelled'] as const) {
+      for (const status of ['error', 'cancelled', 'inDoubt'] as const) {
         resetVscodeTestState();
         const outDir = path.join(tempRoot, status);
         let stagingOutDir: string | undefined;
@@ -101,7 +101,7 @@ suite('cfCommands', () => {
             decomposeCfToXmlDirectory: async (params) => {
               stagingOutDir = params.outDir;
               stagingOutDirs.push(params.outDir);
-              return { status, userMessage: status, logExcerpt: '', exitCode: 1 };
+              return { status, userMessage: status, logExcerpt: '', exitCode: status === 'inDoubt' ? null : 1 };
             },
             buildCfFromXmlConfiguration: async () => {
               throw new Error('not expected');
@@ -116,6 +116,10 @@ suite('cfCommands', () => {
 
         assert.ok(stagingOutDir);
         await assert.rejects(fs.stat(path.dirname(stagingOutDir)));
+        if (status === 'inDoubt') {
+          assert.ok(vscodeTestState.warningLog.some((message) => message === 'inDoubt'));
+          assert.strictEqual(vscodeTestState.errorLog.length, 0);
+        }
       }
     } finally {
       for (const stagingOutDir of stagingOutDirs) {

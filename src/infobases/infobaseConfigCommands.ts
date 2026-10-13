@@ -54,6 +54,23 @@ const OUTPUT_CHANNEL_NAME = 'CDT 41: Infobase (ibcmd)';
 const OUTPUT_DEBOUNCE_MS = 75;
 const TRUNCATION_WARNING =
   '[ibcmd] Вывод усечён из‑за лимита буфера (см. IbcmdStreamingRunner). Полный журнал недоступен в канале.';
+const IMPORT_APPLY_CANCELLED_MESSAGE =
+  'Импорт завершился успешно, но apply отменён до запуска; общий итог неопределён.';
+
+function incompleteImportApplyResult(
+  importResult: IbcmdInfobaseOperationResult,
+): IbcmdInfobaseOperationResult {
+  return {
+    status: 'inDoubt',
+    exitCode: importResult.exitCode,
+    signal: importResult.signal,
+    userMessage: IMPORT_APPLY_CANCELLED_MESSAGE,
+    logExcerpt: importResult.logExcerpt,
+    logTruncated: importResult.logTruncated,
+    effectPossible: true,
+    ...(importResult.termination ? { termination: importResult.termination } : {}),
+  };
+}
 
 let outputChannel: vscode.OutputChannel | undefined;
 
@@ -385,8 +402,12 @@ export async function runInfobaseConfigImportFromDirectory(params: {
     }
 
     const importResult = interpretIbcmdInfobaseOutcome('import', outcome);
-    if (importResult.status === 'error') {
+    if (importResult.status !== 'success') {
       return importResult;
+    }
+
+    if (params.token.isCancellationRequested) {
+      return incompleteImportApplyResult(importResult);
     }
 
     // apply: обновление конфигурации БД
@@ -511,30 +532,34 @@ async function runInfobaseConfigOperation(params: {
 
         let interpreted = interpretIbcmdInfobaseOutcome(params.op, outcome);
 
-        if (interpreted.status !== 'error' && params.postStep) {
-          ch.appendLine(params.postStep.logLine);
-          const postOutcome = await runIbcmdStreaming({
-            executablePath: pathResult.path,
-            args: params.postStep.buildArgsFromPrep(prep, credentials),
-            timeoutMs: ibcmd.getTimeoutMs(),
-            cancellation: vscodeCancellation(token),
-            consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-            redactedValues: credentials?.password ? [credentials.password] : [],
-            onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
-            abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
-          });
+        if (interpreted.status === 'success' && params.postStep) {
+          if (token.isCancellationRequested) {
+            interpreted = incompleteImportApplyResult(interpreted);
+          } else {
+            ch.appendLine(params.postStep.logLine);
+            const postOutcome = await runIbcmdStreaming({
+              executablePath: pathResult.path,
+              args: params.postStep.buildArgsFromPrep(prep, credentials),
+              timeoutMs: ibcmd.getTimeoutMs(),
+              cancellation: vscodeCancellation(token),
+              consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
+              redactedValues: credentials?.password ? [credentials.password] : [],
+              onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
+              abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
+            });
 
-          flushOutputChannel(outputBuffer);
+            flushOutputChannel(outputBuffer);
 
-          if (postOutcome.spawnErrorCode === 'ENOENT' || postOutcome.spawnErrorCode === 'ENOTDIR') {
-            ibcmd.invalidatePathCache();
+            if (postOutcome.spawnErrorCode === 'ENOENT' || postOutcome.spawnErrorCode === 'ENOTDIR') {
+              ibcmd.invalidatePathCache();
+            }
+
+            if (postOutcome.logTruncated) {
+              ch.appendLine(TRUNCATION_WARNING);
+            }
+
+            interpreted = interpretIbcmdInfobaseOutcome(params.postStep.op, postOutcome);
           }
-
-          if (postOutcome.logTruncated) {
-            ch.appendLine(TRUNCATION_WARNING);
-          }
-
-          interpreted = interpretIbcmdInfobaseOutcome(params.postStep.op, postOutcome);
         }
 
         const showOutput = 'Показать вывод';
@@ -546,6 +571,8 @@ async function runInfobaseConfigOperation(params: {
             }
           });
         } else if (interpreted.status === 'cancelled') {
+          void vscode.window.showWarningMessage(interpreted.userMessage);
+        } else if (interpreted.status === 'inDoubt') {
           void vscode.window.showWarningMessage(interpreted.userMessage);
         } else {
           void vscode.window.showErrorMessage(interpreted.userMessage, showOutput).then((r) => {
@@ -795,8 +822,12 @@ export async function runInfobaseConfigIncrementalImport(
     }
 
     const importResult = interpretIbcmdInfobaseOutcome('import', outcome);
-    if (importResult.status === 'error') {
+    if (importResult.status !== 'success') {
       return importResult;
+    }
+
+    if (params.token.isCancellationRequested) {
+      return incompleteImportApplyResult(importResult);
     }
 
     // apply: обновление конфигурации БД
@@ -1431,7 +1462,7 @@ export async function runInfobaseConfigExportStatus(
       ch.appendLine(TRUNCATION_WARNING);
     }
 
-    return interpretIbcmdInfobaseOutcome('export', outcome);
+    return interpretIbcmdInfobaseOutcome('check', outcome);
   } finally {
     flushOutputChannel(outputBuffer);
     await prep.dispose();

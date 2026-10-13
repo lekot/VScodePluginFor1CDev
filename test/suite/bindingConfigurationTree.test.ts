@@ -16,11 +16,49 @@ import {
   getIbcmdService,
   resetIbcmdServiceSingletonForTests,
 } from '../../src/services/ibcmd/ibcmdServiceSingleton';
+import type {
+  IbcmdStreamingRawOutcome,
+  IbcmdStreamingRunnerOptions,
+} from '../../src/services/ibcmd/IbcmdStreamingRunner';
+import type { IbcmdService } from '../../src/services/ibcmd/IbcmdService';
 import {
   resetVscodeTestState,
   restoreVscodeWorkspaceFoldersGetter,
   vscodeTestState,
 } from '../helpers/vscodeModuleStub';
+
+interface MutableIbcmdRunnerModule {
+  runIbcmdStreaming(options: IbcmdStreamingRunnerOptions): Promise<IbcmdStreamingRawOutcome>;
+}
+
+interface MutableIbcmdServiceModule {
+  getIbcmdService(): IbcmdService;
+}
+
+interface MutableIbcmdVersionSupportModule {
+  getIbcmdYamlInfobaseConfigUnsupportedMessage(executablePath: string): Promise<string | undefined>;
+}
+
+const ibcmdRunnerModule = module.require('../../src/services/ibcmd/IbcmdStreamingRunner') as MutableIbcmdRunnerModule;
+const ibcmdServiceModule = module.require('../../src/services/ibcmd/ibcmdServiceSingleton') as MutableIbcmdServiceModule;
+const ibcmdVersionSupportModule = module.require('../../src/services/ibcmd/ibcmdVersionSupport') as MutableIbcmdVersionSupportModule;
+const originalRunIbcmdStreaming = ibcmdRunnerModule.runIbcmdStreaming;
+const originalGetIbcmdService = ibcmdServiceModule.getIbcmdService;
+const originalGetYamlUnsupportedMessage = ibcmdVersionSupportModule.getIbcmdYamlInfobaseConfigUnsupportedMessage;
+
+function rawOutcome(overrides: Partial<IbcmdStreamingRawOutcome> = {}): IbcmdStreamingRawOutcome {
+  return {
+    started: false,
+    effectPossible: false,
+    exitCode: 0,
+    signal: null,
+    combinedLog: '',
+    logTruncated: false,
+    cancelled: false,
+    timedOut: false,
+    ...overrides,
+  };
+}
 
 suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
   let mockContext: vscode.ExtensionContext;
@@ -377,9 +415,20 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
     tempDirs.length = 0;
+    ibcmdRunnerModule.runIbcmdStreaming = originalRunIbcmdStreaming;
+    ibcmdServiceModule.getIbcmdService = originalGetIbcmdService;
+    ibcmdVersionSupportModule.getIbcmdYamlInfobaseConfigUnsupportedMessage = originalGetYamlUnsupportedMessage;
     resetIbcmdServiceSingletonForTests();
     resetVscodeTestState();
   });
+
+  function configureIbcmdMocks(): void {
+    ibcmdServiceModule.getIbcmdService = () => ({
+      resolveExecutablePathAsync: async () => ({ kind: 'resolved', path: 'ibcmd-test' }),
+      getTimeoutMs: () => 30_000,
+    } as unknown as IbcmdService);
+    ibcmdVersionSupportModule.getIbcmdYamlInfobaseConfigUnsupportedMessage = async () => undefined;
+  }
 
   function configurationNode(wsRoot: string): TreeNode {
     return {
@@ -827,6 +876,79 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     } finally {
       DeployService.prototype.deployBinding = original;
     }
+  });
+
+  test('real process inDoubt reaches the multi-base deploy UI summary without starting apply', async () => {
+    configureIbcmdMocks();
+    vscodeTestState.workspaceConfig['deploy.precheckXmlBeforeImport'] = false;
+    vscodeTestState.warningMessageReturnQueue = ['Продолжить'];
+    const wsRoot = fixtureSmallMatrixRoot();
+    vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-ui-process-indoubt-'));
+    tempDirs.push(work);
+    for (const name of ['Alpha', 'Beta']) {
+      fs.writeFileSync(path.join(work, `${name}.1cd`), '');
+    }
+    const termination = {
+      terminated: false,
+      hardKillUsed: true,
+      survivingPids: [9812],
+      errors: ['tree stop not confirmed'],
+    };
+    let runnerCalls = 0;
+    ibcmdRunnerModule.runIbcmdStreaming = async () => {
+      runnerCalls += 1;
+      return rawOutcome({
+        started: true,
+        effectPossible: true,
+        exitCode: null,
+        signal: 'SIGTERM',
+        cancelled: true,
+        termination,
+      });
+    };
+    const state = {
+      bindingManager: {
+        async get() {
+          return {
+            workspaceFolder: 'MyWs',
+            configRelativePath: 'Configuration.xml',
+            infobaseIds: ['ib1', 'ib2'],
+            massDeployment: true,
+          };
+        },
+      },
+      infobaseStorage: {
+        async load() {
+          return ['Alpha', 'Beta'].map((name, index) => ({
+            id: `ib${index + 1}`,
+            name,
+            type: 'file',
+            filePath: path.join(work, `${name}.1cd`),
+            hasStoredPassword: false,
+            createdAt: '2020-01-01T00:00:00.000Z',
+          }));
+        },
+        async readPasswordSecret(): Promise<string | undefined> {
+          return undefined;
+        },
+      },
+    } as unknown as ExtensionState;
+
+    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+
+    assert.strictEqual(runnerCalls, 1, 'uncertain import must prevent apply and the next base');
+    assert.strictEqual(vscodeTestState.errorLog.length, 0);
+    const completionWarning = vscodeTestState.warningLog.find((message) =>
+      message.includes('Раскатка завершена:'),
+    );
+    assert.ok(completionWarning?.includes('1 с неопределённым результатом'), completionWarning);
+    assert.ok(completionWarning?.includes('1 пропущено'), completionWarning);
+    assert.ok(!completionWarning?.includes('с ошибками'), completionWarning);
+    assert.ok(
+      !vscodeTestState.informationLog.some((message) => message.includes('Раскатка завершена:')),
+      'an uncertain process receipt must be shown as a warning',
+    );
   });
 
   test('package.json: команды config.deploy / deployMultiple и контекстное меню', () => {

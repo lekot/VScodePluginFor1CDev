@@ -12,6 +12,7 @@ import type { ConfigurationBinding } from './models/configurationBinding';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import type { InfobaseStorageService } from '../infobases/infobaseStorageService';
+import type { IbcmdInfobaseOperationResult } from '../services/ibcmd/ibcmdInfobaseOperationResult';
 import {
   appendIbcmdOutputLine,
   runInfobaseConfigImportFromDirectory,
@@ -825,6 +826,13 @@ export class DeployService {
           break;
         }
 
+        if (interpreted.status === 'inDoubt') {
+          appendIbcmdOutputLine(`[раскатка] ${entry.name}: результат неопределён — ${interpreted.userMessage}`);
+          results.push(toInDoubtDeployItem(entry, interpreted));
+          appendSkippedAfterUncertainOperation(results, entries, i);
+          break;
+        }
+
         if (interpreted.status === 'success') {
           appendIbcmdOutputLine(`[раскатка] ${entry.name}: успех — ${interpreted.userMessage}`);
           results.push({
@@ -1127,6 +1135,13 @@ export class DeployService {
         break;
       }
 
+      if (interpreted.status === 'inDoubt') {
+        appendIbcmdOutputLine(`[раскатка выбранных] ${entry.name}: результат неопределён — ${interpreted.userMessage}`);
+        results.push(toInDoubtDeployItem(entry, interpreted, skippedFiles));
+        appendSkippedAfterUncertainOperation(results, entries, i);
+        break;
+      }
+
       if (interpreted.status === 'success') {
         const contentSignature = await computeFilesContentSignature(configRoot, supportAndImport.importedFiles);
         recordDeploy(
@@ -1324,6 +1339,13 @@ export class DeployService {
         break;
       }
 
+      if (interpreted.status === 'inDoubt') {
+        appendIbcmdOutputLine(`[раскатка изменённых] ${entry.name}: результат неопределён — ${interpreted.userMessage}`);
+        results.push(toInDoubtDeployItem(entry, interpreted, skippedFiles));
+        appendSkippedAfterUncertainOperation(results, entries, i);
+        break;
+      }
+
       if (interpreted.status === 'success') {
         appendIbcmdOutputLine(`[раскатка изменённых] ${entry.name}: успех — ${interpreted.userMessage}`);
         const partial = skippedFiles.length > 0;
@@ -1426,6 +1448,14 @@ export class DeployService {
       return s;
     }
 
+    if (interpreted.status === 'inDoubt') {
+      appendIbcmdOutputLine(`[выгрузка объектов] ${params.entry.name}: результат неопределён — ${interpreted.userMessage}`);
+      results.push(toInDoubtDeployItem(params.entry, interpreted));
+      const s = summarizeDeployRun(results, false);
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+
     if (interpreted.status === 'success') {
       appendIbcmdOutputLine(`[выгрузка объектов] ${params.entry.name}: успех — ${interpreted.userMessage}`);
       results.push({ infobaseId: params.entry.id, name: params.entry.name, status: 'success', message: interpreted.userMessage });
@@ -1437,6 +1467,39 @@ export class DeployService {
     const s = summarizeDeployRun(results, false);
     appendDeployRunSummaryLine(s);
     return s;
+  }
+}
+
+function toInDoubtDeployItem(
+  entry: InfobaseEntry,
+  operation: IbcmdInfobaseOperationResult,
+  skippedFiles?: readonly string[],
+): DeployItemResult {
+  return {
+    infobaseId: entry.id,
+    name: entry.name,
+    status: 'inDoubt',
+    message: operation.userMessage,
+    errorCode: 'DEPLOY_OPERATION_IN_DOUBT',
+    effectPossible: true,
+    ...(operation.termination ? { termination: operation.termination } : {}),
+    ...(skippedFiles ? { skippedFiles } : {}),
+  };
+}
+
+function appendSkippedAfterUncertainOperation(
+  results: DeployItemResult[],
+  entries: readonly InfobaseEntry[],
+  currentIndex: number,
+): void {
+  for (let index = currentIndex + 1; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    results.push({
+      infobaseId: entry.id,
+      name: entry.name,
+      status: 'skipped',
+      message: 'Пропущено: результат операции на предыдущей базе неопределён.',
+    });
   }
 }
 

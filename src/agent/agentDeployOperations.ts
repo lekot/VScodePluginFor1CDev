@@ -409,9 +409,7 @@ export class AgentDeployOperations {
                     success: isDeploySummarySuccess(summary),
                     code: deploySummaryCode(summary),
                     data: projectDeployRunSummary(summary, false),
-                    error: summary.errorCount > 0
-                        ? `Выгрузка завершена с ошибками: ${summary.errorCount}`
-                        : undefined,
+                    error: deploySummaryError(summary),
                 };
             } finally {
                 processOutput.flush();
@@ -426,7 +424,15 @@ export class AgentDeployOperations {
     // exportStatus — статус конфигурации через ibcmd export status
     // -------------------------------------------------------------------------
 
-    async exportStatus(params: ExportStatusAgentParams, execution: AgentDeployExecutionOptions = {}): Promise<AgentResult<{ message: string }>> {
+    async exportStatus(
+        params: ExportStatusAgentParams,
+        execution: AgentDeployExecutionOptions = {},
+    ): Promise<AgentResult<{
+        message: string;
+        status: 'success' | 'cancelled' | 'inDoubt' | 'error';
+        effectPossible?: boolean;
+        termination?: ProcessTreeTerminationOutcome;
+    }>> {
         try {
             const ctx = await this.resolveDeployContext(params.configPath);
             if (!ctx.success) {
@@ -459,7 +465,12 @@ export class AgentDeployOperations {
                 return {
                     success: result.status === 'success',
                     code: result.status === 'cancelled' ? 'REQUEST_CANCELLED' : undefined,
-                    data: { message: result.userMessage },
+                    data: {
+                        message: result.userMessage,
+                        status: result.status,
+                        effectPossible: result.effectPossible,
+                        termination: result.termination,
+                    },
                     error: result.status !== 'success' ? result.userMessage : undefined,
                 };
             } finally {

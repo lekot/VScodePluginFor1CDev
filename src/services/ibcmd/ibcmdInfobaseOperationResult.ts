@@ -5,7 +5,7 @@ import type { LockedObjectRef } from './ibcmdLockedObjectsParser';
 export type IbcmdInfobaseConfigOpKind = 'import' | 'export' | 'check' | 'apply';
 
 export interface IbcmdInfobaseOperationResult {
-  status: 'success' | 'cancelled' | 'error';
+  status: 'success' | 'cancelled' | 'inDoubt' | 'error';
   exitCode: number | null;
   signal?: string;
   userMessage: string;
@@ -13,6 +13,9 @@ export interface IbcmdInfobaseOperationResult {
   logExcerpt: string;
   /** True when ring buffer trimmed output (see runner). */
   logTruncated?: boolean;
+  /** Process receipt retained from the streaming runner for the public operation result. */
+  effectPossible?: boolean;
+  termination?: IbcmdStreamingRawOutcome['termination'];
   /** Populated when ibcmd rejects specific objects due to support mode lock (NotEditable). */
   lockedObjects?: readonly LockedObjectRef[];
 }
@@ -40,6 +43,14 @@ const IMPORT_FORCE_PARAM_PARSE_MSG =
   'Ошибка ibcmd: параметр принудительной загрузки отклонён при разборе командной строки (это не блокировка базы). См. вывод в канале.';
 
 const CANCELLED_MSG = 'Операция отменена.';
+const IN_DOUBT_MSG = 'Итог операции ibcmd неопределён: изменения могли примениться.';
+
+function processReceipt(raw: IbcmdStreamingRawOutcome): Pick<IbcmdInfobaseOperationResult, 'effectPossible' | 'termination'> {
+  return {
+    ...(raw.effectPossible !== undefined ? { effectPossible: raw.effectPossible } : {}),
+    ...(raw.termination ? { termination: raw.termination } : {}),
+  };
+}
 
 /**
  * True when ibcmd output suggests the process failed parsing a force-related flag (`--force`, `-F`).
@@ -77,6 +88,25 @@ export function interpretIbcmdInfobaseOutcome(
   const logExcerpt = raw.combinedLog;
   const logTruncated = raw.logTruncated;
 
+  const terminationUnconfirmed =
+    raw.spawnErrorCode === 'PROCESS_TREE_TERMINATION_FAILED'
+    || raw.termination?.terminated === false;
+  if (
+    op !== 'check'
+    && (terminationUnconfirmed || (raw.effectPossible && (raw.cancelled || raw.timedOut)))
+  ) {
+    return {
+      status: 'inDoubt',
+      exitCode: raw.exitCode,
+      signal: raw.signal ?? undefined,
+      userMessage: IN_DOUBT_MSG,
+      logExcerpt,
+      logTruncated,
+      ...processReceipt(raw),
+      effectPossible: true,
+    };
+  }
+
   if (raw.cancelled) {
     return {
       status: 'cancelled',
@@ -85,6 +115,7 @@ export function interpretIbcmdInfobaseOutcome(
       userMessage: CANCELLED_MSG,
       logExcerpt,
       logTruncated,
+      ...processReceipt(raw),
     };
   }
 
@@ -96,6 +127,7 @@ export function interpretIbcmdInfobaseOutcome(
       userMessage: INTERACTIVE_PROMPT_ABORT,
       logExcerpt,
       logTruncated,
+      ...processReceipt(raw),
     };
   }
 
@@ -107,6 +139,7 @@ export function interpretIbcmdInfobaseOutcome(
       userMessage: TIMEOUT_HINT,
       logExcerpt,
       logTruncated,
+      ...processReceipt(raw),
     };
   }
 
@@ -117,6 +150,7 @@ export function interpretIbcmdInfobaseOutcome(
       userMessage: SPAWN_ENOENT,
       logExcerpt,
       logTruncated,
+      ...processReceipt(raw),
     };
   }
 
@@ -127,6 +161,7 @@ export function interpretIbcmdInfobaseOutcome(
       userMessage: `Не удалось запустить ibcmd: ${raw.spawnErrorMessage ?? raw.spawnErrorCode ?? 'unknown'}`,
       logExcerpt,
       logTruncated,
+      ...processReceipt(raw),
     };
   }
 
@@ -139,6 +174,7 @@ export function interpretIbcmdInfobaseOutcome(
       userMessage: IMPORT_EXIT_MESSAGES[0],
       logExcerpt,
       logTruncated,
+      ...processReceipt(raw),
     };
   }
 
@@ -154,6 +190,7 @@ export function interpretIbcmdInfobaseOutcome(
       userMessage,
       logExcerpt,
       logTruncated,
+      ...processReceipt(raw),
       ...(lockedObjects.length > 0 ? { lockedObjects } : {}),
     };
   }
@@ -165,5 +202,6 @@ export function interpretIbcmdInfobaseOutcome(
     userMessage: GENERIC_NONZERO,
     logExcerpt,
     logTruncated,
+    ...processReceipt(raw),
   };
 }
