@@ -976,7 +976,7 @@ suite('DeployService.deployBinding', () => {
     }
   });
 
-  test('inDoubt XML preflight receives the deploy token and blocks the import phase', async () => {
+  test('inDoubt XML preflight preserves possible effects and termination across a multi-base deploy chain', async () => {
     vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
     vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
     vscodeTestState.workspaceConfig['deploy.precheckXmlBeforeImport'] = true;
@@ -991,18 +991,91 @@ suite('DeployService.deployBinding', () => {
         onCancellationRequested: () => ({ dispose: () => undefined }),
       };
       let preflightToken: unknown;
+      let preflightCalls = 0;
       let progressCalls = 0;
+      const termination = {
+        terminated: false,
+        hardKillUsed: true,
+        survivingPids: [7124],
+        errors: ['taskkill /T did not confirm exit'],
+      };
       const doubtful = {
         ok: false,
         code: 'IN_DOUBT',
-        effectPossible: true,
+        effectPossible: false,
         message: 'ibcmd import outcome is uncertain after cancellation.',
         durationMs: 5,
+        termination,
       } as unknown as IbcmdXmlPreflightResult;
       const svc = new DeployService({
         runXmlPreflight: async (params) => {
+          preflightCalls += 1;
           preflightToken = (params as typeof params & { token?: unknown }).token;
           return doubtful;
+        },
+      });
+
+      const summary = await svc.deployBinding({
+        binding: baseBinding({ infobaseIds: ['a', 'b', 'c'], massDeployment: true }),
+        workspaceFolderRoot: fixtureSmallRoot(),
+        storage: mockStorage,
+        catalog: [
+          fileEntry('a', 'Alpha', ibPath),
+          fileEntry('b', 'Beta', ibPath),
+          fileEntry('c', 'Gamma', ibPath),
+        ],
+        progress: { report: () => { progressCalls += 1; } },
+        token,
+      });
+
+      assert.strictEqual(preflightToken, token);
+      assert.strictEqual(preflightCalls, 1, 'the chain must stop before preflight on later bases');
+      assert.strictEqual(progressCalls, 0, 'an inDoubt preflight must not advance into import');
+      assert.strictEqual(summary.errorCount, 0, 'an uncertain effect is not a confirmed error');
+      assert.strictEqual(
+        (summary as unknown as { inDoubtCount?: number }).inDoubtCount,
+        1,
+      );
+      assert.strictEqual(summary.skippedCount, 2);
+      assert.deepStrictEqual(
+        summary.results.map((result) => result.status as string),
+        ['inDoubt', 'skipped', 'skipped'],
+      );
+      assert.ok(summary.results[0]!.message.includes('uncertain'));
+      assert.strictEqual(
+        (summary.results[0] as unknown as { effectPossible?: boolean }).effectPossible,
+        true,
+      );
+      assert.deepStrictEqual(
+        (summary.results[0] as unknown as { termination?: unknown }).termination,
+        termination,
+      );
+    } finally {
+      rmDirQuiet(work);
+    }
+  });
+
+  test('successful XML preflight enters the existing import phase and keeps pre-spawn cancellation semantics', async () => {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['deploy.precheckXmlBeforeImport'] = true;
+    resetIbcmdServiceSingletonForTests();
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-preflight-success-'));
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
+      let cancellationRequested = false;
+      let preflightCalls = 0;
+      let progressCalls = 0;
+      const token = {
+        get isCancellationRequested() { return cancellationRequested; },
+        onCancellationRequested: () => ({ dispose: () => undefined }),
+      };
+      const svc = new DeployService({
+        runXmlPreflight: async () => {
+          preflightCalls += 1;
+          return { ok: true, message: 'XML accepted', durationMs: 5 };
         },
       });
 
@@ -1011,14 +1084,21 @@ suite('DeployService.deployBinding', () => {
         workspaceFolderRoot: fixtureSmallRoot(),
         storage: mockStorage,
         catalog: [fileEntry('a', 'Alpha', ibPath)],
-        progress: { report: () => { progressCalls += 1; } },
+        progress: {
+          report: () => {
+            progressCalls += 1;
+            cancellationRequested = true;
+          },
+        },
         token,
       });
 
-      assert.strictEqual(preflightToken, token);
-      assert.strictEqual(progressCalls, 0, 'an inDoubt preflight must not advance into import');
-      assert.strictEqual(summary.errorCount, 1);
-      assert.ok(summary.results[0]!.message.includes('uncertain'));
+      assert.strictEqual(preflightCalls, 1);
+      assert.strictEqual(progressCalls, 1, 'successful preflight must proceed into the import phase');
+      assert.strictEqual(summary.cancelledMidChain, true);
+      assert.strictEqual(summary.errorCount, 0);
+      assert.strictEqual(summary.inDoubtCount, 0);
+      assert.strictEqual(summary.skippedCount, 1);
     } finally {
       rmDirQuiet(work);
     }
@@ -1055,7 +1135,9 @@ suite('DeployService.deployBinding', () => {
       });
 
       assert.strictEqual(progressCalls, 0, 'a doubtful preflight must not advance into import');
-      assert.strictEqual(summary.errorCount, 1);
+      assert.strictEqual(summary.errorCount, 0);
+      assert.strictEqual(summary.inDoubtCount, 1);
+      assert.strictEqual(summary.results[0]!.status, 'inDoubt');
       assert.ok(summary.results[0]!.message.includes('output truncated'));
     } finally {
       rmDirQuiet(work);
