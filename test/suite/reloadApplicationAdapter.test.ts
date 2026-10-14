@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
-import type { ReloadReason } from '../../src/types/reloadContracts';
+import type { ReloadOperationResult, ReloadReason } from '../../src/types/reloadContracts';
 
 interface ReloadRequester {
   (configPath: string, reason: ReloadReason): Promise<void>;
@@ -95,6 +95,45 @@ suite('requestConfigurationReload application adapter', () => {
       return true;
     });
     await coordinator.dispose();
+  });
+
+  test('maps legacy failed results without optional failure details to the public fallback contract', async () => {
+    const cases: Array<{ result: ReloadOperationResult; expectedCode: string; expectedMessage: string }> = [
+      {
+        result: {
+          operationId: 'legacy-error',
+          reason: 'repository',
+          succeeded: false,
+          error: 'Unclassified reload failure.',
+          completedAt: Date.now(),
+        },
+        expectedCode: 'UNKNOWN_RELOAD_FAILURE',
+        expectedMessage: 'Unclassified reload failure.',
+      },
+      {
+        result: {
+          operationId: 'legacy-no-error',
+          reason: 'repository',
+          succeeded: false,
+          completedAt: Date.now(),
+        },
+        expectedCode: 'UNKNOWN_RELOAD_FAILURE',
+        expectedMessage: 'Перезагрузка конфигурации завершилась ошибкой.',
+      },
+    ];
+
+    for (const { result, expectedCode, expectedMessage } of cases) {
+      const coordinator = {
+        requestReload: () => ({ operationId: result.operationId, completed: Promise.resolve(result) }),
+      } as unknown as ReloadCoordinatorService;
+      const request = loadRequesterModule().createRequestConfigurationReload({ reloadCoordinator: coordinator });
+
+      await assert.rejects(request('C:/config', 'repository'), (error: unknown) => {
+        assert.strictEqual((error as Error & { code?: string }).code, expectedCode);
+        assert.strictEqual((error as Error).message, expectedMessage);
+        return true;
+      });
+    }
   });
 
   test('rejects pending application requests when the coordinator is disposed', async () => {

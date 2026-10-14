@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { runFilterCriterionWizard } from '../../src/wizards/filterCriterionWizard';
+import { registerFilterCriterionCommands } from '../../src/commands/filterCriterionCommands';
 import { ExtensionState } from '../../src/state/extensionState';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
@@ -218,29 +219,41 @@ suite('FilterCriterionWizard UI Flow', () => {
     }, { defaultDebounceMs: 0 });
     state.reloadCoordinator = coordinator;
 
-    const executed = await runFilterCriterionWizard({
-      state,
-      target,
-      runConfigurationPlan: async (_configPath: string, plan: any) => {
-        planExecuted = true;
-        capturedPlan = plan;
-        for (const step of plan.steps) {
-          if (step.type === 'ensureDirectory') {
-            await fs.promises.mkdir(step.targetPath, { recursive: true });
-          } else if (step.type === 'writeFile') {
-            await fs.promises.writeFile(step.targetPath, step.content, 'utf-8');
+    const commandHandlers = new Map<string, (...args: any[]) => Promise<unknown>>();
+    const originalRegisterCommand = vscode.commands.registerCommand;
+    (vscode.commands as any).registerCommand = (commandId: string, handler: (...args: any[]) => Promise<unknown>) => {
+      commandHandlers.set(commandId, handler);
+      return { dispose: () => undefined };
+    };
+
+    try {
+      registerFilterCriterionCommands(
+        { subscriptions: [] } as any,
+        state,
+        async (_configPath: string, plan: any) => {
+          planExecuted = true;
+          capturedPlan = plan;
+          for (const step of plan.steps) {
+            if (step.type === 'ensureDirectory') {
+              await fs.promises.mkdir(step.targetPath, { recursive: true });
+            } else if (step.type === 'writeFile') {
+              await fs.promises.writeFile(step.targetPath, step.content, 'utf-8');
+            }
           }
-        }
-        return plan.result;
-      },
-      requestConfigurationReload: createRequestConfigurationReload(state),
-    });
+          return plan.result;
+        },
+        createRequestConfigurationReload(state),
+      );
+      const commandHandler = commandHandlers.get('1c-metadata-tree.createFilterCriterion');
+      assert.ok(commandHandler, 'the filter criterion command should be registered');
+      await commandHandler(target);
+      await reloadRun;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      (vscode.commands as any).registerCommand = originalRegisterCommand;
+      await coordinator.dispose();
+    }
 
-    await reloadRun;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    await coordinator.dispose();
-
-    assert.strictEqual(executed, true, 'wizard must return true upon successful creation');
     assert.strictEqual(planExecuted, true, 'configuration plan must be executed');
     assert.strictEqual(capturedPlan.kind, 'metadata.create', 'wizard must use the shared metadata create planner');
     assert.strictEqual(
