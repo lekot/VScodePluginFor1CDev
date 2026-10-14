@@ -93,6 +93,7 @@ export type CompositionWebviewMessage =
 
 export type CompositionHostMessage =
   | { command: 'init'; data: CompositionInitPayload }
+  | { command: 'sessionState'; data: { saving: boolean; resetLoading: boolean } }
   | { command: 'saveSuccess' }
   | { command: 'saveError'; data: { message: string } }
   | { command: 'error'; data: { message: string } }

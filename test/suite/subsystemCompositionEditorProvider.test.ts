@@ -23,6 +23,7 @@ import { ExchangePlanStrategy } from '../../src/compositionEditor/strategies/exc
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
 import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
+import { CompositionWebviewRuntime } from '../helpers/compositionWebviewRuntime';
 
 // ── diff simulator ────────────────────────────────────────────────────────────
 
@@ -442,9 +443,10 @@ function compositionDeferred<T = void>(): CompositionDeferred<T> {
   };
 }
 
-function createCompositionPanelHarness(): {
+function createCompositionPanelHarness(runRealWebview = false): {
   panel: vscode.WebviewPanel;
   posted: any[];
+  runtime: CompositionWebviewRuntime | undefined;
   disposed(): boolean;
   liveState(): { checkedRefs: string[]; itemSettings: Record<string, Record<string, string>> } | undefined;
   htmlAssignmentCount(): number;
@@ -457,6 +459,7 @@ function createCompositionPanelHarness(): {
   let htmlAssignments = 0;
   let displayedState: { checkedRefs: string[]; itemSettings: Record<string, Record<string, string>> } | undefined;
   const posted: any[] = [];
+  const runtime = runRealWebview ? new CompositionWebviewRuntime() : undefined;
   const webview = {
     get html(): string { return htmlValue; },
     set html(value: string) {
@@ -470,13 +473,18 @@ function createCompositionPanelHarness(): {
           itemSettings: JSON.parse(JSON.stringify(payload.itemSettings)),
         };
       }
+      runtime?.loadHtml(value);
     },
     postMessage: async (message: unknown) => {
       posted.push(message);
+      if (runtime) {
+        runtime.postMessageToWebview(message as import('../../src/compositionEditor/compositionContracts').CompositionHostMessage);
+      }
       return true;
     },
     onDidReceiveMessage: (callback: (message: unknown) => Promise<void>) => {
       messageHandler = callback;
+      runtime?.connectExtension(callback as (message: import('../../src/compositionEditor/compositionContracts').CompositionWebviewMessage) => Promise<void>);
       return { dispose: () => {} };
     },
   };
@@ -499,6 +507,7 @@ function createCompositionPanelHarness(): {
   return {
     panel,
     posted,
+    runtime,
     disposed: () => isDisposed,
     liveState: () => displayedState && {
       checkedRefs: [...displayedState.checkedRefs],
@@ -527,14 +536,14 @@ function createCompositionPanelHarness(): {
   };
 }
 
-function patchCompositionPanelFactory(): {
+function patchCompositionPanelFactory(runRealWebview = false): {
   panels: ReturnType<typeof createCompositionPanelHarness>[];
   restore(): void;
 } {
   const original = vscode.window.createWebviewPanel;
   const panels: ReturnType<typeof createCompositionPanelHarness>[] = [];
   (vscode.window as any).createWebviewPanel = (_viewType: string, title: string) => {
-    const harness = createCompositionPanelHarness();
+    const harness = createCompositionPanelHarness(runRealWebview);
     harness.panel.title = title;
     panels.push(harness);
     return harness.panel;
@@ -1564,6 +1573,427 @@ suite('CompositionEditorProvider — session fences (#250)', () => {
       provider.dispose();
       panels.restore();
       await cleanupTempDir(tempRoot);
+    }
+  });
+});
+
+function createRuntimeCatalogTree(
+  configA: string,
+  configB: string,
+  childrenA: TreeNode[] | undefined,
+  loadA?: () => Promise<TreeNode[]>,
+): { tree: ReturnType<typeof createCompositionTreeProvider>; folderA: TreeNode } {
+  const folderA: TreeNode = {
+    id: 'Catalogs',
+    name: 'Catalogs',
+    type: MetadataType.Catalog,
+    properties: {},
+    children: childrenA,
+  };
+  const folderB: TreeNode = {
+    id: 'Catalogs',
+    name: 'Catalogs',
+    type: MetadataType.Catalog,
+    properties: {},
+    children: [],
+  };
+  const rootA: TreeNode = {
+    id: 'rootA',
+    name: 'A',
+    type: MetadataType.Configuration,
+    filePath: path.join(configA, 'Configuration.xml'),
+    properties: {},
+    children: [folderA],
+  };
+  const rootB: TreeNode = {
+    id: 'rootB',
+    name: 'B',
+    type: MetadataType.Configuration,
+    filePath: path.join(configB, 'Configuration.xml'),
+    properties: {},
+    children: [folderB],
+  };
+  const tree = createCompositionTreeProvider([rootA, rootB], async (node) => {
+    if (node === folderA && loadA) {
+      const children = await loadA();
+      folderA.children = children;
+      return children;
+    }
+    return node.children ?? [];
+  });
+  return { tree, folderA };
+}
+
+async function createRuntimeCompositionFiles(prefix: string): Promise<{
+  tempRoot: string;
+  configA: string;
+  configB: string;
+  fileA: string;
+  fileB: string;
+  nodeA: TreeNode;
+  nodeB: TreeNode;
+}> {
+  const tempRoot = await createTempDir(prefix);
+  const configA = path.join(tempRoot, 'configuration A');
+  const configB = path.join(tempRoot, 'configuration B');
+  const fileA = path.join(configA, 'CommonAttributes', 'A.xml');
+  const fileB = path.join(configB, 'CommonAttributes', 'B.xml');
+  await writeCompositionFixture(configA, fileA, commonAttributeXml('A', 'Catalog.Existing'));
+  await writeCompositionFixture(configB, fileB, commonAttributeXml('B', 'Catalog.Other'));
+  return {
+    tempRoot,
+    configA,
+    configB,
+    fileA,
+    fileB,
+    nodeA: createCompositionNode(fileA, 'A', MetadataType.CommonAttribute),
+    nodeB: createCompositionNode(fileB, 'B', MetadataType.CommonAttribute),
+  };
+}
+
+async function makeRuntimeCompositionDirty(runtime: CompositionWebviewRuntime): Promise<void> {
+  const expandArrow = runtime.findTypeArrow('Catalogs');
+  assert.ok(expandArrow, 'the real webview must render a Catalogs expand control');
+  expandArrow.click();
+  await runtime.drainExtensionMessages();
+
+  const newCheckbox = runtime.findObjectCheckbox('Catalog.New');
+  const existingSetting = runtime.findObjectSetting('Catalog.Existing');
+  assert.ok(newCheckbox, 'the real webview must render the new catalog checkbox');
+  assert.ok(existingSetting, 'the real webview must render the common attribute setting');
+  newCheckbox.checked = true;
+  newCheckbox.dispatchEvent({ type: 'change' });
+  existingSetting.value = 'DontUse';
+  existingSetting.dispatchEvent({ type: 'change' });
+  await runtime.drainExtensionMessages();
+}
+
+suite('CompositionEditorProvider — real webview session state (#250)', () => {
+  test('ignored save during a pending show is re-enabled after A recovery with dirty UI intact', async () => {
+    const fixture = await createRuntimeCompositionFiles('composition-ui-pending-save-');
+    const readB = compositionDeferred<{ refs: string[]; itemSettings: Map<string, Record<string, string>> }>();
+    let writeAttempts = 0;
+    const gateway = configureConfigurationMutationGateway(async (_resourcePath, _kind, operation) => {
+      writeAttempts++;
+      return operation();
+    }, async (_resourcePath, plan) => plan.result);
+    const panels = patchCompositionPanelFactory(true);
+    const strategy = {
+      ...CommonAttributeStrategy,
+      readContent: (filePath: string) => filePath === fixture.fileB
+        ? readB.promise
+        : CommonAttributeStrategy.readContent(filePath),
+    };
+    const provider = new CompositionEditorProvider(
+      createCompositionContext(),
+      { invalidateTreeCacheOnly: async () => {}, loadMetadataTree: async () => {} },
+      strategy,
+    );
+
+    try {
+      await writeCompositionFixture(fixture.configA, fixture.fileA, commonAttributeXml('A', 'Catalog.Existing'));
+      const existing = { id: 'Catalog.Existing', name: 'Existing', type: MetadataType.Catalog, properties: {} } as TreeNode;
+      const added = { id: 'Catalog.New', name: 'New', type: MetadataType.Catalog, properties: {} } as TreeNode;
+      const { tree } = createRuntimeCatalogTree(fixture.configA, fixture.configB, [existing, added]);
+      await provider.show(fixture.nodeA, tree, fixture.configA);
+      const runtime = panels.panels[0].runtime;
+      assert.ok(runtime, 'the panel must execute its real inline webview script');
+      await makeRuntimeCompositionDirty(runtime);
+      assert.strictEqual(runtime.getElementById('btn-save').disabled, false, 'dirty UI must enable save');
+
+      const showB = provider.show(fixture.nodeB, tree, fixture.configB);
+      runtime.getElementById('btn-save').click();
+      await runtime.drainExtensionMessages();
+      assert.strictEqual(writeAttempts, 0, 'save is ignored while B is pending');
+      assert.strictEqual(runtime.getElementById('btn-save').disabled, true, 'the actual click handler marks save pending');
+      readB.reject(new Error('B read failed'));
+      await showB;
+
+      const saveButton = runtime.getElementById('btn-save');
+      assert.strictEqual(saveButton.disabled, false, 'recovered dirty A must allow another save');
+      assert.strictEqual(saveButton.textContent, 'Сохранить', 'recovery must clear the stale saving label');
+      assert.strictEqual(runtime.findObjectCheckbox('Catalog.New')?.checked, true, 'the dirty checked ref must stay visible');
+      assert.strictEqual(runtime.findObjectSetting('Catalog.Existing')?.value, 'DontUse', 'the dirty setting must stay visible');
+      assert.ok(
+        panels.panels[0].posted.some((message) => message.command === 'sessionState'),
+        'recovery must synchronize the live webview without reloading its dirty state',
+      );
+
+      saveButton.click();
+      await runtime.drainExtensionMessages();
+      assert.strictEqual(writeAttempts, 1, 'the re-enabled button must admit the retry');
+      const savedA = await fsp.readFile(fixture.fileA, 'utf8');
+      assert.ok(savedA.includes('Catalog.New'), 'retry must save the preserved checked ref');
+      assert.ok(savedA.includes('DontUse'), 'retry must save the preserved setting');
+    } finally {
+      readB.reject(new Error('cleanup B read'));
+      gateway.dispose();
+      provider.dispose();
+      panels.restore();
+      await cleanupTempDir(fixture.tempRoot);
+    }
+  });
+
+  for (const writerOutcome of ['success', 'failure'] as const) {
+    test(`accepted A ${writerOutcome} after failed B recovery synchronizes UI without a stale outcome`, async () => {
+      const fixture = await createRuntimeCompositionFiles(`composition-ui-stale-${writerOutcome}-`);
+      const enteredSave = compositionDeferred<void>();
+      const releaseSave = compositionDeferred<void>();
+      const readB = compositionDeferred<{ refs: string[]; itemSettings: Map<string, Record<string, string>> }>();
+      const gateway = configureConfigurationMutationGateway(async (resourcePath, kind, operation) => {
+        if (path.resolve(resourcePath) === path.resolve(fixture.fileA) && kind === 'ui.composition.save') {
+          enteredSave.resolve();
+          await releaseSave.promise;
+          if (writerOutcome === 'failure') { throw new Error('captured A writer failed'); }
+        }
+        return operation();
+      }, async (_resourcePath, plan) => plan.result);
+      const panels = patchCompositionPanelFactory(true);
+      const strategy = {
+        ...CommonAttributeStrategy,
+        readContent: (filePath: string) => filePath === fixture.fileB
+          ? readB.promise
+          : CommonAttributeStrategy.readContent(filePath),
+      };
+      const provider = new CompositionEditorProvider(
+        createCompositionContext(),
+        { invalidateTreeCacheOnly: async () => {}, loadMetadataTree: async () => {} },
+        strategy,
+      );
+      let runtime: CompositionWebviewRuntime | undefined;
+
+      try {
+        const existing = { id: 'Catalog.Existing', name: 'Existing', type: MetadataType.Catalog, properties: {} } as TreeNode;
+        const added = { id: 'Catalog.New', name: 'New', type: MetadataType.Catalog, properties: {} } as TreeNode;
+        const { tree } = createRuntimeCatalogTree(fixture.configA, fixture.configB, [existing, added]);
+        await provider.show(fixture.nodeA, tree, fixture.configA);
+        runtime = panels.panels[0].runtime;
+        assert.ok(runtime, 'the panel must execute its real inline webview script');
+        await makeRuntimeCompositionDirty(runtime);
+        runtime.getElementById('btn-save').click();
+        await enteredSave.promise;
+
+        const showB = provider.show(fixture.nodeB, tree, fixture.configB);
+        readB.reject(new Error('B read failed after A accepted save'));
+        await showB;
+        const remainedSavingDuringRecovery = runtime.getElementById('btn-save').disabled &&
+          runtime.getElementById('btn-save').textContent === 'Сохранение...';
+        const recoveryState = panels.panels[0].posted.filter((message) => message.command === 'sessionState');
+
+        releaseSave.resolve();
+        await runtime.drainExtensionMessages();
+
+        const saveButton = runtime.getElementById('btn-save');
+        assert.strictEqual(remainedSavingDuringRecovery, true, 'recovery must retain the accepted A save ownership');
+        assert.ok(
+          recoveryState.some((message) => message.command === 'sessionState' && message.data.saving === true && message.data.resetLoading),
+          'A recovery must synchronize the still-running save and reset old loading indicators',
+        );
+        assert.strictEqual(saveButton.disabled, false, 'A finally must re-enable the dirty recovered editor');
+        assert.strictEqual(saveButton.textContent, 'Сохранить', 'A finally must clear the stale saving label');
+        assert.strictEqual(runtime.findObjectCheckbox('Catalog.New')?.checked, true, 'checked state must survive recovery');
+        assert.strictEqual(runtime.findObjectSetting('Catalog.Existing')?.value, 'DontUse', 'settings must survive recovery');
+        assert.strictEqual(panels.panels[0].disposed(), false, 'a stale save completion must not close recovered A');
+        assert.ok(
+          !panels.panels[0].posted.some((message) => message.command === 'saveSuccess' || message.command === 'saveError'),
+          'stale A completion must not publish a save outcome into recovered A',
+        );
+        assert.ok(
+          panels.panels[0].posted.some((message) => message.command === 'sessionState' && message.data.saving === false && !message.data.resetLoading),
+          'A finally must publish fresh idle state after releasing the same recovered save owner',
+        );
+      } finally {
+        readB.reject(new Error('cleanup B read'));
+        releaseSave.resolve();
+        await runtime?.drainExtensionMessages().catch(() => {});
+        gateway.dispose();
+        provider.dispose();
+        panels.restore();
+        await cleanupTempDir(fixture.tempRoot);
+      }
+    });
+  }
+
+  test('A expansion spinner is cleared after failed B recovery and late A children stay fenced', async () => {
+    const fixture = await createRuntimeCompositionFiles('composition-ui-expand-reset-');
+    const enteredLoad = compositionDeferred<void>();
+    const releaseLoad = compositionDeferred<TreeNode[]>();
+    const readB = compositionDeferred<{ refs: string[]; itemSettings: Map<string, Record<string, string>> }>();
+    const panels = patchCompositionPanelFactory(true);
+    const strategy = {
+      ...CommonAttributeStrategy,
+      readContent: (filePath: string) => filePath === fixture.fileB
+        ? readB.promise
+        : CommonAttributeStrategy.readContent(filePath),
+    };
+    const provider = new CompositionEditorProvider(
+      createCompositionContext(),
+      { invalidateTreeCacheOnly: async () => {}, loadMetadataTree: async () => {} },
+      strategy,
+    );
+    let runtime: CompositionWebviewRuntime | undefined;
+
+    try {
+      const { tree } = createRuntimeCatalogTree(fixture.configA, fixture.configB, undefined, async () => {
+        enteredLoad.resolve();
+        return releaseLoad.promise;
+      });
+      await provider.show(fixture.nodeA, tree, fixture.configA);
+      runtime = panels.panels[0].runtime;
+      assert.ok(runtime, 'the panel must execute its real inline webview script');
+      runtime.findTypeArrow('Catalogs')?.click();
+      await enteredLoad.promise;
+      assert.ok(runtime.findTypeArrow('Catalogs')?.innerHTML.includes('spinner-inline'), 'the real script must show the loading arrow');
+
+      const showB = provider.show(fixture.nodeB, tree, fixture.configB);
+      readB.reject(new Error('B read failed while A expands'));
+      await showB;
+      const spinnerCleared = !runtime.findTypeArrow('Catalogs')?.innerHTML.includes('spinner-inline');
+
+      releaseLoad.resolve([
+        { id: 'Catalog.Existing', name: 'Existing', type: MetadataType.Catalog, properties: {} } as TreeNode,
+      ]);
+      await runtime.drainExtensionMessages();
+
+      assert.strictEqual(spinnerCleared, true, 'resetLoading must clear the stale expansion spinner');
+      assert.strictEqual(runtime.findObjectRow('Catalog.Existing'), undefined, 'late A children must not be published after recovery');
+      assert.ok(
+        panels.panels[0].posted.some((message) => message.command === 'sessionState' && message.data.resetLoading),
+        'failed B recovery must instruct the live webview to reset load indicators',
+      );
+    } finally {
+      readB.reject(new Error('cleanup B read'));
+      releaseLoad.resolve([]);
+      await runtime?.drainExtensionMessages().catch(() => {});
+      provider.dispose();
+      panels.restore();
+      await cleanupTempDir(fixture.tempRoot);
+    }
+  });
+
+  test('bulk loading recovery clears the overlay and pending select-all callback', async () => {
+    const fixture = await createRuntimeCompositionFiles('composition-ui-bulk-reset-');
+    const enteredLoad = compositionDeferred<void>();
+    const releaseLoad = compositionDeferred<TreeNode[]>();
+    const readB = compositionDeferred<{ refs: string[]; itemSettings: Map<string, Record<string, string>> }>();
+    const panels = patchCompositionPanelFactory(true);
+    const strategy = {
+      ...CommonAttributeStrategy,
+      readContent: (filePath: string) => filePath === fixture.fileB
+        ? readB.promise
+        : CommonAttributeStrategy.readContent(filePath),
+    };
+    const provider = new CompositionEditorProvider(
+      createCompositionContext(),
+      { invalidateTreeCacheOnly: async () => {}, loadMetadataTree: async () => {} },
+      strategy,
+    );
+    let runtime: CompositionWebviewRuntime | undefined;
+
+    try {
+      const { tree } = createRuntimeCatalogTree(fixture.configA, fixture.configB, undefined, async () => {
+        enteredLoad.resolve();
+        return releaseLoad.promise;
+      });
+      await provider.show(fixture.nodeA, tree, fixture.configA);
+      runtime = panels.panels[0].runtime;
+      assert.ok(runtime, 'the panel must execute its real inline webview script');
+      runtime.getElementById('btn-select-all').click();
+      await enteredLoad.promise;
+      assert.ok(runtime.getElementById('loading-overlay').classList.contains('visible'), 'bulk load must show its real overlay');
+
+      const showB = provider.show(fixture.nodeB, tree, fixture.configB);
+      readB.reject(new Error('B read failed during bulk load'));
+      await showB;
+      const overlayCleared = !runtime.getElementById('loading-overlay').classList.contains('visible');
+
+      runtime.postMessageToWebview({
+        command: 'allObjectsLoaded',
+        data: {
+          containers: {
+            Catalogs: [{ ref: 'Catalog.New', displayName: 'New', type: MetadataType.Catalog }],
+          },
+        },
+      });
+      runtime.findTypeArrow('Catalogs')?.click();
+
+      assert.strictEqual(overlayCleared, true, 'resetLoading must hide the stale bulk loading overlay');
+      assert.ok(
+        !runtime.sentMessages.some((message) => message.command === 'selectAll'),
+        'resetLoading must discard the pending select-all callback instead of applying it later',
+      );
+    } finally {
+      readB.reject(new Error('cleanup B read'));
+      releaseLoad.resolve([]);
+      await runtime?.drainExtensionMessages().catch(() => {});
+      provider.dispose();
+      panels.restore();
+      await cleanupTempDir(fixture.tempRoot);
+    }
+  });
+
+  test('old A finally does not send session state to successfully published B', async () => {
+    const fixture = await createRuntimeCompositionFiles('composition-ui-new-b-session-');
+    const enteredSave = compositionDeferred<void>();
+    const releaseSave = compositionDeferred<void>();
+    const readB = compositionDeferred<{ refs: string[]; itemSettings: Map<string, Record<string, string>> }>();
+    const gateway = configureConfigurationMutationGateway(async (resourcePath, kind, operation) => {
+      if (path.resolve(resourcePath) === path.resolve(fixture.fileA) && kind === 'ui.composition.save') {
+        enteredSave.resolve();
+        await releaseSave.promise;
+      }
+      return operation();
+    }, async (_resourcePath, plan) => plan.result);
+    const panels = patchCompositionPanelFactory(true);
+    const strategy = {
+      ...CommonAttributeStrategy,
+      readContent: (filePath: string) => filePath === fixture.fileB
+        ? readB.promise
+        : CommonAttributeStrategy.readContent(filePath),
+    };
+    const provider = new CompositionEditorProvider(
+      createCompositionContext(),
+      { invalidateTreeCacheOnly: async () => {}, loadMetadataTree: async () => {} },
+      strategy,
+    );
+    let runtime: CompositionWebviewRuntime | undefined;
+
+    try {
+      const existing = { id: 'Catalog.Existing', name: 'Existing', type: MetadataType.Catalog, properties: {} } as TreeNode;
+      const added = { id: 'Catalog.New', name: 'New', type: MetadataType.Catalog, properties: {} } as TreeNode;
+      const { tree } = createRuntimeCatalogTree(fixture.configA, fixture.configB, [existing, added]);
+      await provider.show(fixture.nodeA, tree, fixture.configA);
+      runtime = panels.panels[0].runtime;
+      assert.ok(runtime, 'the panel must execute its real inline webview script');
+      await makeRuntimeCompositionDirty(runtime);
+      runtime.getElementById('btn-save').click();
+      await enteredSave.promise;
+
+      const showB = provider.show(fixture.nodeB, tree, fixture.configB);
+      readB.resolve(await CommonAttributeStrategy.readContent(fixture.fileB));
+      await showB;
+      const bTitle = runtime.getElementById('entity-title').textContent;
+      releaseSave.resolve();
+      await runtime.drainExtensionMessages();
+
+      assert.ok(bTitle.endsWith(': B'), 'the actual webview script must display B after successful publication');
+      assert.ok(
+        !panels.panels[0].posted.some((message) => message.command === 'sessionState'),
+        'old A finally must not publish fresh UI state into B ownership',
+      );
+      assert.ok(
+        !panels.panels[0].posted.some((message) => message.command === 'saveSuccess' || message.command === 'saveError'),
+        'old A outcome must remain suppressed after B publication',
+      );
+      assert.strictEqual(panels.panels[0].disposed(), false);
+    } finally {
+      readB.reject(new Error('cleanup B read'));
+      releaseSave.resolve();
+      await runtime?.drainExtensionMessages().catch(() => {});
+      gateway.dispose();
+      provider.dispose();
+      panels.restore();
+      await cleanupTempDir(fixture.tempRoot);
     }
   });
 });

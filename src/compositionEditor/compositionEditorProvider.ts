@@ -539,6 +539,19 @@ export class CompositionEditorProvider implements vscode.Disposable {
       });
     } finally {
       this.savingSessions.delete(session.saveOwnership);
+      const currentSession = this.captureSessionSnapshot();
+      if (
+        currentSession &&
+        currentSession.saveOwnership === session.saveOwnership &&
+        currentSession.targetPath === session.targetPath &&
+        currentSession.configPath === session.configPath &&
+        currentSession.panel === session.panel
+      ) {
+        this.postMessageForSession(currentSession, {
+          command: 'sessionState',
+          data: { saving: this.savingSessions.has(currentSession.saveOwnership), resetLoading: false },
+        });
+      }
     }
   }
 
@@ -634,6 +647,13 @@ export class CompositionEditorProvider implements vscode.Disposable {
     }
     this.activeSessionGeneration = generation;
     this.recoveryModel = undefined;
+    const restoredSession = this.captureSessionSnapshot();
+    if (restoredSession) {
+      this.postMessageForSession(restoredSession, {
+        command: 'sessionState',
+        data: { saving: this.savingSessions.has(model.saveOwnership), resetLoading: true },
+      });
+    }
   }
 
   private handlePanelDisposed(panel: vscode.WebviewPanel): void {
