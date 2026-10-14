@@ -1,20 +1,40 @@
+import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ExtensionState } from '../state/extensionState';
 import { Logger } from '../utils/logger';
 import {
-  DELETE_RECONCILE_ATTEMPTS,
-  DELETE_RECONCILE_POLL_MS,
   DELETE_RECONCILE_TIMEOUT_MS,
   recoverDeleteUiStateAfterReconcileIssue,
 } from '../services/deleteReconcileRecovery';
-import { ReloadReason } from '../types/reloadContracts';
+import {
+  ReloadFailure,
+  ReloadFailureCode,
+  ReloadOperationResult,
+  ReloadReason,
+  ReloadRequestHandle,
+  ReloadScheduleOptions,
+  toReloadFailure,
+} from '../types/reloadContracts';
 
 /** Dependencies for coordinated reload / delete-reconcile (injected from extension activation). */
 export type ReloadOrchestratorDeps = {
   state: ExtensionState;
-  invalidateCacheAndReload: (configPath: string) => Promise<void>;
+  /** Test seam for the bounded delete-reconcile wait; production uses the preserved 3-second deadline. */
+  reconcileTimeoutMs?: number;
 };
+
+class ReloadOrchestratorError extends Error {
+  constructor(readonly code: ReloadFailureCode, message: string) {
+    super(message);
+    this.name = 'ReloadOrchestratorError';
+  }
+}
+
+type ReloadCompletionOutcome =
+  | { status: 'completed'; result: ReloadOperationResult }
+  | { status: 'timeout'; error: ReloadOrchestratorError }
+  | { status: 'rejected'; error: unknown };
 
 async function verifyNodeDeletedInTree(
   deps: ReloadOrchestratorDeps,
@@ -36,12 +56,119 @@ async function verifyNodeDeletedInTree(
   return path.normalize(existingConfigPath) !== path.normalize(configPath);
 }
 
+function requestCoordinatedReload(
+  deps: ReloadOrchestratorDeps,
+  configPath: string,
+  reason: ReloadReason,
+  options?: ReloadScheduleOptions,
+): ReloadRequestHandle {
+  const coordinator = deps.state.reloadCoordinator;
+  if (!coordinator) {
+    throw new ReloadOrchestratorError(
+      'RELOAD_COORDINATOR_UNAVAILABLE',
+      'Reload coordinator is unavailable.',
+    );
+  }
+  return coordinator.requestReload(configPath, reason, options);
+}
+
+function awaitBoundedCompletion(
+  handle: ReloadRequestHandle,
+  timeoutMs: number,
+): Promise<ReloadCompletionOutcome> {
+  return new Promise((resolve) => {
+    let settled = false;
+    function finish(outcome: ReloadCompletionOutcome): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(outcome);
+    }
+
+    const timer = setTimeout(() => {
+      finish({
+        status: 'timeout',
+        error: new ReloadOrchestratorError(
+          'RELOAD_TIMEOUT',
+          `Reload did not complete within ${timeoutMs} ms.`,
+        ),
+      });
+    }, timeoutMs);
+
+    void Promise.resolve(handle.completed).then(
+      (result) => finish({ status: 'completed', result }),
+      (error: unknown) => finish({ status: 'rejected', error }),
+    );
+  });
+}
+
+function failureFromResult(result: ReloadOperationResult): ReloadFailure {
+  if (result.failure) {
+    return result.failure;
+  }
+  return toReloadFailure(new Error(result.error ?? 'Reload did not complete successfully.'));
+}
+
+function errorFromFailure(failure: ReloadFailure): ReloadOrchestratorError {
+  return new ReloadOrchestratorError(failure.code, failure.message);
+}
+
+function outcomeFailure(outcome: ReloadCompletionOutcome): ReloadFailure | undefined {
+  if (outcome.status === 'timeout') {
+    return toReloadFailure(outcome.error);
+  }
+  if (outcome.status === 'rejected') {
+    return toReloadFailure(outcome.error);
+  }
+  return outcome.result.succeeded ? undefined : failureFromResult(outcome.result);
+}
+
+function observeBackgroundReload(
+  handle: ReloadRequestHandle,
+  configPath: string,
+  reason: ReloadReason,
+): void {
+  void Promise.resolve(handle.completed).then((result) => {
+    if (!result.succeeded) {
+      Logger.warn('reload.coordinated.failed', {
+        configPath,
+        reason,
+        operationId: result.operationId,
+        failure: failureFromResult(result),
+      });
+    }
+  }).catch((error: unknown) => {
+    Logger.error('reload.coordinated.completion.failed', {
+      configPath,
+      reason,
+      operationId: handle.operationId,
+      failure: toReloadFailure(error),
+    });
+  });
+}
+
+function logRequestFailure(error: unknown, configPath: string, reason: ReloadReason): void {
+  const failure = toReloadFailure(error);
+  Logger.warn(
+    failure.code === 'RELOAD_COORDINATOR_UNAVAILABLE'
+      ? 'reload.coordinator.unavailable'
+      : 'reload.coordinated.request.failed',
+    {
+      configPath,
+      reason,
+      failure,
+    },
+  );
+}
+
 /** Bound handlers for extension activation (deps closed over). */
 export type ReloadOrchestratorHandlers = {
   scheduleCoordinatedReload: (
     configPath: string,
     reason: ReloadReason,
-    options?: { debounceMs?: number; operationId?: string }
+    options?: ReloadScheduleOptions
   ) => void;
   scheduleDeleteReconcile: (
     configPath: string,
@@ -64,19 +191,20 @@ export function scheduleCoordinatedReload(
   deps: ReloadOrchestratorDeps,
   configPath: string,
   reason: ReloadReason,
-  options?: { debounceMs?: number; operationId?: string }
+  options?: ReloadScheduleOptions
 ): void {
-  if (!deps.state.reloadCoordinator) {
-    void deps.invalidateCacheAndReload(configPath).catch((error) => Logger.error('Fallback reload failed', error));
-    return;
+  try {
+    const handle = requestCoordinatedReload(deps, configPath, reason, options);
+    observeBackgroundReload(handle, configPath, reason);
+    Logger.info('reload.schedule', {
+      configPath,
+      reason,
+      operationId: options?.operationId ?? handle.operationId,
+      state: deps.state.reloadCoordinator?.getState(configPath),
+    });
+  } catch (error) {
+    logRequestFailure(error, configPath, reason);
   }
-  deps.state.reloadCoordinator.scheduleReload(configPath, reason, options);
-  Logger.info('reload.schedule', {
-    configPath,
-    reason,
-    operationId: options?.operationId,
-    state: deps.state.reloadCoordinator.getState(configPath),
-  });
 }
 
 export async function recoverDeleteUiState(
@@ -86,11 +214,25 @@ export async function recoverDeleteUiState(
   deletedNodeId: string,
   reason: 'timeout' | 'failed'
 ): Promise<void> {
+  const timeoutMs = deps.reconcileTimeoutMs ?? DELETE_RECONCILE_TIMEOUT_MS;
   const recovery = await recoverDeleteUiStateAfterReconcileIssue({
     elementName,
     reason,
     forceRefresh: async () => {
-      await deps.invalidateCacheAndReload(configPath);
+      const handle = requestCoordinatedReload(deps, configPath, 'delete-command', {
+        operationId: randomUUID(),
+        debounceMs: 0,
+      });
+      const outcome = await awaitBoundedCompletion(handle, timeoutMs);
+      if (outcome.status === 'timeout') {
+        throw outcome.error;
+      }
+      if (outcome.status === 'rejected') {
+        throw outcome.error;
+      }
+      if (!outcome.result.succeeded) {
+        throw errorFromFailure(failureFromResult(outcome.result));
+      }
     },
     verifyDeletionConverged: async () => verifyNodeDeletedInTree(deps, configPath, deletedNodeId),
   });
@@ -126,53 +268,55 @@ export function scheduleDeleteReconcile(
   elementName: string
 ): void {
   const coordinator = deps.state.reloadCoordinator;
-  if (!coordinator) {
-    void deps.invalidateCacheAndReload(configPath).catch((error) => Logger.error('Fallback delete reconcile failed', error));
+  const timeoutMs = deps.reconcileTimeoutMs ?? DELETE_RECONCILE_TIMEOUT_MS;
+  let initialHandle: ReloadRequestHandle;
+  try {
+    coordinator?.markMutationWindow(configPath, operationId);
+    initialHandle = requestCoordinatedReload(deps, configPath, 'delete-command', {
+      operationId,
+      debounceMs: 0,
+    });
+  } catch (error) {
+    const failure = toReloadFailure(error);
+    Logger.warn('delete.reconcile.request.failed', { operationId, elementName, failure });
+    void recoverDeleteUiState(deps, configPath, elementName, deletedNodeId, 'failed').catch((recoveryError: unknown) => {
+      Logger.error('delete.reconcile.monitor.failed', recoveryError);
+    });
     return;
   }
 
-  coordinator.markMutationWindow(configPath, operationId);
-  const initialState = coordinator.getState(configPath);
-  const baselineExecuted = initialState.executedCount;
-  scheduleCoordinatedReload(deps, configPath, 'delete-command', { operationId, debounceMs: 0 });
-
   const finalize = async (): Promise<void> => {
-    for (let i = 0; i < DELETE_RECONCILE_ATTEMPTS; i++) {
-      await new Promise((resolve) => setTimeout(resolve, DELETE_RECONCILE_POLL_MS));
-      const result = coordinator.getOperationResult(configPath, operationId);
-      if (result) {
-        if (!result.succeeded) {
-          Logger.warn('delete.reconcile.failed', {
-            operationId,
-            elementName,
-            reason: result.reason,
-            error: result.error,
-            failure: result.failure,
-          });
-          await recoverDeleteUiState(deps, configPath, elementName, deletedNodeId, 'failed');
-          return;
-        }
-
-        const state = coordinator.getState(configPath);
-        Logger.info('delete.reconcile.completed', {
-          operationId,
-          success: true,
-          baselineExecuted,
-          scheduled: state.scheduledCount,
-          executed: state.executedCount,
-          coalesced: state.coalescedCount,
-          suppressedWatcher: state.suppressedWatcherCount,
-        });
-        vscode.window.showInformationMessage(`Удалён элемент: ${elementName}`);
-        return;
-      }
+    const outcome = await awaitBoundedCompletion(initialHandle, timeoutMs);
+    const failure = outcomeFailure(outcome);
+    if (failure) {
+      Logger.warn('delete.reconcile.failed', {
+        operationId: initialHandle.operationId,
+        elementName,
+        timeoutMs,
+        failure,
+      });
+      await recoverDeleteUiState(
+        deps,
+        configPath,
+        elementName,
+        deletedNodeId,
+        outcome.status === 'timeout' ? 'timeout' : 'failed',
+      );
+      return;
     }
 
-    Logger.warn('delete.reconcile.timeout', { operationId, elementName, timeoutMs: DELETE_RECONCILE_TIMEOUT_MS });
-    await recoverDeleteUiState(deps, configPath, elementName, deletedNodeId, 'timeout');
+    const state = deps.state.reloadCoordinator?.getState(configPath);
+    Logger.info('delete.reconcile.completed', {
+      operationId: initialHandle.operationId,
+      success: true,
+      executed: state?.executedCount,
+      coalesced: state?.coalescedCount,
+      suppressedWatcher: state?.suppressedWatcherCount,
+    });
+    vscode.window.showInformationMessage(`Удалён элемент: ${elementName}`);
   };
 
-  void finalize().catch((error) => {
+  void finalize().catch((error: unknown) => {
     Logger.error('delete.reconcile.monitor.failed', error);
   });
 }
