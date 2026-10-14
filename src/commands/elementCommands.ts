@@ -26,6 +26,7 @@ import {
 import { runFilterCriterionWizard } from '../wizards/filterCriterionWizard';
 import { runChartOfAccountsWizard } from '../wizards/chartOfAccountsWizard';
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
+import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 import {
   runConfigurationMutation as defaultRunConfigurationMutation,
   runConfigurationPlan as defaultRunConfigurationPlan,
@@ -34,7 +35,7 @@ import {
 type RegisterElementCommandsDeps = {
   state: ExtensionState;
   loadMetadataTree: () => Promise<void>;
-  invalidateCacheAndReload: (configPath: string) => Promise<void>;
+  requestConfigurationReload: RequestConfigurationReload;
   scheduleDeleteReconcile: (
     configPath: string,
     operationId: string,
@@ -53,7 +54,7 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
   const {
     state,
     loadMetadataTree,
-    invalidateCacheAndReload,
+    requestConfigurationReload,
     scheduleDeleteReconcile,
     runConfigurationMutation = defaultRunConfigurationMutation,
     runConfigurationPlan = defaultRunConfigurationPlan,
@@ -82,7 +83,7 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
           state,
           target,
           runConfigurationPlan,
-          invalidateCacheAndReload,
+          requestConfigurationReload,
         });
         return;
       }
@@ -92,7 +93,7 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
           state,
           target,
           runConfigurationPlan,
-          invalidateCacheAndReload,
+          requestConfigurationReload,
         });
         return;
       }
@@ -126,7 +127,7 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
           await optimisticAppendCreatedNode(state, target, trimmedName, { configPath, format });
           vscode.window.showInformationMessage(`Создан элемент: ${trimmedName}`);
         }
-        void invalidateCacheAndReload(configPath).catch((err) => {
+        void requestConfigurationReload(configPath, 'create-command').catch((err) => {
           Logger.error('Background reload after create failed', err);
         });
       } catch (err) {
@@ -207,7 +208,7 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
           );
         }
         vscode.window.showInformationMessage(`Дублирован элемент: ${newName.trim()}`);
-        await invalidateCacheAndReload(configPath);
+        await requestConfigurationReload(configPath, 'duplicate-command');
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(msg);
@@ -279,7 +280,7 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
           state.treeDataProvider?.applyOptimisticDelete(target, operationId);
         } catch (optimisticError) {
           Logger.error('delete.optimistic.apply.failed', optimisticError);
-          await invalidateCacheAndReload(configPath);
+          await requestConfigurationReload(configPath, 'delete-command');
           vscode.window.showWarningMessage(
             `Удалён элемент: ${target.name}. Быстрое обновление дерева не удалось; выполнена полная перезагрузка.`
           );
@@ -329,7 +330,7 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
           );
         }
         vscode.window.showInformationMessage(`Переименован в: ${newName.trim()}`);
-        await invalidateCacheAndReload(configPath);
+        await requestConfigurationReload(configPath, 'rename-command');
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(msg);

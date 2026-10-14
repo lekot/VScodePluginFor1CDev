@@ -4,12 +4,13 @@ import { ExtensionState } from '../state/extensionState';
 import { getSelectedNode } from '../helpers/commandHelpers';
 import { runFilterCriterionWizard } from '../wizards/filterCriterionWizard';
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
+import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 
 export function registerFilterCriterionCommands(
   context: vscode.ExtensionContext,
   state: ExtensionState,
-  runConfigurationPlan?: <T>(configPath: string, plan: MutationPlan<T>) => Promise<T>,
-  invalidateCacheAndReload?: (configPath: string) => Promise<void>
+  runConfigurationPlan: (<T>(configPath: string, plan: MutationPlan<T>) => Promise<T>) | undefined,
+  requestConfigurationReload: RequestConfigurationReload
 ): void {
   const createFilterCriterionCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.createFilterCriterion',
@@ -19,7 +20,7 @@ export function registerFilterCriterionCommands(
         state,
         target,
         runConfigurationPlan,
-        invalidateCacheAndReload,
+        requestConfigurationReload,
       });
     }
   );

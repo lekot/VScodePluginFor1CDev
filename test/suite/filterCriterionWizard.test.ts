@@ -3,6 +3,8 @@ import * as vscode from 'vscode';
 import { runFilterCriterionWizard } from '../../src/wizards/filterCriterionWizard';
 import { ExtensionState } from '../../src/state/extensionState';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
+import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
+import { createRequestConfigurationReload } from '../../src/reload/requestConfigurationReload';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -58,7 +60,7 @@ suite('FilterCriterionWizard UI Flow', () => {
       properties: {},
     };
 
-    const executed = await runFilterCriterionWizard({ state, target });
+    const executed = await runFilterCriterionWizard({ state, target, requestConfigurationReload: async () => undefined });
     assert.strictEqual(executed, false, 'wizard must return false when cancelled');
   });
 
@@ -77,7 +79,7 @@ suite('FilterCriterionWizard UI Flow', () => {
       properties: {},
     };
 
-    const executed = await runFilterCriterionWizard({ state, target });
+    const executed = await runFilterCriterionWizard({ state, target, requestConfigurationReload: async () => undefined });
     assert.strictEqual(executed, false);
   });
 
@@ -98,7 +100,7 @@ suite('FilterCriterionWizard UI Flow', () => {
       properties: {},
     };
 
-    const executed = await runFilterCriterionWizard({ state, target });
+    const executed = await runFilterCriterionWizard({ state, target, requestConfigurationReload: async () => undefined });
     assert.strictEqual(executed, false);
     assert.strictEqual(warningShown, true, 'warning message must be shown when no types chosen');
   });
@@ -120,7 +122,7 @@ suite('FilterCriterionWizard UI Flow', () => {
       properties: {},
     };
 
-    const executed = await runFilterCriterionWizard({ state, target });
+    const executed = await runFilterCriterionWizard({ state, target, requestConfigurationReload: async () => undefined });
     assert.strictEqual(executed, false);
     assert.ok(warningMessage.includes('не найдено подходящих'), `expected candidates warning, got: "${warningMessage}"`);
   });
@@ -158,12 +160,12 @@ suite('FilterCriterionWizard UI Flow', () => {
       properties: {},
     };
 
-    const executed = await runFilterCriterionWizard({ state, target });
+    const executed = await runFilterCriterionWizard({ state, target, requestConfigurationReload: async () => undefined });
     assert.strictEqual(executed, false);
     assert.ok(warningMessage.includes('не выбран ни один элемент состава') || warningMessage.includes('не может быть пустым'), `expected empty content warning, got: "${warningMessage}"`);
   });
 
-  test('completes successfully on valid user inputs and runs configuration plan', async () => {
+  test('keeps successful creation fire-and-forget when the shared reload request fails', async () => {
     // Create a catalog fixture so candidates exist for selection
     const catDir = path.join(tmpDir, 'Catalogs');
     await fs.promises.mkdir(catDir, { recursive: true });
@@ -191,7 +193,12 @@ suite('FilterCriterionWizard UI Flow', () => {
     }) as any;
 
     let planExecuted = false;
-    let cacheReloaded = false;
+    let reloadReason: string | undefined;
+    const errorMessages: string[] = [];
+    vscode.window.showErrorMessage = async (message: string) => {
+      errorMessages.push(message);
+      return undefined;
+    };
     let capturedPlan: any;
 
     const target: TreeNode = {
@@ -202,10 +209,19 @@ suite('FilterCriterionWizard UI Flow', () => {
       properties: {},
     };
 
+    let signalReloadRun!: () => void;
+    const reloadRun = new Promise<void>((resolve) => { signalReloadRun = resolve; });
+    const coordinator = new ReloadCoordinatorService(async ({ reason }) => {
+      reloadReason = reason;
+      signalReloadRun();
+      throw Object.assign(new Error('reload failed after commit'), { code: 'CONFIGURATION_PARSE_FAILED' });
+    }, { defaultDebounceMs: 0 });
+    state.reloadCoordinator = coordinator;
+
     const executed = await runFilterCriterionWizard({
       state,
       target,
-      runConfigurationPlan: async (_configPath, plan) => {
+      runConfigurationPlan: async (_configPath: string, plan: any) => {
         planExecuted = true;
         capturedPlan = plan;
         for (const step of plan.steps) {
@@ -217,10 +233,12 @@ suite('FilterCriterionWizard UI Flow', () => {
         }
         return plan.result;
       },
-      invalidateCacheAndReload: async () => {
-        cacheReloaded = true;
-      },
+      requestConfigurationReload: createRequestConfigurationReload(state),
     });
+
+    await reloadRun;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await coordinator.dispose();
 
     assert.strictEqual(executed, true, 'wizard must return true upon successful creation');
     assert.strictEqual(planExecuted, true, 'configuration plan must be executed');
@@ -232,5 +250,7 @@ suite('FilterCriterionWizard UI Flow', () => {
     );
     assert.ok(fs.existsSync(path.join(tmpDir, 'FilterCriteria', 'ПоКонтрагенту.xml')), 'xml file must exist');
     assert.ok(fs.existsSync(path.join(tmpDir, 'FilterCriteria', 'ПоКонтрагенту')), 'dir must exist');
+    assert.strictEqual(reloadReason, 'create-command');
+    assert.deepStrictEqual(errorMessages, [], 'background reload failure must not turn the committed create into a wizard failure');
   });
 });

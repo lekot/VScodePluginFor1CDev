@@ -4,12 +4,13 @@ import { ExtensionState } from '../state/extensionState';
 import { getSelectedNode } from '../helpers/commandHelpers';
 import { runChartOfAccountsWizard } from '../wizards/chartOfAccountsWizard';
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
+import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 
 export function registerChartOfAccountsCommands(
   context: vscode.ExtensionContext,
   state: ExtensionState,
-  runConfigurationPlan?: <T>(configPath: string, plan: MutationPlan<T>) => Promise<T>,
-  invalidateCacheAndReload?: (configPath: string) => Promise<void>
+  runConfigurationPlan: (<T>(configPath: string, plan: MutationPlan<T>) => Promise<T>) | undefined,
+  requestConfigurationReload: RequestConfigurationReload
 ): void {
   const createChartOfAccountsCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.createChartOfAccounts',
@@ -19,7 +20,7 @@ export function registerChartOfAccountsCommands(
         state,
         target,
         runConfigurationPlan,
-        invalidateCacheAndReload,
+        requestConfigurationReload,
       });
     }
   );

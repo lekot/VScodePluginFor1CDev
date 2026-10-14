@@ -7,6 +7,8 @@ import { registerElementCommands } from '../../src/commands/elementCommands';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import type { ExtensionState } from '../../src/state/extensionState';
 import { MutationPlanExecutor } from '../../src/services/configurationSession/mutationPlan';
+import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
+import { createRequestConfigurationReload } from '../../src/reload/requestConfigurationReload';
 
 suite('elementCommands', () => {
   const defaultRegisterCommand = vscode.commands.registerCommand.bind(vscode.commands);
@@ -32,7 +34,7 @@ suite('elementCommands', () => {
     const disposables = registerElementCommands({
       state: {} as unknown as ExtensionState,
       loadMetadataTree: async () => undefined,
-      invalidateCacheAndReload: async () => undefined,
+      requestConfigurationReload: async () => undefined,
       scheduleDeleteReconcile: () => undefined,
     });
 
@@ -84,7 +86,7 @@ suite('elementCommands', () => {
           },
         } as unknown as ExtensionState,
         loadMetadataTree: async () => undefined,
-        invalidateCacheAndReload: async () => undefined,
+        requestConfigurationReload: async () => undefined,
         scheduleDeleteReconcile: () => undefined,
       });
 
@@ -133,13 +135,25 @@ suite('elementCommands', () => {
       showInformationMessage: (...args: unknown[]) => Promise<unknown>;
       showErrorMessage: (...args: unknown[]) => Promise<unknown>;
     };
-    patchedWindow.showInputBox = async () => 'PostingOrder';
+    let promptedName = 'PostingOrder';
+    patchedWindow.showInputBox = async () => promptedName;
     patchedWindow.showWarningMessage = async () => 'Удалить';
     patchedWindow.showInformationMessage = async () => undefined;
     patchedWindow.showErrorMessage = async () => undefined;
 
     const sequenceFolderPath = path.join(tempRoot, 'Sequences');
     const sequenceFilePath = path.join(sequenceFolderPath, 'PostingOrder.xml');
+    const reloadReasons: string[] = [];
+    const reloadCoordinator = new ReloadCoordinatorService(async ({ reason }) => {
+      reloadReasons.push(reason);
+    }, { defaultDebounceMs: 0 });
+    const applicationRequester = createRequestConfigurationReload({ reloadCoordinator });
+    const reloadRequests: Array<{ configPath: string; reason: string; completion: Promise<void> }> = [];
+    const requestConfigurationReload = (configPath: string, reason: import('../../src/types/reloadContracts').ReloadReason) => {
+      const completion = applicationRequester(configPath, reason);
+      reloadRequests.push({ configPath, reason, completion });
+      return completion;
+    };
     const configurationNode: TreeNode = {
       id: 'Configuration',
       name: 'Configuration',
@@ -163,11 +177,11 @@ suite('elementCommands', () => {
             getConfigPath: () => tempRoot,
             resolveNodeForUi: (node: TreeNode) => node,
             refresh: () => undefined,
-            applyOptimisticDelete: () => true,
+            applyOptimisticDelete: () => { throw new Error('projection update failed'); },
           },
         } as unknown as ExtensionState,
         loadMetadataTree: async () => undefined,
-        invalidateCacheAndReload: async () => undefined,
+        requestConfigurationReload,
         scheduleDeleteReconcile: () => undefined,
         runConfigurationPlan: async <T>(configPath: string, plan: import('../../src/services/configurationSession/mutationPlan').MutationPlan<T>) =>
           new MutationPlanExecutor(configPath).execute(plan),
@@ -176,6 +190,7 @@ suite('elementCommands', () => {
       const createHandler = handlers.get('1c-metadata-tree.createElement');
       assert.ok(createHandler);
       await createHandler(sequenceFolder);
+      await reloadRequests[0]?.completion;
       assert.ok(fs.existsSync(sequenceFilePath), 'UI create should write the Sequence root descriptor');
       assert.match(
         fs.readFileSync(path.join(tempRoot, 'Configuration.xml'), 'utf8'),
@@ -190,15 +205,46 @@ suite('elementCommands', () => {
         parent: sequenceFolder,
         properties: {},
       };
+      const duplicateHandler = handlers.get('1c-metadata-tree.duplicateElement');
+      assert.ok(duplicateHandler);
+      promptedName = 'PostingOrderCopy';
+      await duplicateHandler(sequenceNode);
+      const duplicateNode: TreeNode = {
+        id: 'Sequences.PostingOrderCopy',
+        name: 'PostingOrderCopy',
+        type: MetadataType.Sequence,
+        filePath: path.join(sequenceFolderPath, 'PostingOrderCopy.xml'),
+        parent: sequenceFolder,
+        properties: {},
+      };
+      const renameHandler = handlers.get('1c-metadata-tree.renameElement');
+      assert.ok(renameHandler);
+      promptedName = 'PostingOrderRenamed';
+      await renameHandler(duplicateNode);
+
       const deleteHandler = handlers.get('1c-metadata-tree.deleteElement');
       assert.ok(deleteHandler);
       await deleteHandler(sequenceNode);
       assert.strictEqual(fs.existsSync(sequenceFilePath), false, 'UI delete should remove the Sequence root descriptor');
+      assert.ok(fs.existsSync(path.join(sequenceFolderPath, 'PostingOrderRenamed.xml')));
       assert.doesNotMatch(
         fs.readFileSync(path.join(tempRoot, 'Configuration.xml'), 'utf8'),
         /<Sequence>PostingOrder<\/Sequence>/,
       );
+      assert.deepStrictEqual(reloadRequests.map(({ reason }) => reason), [
+        'create-command',
+        'duplicate-command',
+        'rename-command',
+        'delete-command',
+      ]);
+      assert.deepStrictEqual(reloadReasons, [
+        'create-command',
+        'duplicate-command',
+        'rename-command',
+        'delete-command',
+      ]);
     } finally {
+      await reloadCoordinator.dispose();
       patchedWindow.showInputBox = originalShowInputBox as unknown as (...args: unknown[]) => Promise<string | undefined>;
       patchedWindow.showWarningMessage = originalShowWarningMessage as unknown as (...args: unknown[]) => Promise<string | undefined>;
       patchedWindow.showInformationMessage = originalShowInformationMessage as unknown as (...args: unknown[]) => Promise<unknown>;
@@ -268,7 +314,7 @@ suite('elementCommands', () => {
           },
         } as unknown as ExtensionState,
         loadMetadataTree: async () => undefined,
-        invalidateCacheAndReload: async () => undefined,
+        requestConfigurationReload: async () => undefined,
         scheduleDeleteReconcile: () => undefined,
         runConfigurationMutation: async (_configPath, _kind, operation) => {
           mutationCalls++;

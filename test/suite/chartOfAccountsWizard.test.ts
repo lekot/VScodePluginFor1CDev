@@ -4,6 +4,8 @@ import { runChartOfAccountsWizard } from '../../src/wizards/chartOfAccountsWizar
 import { ExtensionState } from '../../src/state/extensionState';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
+import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
+import { createRequestConfigurationReload } from '../../src/reload/requestConfigurationReload';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -58,7 +60,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
       properties: {},
     };
 
-    const executed = await runChartOfAccountsWizard({ state, target });
+    const executed = await runChartOfAccountsWizard({ state, target, requestConfigurationReload: async () => undefined });
     assert.strictEqual(executed, false, 'wizard must return false when cancelled');
   });
 
@@ -77,7 +79,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
       properties: {},
     };
 
-    const executed = await runChartOfAccountsWizard({ state, target });
+    const executed = await runChartOfAccountsWizard({ state, target, requestConfigurationReload: async () => undefined });
     assert.strictEqual(executed, false);
   });
 
@@ -93,7 +95,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
       properties: {},
     };
 
-    const executed = await runChartOfAccountsWizard({ state, target });
+    const executed = await runChartOfAccountsWizard({ state, target, requestConfigurationReload: async () => undefined });
     assert.strictEqual(executed, false);
   });
 
@@ -130,6 +132,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
 
     let planExecuted = false;
     let cacheReloaded = false;
+    let reloadReason: string | undefined;
     let capturedPlan: any;
 
     const target: TreeNode = {
@@ -139,6 +142,12 @@ suite('ChartOfAccountsWizard UI Flow', () => {
       filePath: path.join(tmpDir, 'ChartsOfAccounts'),
       properties: {},
     };
+
+    const coordinator = new ReloadCoordinatorService(async ({ reason }) => {
+      cacheReloaded = true;
+      reloadReason = reason;
+    }, { defaultDebounceMs: 0 });
+    state.reloadCoordinator = coordinator;
 
     const executed = await runChartOfAccountsWizard({
       state,
@@ -156,10 +165,9 @@ suite('ChartOfAccountsWizard UI Flow', () => {
         }
         return plan.result;
       },
-      invalidateCacheAndReload: async () => {
-        cacheReloaded = true;
-      },
+      requestConfigurationReload: createRequestConfigurationReload(state),
     });
+    await coordinator.dispose();
 
     assert.strictEqual(executed, true, 'wizard must return true upon successful creation');
     assert.strictEqual(planExecuted, true, 'configuration plan must be executed');
@@ -170,6 +178,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
       'the shared plan must write Configuration.xml once',
     );
     assert.strictEqual(cacheReloaded, true, 'cache must be reloaded');
+    assert.strictEqual(reloadReason, 'create-command');
     assert.ok(fs.existsSync(path.join(tmpDir, 'ChartsOfAccounts', 'Хозрасчетный.xml')), 'xml file must exist');
     assert.ok(fs.existsSync(path.join(tmpDir, 'ChartsOfAccounts', 'Хозрасчетный', 'Ext', 'Predefined.xml')), 'predefined.xml must exist');
   });
@@ -220,6 +229,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
     const executed = await runChartOfAccountsWizard({
       state,
       target,
+      requestConfigurationReload: async () => undefined,
       runConfigurationPlan: async (_configPath: string, plan: any) => {
         for (const step of plan.steps) {
           if (step.type === 'ensureDirectory') {

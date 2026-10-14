@@ -59,11 +59,13 @@ import { CONFIGURATION_XML } from '../constants/fileNames';
 import { Logger } from '../utils/logger';
 import { registerConfigurationRepositoryCommands } from './configurationRepositoryCommands';
 import { registerSyntaxHelpCommands } from '../providers/syntaxHelpProvider';
+import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 
 export type RegisterAllCommandsArgs = {
   context: vscode.ExtensionContext;
   state: ExtensionState;
   lifecycle: MetadataTreeLifecycle;
+  requestConfigurationReload: RequestConfigurationReload;
 };
 
 
@@ -72,6 +74,7 @@ export async function registerAllCommands({
   context,
   state,
   lifecycle,
+  requestConfigurationReload,
 }: RegisterAllCommandsArgs): Promise<vscode.Disposable[]> {
   const utilityDeps = {
     state,
@@ -135,7 +138,7 @@ export async function registerAllCommands({
   });
   state.configurationMutationEngine = mutationEngine;
   setConfigurationMutationEngine(mutationEngine);
-  registerFilterCriterionCommands(context, state, runConfigurationPlan, lifecycle.invalidateCacheAndReload);
+  registerFilterCriterionCommands(context, state, runConfigurationPlan, requestConfigurationReload);
   registerCfeProjectCommands({
     context,
     state,
@@ -209,7 +212,7 @@ export async function registerAllCommands({
     context,
     state,
     runConfigurationPlan,
-    lifecycle.invalidateCacheAndReload
+    requestConfigurationReload
   );
 
   return [
@@ -221,7 +224,7 @@ export async function registerAllCommands({
     ...registerElementCommands({
       state,
       loadMetadataTree: lifecycle.loadMetadataTree,
-      invalidateCacheAndReload: lifecycle.invalidateCacheAndReload,
+      requestConfigurationReload,
       scheduleDeleteReconcile: lifecycle.reloadOrchestratorHandlers.scheduleDeleteReconcile,
       runConfigurationMutation,
       runConfigurationPlan,

@@ -11,6 +11,7 @@ import { Logger } from '../utils/logger';
 import { getSelectedNode, requireDesignerFormat } from '../helpers/commandHelpers';
 
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
+import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 import { runConfigurationPlan as defaultRunConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
 import { planCreateMetadataObject } from '../services/metadataCrudService';
 
@@ -18,14 +19,14 @@ export interface RunFilterCriterionWizardOptions {
   state: ExtensionState;
   target?: TreeNode;
   runConfigurationPlan?: <T>(configPath: string, plan: MutationPlan<T>) => Promise<T>;
-  invalidateCacheAndReload?: (configPath: string) => Promise<void>;
+  requestConfigurationReload: RequestConfigurationReload;
 }
 
 /**
  * Interactive step-by-step wizard for creating a valid FilterCriterion.
  */
 export async function runFilterCriterionWizard(options: RunFilterCriterionWizardOptions): Promise<boolean> {
-  const { state, target, runConfigurationPlan, invalidateCacheAndReload } = options;
+  const { state, target, runConfigurationPlan, requestConfigurationReload } = options;
 
   const selectedNode = getSelectedNode(state, target);
   if (!selectedNode) {
@@ -135,11 +136,9 @@ export async function runFilterCriterionWizard(options: RunFilterCriterionWizard
     await executePlan(configPath, planned.plan);
     vscode.window.showInformationMessage(`Создан критерий отбора: ${trimmedName}`);
 
-    if (invalidateCacheAndReload) {
-      void invalidateCacheAndReload(configPath).catch((err) => {
-        Logger.error('Background reload after createFilterCriterion failed', err);
-      });
-    }
+    void requestConfigurationReload(configPath, 'create-command').catch((err) => {
+      Logger.error('Background reload after createFilterCriterion failed', err);
+    });
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

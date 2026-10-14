@@ -43,6 +43,7 @@ import type {
   RepositoryTarget,
 } from './types';
 import type { RepositoryStateProjection } from './repositoryTreeDecorations';
+import type { RequestConfigurationReload } from '../../reload/requestConfigurationReload';
 
 export interface ConfigurationRepositoryServiceDeps {
   readonly bindingStore: RepositoryBindingStore;
@@ -52,7 +53,7 @@ export interface ConfigurationRepositoryServiceDeps {
   readonly transport?: ConfigurationRepositoryTransport;
   readonly transportDeps?: ConfigurationRepositoryTransportDeps;
   readonly queue?: InfobaseConfigurationOperationQueue;
-  readonly reloadConfiguration?: (configRoot: string) => Promise<void>;
+  readonly requestConfigurationReload: RequestConfigurationReload;
   readonly importFiles?: typeof runInfobaseConfigIncrementalImport;
   readonly exportObjects?: typeof runInfobaseConfigExportObjects;
   readonly exportConfiguration?: typeof runInfobaseConfigExportToDirectory;
@@ -717,9 +718,7 @@ export class ConfigurationRepositoryService {
   }
 
   private async reload(target: RepositoryTarget): Promise<void> {
-    if (this.deps.reloadConfiguration) {
-      await this.deps.reloadConfiguration(target.configRoot);
-    }
+    await this.deps.requestConfigurationReload(target.configRoot, 'repository');
   }
 
   private success(

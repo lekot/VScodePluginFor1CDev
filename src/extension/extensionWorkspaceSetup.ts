@@ -42,6 +42,10 @@ import {
   RepositoryStateStore,
 } from '../services/configurationRepository/repositoryStores';
 import {
+  createRequestConfigurationReload,
+  type RequestConfigurationReload,
+} from '../reload/requestConfigurationReload';
+import {
   RepositoryStateProjection,
   resolveRepositoryTreeDecoration,
 } from '../services/configurationRepository/repositoryTreeDecorations';
@@ -235,7 +239,7 @@ function registerReloadCoordinator(
 async function configureConfigurationRepositoryServices(
   context: vscode.ExtensionContext,
   state: ExtensionState,
-  lifecycle: MetadataTreeLifecycle,
+  requestConfigurationReload: RequestConfigurationReload,
 ): Promise<void> {
   const storage = state.infobaseStorage;
   const provider = state.treeDataProvider;
@@ -260,7 +264,7 @@ async function configureConfigurationRepositoryServices(
     infobaseStorage: storage,
     stateProjection: projection,
     onStateChanged: () => provider.refresh(),
-    reloadConfiguration: lifecycle.invalidateCacheAndReload,
+    requestConfigurationReload,
   });
   state.configurationRepositoryProjection = projection;
   state.configurationRepositoryService = service;
@@ -308,11 +312,17 @@ export async function registerExtensionWorkspace(
 
   registerMetadataTreeProviders(context, state, trackedLifecycle);
   registerReloadCoordinator(context, state, trackedLifecycle);
+  const requestConfigurationReload = createRequestConfigurationReload(state);
   registerEditorProviders(context, state);
   registerInfobaseFeatures(context, state);
-  await configureConfigurationRepositoryServices(context, state, trackedLifecycle);
+  await configureConfigurationRepositoryServices(context, state, requestConfigurationReload);
 
-  const commandDisposables = await registerAllCommands({ context, state, lifecycle: trackedLifecycle });
+  const commandDisposables = await registerAllCommands({
+    context,
+    state,
+    lifecycle: trackedLifecycle,
+    requestConfigurationReload,
+  });
   context.subscriptions.push(...commandDisposables);
 
   if (state.treeView) {
