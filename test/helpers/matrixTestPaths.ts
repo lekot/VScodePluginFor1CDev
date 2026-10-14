@@ -2,6 +2,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+interface TestDirectoryCopierModule {
+  copyRegularDirectory(sourcePath: string, destinationPath: string): void;
+}
+
 /**
  * Repo root when compiled under `out/test/helpers/`.
  */
@@ -20,7 +24,9 @@ export function copyEmptyConfFixtureToTemp(): string {
   }
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), '1cviewer-matrix-empty-conf-'));
   const dest = path.join(parent, 'empty_conf');
-  fs.cpSync(src, dest, { recursive: true });
+  const copierPath = path.resolve(repoRoot, 'scripts', 'copy-test-fixtures.js');
+  const { copyRegularDirectory } = require(copierPath) as TestDirectoryCopierModule;
+  copyRegularDirectory(src, dest);
   return path.resolve(dest);
 }
 

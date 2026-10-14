@@ -3,12 +3,14 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 
 interface FixtureCopierModule {
+  copyRegularDirectory(sourcePath: string, destinationPath: string): void;
   copyTestFixtures(projectRoot?: string): void;
 }
 
-const { copyTestFixtures } = require(path.resolve(__dirname, '../../../scripts/copy-test-fixtures.js')) as FixtureCopierModule;
+const { copyRegularDirectory, copyTestFixtures } = require(path.resolve(__dirname, '../../../scripts/copy-test-fixtures.js')) as FixtureCopierModule;
 
 interface TemporaryProject {
   root: string;
@@ -66,7 +68,113 @@ function createDirectoryLink(target: string, linkPath: string): void {
   fs.symlinkSync(target, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
 }
 
+function collectFiles(rootPath: string, currentPath = rootPath): string[] {
+  const relativePaths: string[] = [];
+  for (const entryName of fs.readdirSync(currentPath)) {
+    const entryPath = path.join(currentPath, entryName);
+    const relativePath = path.relative(rootPath, entryPath);
+    if (fs.lstatSync(entryPath).isDirectory()) {
+      relativePaths.push(...collectFiles(rootPath, entryPath));
+    } else {
+      relativePaths.push(relativePath);
+    }
+  }
+  return relativePaths.sort();
+}
+
 suite('Test fixture copier', () => {
+  test('copies regular directories between Unicode source and destination paths', () => {
+    withTemporaryProject((projectRoot) => {
+      const source = path.join(projectRoot, 'источник', 'дерево');
+      const destination = path.join(projectRoot, 'приёмник', 'копия');
+      const binaryContents = Buffer.from(Array.from({ length: 256 }, (_value, index) => index));
+      writeFixture(source, path.join('вложенный-каталог', 'данные.bin'), binaryContents);
+      fs.mkdirSync(path.join(source, 'пустой-каталог'));
+
+      copyRegularDirectory(source, destination);
+
+      assert.deepStrictEqual(collectFiles(source), collectFiles(destination));
+      assert.deepStrictEqual(fs.readFileSync(path.join(destination, 'вложенный-каталог', 'данные.bin')), binaryContents);
+      assert.ok(fs.statSync(path.join(destination, 'пустой-каталог')).isDirectory());
+      copyRegularDirectory(source, destination);
+      assert.deepStrictEqual(collectFiles(source), collectFiles(destination));
+    });
+  });
+
+  test('rejects equal and ancestor/descendant source and destination paths before writing', () => {
+    withTemporaryProject((projectRoot) => {
+      const source = path.join(projectRoot, 'источник');
+      fs.mkdirSync(source);
+      writeFixture(source, 'must-stay-in-source.txt', 'sentinel');
+
+      assert.strictEqual(typeof copyRegularDirectory, 'function');
+      assert.throws(() => copyRegularDirectory(source, source), /overlap/);
+      assert.throws(() => copyRegularDirectory(source, path.join(source, 'потомок')), /overlap/);
+      assert.throws(() => copyRegularDirectory(path.join(source, 'потомок'), source), /overlap/);
+      assert.deepStrictEqual(fs.readdirSync(source), ['must-stay-in-source.txt']);
+      assert.strictEqual(fs.readFileSync(path.join(source, 'must-stay-in-source.txt'), 'utf8'), 'sentinel');
+    });
+  });
+
+  test('rejects paths that resolve to the same canonical directory', () => {
+    withTemporaryProject((projectRoot) => {
+      const source = path.join(projectRoot, 'canonical-source');
+      const destination = path.join(projectRoot, 'canonical-destination');
+      fs.mkdirSync(source);
+      fs.mkdirSync(destination);
+
+      const mutableFs = require('fs') as { realpathSync: typeof fs.realpathSync };
+      const originalRealpathSync = mutableFs.realpathSync;
+      try {
+        mutableFs.realpathSync = ((entryPath: fs.PathLike, ...args: unknown[]) => {
+          if (path.resolve(String(entryPath)) === path.resolve(destination)) {
+            return originalRealpathSync(source, ...(args as []));
+          }
+          return originalRealpathSync(entryPath, ...(args as []));
+        }) as typeof fs.realpathSync;
+        assert.throws(() => copyRegularDirectory(source, destination), /overlap/);
+      } finally {
+        mutableFs.realpathSync = originalRealpathSync;
+      }
+      assert.deepStrictEqual(fs.readdirSync(destination), []);
+    });
+  });
+
+  test('matrix helper copies the Unicode checkout fixture into a Unicode temp path in a child process', () => {
+    withTemporaryProject((_projectRoot, tempRoot) => {
+      const unicodeTemp = path.join(tempRoot, 'матрица-временные-файлы');
+      fs.mkdirSync(unicodeTemp);
+      const helperPath = path.resolve(__dirname, '../helpers/matrixTestPaths.js');
+      const script = [
+        "console.log('BEFORE_COPY');",
+        `const destination = require(${JSON.stringify(helperPath)}).copyEmptyConfFixtureToTemp();`,
+        "console.log('AFTER_COPY');",
+        "console.log('DESTINATION:' + destination);",
+      ].join('\n');
+      const result = spawnSync(process.execPath, ['-e', script], {
+        cwd: path.resolve(__dirname, '../../..'),
+        encoding: 'utf8',
+        env: { ...process.env, TEMP: unicodeTemp, TMP: unicodeTemp, TMPDIR: unicodeTemp },
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: 60_000,
+        windowsHide: true,
+      });
+
+      assert.strictEqual(result.status, 0, `matrix helper child failed: ${result.error?.message ?? result.stderr}`);
+      assert.ok(result.stdout.includes('BEFORE_COPY'));
+      assert.ok(result.stdout.includes('AFTER_COPY'));
+      const destination = result.stdout.split('DESTINATION:').pop()?.trim();
+      assert.ok(destination);
+      assert.ok(destination!.includes('матрица-временные-файлы'));
+
+      const source = path.resolve(__dirname, '../../..', 'FormatSamples', 'empty_conf');
+      assert.deepStrictEqual(collectFiles(source), collectFiles(destination!));
+      for (const relativePath of collectFiles(source)) {
+        assert.deepStrictEqual(fs.readFileSync(path.join(source, relativePath)), fs.readFileSync(path.join(destination!, relativePath)));
+      }
+    });
+  });
+
   test('copies binary files and empty directories, overwrites in place, and stays idempotent under a Unicode project path', () => {
     withTemporaryProject((projectRoot) => {
       assert.ok(projectRoot.includes('проект-тестирования'));
@@ -161,6 +269,79 @@ suite('Test fixture copier', () => {
       assert.throws(() => copyTestFixtures(projectRoot), /symbolic links/);
       assert.strictEqual(fs.readFileSync(path.join(externalDirectory, 'sentinel.txt'), 'utf8'), 'external destination sentinel');
       assert.ok(!fs.existsSync(path.join(externalDirectory, 'fixture.txt')));
+    });
+  });
+
+  test('rejects source and destination ancestor symlinks without writing through them', () => {
+    withTemporaryProject((projectRoot, tempRoot) => {
+      const sourceTarget = path.join(tempRoot, 'source-target');
+      const destinationTarget = path.join(tempRoot, 'destination-target');
+      fs.mkdirSync(sourceTarget);
+      fs.mkdirSync(destinationTarget);
+      writeFixture(sourceTarget, 'source.txt', 'source sentinel');
+      fs.writeFileSync(path.join(destinationTarget, 'destination-sentinel.txt'), 'destination sentinel');
+      const linkedSource = path.join(projectRoot, 'источник-ссылка', 'tree');
+      const linkedDestination = path.join(projectRoot, 'приёмник-ссылка', 'tree');
+      const ordinarySource = path.join(projectRoot, 'обычный-источник');
+      fs.mkdirSync(ordinarySource);
+      createDirectoryLink(sourceTarget, path.dirname(linkedSource));
+      createDirectoryLink(destinationTarget, path.dirname(linkedDestination));
+
+      assert.throws(() => copyRegularDirectory(linkedSource, path.join(projectRoot, 'обычный-приёмник')), /symbolic links/);
+      assert.throws(() => copyRegularDirectory(ordinarySource, linkedDestination), /symbolic links/);
+      assert.strictEqual(fs.readFileSync(path.join(sourceTarget, 'source.txt'), 'utf8'), 'source sentinel');
+      assert.deepStrictEqual(fs.readdirSync(destinationTarget), ['destination-sentinel.txt']);
+      assert.ok(!fs.existsSync(path.join(projectRoot, 'обычный-приёмник')));
+      assert.ok(fs.statSync(ordinarySource).isDirectory());
+    });
+  });
+
+  test('rejects unsupported source and destination entries before copying', () => {
+    withTemporaryProject((projectRoot) => {
+      const source = path.join(projectRoot, 'source');
+      const destination = path.join(projectRoot, 'destination');
+      const unsupportedSourcePath = path.join(source, 'unsupported.entry');
+      const unsupportedDestinationPath = path.join(destination, 'unsupported.entry');
+      fs.mkdirSync(source);
+      fs.writeFileSync(path.join(source, 'fixture.txt'), 'fixture');
+      fs.writeFileSync(unsupportedSourcePath, 'source sentinel');
+      const unsupportedStats = {
+        isSymbolicLink: () => false,
+        isDirectory: () => false,
+        isFile: () => false,
+      } as unknown as fs.Stats;
+      const mutableFs = require('fs') as { lstatSync: typeof fs.lstatSync };
+      const originalLstatSync = mutableFs.lstatSync;
+
+      try {
+        mutableFs.lstatSync = ((entryPath: fs.PathLike, ...args: unknown[]) => {
+          if (path.resolve(String(entryPath)) === path.resolve(unsupportedSourcePath)) {
+            return unsupportedStats;
+          }
+          return originalLstatSync(entryPath, ...(args as []));
+        }) as typeof fs.lstatSync;
+        assert.throws(() => copyRegularDirectory(source, destination), /unsupported filesystem entries/);
+      } finally {
+        mutableFs.lstatSync = originalLstatSync;
+      }
+      assert.ok(!fs.existsSync(destination));
+      assert.strictEqual(fs.readFileSync(unsupportedSourcePath, 'utf8'), 'source sentinel');
+
+      fs.mkdirSync(destination);
+      fs.writeFileSync(unsupportedDestinationPath, 'destination sentinel');
+      try {
+        mutableFs.lstatSync = ((entryPath: fs.PathLike, ...args: unknown[]) => {
+          if (path.resolve(String(entryPath)) === path.resolve(unsupportedDestinationPath)) {
+            return unsupportedStats;
+          }
+          return originalLstatSync(entryPath, ...(args as []));
+        }) as typeof fs.lstatSync;
+        assert.throws(() => copyRegularDirectory(source, destination), /unsupported filesystem entries/);
+      } finally {
+        mutableFs.lstatSync = originalLstatSync;
+      }
+      assert.ok(!fs.existsSync(path.join(destination, 'fixture.txt')));
+      assert.strictEqual(fs.readFileSync(unsupportedDestinationPath, 'utf8'), 'destination sentinel');
     });
   });
 });

@@ -4,6 +4,12 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { runTests } from '@vscode/test-electron';
 
+interface FixtureDirectoryCopier {
+  copyRegularDirectory(sourcePath: string, destinationPath: string): void;
+}
+
+const { copyRegularDirectory } = require(path.resolve(__dirname, '../../scripts/copy-test-fixtures.js')) as FixtureDirectoryCopier;
+
 function assertPathIsWithin(parentPath: string, targetPath: string): void {
   const parent = path.resolve(parentPath);
   const target = path.resolve(targetPath);
@@ -33,7 +39,7 @@ async function main() {
       : path.resolve(extensionDevelopmentPath, 'test/fixtures/designer-config');
     if (!requestedWorkspace) {
       temporaryWorkspace = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-smoke-common-module-'));
-      await fs.promises.cp(workspaceFolder, temporaryWorkspace, { recursive: true });
+      copyRegularDirectory(workspaceFolder, temporaryWorkspace);
       workspaceFolder = temporaryWorkspace;
       const commonModulesPath = path.join(workspaceFolder, 'CommonModules');
       await fs.promises.mkdir(commonModulesPath, { recursive: true });

@@ -31,30 +31,69 @@ function getEntryKind(stats, entryPath) {
   throw new Error(`Fixture copier refuses unsupported filesystem entries: ${entryPath}`);
 }
 
-function assertDirectory(directoryPath, label) {
-  const stats = fs.lstatSync(directoryPath);
-  if (getEntryKind(stats, directoryPath) !== 'directory') {
-    throw new Error(`Fixture copier expected ${label} to be a directory: ${directoryPath}`);
-  }
+function getPathParts(directoryPath) {
+  const resolvedPath = path.resolve(directoryPath);
+  const rootPath = path.parse(resolvedPath).root;
+  const segments = resolvedPath.slice(rootPath.length).split(path.sep).filter(Boolean);
+  return { resolvedPath, rootPath, segments };
 }
 
-function ensureDirectoryPath(projectRoot, parts, createMissing) {
-  let currentPath = projectRoot;
-  for (const part of parts) {
-    currentPath = path.join(currentPath, part);
+function assertDirectoryPath(directoryPath, label, allowMissing) {
+  const { resolvedPath, rootPath, segments } = getPathParts(directoryPath);
+  const rootStats = getStatsIfPresent(rootPath);
+  if (!rootStats || getEntryKind(rootStats, rootPath) !== 'directory') {
+    throw new Error(`Fixture copier expected a filesystem root while checking ${label}: ${rootPath}`);
+  }
+
+  let currentPath = rootPath;
+  let missingSegmentSeen = false;
+  for (const segment of segments) {
+    currentPath = path.join(currentPath, segment);
     const stats = getStatsIfPresent(currentPath);
     if (!stats) {
-      if (!createMissing) {
+      missingSegmentSeen = true;
+      if (!allowMissing) {
         throw new Error(`Fixture copier directory does not exist: ${currentPath}`);
       }
-      fs.mkdirSync(currentPath);
       continue;
     }
     if (getEntryKind(stats, currentPath) !== 'directory') {
-      throw new Error(`Fixture copier expected a directory: ${currentPath}`);
+      throw new Error(`Fixture copier expected ${label} path segment to be a directory: ${currentPath}`);
     }
   }
-  return currentPath;
+  return !missingSegmentSeen;
+}
+
+function isSameOrDescendant(parentPath, candidatePath) {
+  const relativePath = path.relative(parentPath, candidatePath);
+  return relativePath === '' || (relativePath !== '..' && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath));
+}
+
+function assertPathsDoNotOverlap(sourcePath, destinationPath) {
+  if (isSameOrDescendant(sourcePath, destinationPath) || isSameOrDescendant(destinationPath, sourcePath)) {
+    throw new Error(`Fixture copier refuses overlapping source and destination directories: ${sourcePath} and ${destinationPath}`);
+  }
+}
+
+function getCanonicalPath(directoryPath) {
+  return path.resolve(fs.realpathSync(directoryPath));
+}
+
+function getCanonicalPathForPossiblyMissingDirectory(directoryPath) {
+  let currentPath = path.resolve(directoryPath);
+  const suffix = [];
+  let stats = getStatsIfPresent(currentPath);
+  while (!stats) {
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      throw new Error(`Fixture copier could not find an existing ancestor for: ${directoryPath}`);
+    }
+    suffix.unshift(path.basename(currentPath));
+    currentPath = parentPath;
+    stats = getStatsIfPresent(currentPath);
+  }
+  const canonicalAncestor = getCanonicalPath(currentPath);
+  return path.resolve(canonicalAncestor, ...suffix);
 }
 
 function validateTree(directoryPath) {
@@ -63,6 +102,42 @@ function validateTree(directoryPath) {
     const kind = getEntryKind(fs.lstatSync(entryPath), entryPath);
     if (kind === 'directory') {
       validateTree(entryPath);
+    }
+  }
+}
+
+function validateMerge(sourcePath, destinationPath) {
+  for (const entryName of fs.readdirSync(sourcePath)) {
+    const sourceEntryPath = path.join(sourcePath, entryName);
+    const sourceKind = getEntryKind(fs.lstatSync(sourceEntryPath), sourceEntryPath);
+    const destinationEntryPath = path.join(destinationPath, entryName);
+    const destinationStats = getStatsIfPresent(destinationEntryPath);
+    if (!destinationStats) {
+      continue;
+    }
+
+    const destinationKind = getEntryKind(destinationStats, destinationEntryPath);
+    if (sourceKind !== destinationKind) {
+      throw new Error(`Fixture copier found incompatible source and destination entries: ${sourceEntryPath} and ${destinationEntryPath}`);
+    }
+    if (sourceKind === 'directory') {
+      validateMerge(sourceEntryPath, destinationEntryPath);
+    }
+  }
+}
+
+function ensureDirectoryPath(directoryPath) {
+  const { rootPath, segments } = getPathParts(directoryPath);
+  let currentPath = rootPath;
+  for (const segment of segments) {
+    currentPath = path.join(currentPath, segment);
+    const stats = getStatsIfPresent(currentPath);
+    if (!stats) {
+      fs.mkdirSync(currentPath);
+      continue;
+    }
+    if (getEntryKind(stats, currentPath) !== 'directory') {
+      throw new Error(`Fixture copier expected a directory while preparing destination: ${currentPath}`);
     }
   }
 }
@@ -92,20 +167,39 @@ function copyDirectory(sourcePath, destinationPath) {
   }
 }
 
+function copyRegularDirectory(sourcePath, destinationPath) {
+  const resolvedSourcePath = path.resolve(sourcePath);
+  const resolvedDestinationPath = path.resolve(destinationPath);
+  assertPathsDoNotOverlap(resolvedSourcePath, resolvedDestinationPath);
+
+  assertDirectoryPath(resolvedSourcePath, 'source', false);
+  const destinationExists = assertDirectoryPath(resolvedDestinationPath, 'destination', true);
+  const canonicalSourcePath = getCanonicalPath(resolvedSourcePath);
+  const canonicalDestinationPath = destinationExists
+    ? getCanonicalPath(resolvedDestinationPath)
+    : getCanonicalPathForPossiblyMissingDirectory(resolvedDestinationPath);
+  assertPathsDoNotOverlap(canonicalSourcePath, canonicalDestinationPath);
+
+  validateTree(resolvedSourcePath);
+  if (destinationExists) {
+    validateTree(resolvedDestinationPath);
+    validateMerge(resolvedSourcePath, resolvedDestinationPath);
+  }
+
+  ensureDirectoryPath(resolvedDestinationPath);
+  copyDirectory(resolvedSourcePath, resolvedDestinationPath);
+}
+
 function copyTestFixtures(projectRoot = PROJECT_ROOT) {
   const resolvedProjectRoot = path.resolve(projectRoot);
-  assertDirectory(resolvedProjectRoot, 'project root');
-
-  const sourcePath = ensureDirectoryPath(resolvedProjectRoot, SOURCE_PARTS, false);
-  validateTree(sourcePath);
-
-  const destinationPath = ensureDirectoryPath(resolvedProjectRoot, DESTINATION_PARTS, true);
-  validateTree(destinationPath);
-  copyDirectory(sourcePath, destinationPath);
+  assertDirectoryPath(resolvedProjectRoot, 'project root', false);
+  const sourcePath = path.join(resolvedProjectRoot, ...SOURCE_PARTS);
+  const destinationPath = path.join(resolvedProjectRoot, ...DESTINATION_PARTS);
+  copyRegularDirectory(sourcePath, destinationPath);
 }
 
 if (require.main === module) {
   copyTestFixtures();
 }
 
-module.exports = { copyTestFixtures };
+module.exports = { copyRegularDirectory, copyTestFixtures };

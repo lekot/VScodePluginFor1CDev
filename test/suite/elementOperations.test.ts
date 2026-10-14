@@ -30,6 +30,12 @@ import { ensureR6PlaceholdersForInstanceNode, NormalizeContext } from '../../src
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { addRootObjectToConfiguration } from '../../src/services/configurationXmlUpdater';
 
+interface FixtureDirectoryCopier {
+  copyRegularDirectory(sourcePath: string, destinationPath: string): void;
+}
+
+const { copyRegularDirectory } = require(path.resolve(__dirname, '../../../scripts/copy-test-fixtures.js')) as FixtureDirectoryCopier;
+
 async function writeConfigurationWithFormat(dir: string, version = '2.20'): Promise<void> {
   await fs.promises.writeFile(
     path.join(dir, 'Configuration.xml'),
@@ -836,7 +842,7 @@ suite('elementOperations', () => {
   test('createElement adds first column into dedicated TabularSections/Name/Name.xml file', async () => {
     const fixtureRoot = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogEmptyFolder');
     const catDestDir = path.join(tmpDir, 'Catalogs', 'ZFolder');
-    await fs.promises.cp(fixtureRoot, catDestDir, { recursive: true });
+    copyRegularDirectory(fixtureRoot, catDestDir);
     const catXml = path.join(catDestDir, 'CatalogEmptyFolder.xml');
     const tsXml = path.join(catDestDir, 'TabularSections', 'FolderEmpty', 'FolderEmpty.xml');
 
@@ -1259,7 +1265,7 @@ suite('elementOperations', () => {
       path.join(fixture, 'NestedModule.xml'),
       path.join(cmRoot, 'SrcMod.xml')
     );
-    await fs.promises.cp(path.join(fixture, 'Ext'), path.join(cmRoot, 'SrcMod', 'Ext'), { recursive: true });
+    copyRegularDirectory(path.join(fixture, 'Ext'), path.join(cmRoot, 'SrcMod', 'Ext'));
     let content = await fs.promises.readFile(path.join(cmRoot, 'SrcMod.xml'), 'utf-8');
     content = content.replace(/<Name>NestedModule<\/Name>/g, '<Name>SrcMod</Name>');
     await fs.promises.writeFile(path.join(cmRoot, 'SrcMod.xml'), content, 'utf-8');
@@ -1295,7 +1301,7 @@ suite('elementOperations', () => {
       path.join(fixture, 'NestedModule.xml'),
       path.join(cmRoot, 'SrcMod.xml')
     );
-    await fs.promises.cp(path.join(fixture, 'Ext'), path.join(cmRoot, 'SrcMod', 'Ext'), { recursive: true });
+    copyRegularDirectory(path.join(fixture, 'Ext'), path.join(cmRoot, 'SrcMod', 'Ext'));
     let content = await fs.promises.readFile(path.join(cmRoot, 'SrcMod.xml'), 'utf-8');
     content = content.replace(/<Name>NestedModule<\/Name>/g, '<Name>SrcMod</Name>');
     await fs.promises.writeFile(path.join(cmRoot, 'SrcMod.xml'), content, 'utf-8');
