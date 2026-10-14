@@ -82,6 +82,84 @@ function collectFiles(rootPath: string, currentPath = rootPath): string[] {
   return relativePaths.sort();
 }
 
+function snapshotTree(rootPath: string, currentPath = rootPath): string[] {
+  const entries = fs.readdirSync(currentPath).sort();
+  const snapshot: string[] = [];
+  for (const entryName of entries) {
+    const entryPath = path.join(currentPath, entryName);
+    const relativePath = path.relative(rootPath, entryPath);
+    const stats = fs.lstatSync(entryPath);
+    if (stats.isDirectory()) {
+      snapshot.push('directory:' + relativePath);
+      snapshot.push(...snapshotTree(rootPath, entryPath));
+    } else if (stats.isFile()) {
+      snapshot.push('file:' + relativePath + ':' + fs.readFileSync(entryPath).toString('base64'));
+    } else if (stats.isSymbolicLink()) {
+      snapshot.push('symlink:' + relativePath + ':' + fs.readlinkSync(entryPath));
+    } else {
+      snapshot.push('other:' + relativePath);
+    }
+  }
+  return snapshot.sort();
+}
+
+function getWindowsPathAliases(directoryPath: string): { shortPath: string; longPath: string } | undefined {
+  if (process.platform !== 'win32') {
+    return undefined;
+  }
+  const shortPath = path.resolve(directoryPath);
+  const longPath = path.resolve(fs.realpathSync.native(shortPath));
+  if (shortPath.toLowerCase() === longPath.toLowerCase()) {
+    return undefined;
+  }
+  return { shortPath, longPath };
+}
+
+function assertAliasOverlapRejectedBeforeWrites(
+  sourcePath: string,
+  destinationPath: string,
+  watchedTrees: string[],
+  externalSentinelPath: string,
+): void {
+  const beforeSnapshots = watchedTrees.map((treePath) => snapshotTree(treePath));
+  const externalSentinelBefore = fs.readFileSync(externalSentinelPath);
+  const mutableFs = require('fs') as {
+    copyFileSync: typeof fs.copyFileSync;
+    mkdirSync: typeof fs.mkdirSync;
+  };
+  const originalCopyFileSync = mutableFs.copyFileSync;
+  const originalMkdirSync = mutableFs.mkdirSync;
+  let copyAttempted = false;
+  let mkdirAttempted = false;
+  let thrown: unknown;
+
+  try {
+    mutableFs.copyFileSync = (() => {
+      copyAttempted = true;
+      throw new Error('copy started before overlap rejection');
+    }) as typeof fs.copyFileSync;
+    mutableFs.mkdirSync = (() => {
+      mkdirAttempted = true;
+      throw new Error('directory creation started before overlap rejection');
+    }) as typeof fs.mkdirSync;
+    try {
+      copyRegularDirectory(sourcePath, destinationPath);
+    } catch (error) {
+      thrown = error;
+    }
+  } finally {
+    mutableFs.copyFileSync = originalCopyFileSync;
+    mutableFs.mkdirSync = originalMkdirSync;
+  }
+
+  assert.deepStrictEqual(watchedTrees.map((treePath) => snapshotTree(treePath)), beforeSnapshots);
+  assert.deepStrictEqual(fs.readFileSync(externalSentinelPath), externalSentinelBefore);
+  assert.strictEqual(copyAttempted, false);
+  assert.strictEqual(mkdirAttempted, false);
+  const errorMessage = thrown instanceof Error ? thrown.message : String(thrown);
+  assert.match(errorMessage, /overlap/);
+}
+
 suite('Test fixture copier', () => {
   test('copies regular directories between Unicode source and destination paths', () => {
     withTemporaryProject((projectRoot) => {
@@ -116,27 +194,75 @@ suite('Test fixture copier', () => {
     });
   });
 
-  test('rejects paths that resolve to the same canonical directory', () => {
-    withTemporaryProject((projectRoot) => {
-      const source = path.join(projectRoot, 'canonical-source');
-      const destination = path.join(projectRoot, 'canonical-destination');
-      fs.mkdirSync(source);
-      fs.mkdirSync(destination);
-
-      const mutableFs = require('fs') as { realpathSync: typeof fs.realpathSync };
-      const originalRealpathSync = mutableFs.realpathSync;
-      try {
-        mutableFs.realpathSync = ((entryPath: fs.PathLike, ...args: unknown[]) => {
-          if (path.resolve(String(entryPath)) === path.resolve(destination)) {
-            return originalRealpathSync(source, ...(args as []));
-          }
-          return originalRealpathSync(entryPath, ...(args as []));
-        }) as typeof fs.realpathSync;
-        assert.throws(() => copyRegularDirectory(source, destination), /overlap/);
-      } finally {
-        mutableFs.realpathSync = originalRealpathSync;
+  test('rejects the same existing directory through native Windows short and long aliases before writing', function () {
+    withTemporaryProject((_projectRoot, tempRoot) => {
+      const aliases = getWindowsPathAliases(tempRoot);
+      if (!aliases) {
+        this.skip();
       }
-      assert.deepStrictEqual(fs.readdirSync(destination), []);
+      const source = path.join(aliases!.shortPath, 'same-existing-directory');
+      const destination = path.join(aliases!.longPath, 'same-existing-directory');
+      fs.mkdirSync(source);
+      writeFixture(source, 'sentinel.txt', 'same-directory sentinel');
+      const externalSentinelPath = path.join(tempRoot, 'outside-sentinel.txt');
+      fs.writeFileSync(externalSentinelPath, 'external sentinel');
+
+      assertAliasOverlapRejectedBeforeWrites(source, destination, [source], externalSentinelPath);
+    });
+  });
+
+  test('rejects an existing descendant reached through native Windows aliases before writing', function () {
+    withTemporaryProject((_projectRoot, tempRoot) => {
+      const aliases = getWindowsPathAliases(tempRoot);
+      if (!aliases) {
+        this.skip();
+      }
+      const source = path.join(aliases!.shortPath, 'existing-ancestor');
+      const destination = path.join(aliases!.longPath, 'existing-ancestor', 'child');
+      fs.mkdirSync(source);
+      writeFixture(source, 'source-sentinel.txt', 'source sentinel');
+      fs.mkdirSync(destination);
+      writeFixture(destination, 'destination-sentinel.txt', 'destination sentinel');
+      const externalSentinelPath = path.join(tempRoot, 'outside-sentinel.txt');
+      fs.writeFileSync(externalSentinelPath, 'external sentinel');
+
+      assertAliasOverlapRejectedBeforeWrites(source, destination, [source], externalSentinelPath);
+    });
+  });
+
+  test('rejects a missing descendant reached through native Windows aliases before creating directories', function () {
+    withTemporaryProject((_projectRoot, tempRoot) => {
+      const aliases = getWindowsPathAliases(tempRoot);
+      if (!aliases) {
+        this.skip();
+      }
+      const source = path.join(aliases!.shortPath, 'missing-ancestor');
+      const destination = path.join(aliases!.longPath, 'missing-ancestor', 'new-child', 'nested-child');
+      fs.mkdirSync(source);
+      writeFixture(source, 'source-sentinel.txt', 'source sentinel');
+      const externalSentinelPath = path.join(tempRoot, 'outside-sentinel.txt');
+      fs.writeFileSync(externalSentinelPath, 'external sentinel');
+
+      assertAliasOverlapRejectedBeforeWrites(source, destination, [source], externalSentinelPath);
+    });
+  });
+
+  test('rejects an existing source descendant reached through native Windows aliases before writing', function () {
+    withTemporaryProject((_projectRoot, tempRoot) => {
+      const aliases = getWindowsPathAliases(tempRoot);
+      if (!aliases) {
+        this.skip();
+      }
+      const destination = path.join(aliases!.shortPath, 'destination-ancestor');
+      const source = path.join(aliases!.longPath, 'destination-ancestor', 'child');
+      fs.mkdirSync(destination);
+      writeFixture(destination, 'destination-sentinel.txt', 'destination sentinel');
+      fs.mkdirSync(source);
+      writeFixture(source, 'source-sentinel.txt', 'source sentinel');
+      const externalSentinelPath = path.join(tempRoot, 'outside-sentinel.txt');
+      fs.writeFileSync(externalSentinelPath, 'external sentinel');
+
+      assertAliasOverlapRejectedBeforeWrites(source, destination, [destination], externalSentinelPath);
     });
   });
 

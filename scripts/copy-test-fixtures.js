@@ -76,7 +76,7 @@ function assertPathsDoNotOverlap(sourcePath, destinationPath) {
 }
 
 function getCanonicalPath(directoryPath) {
-  return path.resolve(fs.realpathSync(directoryPath));
+  return path.resolve(fs.realpathSync.native(directoryPath));
 }
 
 function getCanonicalPathForPossiblyMissingDirectory(directoryPath) {
