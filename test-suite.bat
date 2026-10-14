@@ -1,7 +1,6 @@
 @echo off
 setlocal
 chcp 65001 >nul 2>&1
-node "%~dp0scripts\cleanup-1cviewer-temp.js"
 echo Compiling TypeScript with test config...
 node node_modules/typescript/bin/tsc -p tsconfig.test.json
 if %errorlevel% neq 0 exit /b %errorlevel%
@@ -17,7 +16,6 @@ if errorlevel 1 (
     goto :core_tests_failed
 )
 
-node "%~dp0scripts\cleanup-1cviewer-temp.js"
 echo Done!
 endlocal & exit /b 0
 

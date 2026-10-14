@@ -2,7 +2,6 @@
 setlocal
 chcp 65001 >nul 2>&1
 cd /d "%~dp0.."
-call "%~dp0cleanup-1cviewer-temp.bat"
 
 REM ============================================================================
 REM  Полный смокер инструмента CDT 41 (не «исторический» только-VS Code smoke):
@@ -95,7 +94,6 @@ node out\test\runSmoke.js %*
 if errorlevel 1 exit /b 1
 
 :done
-call "%~dp0cleanup-1cviewer-temp.bat"
 echo [instrument-smoke] Completed successfully.
 endlocal
 exit /b 0

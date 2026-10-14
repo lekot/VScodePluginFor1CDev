@@ -44,6 +44,7 @@ const mustRegisterInCoreCi: readonly string[] = [
   'suite/configurationPathIdentity.test.js',
   'suite/configurationMutationGateway.test.js',
   'suite/configurationContextResolver.test.js',
+  'suite/tempCleanupOwnership.test.js',
 ];
 
 
