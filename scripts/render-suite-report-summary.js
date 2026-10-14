@@ -2,8 +2,28 @@ const fs = require('fs');
 const path = require('path');
 
 function readReport(reportPath) {
-  const raw = fs.readFileSync(reportPath, 'utf8');
-  return JSON.parse(raw);
+  try {
+    const raw = fs.readFileSync(reportPath, 'utf8');
+    return JSON.parse(raw);
+  } catch (error) {
+    if (
+      error &&
+      error.code === 'ENOENT' &&
+      path.basename(reportPath).toLowerCase() === 'smoke.json' &&
+      process.env.SUITE_REPORT_RUNNER_OUTCOME === 'failure'
+    ) {
+      return undefined;
+    }
+    if (
+      error &&
+      error.code === 'ENOENT' &&
+      path.basename(reportPath).toLowerCase() === 'smoke.json' &&
+      process.env.SUITE_REPORT_RUNNER_OUTCOME === 'success'
+    ) {
+      throw new Error(`Smoke suite report is required after a successful runner: ${reportPath}`);
+    }
+    throw error;
+  }
 }
 
 function formatReport(report) {
@@ -26,6 +46,15 @@ function formatReport(report) {
   return lines.join('\n');
 }
 
+function formatMissingSmokeReport() {
+  return [
+    '### smoke',
+    '- suite report is missing because the smoke runner failed before it was written.',
+    '- Check the full `smoke-tests.log` and VS Code logs in the `smoke-diagnostics` artifact.',
+    '',
+  ].join('\n');
+}
+
 function main() {
   const outputPath = process.argv[2];
   const reportPaths = process.argv.slice(3);
@@ -37,7 +66,7 @@ function main() {
   const sections = ['## Executed Test Suites'];
   for (const reportPath of reportPaths) {
     const report = readReport(reportPath);
-    sections.push(formatReport(report));
+    sections.push(report === undefined ? formatMissingSmokeReport() : formatReport(report));
   }
 
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });

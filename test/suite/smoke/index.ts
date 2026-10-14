@@ -9,6 +9,7 @@ import {
 } from '../suiteExecutionReport';
 
 export function run(): Promise<void> {
+  console.log(`SMOKE_SUITE_ENTERED ${new Date().toISOString()}`);
   const mocha = new Mocha({
     ui: 'tdd',
     color: true,
