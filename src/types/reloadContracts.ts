@@ -67,7 +67,12 @@ export interface ReloadRunContext {
   configPath: string;
   reason: ReloadReason;
   operationId?: string;
+  readonly canPublish: () => boolean;
 }
+
+export type ReloadAttemptOutcome =
+  | { readonly status: 'published' }
+  | { readonly status: 'superseded' };
 
 export interface ReloadOperationResult {
   operationId: string;

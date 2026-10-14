@@ -21,7 +21,9 @@ const lifecycleOwners = new Set([
   'src/extension/metadataTreeLifecycle.ts',
   'src/extension/extensionWorkspaceSetup.ts',
 ]);
-const lifecycleBypassPattern = /\b(?:invalidateCacheAndReload|reloadConfiguration)\b/u;
+const lifecycleSchedulingPattern = /\b(?:invalidateCacheAndReload|reloadConfiguration)\b/u;
+const lifecycleExecutorPattern = /\bexecuteConfigurationReload\b/u;
+const lifecycleExecutorForwardingPattern = /\bexecuteConfigurationReload\s*:/u;
 
 function loadRequesterModule(): RequesterModule {
   // Keep the module lookup dynamic so this suite compiles on Red before the adapter exists.
@@ -46,7 +48,11 @@ function collectProductionTypeScriptSources(directory: string, projectRoot: stri
 
 function findLifecycleBypasses(sources: readonly TypeScriptSource[]): string[] {
   return sources
-    .filter(({ relativePath, content }) => !lifecycleOwners.has(relativePath) && lifecycleBypassPattern.test(content))
+    .filter(({ relativePath, content }) => lifecycleSchedulingPattern.test(content)
+      || (lifecycleExecutorPattern.test(content)
+        && (!lifecycleOwners.has(relativePath)
+          || (relativePath === 'src/extension/extensionWorkspaceSetup.ts'
+            && lifecycleExecutorForwardingPattern.test(content)))))
     .map(({ relativePath }) => relativePath)
     .sort();
 }
@@ -177,6 +183,26 @@ suite('requestConfigurationReload application adapter', () => {
       findLifecycleBypasses([...sources, injectedFeature]),
       ['src/commands/injectedReloadBypass.ts'],
       'the recursive source guard must detect bypasses in newly added feature files',
+    );
+
+    const injectedExecutor = {
+      relativePath: 'src/commands/injectedExecutorBypass.ts',
+      content: 'lifecycle.executeConfigurationReload(configPath, canPublish);',
+    };
+    assert.deepStrictEqual(
+      findLifecycleBypasses([...sources, injectedExecutor]),
+      ['src/commands/injectedExecutorBypass.ts'],
+      'only the composition root may call the single-attempt lifecycle executor',
+    );
+
+    const injectedForwarding = {
+      relativePath: 'src/extension/extensionWorkspaceSetup.ts',
+      content: 'const trackedLifecycle = { executeConfigurationReload: lifecycle.executeConfigurationReload };',
+    };
+    assert.deepStrictEqual(
+      findLifecycleBypasses([...sources, injectedForwarding]),
+      ['src/extension/extensionWorkspaceSetup.ts'],
+      'the composition root must not forward its single-attempt executor to feature registrations',
     );
   });
 });

@@ -5,7 +5,7 @@ import { registerExternalProcessorCommands } from './externalProcessorCommands';
 import { registerFilterCriterionCommands } from './filterCriterionCommands';
 import { registerPictureCommands } from './pictureCommands';
 import { ExtensionState } from '../state/extensionState';
-import type { MetadataTreeLifecycle } from '../extension/metadataTreeLifecycle';
+import type { MetadataTreeFeatureLifecycle } from '../extension/metadataTreeLifecycle';
 import { registerElementCommands } from './elementCommands';
 import { registerNavigationCommands } from './navigationCommands';
 import { registerEditorCommands } from './editorCommands';
@@ -64,7 +64,7 @@ import type { RequestConfigurationReload } from '../reload/requestConfigurationR
 export type RegisterAllCommandsArgs = {
   context: vscode.ExtensionContext;
   state: ExtensionState;
-  lifecycle: MetadataTreeLifecycle;
+  lifecycle: MetadataTreeFeatureLifecycle;
   requestConfigurationReload: RequestConfigurationReload;
 };
 

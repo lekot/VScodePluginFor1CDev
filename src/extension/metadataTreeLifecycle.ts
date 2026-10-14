@@ -12,8 +12,8 @@ import { loadTreeFromCache, saveTreeToCache, invalidateTreeCache } from '../util
 import { MetadataType, TreeNode } from '../models/treeNode';
 import { MESSAGES } from '../constants/messages';
 import { normalizeEmptyPlaceholderTree } from '../utils/treeNormalization';
-import { configurationPathKey } from '../utils/configurationPathIdentity';
 import { Logger } from '../utils/logger';
+import type { ReloadAttemptOutcome } from '../types/reloadContracts';
 import {
   createReloadOrchestratorHandlers,
   ReloadOrchestratorHandlers,
@@ -50,12 +50,17 @@ function handleLoadError(error: unknown): void {
 
 export type MetadataTreeLifecycle = {
   invalidateTreeCacheOnly: (configPath: string) => Promise<void>;
-  invalidateCacheAndReload: (configPath: string) => Promise<void>;
-  reloadConfiguration: (configPath: string) => Promise<void>;
+  executeConfigurationReload: (
+    configPath: string,
+    canPublish: () => boolean,
+  ) => Promise<ReloadAttemptOutcome>;
   loadMetadataTree: () => Promise<void>;
   reloadOrchestratorHandlers: ReloadOrchestratorHandlers;
   dispose: () => void;
 };
+
+/** Lifecycle surface available to feature registrations; targeted execution stays at the composition root. */
+export type MetadataTreeFeatureLifecycle = Omit<MetadataTreeLifecycle, 'executeConfigurationReload'>;
 
 export type MetadataReloadErrorCode =
   | 'RELOAD_DISPOSED'
@@ -83,12 +88,6 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
   let completedGeneration = 0;
   let cacheEpoch = 0;
   let loadInProgress: Promise<void> | null = null;
-  const configurationReloadSlots = new Map<string, {
-    configPath: string;
-    requestedGeneration: number;
-    completedGeneration: number;
-    inProgress: Promise<void> | null;
-  }>();
 
   function throwIfDisposed(): void {
     if (disposed) {
@@ -122,11 +121,6 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
       await invalidateTreeCache(state.extensionContext.globalStoragePath, configPath);
     }
     await MetadataParser.invalidateTypeContentsCache(configPath);
-  }
-
-  async function invalidateCacheAndReload(configPath: string): Promise<void> {
-    await invalidateTreeCacheOnly(configPath);
-    await reloadConfiguration(configPath);
   }
 
   const reloadOrchestratorHandlers = createReloadOrchestratorHandlers({ state });
@@ -312,15 +306,21 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     await loadInProgress;
   }
 
-  async function doReloadConfiguration(
+  async function executeConfigurationReload(
     configPath: string,
-    generation: number,
-    slot: { requestedGeneration: number },
-  ): Promise<boolean> {
+    canPublish: () => boolean,
+  ): Promise<ReloadAttemptOutcome> {
     throwIfDisposed();
-    if (loadInProgress) {
+    await invalidateTreeCacheOnly(configPath);
+    while (loadInProgress) {
       await loadInProgress;
+      throwIfDisposed();
     }
+
+    if (!canPublish()) {
+      return { status: 'superseded' };
+    }
+
     const fullGenerationAtStart = requestedGeneration;
     const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(configPath));
     const workspaceFolderPath = folder?.uri.fsPath ?? configPath;
@@ -341,12 +341,15 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
       );
     }
     throwIfDisposed();
-    if (generation !== slot.requestedGeneration) {
-      return false;
+    if (!canPublish()) {
+      return { status: 'superseded' };
     }
     if (requestedGeneration !== fullGenerationAtStart || loadInProgress) {
-      await loadInProgress;
-      return false;
+      while (loadInProgress) {
+        await loadInProgress;
+        throwIfDisposed();
+      }
+      return { status: 'superseded' };
     }
     const provider = state.treeDataProvider;
     if (!provider?.replaceConfigurationRoot(configPath, loaded.rootNode, loaded.context)) {
@@ -360,55 +363,20 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
       delayMs: 1000,
       preferredRootId: loaded.rootNode.id,
     });
-    return true;
-  }
-
-  async function reloadConfiguration(configPath: string): Promise<void> {
-    throwIfDisposed();
-    const key = configurationPathKey(configPath);
-    let slot = configurationReloadSlots.get(key);
-    if (!slot) {
-      slot = {
-        configPath,
-        requestedGeneration: 0,
-        completedGeneration: 0,
-        inProgress: null,
-      };
-      configurationReloadSlots.set(key, slot);
-    }
-    slot.requestedGeneration += 1;
-    if (!slot.inProgress) {
-      const activeSlot = slot;
-      activeSlot.inProgress = (async () => {
-        while (activeSlot.completedGeneration < activeSlot.requestedGeneration) {
-          const generation = activeSlot.requestedGeneration;
-          const published = await doReloadConfiguration(activeSlot.configPath, generation, activeSlot);
-          if (published) {
-            activeSlot.completedGeneration = generation;
-          }
-        }
-      })().finally(() => {
-        activeSlot.inProgress = null;
-      });
-    }
-    await slot.inProgress;
+    return { status: 'published' };
   }
 
   function dispose(): void {
     if (disposed) { return; }
     disposed = true;
     requestedGeneration += 1;
-    for (const slot of configurationReloadSlots.values()) {
-      slot.requestedGeneration += 1;
-    }
     disposeMetadataWatchers();
     state.treeDataProvider?.dispose();
   }
 
   return {
     invalidateTreeCacheOnly,
-    invalidateCacheAndReload,
-    reloadConfiguration,
+    executeConfigurationReload,
     loadMetadataTree,
     reloadOrchestratorHandlers,
     dispose,
