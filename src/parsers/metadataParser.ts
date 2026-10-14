@@ -15,7 +15,7 @@ import {
   ensureTabularSectionColumnsPlaceholder,
   isTabularSectionColumnsContainer,
 } from '../utils/treeNormalization';
-import { configurationPathKey } from '../utils/configurationPathIdentity';
+import { configurationPathKey, filesystemPathKey } from '../utils/configurationPathIdentity';
 
 const R6_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates', 'Dimensions', 'Resources', 'EnumValues', 'PredefinedData']);
 /** Types with R6 placeholder children (Forms, Attributes, etc.) — must match treeNormalization.ts R6_OBJECT_TYPES. */
@@ -41,30 +41,102 @@ const R6_OBJECT_TYPES = new Set<MetadataType>([
   MetadataType.Enum,
 ]);
 
+interface TypeContentsCacheEpochToken {
+  readonly storagePath: string | null;
+  readonly storageIdentity: string | null;
+  readonly globalEpoch: number;
+  readonly configPathKey: string;
+  readonly configEpoch: number;
+}
+
 /**
  * Main metadata parser that handles both EDT and Designer formats
  */
 export class MetadataParser {
   private static typeContentsCacheStoragePath: string | null = null;
+  private static typeContentsCacheStorageIdentity: string | null = null;
+  private static typeContentsCacheGlobalEpoch = 0;
+  private static readonly typeContentsCacheConfigEpochs = new Map<string, number>();
+  /** Serializes short cache filesystem operations; signatures and parsing must stay outside this queue. */
+  private static diskCacheOperationQueue: Promise<void> = Promise.resolve();
   private static readonly inFlightTypeContents = new Map<string, Promise<TreeNode[]>>();
   private static readonly inFlightTypeIndex = new Map<string, Promise<TreeNode[]>>();
 
   static setTypeContentsCacheStoragePath(storagePath: string | null): void {
-    this.typeContentsCacheStoragePath = storagePath && storagePath.trim() ? storagePath : null;
+    const nextStoragePath = storagePath && storagePath.trim() ? storagePath : null;
+    const nextStorageIdentity = nextStoragePath ? filesystemPathKey(nextStoragePath) : null;
+    if (nextStorageIdentity !== this.typeContentsCacheStorageIdentity) {
+      this.typeContentsCacheGlobalEpoch += 1;
+    }
+    this.typeContentsCacheStoragePath = nextStoragePath;
+    this.typeContentsCacheStorageIdentity = nextStorageIdentity;
   }
 
   static async invalidateTypeContentsCache(configPath: string): Promise<void> {
-    if (!this.typeContentsCacheStoragePath) {
+    const configPathKey = configurationPathKey(configPath);
+    this.advanceConfigEpoch(configPathKey);
+
+    const storagePath = this.typeContentsCacheStoragePath;
+    if (!storagePath) {
       return;
     }
-    await invalidateTypeContentsCache(this.typeContentsCacheStoragePath, configPath);
+    await this.enqueueDiskCacheOperation(async () => {
+      await invalidateTypeContentsCache(storagePath, configPath);
+    });
   }
 
   static async clearTypeContentsCache(): Promise<void> {
-    if (!this.typeContentsCacheStoragePath) {
+    this.typeContentsCacheGlobalEpoch += 1;
+
+    const storagePath = this.typeContentsCacheStoragePath;
+    if (!storagePath) {
       return;
     }
-    await clearTypeContentsCache(this.typeContentsCacheStoragePath);
+    await this.enqueueDiskCacheOperation(async () => {
+      await clearTypeContentsCache(storagePath);
+    });
+  }
+
+  private static advanceConfigEpoch(configPathKey: string): void {
+    const currentEpoch = this.typeContentsCacheConfigEpochs.get(configPathKey) ?? 0;
+    this.typeContentsCacheConfigEpochs.set(configPathKey, currentEpoch + 1);
+  }
+
+  private static captureTypeContentsCacheEpoch(configPath: string): TypeContentsCacheEpochToken {
+    const configPathKey = configurationPathKey(configPath);
+    return Object.freeze({
+      storagePath: this.typeContentsCacheStoragePath,
+      storageIdentity: this.typeContentsCacheStorageIdentity,
+      globalEpoch: this.typeContentsCacheGlobalEpoch,
+      configPathKey,
+      configEpoch: this.typeContentsCacheConfigEpochs.get(configPathKey) ?? 0,
+    });
+  }
+
+  private static isTypeContentsCacheEpochCurrent(token: TypeContentsCacheEpochToken): boolean {
+    return token.globalEpoch === this.typeContentsCacheGlobalEpoch &&
+      token.storageIdentity === this.typeContentsCacheStorageIdentity &&
+      token.configEpoch === (this.typeContentsCacheConfigEpochs.get(token.configPathKey) ?? 0);
+  }
+
+  private static getTypeContentsCacheEpochInFlightKey(
+    configPath: string,
+    typeName: string,
+    format: ConfigFormat,
+    token: TypeContentsCacheEpochToken,
+  ): string {
+    return JSON.stringify([
+      this.getTypeContentsInFlightKey(configPath, typeName, format),
+      token.storageIdentity,
+      token.globalEpoch,
+      token.configEpoch,
+    ]);
+  }
+
+  private static enqueueDiskCacheOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.diskCacheOperationQueue.then(operation);
+    this.diskCacheOperationQueue = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   private static getTypePath(configPath: string, typeName: string, format: ConfigFormat): string | null {
@@ -165,19 +237,21 @@ export class MetadataParser {
     typeName: string,
     options?: { format?: ConfigFormat; bypassCache?: boolean }
   ): Promise<TreeNode[]> {
+    // Capture before the first await so a delayed format detection cannot join a newer generation.
+    const token = this.captureTypeContentsCacheEpoch(configPath);
     const format = options?.format ?? await FormatDetector.detect(configPath);
     if (options?.bypassCache === true) {
       return await this.parseTypeContentsUncached(configPath, typeName, format);
     }
 
-    const inFlightKey = this.getTypeContentsInFlightKey(configPath, typeName, format);
+    const inFlightKey = this.getTypeContentsCacheEpochInFlightKey(configPath, typeName, format, token);
     const existing = this.inFlightTypeContents.get(inFlightKey);
     if (existing) {
       return await existing;
     }
 
     const pending = (async () => {
-      return await this.parseTypeContentsWithCache(configPath, typeName, format);
+      return await this.parseTypeContentsWithCache(configPath, typeName, format, token);
     })().finally(() => {
       if (this.inFlightTypeContents.get(inFlightKey) === pending) {
         this.inFlightTypeContents.delete(inFlightKey);
@@ -197,19 +271,21 @@ export class MetadataParser {
     typeName: string,
     options?: { format?: ConfigFormat; bypassCache?: boolean }
   ): Promise<TreeNode[]> {
+    // Capture before the first await so a delayed format detection cannot join a newer generation.
+    const token = this.captureTypeContentsCacheEpoch(configPath);
     const format = options?.format ?? await FormatDetector.detect(configPath);
     if (options?.bypassCache === true) {
       return this.cloneTreeNodes(await this.parseTypeIndexUncached(configPath, typeName, format));
     }
 
-    const inFlightKey = this.getTypeContentsInFlightKey(configPath, typeName, format);
+    const inFlightKey = this.getTypeContentsCacheEpochInFlightKey(configPath, typeName, format, token);
     const existing = this.inFlightTypeIndex.get(inFlightKey);
     if (existing) {
       return this.cloneTreeNodes(await existing);
     }
 
     const pending = (async () => {
-      return await this.parseTypeIndexWithCache(configPath, typeName, format);
+      return await this.parseTypeIndexWithCache(configPath, typeName, format, token);
     })().finally(() => {
       if (this.inFlightTypeIndex.get(inFlightKey) === pending) {
         this.inFlightTypeIndex.delete(inFlightKey);
@@ -223,52 +299,72 @@ export class MetadataParser {
   private static async parseTypeIndexWithCache(
     configPath: string,
     typeName: string,
-    format: ConfigFormat
+    format: ConfigFormat,
+    token: TypeContentsCacheEpochToken,
   ): Promise<TreeNode[]> {
     const typePath = this.getTypePath(configPath, typeName, format);
-    const storagePath = this.typeContentsCacheStoragePath;
+    const storagePath = token.storagePath;
     if (!typePath || !storagePath) {
       return await this.parseTypeIndexUncached(configPath, typeName, format);
     }
 
     const signature = await computeTypeContentsSignature(typePath, format);
-    if (!signature) {
+    if (!signature || !this.isTypeContentsCacheEpochCurrent(token)) {
       return await this.parseTypeIndexUncached(configPath, typeName, format);
     }
 
-    const cached = await loadTypeContentsFromCache(storagePath, configPath, typeName, signature, 'index');
+    const cached = await this.enqueueDiskCacheOperation(async () => {
+      if (!this.isTypeContentsCacheEpochCurrent(token)) {
+        return null;
+      }
+      return await loadTypeContentsFromCache(storagePath, configPath, typeName, signature, 'index');
+    });
     if (cached) {
       return cached;
     }
 
     const children = await this.parseTypeIndexUncached(configPath, typeName, format);
-    await saveTypeContentsToCache(storagePath, configPath, typeName, signature, children, 'index');
+    await this.enqueueDiskCacheOperation(async () => {
+      if (this.isTypeContentsCacheEpochCurrent(token)) {
+        await saveTypeContentsToCache(storagePath, configPath, typeName, signature, children, 'index');
+      }
+    });
     return children;
   }
 
   private static async parseTypeContentsWithCache(
     configPath: string,
     typeName: string,
-    format: ConfigFormat
+    format: ConfigFormat,
+    token: TypeContentsCacheEpochToken,
   ): Promise<TreeNode[]> {
     const typePath = this.getTypePath(configPath, typeName, format);
-    const storagePath = this.typeContentsCacheStoragePath;
+    const storagePath = token.storagePath;
     if (!typePath || !storagePath) {
       return await this.parseTypeContentsUncached(configPath, typeName, format);
     }
 
     const signature = await computeTypeContentsSignature(typePath, format);
-    if (!signature) {
+    if (!signature || !this.isTypeContentsCacheEpochCurrent(token)) {
       return await this.parseTypeContentsUncached(configPath, typeName, format);
     }
 
-    const cached = await loadTypeContentsFromCache(storagePath, configPath, typeName, signature);
+    const cached = await this.enqueueDiskCacheOperation(async () => {
+      if (!this.isTypeContentsCacheEpochCurrent(token)) {
+        return null;
+      }
+      return await loadTypeContentsFromCache(storagePath, configPath, typeName, signature);
+    });
     if (cached) {
       return cached;
     }
 
     const children = await this.parseTypeContentsUncached(configPath, typeName, format);
-    await saveTypeContentsToCache(storagePath, configPath, typeName, signature, children);
+    await this.enqueueDiskCacheOperation(async () => {
+      if (this.isTypeContentsCacheEpochCurrent(token)) {
+        await saveTypeContentsToCache(storagePath, configPath, typeName, signature, children);
+      }
+    });
     return children;
   }
 
