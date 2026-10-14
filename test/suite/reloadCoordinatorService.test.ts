@@ -1,7 +1,21 @@
 import * as assert from 'assert';
 import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
-import { ReloadRunContext } from '../../src/types/reloadContracts';
+import {
+  ReloadReason,
+  ReloadRequestHandle,
+  ReloadRunContext,
+  ReloadScheduleOptions,
+} from '../../src/types/reloadContracts';
 import { MetadataReloadError } from '../../src/extension/metadataTreeLifecycle';
+
+function requestReload(
+  coordinator: ReloadCoordinatorService,
+  configPath: string,
+  reason: ReloadReason,
+  options?: ReloadScheduleOptions,
+): ReloadRequestHandle {
+  return coordinator.requestReload(configPath, reason, options);
+}
 
 const sleep = async (ms: number): Promise<void> => {
   await new Promise((resolve) => setTimeout(resolve, ms));
@@ -554,5 +568,305 @@ suite('ReloadCoordinatorService', () => {
     assert.strictEqual(disposeFinished, true, 'dispose() must complete after in-flight reload settles');
     assert.strictEqual(reloadFinished, true, 'in-flight reload must be completed');
     assert.strictEqual(secondReloadStarted, false, 'pending debounced reload must not have run');
+  });
+
+  test('returns independent completion handles for every request in one debounced batch', async () => {
+    const runs: ReloadRunContext[] = [];
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      runs.push(ctx);
+    }, { defaultDebounceMs: 15 });
+
+    const requests = [
+      requestReload(coordinator, 'C:/cfg-a', 'delete-command'),
+      requestReload(coordinator, 'C:/cfg-a', 'rename-command'),
+      requestReload(coordinator, 'C:/cfg-a', 'watcher'),
+    ];
+    const results = await Promise.all(requests.map((request) => request.completed));
+
+    assert.strictEqual(runs.length, 1);
+    assert.strictEqual(new Set(requests.map((request) => request.operationId)).size, requests.length);
+    assert.deepStrictEqual(
+      results.map((result) => ({ operationId: result.operationId, reason: result.reason, succeeded: result.succeeded })),
+      requests.map((request, index) => ({
+        operationId: request.operationId,
+        reason: ['delete-command', 'rename-command', 'watcher'][index],
+        succeeded: true,
+      })),
+    );
+    await coordinator.dispose();
+  });
+
+  test('keeps the same operation ID isolated between an in-flight and trailing request batch', async () => {
+    const runs: ReloadRunContext[] = [];
+    const firstRunEntered = deferred<void>();
+    const releaseFirstRun = deferred<void>();
+    const trailingRunEntered = deferred<void>();
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      const runIndex = runs.push(ctx) - 1;
+      if (runIndex === 0) {
+        firstRunEntered.resolve(undefined);
+        await releaseFirstRun.promise;
+        return;
+      }
+      trailingRunEntered.resolve(undefined);
+      throw new MetadataReloadError(
+        'CONFIGURATION_PARSE_FAILED',
+        'trailing batch failed',
+        'C:/cfg-a',
+      );
+    }, { defaultDebounceMs: 0 });
+
+    const first = requestReload(coordinator, 'C:/cfg-a', 'delete-command', {
+      operationId: 'shared-id',
+      debounceMs: 0,
+    });
+    await firstRunEntered.promise;
+    const trailing = requestReload(coordinator, 'C:/cfg-a', 'rename-command', {
+      operationId: 'shared-id',
+    });
+    let trailingSettled = false;
+    void trailing.completed.then(() => { trailingSettled = true; });
+    await nextEventLoopTurn();
+    assert.strictEqual(trailingSettled, false, 'trailing request must wait for its own run');
+
+    releaseFirstRun.resolve(undefined);
+    await trailingRunEntered.promise;
+    const [firstResult, trailingResult] = await Promise.all([first.completed, trailing.completed]);
+
+    assert.strictEqual(runs.length, 2);
+    assert.strictEqual(firstResult.operationId, 'shared-id');
+    assert.strictEqual(firstResult.reason, 'delete-command');
+    assert.strictEqual(firstResult.succeeded, true);
+    assert.strictEqual(trailingResult.operationId, 'shared-id');
+    assert.strictEqual(trailingResult.reason, 'rename-command');
+    assert.strictEqual(trailingResult.succeeded, false);
+    assert.strictEqual(trailingResult.error, 'trailing batch failed');
+    assert.strictEqual(trailingResult.failure?.code, 'CONFIGURATION_PARSE_FAILED');
+    await coordinator.dispose();
+  });
+
+  test('keeps separate same-ID request waiters and their original reasons inside one batch', async () => {
+    const runs: ReloadRunContext[] = [];
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      runs.push(ctx);
+    }, { defaultDebounceMs: 0 });
+
+    const first = requestReload(coordinator, 'C:/cfg-a', 'delete-command', {
+      operationId: 'same-id',
+      debounceMs: 0,
+    });
+    const second = requestReload(coordinator, 'C:/cfg-a', 'rename-command', {
+      operationId: 'same-id',
+    });
+    const [firstResult, secondResult] = await Promise.all([first.completed, second.completed]);
+
+    assert.strictEqual(runs.length, 1);
+    assert.strictEqual(firstResult.reason, 'delete-command');
+    assert.strictEqual(secondResult.reason, 'rename-command');
+    assert.strictEqual(firstResult.operationId, 'same-id');
+    assert.strictEqual(secondResult.operationId, 'same-id');
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'same-id')?.reason, 'delete-command');
+    await coordinator.dispose();
+  });
+
+  test('suppressed watcher request joins the scheduled batch and retains its own reason', async () => {
+    const runs: ReloadRunContext[] = [];
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      runs.push(ctx);
+    }, { defaultDebounceMs: 25, mutationWindowTtlMs: 250 });
+    coordinator.markMutationWindow('C:/cfg-a', 'op-command', 250);
+
+    const command = requestReload(coordinator, 'C:/cfg-a', 'delete-command', {
+      operationId: 'op-command',
+    });
+    const watcher = requestReload(coordinator, 'C:/cfg-a', 'watcher');
+    const [commandResult, watcherResult] = await Promise.all([command.completed, watcher.completed]);
+
+    assert.strictEqual(runs.length, 1);
+    assert.strictEqual(runs[0].reason, 'delete-command');
+    assert.strictEqual(commandResult.succeeded, true);
+    assert.strictEqual(watcherResult.succeeded, true);
+    assert.strictEqual(watcherResult.operationId, watcher.operationId);
+    assert.strictEqual(watcherResult.reason, 'watcher');
+    assert.ok(coordinator.getState('C:/cfg-a').suppressedWatcherCount >= 1);
+    await coordinator.dispose();
+  });
+
+  test('suppressed watcher request joins the active batch without starting another run', async () => {
+    const runs: ReloadRunContext[] = [];
+    const runEntered = deferred<void>();
+    const releaseRun = deferred<void>();
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      runs.push(ctx);
+      runEntered.resolve(undefined);
+      await releaseRun.promise;
+    }, { defaultDebounceMs: 0, mutationWindowTtlMs: 250 });
+    coordinator.markMutationWindow('C:/cfg-a', 'op-command', 250);
+
+    const command = requestReload(coordinator, 'C:/cfg-a', 'delete-command', {
+      operationId: 'op-command',
+      debounceMs: 0,
+    });
+    await runEntered.promise;
+    const watcher = requestReload(coordinator, 'C:/cfg-a', 'watcher');
+    let watcherSettled = false;
+    void watcher.completed.then(() => { watcherSettled = true; });
+    await nextEventLoopTurn();
+    assert.strictEqual(watcherSettled, false, 'watcher completion must follow the run that suppressed it');
+
+    releaseRun.resolve(undefined);
+    const [commandResult, watcherResult] = await Promise.all([command.completed, watcher.completed]);
+    assert.strictEqual(runs.length, 1);
+    assert.strictEqual(commandResult.succeeded, true);
+    assert.strictEqual(watcherResult.succeeded, true);
+    assert.strictEqual(watcherResult.reason, 'watcher');
+    await coordinator.dispose();
+  });
+
+  test('suppressed watcher request joins a pending trailing batch without changing its runner ID', async () => {
+    const runs: ReloadRunContext[] = [];
+    const firstRunEntered = deferred<void>();
+    const secondRunEntered = deferred<void>();
+    const releaseFirstRun = deferred<void>();
+    const releaseSecondRun = deferred<void>();
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      const runIndex = runs.push(ctx) - 1;
+      if (runIndex === 0) {
+        firstRunEntered.resolve(undefined);
+        await releaseFirstRun.promise;
+        return;
+      }
+      secondRunEntered.resolve(undefined);
+      await releaseSecondRun.promise;
+    }, { defaultDebounceMs: 0, mutationWindowTtlMs: 500 });
+    coordinator.markMutationWindow('C:/cfg-a', 'op-active', 500);
+
+    const active = requestReload(coordinator, 'C:/cfg-a', 'delete-command', {
+      operationId: 'op-active',
+      debounceMs: 0,
+    });
+    await firstRunEntered.promise;
+    const pending = requestReload(coordinator, 'C:/cfg-a', 'rename-command', {
+      operationId: 'op-pending',
+    });
+    const watcher = requestReload(coordinator, 'C:/cfg-a', 'watcher');
+    let watcherSettled = false;
+    void watcher.completed.then(() => { watcherSettled = true; });
+
+    releaseFirstRun.resolve(undefined);
+    await secondRunEntered.promise;
+    await nextEventLoopTurn();
+    assert.strictEqual(watcherSettled, false, 'watcher should follow the pending trailing batch');
+    assert.strictEqual(runs.length, 2);
+    assert.strictEqual(runs[1].operationId, 'op-pending');
+
+    releaseSecondRun.resolve(undefined);
+    const [activeResult, pendingResult, watcherResult] = await Promise.all([
+      active.completed,
+      pending.completed,
+      watcher.completed,
+    ]);
+    assert.strictEqual(activeResult.reason, 'delete-command');
+    assert.strictEqual(pendingResult.reason, 'rename-command');
+    assert.strictEqual(watcherResult.reason, 'watcher');
+    assert.ok(activeResult.succeeded && pendingResult.succeeded && watcherResult.succeeded);
+    await coordinator.dispose();
+  });
+
+  test('request completions survive operation result cache eviction', async () => {
+    let runCount = 0;
+    const coordinator = new ReloadCoordinatorService(async () => {
+      runCount += 1;
+    }, { defaultDebounceMs: 0 });
+    const requests = Array.from({ length: 51 }, () =>
+      requestReload(coordinator, 'C:/cfg-a', 'create-command', { debounceMs: 0 })
+    );
+
+    const results = await Promise.all(requests.map((request) => request.completed));
+
+    assert.strictEqual(runCount, 1);
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', requests[0].operationId), null);
+    assert.strictEqual(results.length, 51);
+    assert.strictEqual(results[0].operationId, requests[0].operationId);
+    assert.strictEqual(results[0].succeeded, true);
+    assert.ok(results.every((result) => result.succeeded));
+    await coordinator.dispose();
+  });
+
+  test('isolates request completions for several configuration roots', async () => {
+    const runs: ReloadRunContext[] = [];
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      runs.push(ctx);
+    }, { defaultDebounceMs: 0 });
+
+    const first = requestReload(coordinator, 'C:/cfg-a', 'delete-command', { debounceMs: 0 });
+    const second = requestReload(coordinator, 'C:/cfg-b', 'rename-command', { debounceMs: 0 });
+    const [firstResult, secondResult] = await Promise.all([first.completed, second.completed]);
+
+    assert.strictEqual(runs.length, 2);
+    assert.strictEqual(firstResult.operationId, first.operationId);
+    assert.strictEqual(firstResult.reason, 'delete-command');
+    assert.strictEqual(secondResult.operationId, second.operationId);
+    assert.strictEqual(secondResult.reason, 'rename-command');
+    await coordinator.dispose();
+  });
+
+  test('shares admission between scheduleReload and awaitable requests', async () => {
+    const runs: ReloadRunContext[] = [];
+    const coordinator = new ReloadCoordinatorService(async (ctx) => {
+      runs.push(ctx);
+    }, { defaultDebounceMs: 0 });
+
+    coordinator.scheduleReload('C:/cfg-a', 'delete-command', {
+      operationId: 'scheduled-op',
+      debounceMs: 0,
+    });
+    const request = requestReload(coordinator, 'C:/cfg-a', 'rename-command');
+    const result = await request.completed;
+
+    assert.strictEqual(runs.length, 1);
+    assert.strictEqual(runs[0].operationId, 'scheduled-op');
+    assert.strictEqual(result.operationId, request.operationId);
+    assert.strictEqual(result.reason, 'rename-command');
+    await coordinator.dispose();
+  });
+
+  test('dispose immediately settles active and pending requests and ignores late runner completion', async () => {
+    const runEntered = deferred<void>();
+    const releaseRun = deferred<void>();
+    const coordinator = new ReloadCoordinatorService(async () => {
+      runEntered.resolve(undefined);
+      await releaseRun.promise;
+    }, { defaultDebounceMs: 0 });
+
+    const active = requestReload(coordinator, 'C:/cfg-a', 'delete-command', { debounceMs: 0 });
+    await runEntered.promise;
+    const pending = requestReload(coordinator, 'C:/cfg-a', 'rename-command');
+    let disposeFinished = false;
+    const disposePromise = coordinator.dispose().then(() => { disposeFinished = true; });
+    const [activeResult, pendingResult] = await Promise.all([active.completed, pending.completed]);
+
+    assert.strictEqual(activeResult.succeeded, false);
+    assert.strictEqual(activeResult.failure?.code, 'RELOAD_DISPOSED');
+    assert.strictEqual(pendingResult.succeeded, false);
+    assert.strictEqual(pendingResult.failure?.code, 'RELOAD_DISPOSED');
+    assert.strictEqual(disposeFinished, false, 'dispose still waits for the active runner');
+
+    const afterDispose = requestReload(coordinator, 'C:/cfg-b', 'watcher');
+    const afterDisposeResult = await afterDispose.completed;
+    assert.strictEqual(afterDisposeResult.operationId, afterDispose.operationId);
+    assert.strictEqual(afterDisposeResult.failure?.code, 'RELOAD_DISPOSED');
+
+    releaseRun.resolve(undefined);
+    await disposePromise;
+    assert.strictEqual(disposeFinished, true);
+    assert.deepStrictEqual(activeResult.failure, {
+      code: 'RELOAD_DISPOSED',
+      message: 'Reload coordinator has been disposed.',
+    });
+    assert.deepStrictEqual(pendingResult.failure, {
+      code: 'RELOAD_DISPOSED',
+      message: 'Reload coordinator has been disposed.',
+    });
   });
 });
