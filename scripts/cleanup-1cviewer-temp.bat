@@ -1,5 +1,4 @@
 @echo off
-REM Best-effort removal under TEMP from tests / extension snapshots.
-REM Delegates to .js for reliable cross-shell execution (cmd, Git Bash, WSL).
+REM Legacy compatibility wrapper. Global TEMP scavenging is disabled.
 node "%~dp0cleanup-1cviewer-temp.js"
 exit /b 0
