@@ -185,10 +185,39 @@ function readIfPresent(filePath: string): string | undefined {
   }
 }
 
-function runBatch(batchPath: string, env: NodeJS.ProcessEnv, cwd: string) {
+interface BatchSpawnOptions {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  encoding: 'utf8';
+  windowsHide: boolean;
+  timeout: number;
+}
+
+interface BatchSpawnResult {
+  error?: Error;
+  status: number | null;
+  stdout: string | null;
+  stderr: string | null;
+}
+
+type BatchSpawner = (
+  command: string,
+  args: string[],
+  options: BatchSpawnOptions
+) => BatchSpawnResult;
+
+function runBatch(
+  batchPath: string,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  spawnBatch: BatchSpawner = (command, args, options) => spawnSync(command, args, options)
+) {
+  if (process.platform !== 'win32') {
+    throw new Error('Windows batch files can only be launched on Windows.');
+  }
   const commandProcessor = env.ComSpec ?? process.env.ComSpec ?? 'cmd.exe';
   const relativeBatchPath = path.relative(cwd, batchPath).replace(/\//g, '\\');
-  return spawnSync(commandProcessor, ['/d', '/c', relativeBatchPath], {
+  return spawnBatch(commandProcessor, ['/d', '/c', relativeBatchPath], {
     cwd,
     env,
     encoding: 'utf8',
@@ -196,6 +225,9 @@ function runBatch(batchPath: string, env: NodeJS.ProcessEnv, cwd: string) {
     timeout: 15000,
   });
 }
+
+const windowsOnlyTest = process.platform === 'win32' ? test : test.skip;
+const nonWindowsOnlyTest = process.platform === 'win32' ? test.skip : test;
 
 interface BatchFixture {
   root: string;
@@ -392,7 +424,7 @@ suite('Global TEMP cleanup retirement', () => {
     assert.doesNotMatch(cleanupSource, /os\.tmpdir|readdirSync|rmSync|unlinkSync|rmdirSync/);
   });
 
-  test('standalone batch wrapper safely forwards to the compatibility no-op', () => {
+  windowsOnlyTest('standalone batch wrapper safely forwards to the compatibility no-op', () => {
     const audit = createAuditRoot();
     try {
       const repoRoot = path.resolve(process.cwd());
@@ -405,7 +437,7 @@ suite('Global TEMP cleanup retirement', () => {
 
       assert.ifError(wrapper.error ?? undefined);
       assert.strictEqual(wrapper.status, 0, `standalone wrapper exit code changed: ${wrapper.stderr}`);
-      assert.match(wrapper.stdout, /Глобальная очистка TEMP отключена/);
+      assert.match(wrapper.stdout ?? '', /Глобальная очистка TEMP отключена/);
       assert.strictEqual(
         fs.readFileSync(path.join(candidate, 'owner-sentinel.txt'), 'utf8'),
         'sentinel:1cviewer-standalone-bat'
@@ -415,11 +447,7 @@ suite('Global TEMP cleanup retirement', () => {
     }
   });
 
-  test('batch test runners keep their existing failure exit contracts with fake runners', () => {
-    if (process.platform !== 'win32') {
-      return;
-    }
-
+  windowsOnlyTest('batch test runners keep their existing failure exit contracts with fake runners', () => {
     const audit = createAuditRoot();
     try {
       const repoRoot = path.resolve(process.cwd());
@@ -449,5 +477,19 @@ suite('Global TEMP cleanup retirement', () => {
     } finally {
       removeAuditRoot(audit);
     }
+  });
+
+  nonWindowsOnlyTest('batch launcher rejects unsupported platforms before spawning a child', () => {
+    let spawnCalled = false;
+    const spawnBatch: BatchSpawner = () => {
+      spawnCalled = true;
+      return { status: 0, stdout: '', stderr: '' };
+    };
+
+    assert.throws(
+      () => runBatch('unused.bat', {}, process.cwd(), spawnBatch),
+      /Windows batch files can only be launched on Windows/
+    );
+    assert.strictEqual(spawnCalled, false, 'unsupported hosts must not launch cmd.exe or another child');
   });
 });
