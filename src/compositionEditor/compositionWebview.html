@@ -954,6 +954,28 @@
                         }
                         break;
                     }
+                    case 'sessionState': {
+                        if (msg.data.resetLoading) {
+                            loadingTypes.clear();
+                            bulkLoadInProgress = false;
+                            pendingAfterLoad = null;
+                            hideLoadingOverlay();
+                            if (searchQuery || showCheckedOnly) {
+                                renderFlat();
+                            } else {
+                                renderTree();
+                            }
+                        }
+
+                        const btn = document.getElementById('btn-save');
+                        btn.textContent = msg.data.saving ? 'Сохранение...' : 'Сохранить';
+                        if (msg.data.saving) {
+                            btn.disabled = true;
+                        } else {
+                            updateBadge();
+                        }
+                        break;
+                    }
                     case 'saveSuccess':
                         // Panel will be disposed by provider
                         break;
