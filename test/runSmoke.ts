@@ -2,7 +2,13 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
-import { runTests } from '@vscode/test-electron';
+import {
+  downloadAndUnzipVSCode,
+  runTests,
+  TestRunFailedError,
+  type DownloadOptions,
+  type TestOptions,
+} from '@vscode/test-electron';
 
 interface FixtureDirectoryCopier {
   copyRegularDirectory(sourcePath: string, destinationPath: string): void;
@@ -24,12 +30,32 @@ function assertPathIsWithin(parentPath: string, targetPath: string): void {
   }
 }
 
+function logSmokeDiagnostic(marker: string, details: Record<string, unknown>): void {
+  console.log(`${marker} ${JSON.stringify({ timestamp: new Date().toISOString(), ...details })}`);
+}
+
+function formatError(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    const details: Record<string, unknown> = {
+      name: error.name,
+      message: error.message,
+    };
+    if (error instanceof TestRunFailedError) {
+      details.exitCode = error.code;
+      details.signal = error.signal;
+    }
+    return details;
+  }
+  return { message: String(error) };
+}
+
 async function main() {
   if (process.argv.includes('-await-user-close')) {
     process.env.SMOKE_AWAIT_USER_CLOSE = '1';
   }
 
   let temporaryWorkspace: string | undefined;
+  let exitCode = 0;
   try {
     const extensionDevelopmentPath = path.resolve(__dirname, '../../');
     const extensionTestsPath = path.resolve(__dirname, './suite/smoke/index');
@@ -54,20 +80,85 @@ async function main() {
       await fs.promises.writeFile(path.join(commonModulesPath, `${commonModuleName}.xml`), moduleXml, 'utf8');
     }
 
-    await runTests({
+    const vscodeTestDirectory = path.join(extensionDevelopmentPath, '.vscode-test');
+    const userDataDirectory = path.join(vscodeTestDirectory, 'user-data');
+    const extensionsDirectory = path.join(vscodeTestDirectory, 'extensions');
+    const launchArgs = [
+      '--folder-uri',
+      pathToFileURL(workspaceFolder).toString(),
+      `--user-data-dir=${userDataDirectory}`,
+      `--extensions-dir=${extensionsDirectory}`,
+    ];
+
+    logSmokeDiagnostic('SMOKE_LAUNCH_REQUESTED', {
+      versionPolicy: 'extension-engines',
+      cachePath: vscodeTestDirectory,
       extensionDevelopmentPath,
       extensionTestsPath,
-      launchArgs: ['--folder-uri', pathToFileURL(workspaceFolder).toString()],
+      launchArgs,
     });
+
+    let vscodeExecutablePath: string;
+    try {
+      vscodeExecutablePath = await downloadAndUnzipVSCode({
+        cachePath: vscodeTestDirectory,
+        extensionDevelopmentPath,
+      } satisfies Partial<DownloadOptions>);
+    } catch (err) {
+      logSmokeDiagnostic('SMOKE_LAUNCH_FAILED', {
+        stage: 'downloadAndUnzipVSCode',
+        error: formatError(err),
+      });
+      throw err;
+    }
+
+    logSmokeDiagnostic('SMOKE_LAUNCH_RESOLVED', {
+      vscodeExecutablePath,
+      launchArgs,
+    });
+
+    const runOptions: TestOptions = {
+      vscodeExecutablePath,
+      extensionDevelopmentPath,
+      extensionTestsPath,
+      launchArgs,
+    };
+    let runnerExitCode: number;
+    try {
+      runnerExitCode = await runTests(runOptions);
+    } catch (err) {
+      logSmokeDiagnostic('SMOKE_RUNNER_FAILED', {
+        error: formatError(err),
+      });
+      throw err;
+    }
+
+    if (runnerExitCode !== 0) {
+      const runnerError = new TestRunFailedError(runnerExitCode, undefined);
+      logSmokeDiagnostic('SMOKE_RUNNER_FAILED', {
+        error: formatError(runnerError),
+      });
+      throw runnerError;
+    }
+    logSmokeDiagnostic('SMOKE_RUNNER_COMPLETED', { exitCode: runnerExitCode });
   } catch (err) {
     console.error('Smoke tests failed', err);
-    process.exitCode = 1;
+    exitCode = err instanceof TestRunFailedError && typeof err.code === 'number' ? err.code : 1;
   } finally {
     if (temporaryWorkspace) {
-      assertPathIsWithin(os.tmpdir(), temporaryWorkspace);
-      await fs.promises.rm(temporaryWorkspace, { recursive: true, force: true });
+      try {
+        assertPathIsWithin(os.tmpdir(), temporaryWorkspace);
+        await fs.promises.rm(temporaryWorkspace, { recursive: true, force: true });
+      } catch (err) {
+        console.error('Failed to clean temporary smoke workspace', err);
+        if (exitCode === 0) exitCode = 1;
+      }
     }
   }
+
+  process.exitCode = exitCode;
 }
 
-void main();
+if (require.main === module) {
+  void main();
+}

@@ -32,6 +32,7 @@ export const coreSuiteFiles: string[] = [
   'suite/formXmlTextEditor.test.js',
   'suite/metadataParser.test.js',
   'suite/metadataParser.edge.test.js',
+  'suite/metadataParserCacheEpoch.test.js',
   'suite/metadataTreeLifecycle.test.js',
   'suite/metadataWatcherService.test.js',
   'suite/reloadCoordinatorService.test.js',
@@ -338,6 +339,7 @@ export const coreSuiteFiles: string[] = [
   'suite/workspaceRegistryCoordinator.test.js',
   'suite/webviewCspSecurity.test.js',
   'suite/smokeFileCleanup.test.js',
+  'suite/smokeStartupDiagnostics.test.js',
   'suite/copyTestFixtures.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []

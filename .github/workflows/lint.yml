@@ -215,20 +215,28 @@ jobs:
         run: npm ci
 
       - name: Run smoke tests (blocking)
+        id: smoke-runner
         run: |
           set -o pipefail
-          xvfb-run -a npm run test:smoke > smoke-tests.log 2>&1
-          status=$?
+          if xvfb-run -a npm run test:smoke > smoke-tests.log 2>&1; then
+            status=0
+          else
+            status=$?
+          fi
           echo "---- Smoke test errors ----"
           grep -nEi "(error|referenceerror|typeerror|assertionerror|enoent|failed|precondition|extension host test runner error|process completed with exit code|exit code [1-9][0-9]*)" smoke-tests.log | tail -n 80 || true
-          exit $status
+          exit "$status"
 
-      - name: Upload smoke test log
-        if: failure()
+      - name: Upload smoke diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-tests.log
-          path: smoke-tests.log
+          name: smoke-diagnostics
+          path: |
+            smoke-tests.log
+            .vscode-test/user-data/logs/**
+          if-no-files-found: ignore
+          include-hidden-files: true
 
       - name: Upload smoke artifacts
         if: failure()
@@ -244,9 +252,12 @@ jobs:
         with:
           name: smoke-suite-report
           path: suite-reports/smoke.json
+          if-no-files-found: ignore
 
       - name: Append smoke suite summary
         if: always()
+        env:
+          SUITE_REPORT_RUNNER_OUTCOME: ${{ steps.smoke-runner.outcome }}
         run: |
           node scripts/render-suite-report-summary.js suite-reports/smoke-summary.md suite-reports/smoke.json
           cat suite-reports/smoke-summary.md >> $GITHUB_STEP_SUMMARY
