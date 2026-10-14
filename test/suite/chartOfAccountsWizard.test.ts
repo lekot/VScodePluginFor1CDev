@@ -1,9 +1,12 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { runChartOfAccountsWizard } from '../../src/wizards/chartOfAccountsWizard';
+import { registerChartOfAccountsCommands } from '../../src/commands/chartOfAccountsCommands';
 import { ExtensionState } from '../../src/state/extensionState';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
+import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
+import { createRequestConfigurationReload } from '../../src/reload/requestConfigurationReload';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -58,7 +61,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
       properties: {},
     };
 
-    const executed = await runChartOfAccountsWizard({ state, target });
+    const executed = await runChartOfAccountsWizard({ state, target, requestConfigurationReload: async () => undefined });
     assert.strictEqual(executed, false, 'wizard must return false when cancelled');
   });
 
@@ -77,7 +80,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
       properties: {},
     };
 
-    const executed = await runChartOfAccountsWizard({ state, target });
+    const executed = await runChartOfAccountsWizard({ state, target, requestConfigurationReload: async () => undefined });
     assert.strictEqual(executed, false);
   });
 
@@ -93,11 +96,11 @@ suite('ChartOfAccountsWizard UI Flow', () => {
       properties: {},
     };
 
-    const executed = await runChartOfAccountsWizard({ state, target });
+    const executed = await runChartOfAccountsWizard({ state, target, requestConfigurationReload: async () => undefined });
     assert.strictEqual(executed, false);
   });
 
-  test('completes successfully on valid user inputs and runs configuration plan', async () => {
+  test('registered command routes and handles typed reload failure after successful plan', async () => {
     let inputStep = 0;
     vscode.window.showInputBox = async () => {
       inputStep++;
@@ -130,6 +133,12 @@ suite('ChartOfAccountsWizard UI Flow', () => {
 
     let planExecuted = false;
     let cacheReloaded = false;
+    let reloadReason: string | undefined;
+    const shownErrors: string[] = [];
+    vscode.window.showErrorMessage = async (message: string) => {
+      shownErrors.push(message);
+      return undefined;
+    };
     let capturedPlan: any;
 
     const target: TreeNode = {
@@ -140,28 +149,47 @@ suite('ChartOfAccountsWizard UI Flow', () => {
       properties: {},
     };
 
-    const executed = await runChartOfAccountsWizard({
-      state,
-      target,
-      runConfigurationPlan: async (_configPath: string, plan: any) => {
-        planExecuted = true;
-        capturedPlan = plan;
-        for (const step of plan.steps) {
-          if (step.type === 'ensureDirectory') {
-            await fs.promises.mkdir(step.targetPath, { recursive: true });
-          } else if (step.type === 'writeFile') {
-            await fs.promises.mkdir(path.dirname(step.targetPath), { recursive: true });
-            await fs.promises.writeFile(step.targetPath, step.content, 'utf-8');
-          }
-        }
-        return plan.result;
-      },
-      invalidateCacheAndReload: async () => {
-        cacheReloaded = true;
-      },
-    });
+    const coordinator = new ReloadCoordinatorService(async ({ reason }) => {
+      cacheReloaded = true;
+      reloadReason = reason;
+      throw Object.assign(new Error('Configuration parse failed.'), { code: 'CONFIGURATION_PARSE_FAILED' });
+    }, { defaultDebounceMs: 0 });
+    state.reloadCoordinator = coordinator;
 
-    assert.strictEqual(executed, true, 'wizard must return true upon successful creation');
+    const commandHandlers = new Map<string, (...args: any[]) => Promise<unknown>>();
+    const originalRegisterCommand = vscode.commands.registerCommand;
+    (vscode.commands as any).registerCommand = (commandId: string, handler: (...args: any[]) => Promise<unknown>) => {
+      commandHandlers.set(commandId, handler);
+      return { dispose: () => undefined };
+    };
+
+    try {
+      registerChartOfAccountsCommands(
+        { subscriptions: [] } as any,
+        state,
+        async (_configPath: string, plan: any) => {
+          planExecuted = true;
+          capturedPlan = plan;
+          for (const step of plan.steps) {
+            if (step.type === 'ensureDirectory') {
+              await fs.promises.mkdir(step.targetPath, { recursive: true });
+            } else if (step.type === 'writeFile') {
+              await fs.promises.mkdir(path.dirname(step.targetPath), { recursive: true });
+              await fs.promises.writeFile(step.targetPath, step.content, 'utf-8');
+            }
+          }
+          return plan.result;
+        },
+        createRequestConfigurationReload(state),
+      );
+      const commandHandler = commandHandlers.get('1c-metadata-tree.createChartOfAccounts');
+      assert.ok(commandHandler, 'the chart creation command should be registered');
+      await commandHandler(target);
+    } finally {
+      (vscode.commands as any).registerCommand = originalRegisterCommand;
+      await coordinator.dispose();
+    }
+
     assert.strictEqual(planExecuted, true, 'configuration plan must be executed');
     assert.strictEqual(capturedPlan.kind, 'metadata.create', 'wizard must use the shared metadata create planner');
     assert.strictEqual(
@@ -170,6 +198,12 @@ suite('ChartOfAccountsWizard UI Flow', () => {
       'the shared plan must write Configuration.xml once',
     );
     assert.strictEqual(cacheReloaded, true, 'cache must be reloaded');
+    assert.strictEqual(reloadReason, 'create-command');
+    assert.deepStrictEqual(
+      shownErrors,
+      ['Ошибка при создании плана счетов: Configuration parse failed.'],
+      'the registered wizard must surface the typed reload failure',
+    );
     assert.ok(fs.existsSync(path.join(tmpDir, 'ChartsOfAccounts', 'Хозрасчетный.xml')), 'xml file must exist');
     assert.ok(fs.existsSync(path.join(tmpDir, 'ChartsOfAccounts', 'Хозрасчетный', 'Ext', 'Predefined.xml')), 'predefined.xml must exist');
   });
@@ -220,6 +254,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
     const executed = await runChartOfAccountsWizard({
       state,
       target,
+      requestConfigurationReload: async () => undefined,
       runConfigurationPlan: async (_configPath: string, plan: any) => {
         for (const step of plan.steps) {
           if (step.type === 'ensureDirectory') {

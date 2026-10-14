@@ -35,6 +35,9 @@ import {
 } from '../../src/services/configurationRepository/repositoryStores';
 import { XmlParser } from '../../src/parsers/xmlParser';
 import type { IbcmdInfobaseOperationResult } from '../../src/services/ibcmd/ibcmdInfobaseOperationResult';
+import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
+import type { ReloadReason } from '../../src/types/reloadContracts';
+import { createRequestConfigurationReload } from '../../src/reload/requestConfigurationReload';
 
 suite('Configuration Repository phase 1', () => {
   test('Configurator batch builder keeps repository and infobase passwords separate and redacted', () => {
@@ -517,9 +520,14 @@ suite('Configuration Repository phase 1', () => {
   });
 
   test('local reload failure after acknowledged operation does not quarantine the physical IB', async () => {
+    const reloadRequests: Array<{ configRoot: string; reason: ReloadReason }> = [];
+    const coordinator = new ReloadCoordinatorService(async ({ configPath, reason }) => {
+      reloadRequests.push({ configRoot: configPath, reason });
+      throw Object.assign(new Error('reload failed'), { code: 'CONFIGURATION_PARSE_FAILED' });
+    }, { defaultDebounceMs: 0 });
     const harness = await createServiceHarness(
       (operation) => acknowledgedOutcome(operation as 'bind' | 'lock'),
-      async () => { throw new Error('reload failed'); },
+      createRequestConfigurationReload({ reloadCoordinator: coordinator }),
     );
     try {
       const connected = await harness.service.connect(harness.target, harness.entry, {
@@ -528,10 +536,12 @@ suite('Configuration Repository phase 1', () => {
       assert.strictEqual(connected.status, 'acknowledged');
       const result = await harness.service.lock(harness.catalog, neverCancelled());
       assert.strictEqual(result.status, 'inDoubt');
+      assert.deepStrictEqual(reloadRequests, [{ configRoot: harness.target.configRoot, reason: 'repository' }]);
       assert.strictEqual(harness.queue.getQuarantines([await resolveInfobaseCanonicalIdentity(harness.entry)]).length, 0);
       assert.strictEqual((await harness.stateStore.get(harness.target)).connection, 'unknown');
     } finally {
       await harness.dispose();
+      await coordinator.dispose();
     }
   });
 
@@ -664,7 +674,7 @@ function acknowledgedOutcome(operation: 'bind' | 'lock' | 'unlock' | 'commit' | 
 
 async function createServiceHarness(
   outcome: (operation: string) => unknown,
-  reloadConfiguration?: () => Promise<void>,
+  requestConfigurationReload: (configRoot: string, reason: ReloadReason) => Promise<void> = async () => undefined,
   extraDeps: Partial<Pick<ConfigurationRepositoryServiceDeps, 'importFiles'>> = {},
 ) {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-service-'));
@@ -704,7 +714,7 @@ async function createServiceHarness(
     infobaseStorage: storage,
     transport,
     queue,
-    ...(reloadConfiguration ? { reloadConfiguration } : {}),
+    requestConfigurationReload,
     ...extraDeps,
   });
   return {

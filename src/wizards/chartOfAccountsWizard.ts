@@ -11,6 +11,7 @@ import {
 import { Logger } from '../utils/logger';
 import { getSelectedNode, requireDesignerFormat } from '../helpers/commandHelpers';
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
+import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 import { runConfigurationPlan as defaultRunConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
 import { planCreateMetadataObject } from '../services/metadataCrudService';
 
@@ -18,14 +19,14 @@ export interface RunChartOfAccountsWizardOptions {
   state: ExtensionState;
   target?: TreeNode;
   runConfigurationPlan?: <T>(configPath: string, plan: MutationPlan<T>) => Promise<T>;
-  invalidateCacheAndReload?: (configPath: string) => Promise<void>;
+  requestConfigurationReload: RequestConfigurationReload;
 }
 
 /**
  * Interactive step-by-step wizard for creating a valid ChartOfAccounts.
  */
 export async function runChartOfAccountsWizard(options: RunChartOfAccountsWizardOptions): Promise<boolean> {
-  const { state, target, runConfigurationPlan, invalidateCacheAndReload } = options;
+  const { state, target, runConfigurationPlan, requestConfigurationReload } = options;
 
   const selectedNode = getSelectedNode(state, target);
   if (!selectedNode) {
@@ -238,9 +239,7 @@ export async function runChartOfAccountsWizard(options: RunChartOfAccountsWizard
     const executePlan = runConfigurationPlan ?? defaultRunConfigurationPlan;
     await executePlan(configPath, planned.plan);
 
-    if (invalidateCacheAndReload) {
-      await invalidateCacheAndReload(configPath);
-    }
+    await requestConfigurationReload(configPath, 'create-command');
 
     vscode.window.showInformationMessage(`План счетов «${trimmedName}» успешно создан.`);
     return true;
