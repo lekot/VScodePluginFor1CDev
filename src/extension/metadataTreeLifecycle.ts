@@ -129,10 +129,7 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     await reloadConfiguration(configPath);
   }
 
-  const reloadOrchestratorHandlers = createReloadOrchestratorHandlers({
-    state,
-    invalidateCacheAndReload,
-  });
+  const reloadOrchestratorHandlers = createReloadOrchestratorHandlers({ state });
 
   async function loadConfigurationRoot(
     configRoot: string,

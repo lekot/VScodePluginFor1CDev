@@ -11,6 +11,8 @@ export type ReloadReason =
 
 export type ReloadFailureCode =
   | 'RELOAD_DISPOSED'
+  | 'RELOAD_COORDINATOR_UNAVAILABLE'
+  | 'RELOAD_TIMEOUT'
   | 'CONFIGURATION_NOT_LOADED'
   | 'CONFIGURATION_PARSE_FAILED'
   | 'UNKNOWN_RELOAD_FAILURE';
@@ -26,6 +28,8 @@ export function toReloadFailure(error: unknown): ReloadFailure {
     const code = error.code;
     if (
       code === 'RELOAD_DISPOSED'
+      || code === 'RELOAD_COORDINATOR_UNAVAILABLE'
+      || code === 'RELOAD_TIMEOUT'
       || code === 'CONFIGURATION_NOT_LOADED'
       || code === 'CONFIGURATION_PARSE_FAILED'
     ) {

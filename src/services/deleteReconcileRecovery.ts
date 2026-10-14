@@ -1,8 +1,7 @@
 import { ReloadFailure, toReloadFailure } from '../types/reloadContracts';
 
-export const DELETE_RECONCILE_ATTEMPTS = 20;
-export const DELETE_RECONCILE_POLL_MS = 150;
-export const DELETE_RECONCILE_TIMEOUT_MS = DELETE_RECONCILE_ATTEMPTS * DELETE_RECONCILE_POLL_MS;
+// Preserve the previous total delete-reconcile deadline while completion moves to coordinator handles.
+export const DELETE_RECONCILE_TIMEOUT_MS = 20 * 150;
 
 type DeleteReconcileIssueReason = 'timeout' | 'failed';
 
