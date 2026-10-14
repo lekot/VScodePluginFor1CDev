@@ -73,6 +73,11 @@ export interface ReloadOperationResult {
   completedAt: number;
 }
 
+export interface ReloadRequestHandle {
+  readonly operationId: string;
+  readonly completed: Promise<ReloadOperationResult>;
+}
+
 export interface OptimisticDeleteToken {
   configRootId: string;
   parentId: string;

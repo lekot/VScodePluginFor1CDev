@@ -1,7 +1,9 @@
+import { randomUUID } from 'crypto';
 import { Logger } from '../utils/logger';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
 import {
   ReloadOperationResult,
+  ReloadRequestHandle,
   ReloadReason,
   ReloadRunContext,
   ReloadScheduleOptions,
@@ -21,7 +23,17 @@ interface ConfigReloadSlot {
   pendingReason: ReloadReason | null;
   pendingOperationId: string | undefined;
   pendingOperations: Map<string, ReloadReason>;
+  pendingWaiters: ReloadRequestWaiter[];
+  activeOperations: Map<string, ReloadReason> | undefined;
+  activeWaiters: ReloadRequestWaiter[];
   operationResults: Map<string, ReloadOperationResult>;
+}
+
+interface ReloadRequestWaiter {
+  operationId: string;
+  reason: ReloadReason;
+  resolve: (result: ReloadOperationResult) => void;
+  settled: boolean;
 }
 
 type ReloadRunner = (ctx: ReloadRunContext) => Promise<void>;
@@ -29,8 +41,7 @@ type ReloadRunner = (ctx: ReloadRunContext) => Promise<void>;
 const DEFAULT_DEBOUNCE_MS = 250;
 const DEFAULT_MUTATION_WINDOW_TTL_MS = 1500;
 // Results are stored per-config, up to 50 entries; oldest are evicted FIFO (insertion order).
-// Callers should retrieve operation results promptly after completion — results may be lost
-// under high-frequency reload scenarios before they are consumed.
+// Awaitable request completion is owned by its batch waiter and does not depend on this cache.
 const OPERATION_RESULT_LIMIT = 50;
 
 export class ReloadCoordinatorService {
@@ -49,7 +60,45 @@ export class ReloadCoordinatorService {
   }
 
   scheduleReload(configPath: string, reason: ReloadReason, options?: ReloadScheduleOptions): void {
+    this.admitReload(configPath, reason, options);
+  }
+
+  requestReload(
+    configPath: string,
+    reason: ReloadReason,
+    options?: ReloadScheduleOptions,
+  ): ReloadRequestHandle {
+    const operationId = options?.operationId ?? randomUUID();
+    let resolveCompleted!: (result: ReloadOperationResult) => void;
+    const completed = new Promise<ReloadOperationResult>((resolve) => {
+      resolveCompleted = resolve;
+    });
+    const waiter: ReloadRequestWaiter = {
+      operationId,
+      reason,
+      resolve: resolveCompleted,
+      settled: false,
+    };
+
     if (this.disposed) {
+      this.settleWaiter(waiter, this.disposedResult(operationId, reason));
+      return { operationId, completed };
+    }
+
+    this.admitReload(configPath, reason, options, waiter);
+    return { operationId, completed };
+  }
+
+  private admitReload(
+    configPath: string,
+    reason: ReloadReason,
+    options?: ReloadScheduleOptions,
+    waiter?: ReloadRequestWaiter,
+  ): void {
+    if (this.disposed) {
+      if (waiter) {
+        this.settleWaiter(waiter, this.disposedResult(waiter.operationId, waiter.reason));
+      }
       return;
     }
 
@@ -65,6 +114,9 @@ export class ReloadCoordinatorService {
       slot.state.coalescedCount += 1;
       slot.state.suppressedWatcherCount += 1;
       Logger.debug('Suppressed watcher reload inside mutation window', { configPath, reason });
+      if (waiter) {
+        this.attachSuppressedWaiter(slot, waiter);
+      }
       return;
     }
 
@@ -72,7 +124,10 @@ export class ReloadCoordinatorService {
       slot.state.pending = true;
       slot.pendingReason = slot.pendingReason ?? reason;
       slot.pendingOperationId = slot.pendingOperationId ?? options?.operationId;
-      this.addPendingOperation(slot, options?.operationId, reason);
+      this.addPendingOperation(slot, waiter?.operationId ?? options?.operationId, reason);
+      if (waiter) {
+        slot.pendingWaiters.push(waiter);
+      }
       slot.state.coalescedCount += 1;
       Logger.debug('Coalesced reload while in-flight', { configPath, reason });
       return;
@@ -87,7 +142,10 @@ export class ReloadCoordinatorService {
     if (options?.operationId !== undefined) {
       slot.pendingOperationId = options.operationId;
     }
-    this.addPendingOperation(slot, options?.operationId, reason);
+    this.addPendingOperation(slot, waiter?.operationId ?? options?.operationId, reason);
+    if (waiter) {
+      slot.pendingWaiters.push(waiter);
+    }
     const debounceMs = options?.debounceMs ?? this.defaultDebounceMs;
     slot.timer = setTimeout(() => {
       void this.executeSlot(slot);
@@ -138,6 +196,14 @@ export class ReloadCoordinatorService {
       slot.pendingOperationId = undefined;
       slot.pendingOperations.clear();
       slot.state.pending = false;
+      for (const waiter of slot.pendingWaiters) {
+        this.settleWaiter(waiter, this.disposedResult(waiter.operationId, waiter.reason));
+      }
+      slot.pendingWaiters = [];
+      for (const waiter of slot.activeWaiters) {
+        this.settleWaiter(waiter, this.disposedResult(waiter.operationId, waiter.reason));
+      }
+      slot.activeWaiters = [];
     }
 
     const pendingReloads = Array.from(this.inFlightReloads);
@@ -162,9 +228,13 @@ export class ReloadCoordinatorService {
     const reason = slot.pendingReason ?? slot.state.lastReason ?? 'unknown';
     const operationId = slot.pendingOperationId;
     const operations = new Map(slot.pendingOperations);
+    const waiters = slot.pendingWaiters;
     slot.pendingReason = null;
     slot.pendingOperationId = undefined;
     slot.pendingOperations.clear();
+    slot.pendingWaiters = [];
+    slot.activeOperations = operations;
+    slot.activeWaiters = waiters;
     slot.state.pending = false;
     slot.state.inFlight = true;
     slot.state.startedAt = Date.now();
@@ -185,6 +255,8 @@ export class ReloadCoordinatorService {
 
     if (this.disposed) {
       slot.state.inFlight = false;
+      slot.activeOperations = undefined;
+      slot.activeWaiters = [];
       return;
     }
 
@@ -203,26 +275,27 @@ export class ReloadCoordinatorService {
     }
 
     for (const [pendingOperationId, pendingReason] of operations) {
-      slot.operationResults.set(pendingOperationId, failure
-        ? {
-          operationId: pendingOperationId,
-          reason: pendingReason,
-          succeeded: false,
-          error: failure.message,
-          failure,
-          completedAt,
-        }
-        : {
-          operationId: pendingOperationId,
-          reason: pendingReason,
-          succeeded: true,
-          completedAt,
-        });
+      slot.operationResults.set(pendingOperationId, this.createOperationResult(
+        pendingOperationId,
+        pendingReason,
+        failure,
+        completedAt,
+      ));
       this.trimOperationResults(slot);
+    }
+    for (const waiter of waiters) {
+      this.settleWaiter(waiter, this.createOperationResult(
+        waiter.operationId,
+        waiter.reason,
+        failure,
+        completedAt,
+      ));
     }
 
     slot.state.inFlight = false;
     slot.state.completedAt = completedAt;
+    slot.activeOperations = undefined;
+    slot.activeWaiters = [];
 
     if (slot.state.pending) {
       slot.state.pending = false;
@@ -236,6 +309,72 @@ export class ReloadCoordinatorService {
     if (operationId !== undefined && !slot.pendingOperations.has(operationId)) {
       slot.pendingOperations.set(operationId, reason);
     }
+  }
+
+  private addActiveOperation(slot: ConfigReloadSlot, operationId: string, reason: ReloadReason): void {
+    if (slot.activeOperations && !slot.activeOperations.has(operationId)) {
+      slot.activeOperations.set(operationId, reason);
+    }
+  }
+
+  private attachSuppressedWaiter(slot: ConfigReloadSlot, waiter: ReloadRequestWaiter): void {
+    if (slot.state.pending || slot.timer) {
+      slot.pendingWaiters.push(waiter);
+      this.addPendingOperation(slot, waiter.operationId, waiter.reason);
+      return;
+    }
+
+    if (slot.state.inFlight) {
+      slot.activeWaiters.push(waiter);
+      this.addActiveOperation(slot, waiter.operationId, waiter.reason);
+      return;
+    }
+
+    // The suppression predicate guarantees there is an existing scheduled or active batch.
+    // If state is inconsistent, resolve rather than leave the caller waiting forever.
+    const failure = toReloadFailure(new Error('Suppressed reload has no active batch to join.'));
+    this.settleWaiter(waiter, this.createOperationResult(
+      waiter.operationId,
+      waiter.reason,
+      failure,
+      Date.now(),
+    ));
+  }
+
+  private settleWaiter(waiter: ReloadRequestWaiter, result: ReloadOperationResult): void {
+    if (waiter.settled) {
+      return;
+    }
+    waiter.settled = true;
+    waiter.resolve(result);
+  }
+
+  private createOperationResult(
+    operationId: string,
+    reason: ReloadReason,
+    failure: ReturnType<typeof toReloadFailure> | undefined,
+    completedAt: number,
+  ): ReloadOperationResult {
+    return failure
+      ? {
+        operationId,
+        reason,
+        succeeded: false,
+        error: failure.message,
+        failure,
+        completedAt,
+      }
+      : {
+        operationId,
+        reason,
+        succeeded: true,
+        completedAt,
+      };
+  }
+
+  private disposedResult(operationId: string, reason: ReloadReason): ReloadOperationResult {
+    const failure = { code: 'RELOAD_DISPOSED' as const, message: 'Reload coordinator has been disposed.' };
+    return this.createOperationResult(operationId, reason, failure, Date.now());
   }
 
   private getOrCreateSlot(configPath: string): ConfigReloadSlot {
@@ -252,6 +391,9 @@ export class ReloadCoordinatorService {
       pendingReason: null,
       pendingOperationId: undefined,
       pendingOperations: new Map(),
+      pendingWaiters: [],
+      activeOperations: undefined,
+      activeWaiters: [],
       operationResults: new Map(),
     };
     this.slots.set(key, slot);
