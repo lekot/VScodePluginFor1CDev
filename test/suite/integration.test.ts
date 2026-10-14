@@ -10,6 +10,12 @@ import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { createElement } from '../../src/services/elementOperations';
 import { renameElement } from '../../src/services/elementOperations';
 
+interface FixtureDirectoryCopier {
+  copyRegularDirectory(sourcePath: string, destinationPath: string): void;
+}
+
+const { copyRegularDirectory } = require(path.resolve(__dirname, '../../../scripts/copy-test-fixtures.js')) as FixtureDirectoryCopier;
+
 suite('Integration', () => {
   const fixturesPath = path.join(__dirname, '../fixtures', 'designer-config');
 
@@ -18,16 +24,7 @@ suite('Integration', () => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), '1cviewer-doc-create-'));
     try {
       const tmpConfigPath = path.join(tmpRoot, 'designer-config-copy');
-      await fs.promises.mkdir(tmpConfigPath, { recursive: true });
-
-      // Copy fixture (simple recursive copy using native fs.cp APIs)
-      if ((fs.promises as any).cp) {
-        await (fs.promises as any).cp(fixturesPath, tmpConfigPath, { recursive: true });
-      } else if ((fs as any).cpSync) {
-        (fs as any).cpSync(fixturesPath, tmpConfigPath, { recursive: true });
-      } else {
-        throw new Error('Neither fs.promises.cp nor fs.cpSync is available in this Node runtime');
-      }
+      copyRegularDirectory(fixturesPath, tmpConfigPath);
 
       const removedDir = path.join(tmpConfigPath, 'Documents');
       if (fs.existsSync(removedDir)) {
@@ -116,15 +113,7 @@ suite('Integration', () => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), '1cviewer-create-reload-visible-'));
     const tmpConfigPath = path.join(tmpRoot, 'designer-config-copy');
     try {
-      await fs.promises.mkdir(tmpConfigPath, { recursive: true });
-
-      if ((fs.promises as any).cp) {
-        await (fs.promises as any).cp(fixturesPath, tmpConfigPath, { recursive: true });
-      } else if ((fs as any).cpSync) {
-        (fs as any).cpSync(fixturesPath, tmpConfigPath, { recursive: true });
-      } else {
-        throw new Error('Neither fs.promises.cp nor fs.cpSync is available in this Node runtime');
-      }
+      copyRegularDirectory(fixturesPath, tmpConfigPath);
 
       const mockContext = {
         subscriptions: [] as vscode.Disposable[],
@@ -179,18 +168,8 @@ suite('Integration', () => {
     const cfgA = path.join(tmpRoot, 'configA');
     const cfgB = path.join(tmpRoot, 'configB');
     try {
-      await fs.promises.mkdir(cfgA, { recursive: true });
-      await fs.promises.mkdir(cfgB, { recursive: true });
-
-      if ((fs.promises as any).cp) {
-        await (fs.promises as any).cp(fixturesPath, cfgA, { recursive: true });
-        await (fs.promises as any).cp(fixturesPath, cfgB, { recursive: true });
-      } else if ((fs as any).cpSync) {
-        (fs as any).cpSync(fixturesPath, cfgA, { recursive: true });
-        (fs as any).cpSync(fixturesPath, cfgB, { recursive: true });
-      } else {
-        throw new Error('Neither fs.promises.cp nor fs.cpSync is available in this Node runtime');
-      }
+      copyRegularDirectory(fixturesPath, cfgA);
+      copyRegularDirectory(fixturesPath, cfgB);
 
       const mockContext = {
         subscriptions: [] as vscode.Disposable[],
@@ -249,15 +228,8 @@ suite('Integration', () => {
     const cfgA = path.join(tmpRoot, 'configA');
     const cfgB = path.join(tmpRoot, 'configB');
     try {
-      if ((fs.promises as any).cp) {
-        await (fs.promises as any).cp(fixturesPath, cfgA, { recursive: true });
-        await (fs.promises as any).cp(fixturesPath, cfgB, { recursive: true });
-      } else if ((fs as any).cpSync) {
-        (fs as any).cpSync(fixturesPath, cfgA, { recursive: true });
-        (fs as any).cpSync(fixturesPath, cfgB, { recursive: true });
-      } else {
-        throw new Error('Neither fs.promises.cp nor fs.cpSync is available in this Node runtime');
-      }
+      copyRegularDirectory(fixturesPath, cfgA);
+      copyRegularDirectory(fixturesPath, cfgB);
 
       const rootA = await MetadataParser.parse(cfgA);
       const rootB = await MetadataParser.parse(cfgB);
