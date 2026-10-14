@@ -17,6 +17,7 @@ import {
 } from '../../src/parsers/formatDetector';
 import { MetadataParser } from '../../src/parsers/metadataParser';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
+import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
 import { ExtensionState } from '../../src/state/extensionState';
 import {
   fireWorkspaceFoldersChanged,
@@ -24,13 +25,25 @@ import {
   vscodeTestState,
 } from '../helpers/vscodeModuleStub';
 import { registerMetadataWorkspaceFolderLifecycle } from '../../src/extension/metadataWorkspaceFolders';
-import { loadTreeFromCache } from '../../src/utils/diskCache';
+import { loadTreeFromCache, saveTreeToCache } from '../../src/utils/diskCache';
 
 suite('MetadataTreeLifecycle', () => {
   const originalDiscoverAllConfigurationRoots = FormatDetector.discoverAllConfigurationRoots;
   const originalDiscoverAllConfigurationPackageFiles = FormatDetector.discoverAllConfigurationPackageFiles;
   const originalDetect = FormatDetector.detect;
   const originalParseStructureOnly = MetadataParser.parseStructureOnly;
+  const originalInvalidateTypeContentsCache = MetadataParser.invalidateTypeContentsCache;
+
+  interface Deferred<T> {
+    promise: Promise<T>;
+    resolve: (value: T) => void;
+  }
+
+  function deferred<T>(): Deferred<T> {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+    return { promise, resolve };
+  }
 
   function stubDiscovery(options?: {
     configs?: Array<{ configPath: string; workspaceFolderPath: string }>;
@@ -69,6 +82,19 @@ suite('MetadataTreeLifecycle', () => {
     return { state, provider, messages };
   }
 
+  function createReloadCoordinator(lifecycle: ReturnType<typeof createMetadataTreeLifecycle>): ReloadCoordinatorService {
+    return new ReloadCoordinatorService(async ({ configPath, canPublish }) =>
+      lifecycle.executeConfigurationReload(configPath, canPublish), { defaultDebounceMs: 0 });
+  }
+
+  async function executeSingleReload(
+    lifecycle: ReturnType<typeof createMetadataTreeLifecycle>,
+    configPath: string,
+  ): Promise<void> {
+    const outcome = await lifecycle.executeConfigurationReload(configPath, () => true);
+    assert.strictEqual(outcome.status, 'published');
+  }
+
   setup(() => {
     resetVscodeTestState();
     stubDiscovery();
@@ -82,6 +108,8 @@ suite('MetadataTreeLifecycle', () => {
     (FormatDetector.detect as unknown as typeof FormatDetector.detect) = originalDetect;
     (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) =
       originalParseStructureOnly;
+    (MetadataParser.invalidateTypeContentsCache as unknown as typeof MetadataParser.invalidateTypeContentsCache) =
+      originalInvalidateTypeContentsCache;
     resetVscodeTestState();
   });
 
@@ -242,7 +270,7 @@ suite('MetadataTreeLifecycle', () => {
       parseCalls.length = 0;
       revisions.set(configA, 2);
 
-      await lifecycle.invalidateCacheAndReload(configA);
+      await executeSingleReload(lifecycle, configA);
 
       const rootsAfterReload = provider.getRootNodes();
       assert.deepStrictEqual(parseCalls, [configA]);
@@ -302,6 +330,7 @@ suite('MetadataTreeLifecycle', () => {
 
     const { state, provider } = createStateWithProvider();
     const lifecycle = createMetadataTreeLifecycle(state);
+    const coordinator = createReloadCoordinator(lifecycle);
     try {
       await lifecycle.loadMetadataTree();
       assert.deepStrictEqual(
@@ -311,9 +340,11 @@ suite('MetadataTreeLifecycle', () => {
 
       parseCalls.length = 0;
       revisions.set(configA, 2);
-      await lifecycle.reloadConfiguration(configA);
+      const firstReload = await coordinator.requestReload(configA, 'repository', { debounceMs: 0 }).completed;
+      assert.strictEqual(firstReload.succeeded, true);
       revisions.set(configB, 5);
-      await lifecycle.reloadConfiguration(configB);
+      const secondReload = await coordinator.requestReload(configB, 'repository', { debounceMs: 0 }).completed;
+      assert.strictEqual(secondReload.succeeded, true);
 
       assert.deepStrictEqual(parseCalls, [configA, configB]);
       assert.deepStrictEqual(
@@ -333,11 +364,13 @@ suite('MetadataTreeLifecycle', () => {
       });
       pauseNextParseForA = true;
 
-      const reloadA = lifecycle.reloadConfiguration(configA);
+      const reloadA = coordinator.requestReload(configA, 'repository', { debounceMs: 0 });
       await parseAStartedPromise;
-      const reloadB = lifecycle.reloadConfiguration(configB);
+      const reloadB = coordinator.requestReload(configB, 'repository', { debounceMs: 0 });
       releaseParseA?.();
-      await Promise.all([reloadA, reloadB]);
+      const [reloadAResult, reloadBResult] = await Promise.all([reloadA.completed, reloadB.completed]);
+      assert.strictEqual(reloadAResult.succeeded, true);
+      assert.strictEqual(reloadBResult.succeeded, true);
 
       assert.deepStrictEqual(parseCalls.sort(), [configA, configB].sort());
       assert.deepStrictEqual(
@@ -347,6 +380,7 @@ suite('MetadataTreeLifecycle', () => {
       );
     } finally {
       releaseParseA?.();
+      await coordinator.dispose();
       lifecycle.dispose();
     }
   });
@@ -387,6 +421,7 @@ suite('MetadataTreeLifecycle', () => {
 
     const { state, provider } = createStateWithProvider();
     const lifecycle = createMetadataTreeLifecycle(state);
+    const coordinator = createReloadCoordinator(lifecycle);
     try {
       await lifecycle.loadMetadataTree();
       assert.deepStrictEqual(
@@ -397,7 +432,8 @@ suite('MetadataTreeLifecycle', () => {
       parseCalls.length = 0;
       revision = 2;
       // Reload via lower case alias
-      await lifecycle.reloadConfiguration(configLowerAlias);
+      const reload = await coordinator.requestReload(configLowerAlias, 'repository', { debounceMs: 0 }).completed;
+      assert.strictEqual(reload.succeeded, true);
 
       assert.strictEqual(parseCalls.length, 1);
       assert.deepStrictEqual(
@@ -406,6 +442,7 @@ suite('MetadataTreeLifecycle', () => {
         'reloading via case alias on Windows must update the canonical root',
       );
     } finally {
+      await coordinator.dispose();
       lifecycle.dispose();
     }
   });
@@ -446,7 +483,7 @@ suite('MetadataTreeLifecycle', () => {
       await lifecycle.loadMetadataTree();
       warmupCalls.length = 0;
 
-      await lifecycle.invalidateCacheAndReload(configA);
+      await executeSingleReload(lifecycle, configA);
 
       assert.strictEqual(warmupCalls.length, 1);
       assert.strictEqual(warmupCalls[0]?.preferredRootId, provider.getRootNodes()[0].id);
@@ -498,17 +535,28 @@ suite('MetadataTreeLifecycle', () => {
       value: { globalStoragePath },
     });
     const lifecycle = createMetadataTreeLifecycle(state);
+    const coordinator = createReloadCoordinator(lifecycle);
     try {
       await lifecycle.loadMetadataTree();
-      const firstReload = lifecycle.invalidateCacheAndReload(configPath);
+      const firstReload = coordinator.requestReload(configPath, 'repository', {
+        operationId: 'same-reload-id',
+        debounceMs: 0,
+      });
       await oldParseStartedPromise;
       await fs.promises.writeFile(path.join(configPath, 'Configuration.xml'), '<Configuration revision="2"/>');
-      const secondReload = lifecycle.invalidateCacheAndReload(configPath);
+      const secondReload = coordinator.requestReload(configPath, 'create-command', {
+        operationId: 'same-reload-id',
+        debounceMs: 0,
+      });
       releaseOldParse();
 
-      await Promise.all([firstReload, secondReload]);
+      const [firstResult, secondResult] = await Promise.all([firstReload.completed, secondReload.completed]);
 
       assert.strictEqual(parseCall, 3, 'trailing generation must reparse instead of consuming stale cache');
+      assert.strictEqual(firstResult.succeeded, true);
+      assert.strictEqual(secondResult.succeeded, true);
+      assert.strictEqual(firstResult.reason, 'repository');
+      assert.strictEqual(secondResult.reason, 'create-command');
       assert.strictEqual(provider.getRootNodes()[0]?.properties.comment, 'fresh');
       assert.strictEqual(
         await loadTreeFromCache(globalStoragePath, configPath),
@@ -516,8 +564,445 @@ suite('MetadataTreeLifecycle', () => {
         'targeted generations must not repopulate shared tree cache',
       );
     } finally {
+      await coordinator.dispose();
       lifecycle.dispose();
       await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('coordinator keeps a superseded lifecycle parse private and completes same-ID requests on one fresh attempt', async () => {
+    const workspaceFolderPath = 'C:/workspace/single-attempt';
+    const configPath = `${workspaceFolderPath}/cfg`;
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'single-attempt', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({ configs: [{ configPath, workspaceFolderPath }] });
+
+    let revision = 'base';
+    let parseCall = 0;
+    const firstTargetedParseStarted = deferred<void>();
+    const releaseFirstTargetedParse = deferred<void>();
+    const retryParseStarted = deferred<void>();
+    const releaseRetryParse = deferred<void>();
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async () => {
+      parseCall += 1;
+      const parsedRevision = revision;
+      if (parseCall === 2) {
+        firstTargetedParseStarted.resolve(undefined);
+        await releaseFirstTargetedParse.promise;
+      } else if (parseCall === 3) {
+        retryParseStarted.resolve(undefined);
+        await releaseRetryParse.promise;
+      }
+      return {
+        id: 'configuration',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: { comment: parsedRevision },
+        children: [],
+      };
+    };
+    (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
+
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createMetadataTreeLifecycle(state);
+    let runnerAttempts = 0;
+    const coordinator = new ReloadCoordinatorService(async ({ configPath: requestedConfigPath, canPublish }) => {
+      runnerAttempts += 1;
+      return lifecycle.executeConfigurationReload(requestedConfigPath, canPublish);
+    }, { defaultDebounceMs: 0 });
+    try {
+      await lifecycle.loadMetadataTree();
+      revision = 'stale';
+      const firstHandle = coordinator.requestReload(configPath, 'repository', {
+        operationId: 'shared-id',
+        debounceMs: 0,
+      });
+      let firstSettled = false;
+      firstHandle.completed.then(() => { firstSettled = true; });
+      await firstTargetedParseStarted.promise;
+
+      revision = 'current';
+      const trailingHandle = coordinator.requestReload(configPath, 'create-command', {
+        operationId: 'shared-id',
+        debounceMs: 0,
+      });
+      let trailingSettled = false;
+      trailingHandle.completed.then(() => { trailingSettled = true; });
+      releaseFirstTargetedParse.resolve(undefined);
+      await retryParseStarted.promise;
+
+      assert.strictEqual(firstSettled, false, 'active request cannot complete from a parse superseded by the trailing request');
+      assert.strictEqual(trailingSettled, false, 'trailing request remains attached until the fresh tree is published');
+      assert.strictEqual(
+        provider.getRootNodes()[0]?.properties.comment,
+        'base',
+        'stale targeted output must not publish before the retry',
+      );
+
+      releaseRetryParse.resolve(undefined);
+      const [firstResult, trailingResult] = await Promise.all([
+        firstHandle.completed,
+        trailingHandle.completed,
+      ]);
+      assert.strictEqual(parseCall, 3, 'one superseded attempt plus one fresh attempt follow the initial full load');
+      assert.strictEqual(runnerAttempts, 2, 'the coordinator owns the retry instead of a lifecycle loop');
+      assert.strictEqual(provider.getRootNodes()[0]?.properties.comment, 'current');
+      assert.strictEqual(firstResult.succeeded, true);
+      assert.strictEqual(trailingResult.succeeded, true);
+      assert.strictEqual(firstResult.reason, 'repository');
+      assert.strictEqual(trailingResult.reason, 'create-command');
+    } finally {
+      releaseFirstTargetedParse.resolve(undefined);
+      releaseRetryParse.resolve(undefined);
+      await coordinator.dispose();
+      lifecycle.dispose();
+    }
+  });
+
+  test('coordinator retries after a full load supersedes one targeted lifecycle attempt', async () => {
+    const workspaceFolderPath = 'C:/workspace/full-load-race';
+    const configPath = `${workspaceFolderPath}/cfg`;
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'full-load-race', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({ configs: [{ configPath, workspaceFolderPath }] });
+
+    let parseCall = 0;
+    const firstTargetedParseStarted = deferred<void>();
+    const releaseFirstTargetedParse = deferred<void>();
+    const fullParseStarted = deferred<void>();
+    const releaseFullParse = deferred<void>();
+    const retryParseStarted = deferred<void>();
+    const releaseRetryParse = deferred<void>();
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async () => {
+      parseCall += 1;
+      const revision = parseCall === 1
+        ? 'base'
+        : parseCall === 2
+          ? 'stale-targeted'
+          : parseCall === 3
+            ? 'fresh-full'
+            : 'fresh-targeted';
+      if (parseCall === 2) {
+        firstTargetedParseStarted.resolve(undefined);
+        await releaseFirstTargetedParse.promise;
+      } else if (parseCall === 3) {
+        fullParseStarted.resolve(undefined);
+        await releaseFullParse.promise;
+      } else if (parseCall === 4) {
+        retryParseStarted.resolve(undefined);
+        await releaseRetryParse.promise;
+      }
+      return {
+        id: 'configuration',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: { comment: revision },
+        children: [],
+      };
+    };
+    (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
+
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createMetadataTreeLifecycle(state);
+    let runnerAttempts = 0;
+    const coordinator = new ReloadCoordinatorService(async ({ configPath: requestedConfigPath, canPublish }) => {
+      runnerAttempts += 1;
+      return lifecycle.executeConfigurationReload(requestedConfigPath, canPublish);
+    }, { defaultDebounceMs: 0 });
+    try {
+      await lifecycle.loadMetadataTree();
+      const request = coordinator.requestReload(configPath, 'repository', {
+        operationId: 'full-race',
+        debounceMs: 0,
+      });
+      let requestSettled = false;
+      request.completed.then(() => { requestSettled = true; });
+      const fullLoad = (async () => {
+        await firstTargetedParseStarted.promise;
+        await lifecycle.loadMetadataTree();
+      })();
+      await fullParseStarted.promise;
+      releaseFirstTargetedParse.resolve(undefined);
+      releaseFullParse.resolve(undefined);
+      await retryParseStarted.promise;
+
+      assert.strictEqual(runnerAttempts, 2, 'full-load supersession must return to the coordinator for its retry');
+      assert.strictEqual(requestSettled, false, 'targeted handle stays pending until the post-full-load retry publishes');
+      assert.strictEqual(
+        provider.getRootNodes()[0]?.properties.comment,
+        'fresh-full',
+        'the full load publishes its own fresh discovery before the targeted retry',
+      );
+
+      releaseRetryParse.resolve(undefined);
+      const result = await request.completed;
+      await fullLoad;
+      assert.strictEqual(result.succeeded, true);
+      assert.strictEqual(parseCall, 4, 'one targeted attempt, one full load and one coordinator retry follow initialization');
+      assert.strictEqual(provider.getRootNodes()[0]?.properties.comment, 'fresh-targeted');
+    } finally {
+      releaseFirstTargetedParse.resolve(undefined);
+      releaseFullParse.resolve(undefined);
+      releaseRetryParse.resolve(undefined);
+      await coordinator.dispose();
+      lifecycle.dispose();
+    }
+  });
+
+  test('trailing request supersedes an attempt during cache invalidation before parse and both wait for one fresh parse', async () => {
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'metadata-preparse-supersession-'));
+    const workspaceFolderPath = path.join(tempRoot, 'workspace');
+    const configPath = path.join(workspaceFolderPath, 'cfg');
+    const globalStoragePath = path.join(tempRoot, 'global-storage');
+    await fs.promises.mkdir(configPath, { recursive: true });
+    await fs.promises.writeFile(path.join(configPath, 'Configuration.xml'), '<Configuration/>');
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'preparse-supersession', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({ configs: [{ configPath, workspaceFolderPath }] });
+
+    let revision = 'base';
+    let parseCalls = 0;
+    let runnerAttempts = 0;
+    let invalidationCalls = 0;
+    const invalidationStarted = deferred<void>();
+    const releaseInvalidation = deferred<void>();
+    const retryParseStarted = deferred<void>();
+    const releaseRetryParse = deferred<void>();
+    (MetadataParser.invalidateTypeContentsCache as unknown as typeof MetadataParser.invalidateTypeContentsCache) =
+      async () => {
+        invalidationCalls += 1;
+        if (invalidationCalls === 1) {
+          invalidationStarted.resolve(undefined);
+          await releaseInvalidation.promise;
+        }
+      };
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async () => {
+      parseCalls += 1;
+      const parsedRevision = revision;
+      if (parseCalls === 2) {
+        retryParseStarted.resolve(undefined);
+        await releaseRetryParse.promise;
+      }
+      return {
+        id: 'configuration',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: { comment: parsedRevision, bslLanguage: 'ru' },
+        children: [],
+      };
+    };
+    (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
+
+    const { state, provider } = createStateWithProvider();
+    Object.defineProperty(state, '_extensionContext', {
+      configurable: true,
+      value: { globalStoragePath },
+    });
+    const lifecycle = createMetadataTreeLifecycle(state);
+    const coordinator = new ReloadCoordinatorService(async ({ configPath: requestedConfigPath, canPublish }) => {
+      runnerAttempts += 1;
+      return lifecycle.executeConfigurationReload(requestedConfigPath, canPublish);
+    }, { defaultDebounceMs: 0 });
+    try {
+      await lifecycle.loadMetadataTree();
+      assert.strictEqual(provider.getRootNodes()[0]?.properties.comment, 'base');
+      const baselineRoot = provider.getRootNodes()[0];
+      assert.ok(baselineRoot);
+      await saveTreeToCache(globalStoragePath, configPath, baselineRoot);
+      assert.ok(await loadTreeFromCache(globalStoragePath, configPath), 'initial full load should establish a cache entry');
+
+      const active = coordinator.requestReload(configPath, 'repository', {
+        operationId: 'preparse-active',
+        debounceMs: 0,
+      });
+      let activeSettled = false;
+      void active.completed.then(() => { activeSettled = true; });
+      await invalidationStarted.promise;
+
+      revision = 'fresh';
+      const trailing = coordinator.requestReload(configPath, 'create-command', {
+        operationId: 'preparse-trailing',
+        debounceMs: 0,
+      });
+      let trailingSettled = false;
+      void trailing.completed.then(() => { trailingSettled = true; });
+      releaseInvalidation.resolve(undefined);
+      await retryParseStarted.promise;
+
+      assert.strictEqual(runnerAttempts, 2, 'the rejected pre-parse attempt returns ownership to the coordinator');
+      assert.strictEqual(parseCalls, 2, 'only the fresh retry performs a targeted parse after initialization');
+      assert.strictEqual(activeSettled, false, 'the active handle waits for the fresh retry');
+      assert.strictEqual(trailingSettled, false, 'the trailing handle waits for the same fresh retry');
+      assert.strictEqual(provider.getRootNodes()[0]?.properties.comment, 'base', 'the retry must remain private until parse completion');
+      assert.strictEqual(await loadTreeFromCache(globalStoragePath, configPath), null, 'neither targeted attempt may republish tree cache');
+
+      releaseRetryParse.resolve(undefined);
+      const [activeResult, trailingResult] = await Promise.all([active.completed, trailing.completed]);
+      assert.strictEqual(activeResult.succeeded, true);
+      assert.strictEqual(trailingResult.succeeded, true);
+      assert.strictEqual(activeResult.reason, 'repository');
+      assert.strictEqual(trailingResult.reason, 'create-command');
+      assert.strictEqual(parseCalls, 2);
+      assert.strictEqual(provider.getRootNodes()[0]?.properties.comment, 'fresh');
+      assert.strictEqual(await loadTreeFromCache(globalStoragePath, configPath), null);
+    } finally {
+      releaseInvalidation.resolve(undefined);
+      releaseRetryParse.resolve(undefined);
+      await coordinator.dispose();
+      lifecycle.dispose();
+      await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('full-load failure while targeted reload waits completes negatively without retry or stale publication', async () => {
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'metadata-full-load-failure-'));
+    const workspaceFolderPath = path.join(tempRoot, 'workspace');
+    const configPath = path.join(workspaceFolderPath, 'cfg');
+    const globalStoragePath = path.join(tempRoot, 'global-storage');
+    await fs.promises.mkdir(configPath, { recursive: true });
+    await fs.promises.writeFile(path.join(configPath, 'Configuration.xml'), '<Configuration/>');
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'full-load-failure', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({ configs: [{ configPath, workspaceFolderPath }] });
+
+    let parseCalls = 0;
+    let runnerAttempts = 0;
+    const fullParseStarted = deferred<void>();
+    const rejectFullParse = (() => {
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<void>((_resolve, rejectPromise) => { reject = rejectPromise; });
+      return { promise, reject };
+    })();
+    const targetedInvalidationStarted = deferred<void>();
+    (MetadataParser.invalidateTypeContentsCache as unknown as typeof MetadataParser.invalidateTypeContentsCache) =
+      async () => { targetedInvalidationStarted.resolve(undefined); };
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async () => {
+      parseCalls += 1;
+      if (parseCalls === 2) {
+        fullParseStarted.resolve(undefined);
+        await rejectFullParse.promise;
+      }
+      return {
+        id: 'configuration',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: { comment: 'base', bslLanguage: 'ru' },
+        children: [],
+      };
+    };
+    (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
+
+    const { state, provider } = createStateWithProvider();
+    Object.defineProperty(state, '_extensionContext', {
+      configurable: true,
+      value: { globalStoragePath },
+    });
+    const lifecycle = createMetadataTreeLifecycle(state);
+    const coordinator = new ReloadCoordinatorService(async ({ configPath: requestedConfigPath, canPublish }) => {
+      runnerAttempts += 1;
+      return lifecycle.executeConfigurationReload(requestedConfigPath, canPublish);
+    }, { defaultDebounceMs: 0 });
+    try {
+      await lifecycle.loadMetadataTree();
+      await fs.promises.writeFile(path.join(configPath, 'Configuration.xml'), '<Configuration revision="2"/>');
+      const fullLoad = lifecycle.loadMetadataTree().then(
+        () => ({ succeeded: true as const }),
+        (error: unknown) => ({ succeeded: false as const, error }),
+      );
+      await fullParseStarted.promise;
+
+      const targeted = coordinator.requestReload(configPath, 'repository', {
+        operationId: 'waited-targeted',
+        debounceMs: 0,
+      });
+      let targetedSettled = false;
+      void targeted.completed.then(() => { targetedSettled = true; });
+      await targetedInvalidationStarted.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(targetedSettled, false, 'the targeted handle remains pending while the full parse is unresolved');
+      assert.strictEqual(parseCalls, 2, 'targeted parsing must wait until the active full parse finishes');
+
+      rejectFullParse.reject(new Error('full-tree parse failed'));
+      const [fullLoadResult, targetedResult] = await Promise.all([fullLoad, targeted.completed]);
+
+      assert.strictEqual(fullLoadResult.succeeded, false);
+      assert.strictEqual(targetedResult.succeeded, false, 'a failed full-load wait must not become a false success');
+      assert.strictEqual(targetedResult.failure?.code, 'UNKNOWN_RELOAD_FAILURE');
+      assert.match(targetedResult.error ?? '', /full-tree parse failed/u);
+      assert.strictEqual(runnerAttempts, 1, 'a failed full-load wait is final and does not schedule a targeted retry');
+      assert.strictEqual(parseCalls, 2, 'no targeted parse follows the failed full load');
+      assert.strictEqual(coordinator.getState(configPath).lastRunSucceeded, false);
+      assert.strictEqual(provider.getRootNodes()[0]?.properties.comment, 'base');
+      assert.strictEqual(await loadTreeFromCache(globalStoragePath, configPath), null);
+    } finally {
+      rejectFullParse.reject(new Error('test cleanup released the full parse'));
+      await coordinator.dispose();
+      lifecycle.dispose();
+      await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('coordinator and lifecycle disposal settle an active targeted handle without late publication or retry', async () => {
+    const workspaceFolderPath = 'C:/workspace/dispose-targeted';
+    const configPath = `${workspaceFolderPath}/cfg`;
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'dispose-targeted', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({ configs: [{ configPath, workspaceFolderPath }] });
+
+    let parseCall = 0;
+    const targetedParseStarted = deferred<void>();
+    const releaseTargetedParse = deferred<void>();
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async () => {
+      parseCall += 1;
+      const revision = parseCall === 1 ? 'base' : 'late';
+      if (parseCall === 2) {
+        targetedParseStarted.resolve(undefined);
+        await releaseTargetedParse.promise;
+      }
+      return {
+        id: 'configuration',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: { comment: revision },
+        children: [],
+      };
+    };
+    (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
+
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createMetadataTreeLifecycle(state);
+    const coordinator = createReloadCoordinator(lifecycle);
+    try {
+      await lifecycle.loadMetadataTree();
+      const request = coordinator.requestReload(configPath, 'repository', {
+        operationId: 'dispose-targeted',
+        debounceMs: 0,
+      });
+      await targetedParseStarted.promise;
+
+      const disposal = coordinator.dispose();
+      lifecycle.dispose();
+      const result = await request.completed;
+      assert.strictEqual(result.succeeded, false);
+      assert.strictEqual(result.failure?.code, 'RELOAD_DISPOSED');
+
+      releaseTargetedParse.resolve(undefined);
+      await disposal;
+      assert.strictEqual(parseCall, 2, 'disposed work must not schedule a second attempt');
+      assert.strictEqual(
+        provider.getRootNodes()[0]?.properties.comment,
+        'base',
+        'an in-flight targeted parse must not publish after disposal',
+      );
+    } finally {
+      releaseTargetedParse.resolve(undefined);
+      await coordinator.dispose();
+      lifecycle.dispose();
     }
   });
 
@@ -561,14 +1046,16 @@ suite('MetadataTreeLifecycle', () => {
       value: { globalStoragePath },
     });
     const lifecycle = createMetadataTreeLifecycle(state);
+    const coordinator = createReloadCoordinator(lifecycle);
     try {
       const fullLoad = lifecycle.loadMetadataTree();
       await fullParseStartedPromise;
-      const targetedReload = lifecycle.invalidateCacheAndReload(configPath);
+      const targetedReload = coordinator.requestReload(configPath, 'repository', { debounceMs: 0 });
       releaseFullParse();
 
-      await Promise.all([fullLoad, targetedReload]);
+      const [, targetedResult] = await Promise.all([fullLoad, targetedReload.completed]);
 
+      assert.strictEqual(targetedResult.succeeded, true);
       assert.strictEqual(provider.getRootNodes()[0]?.properties.comment, 'fresh-targeted');
       assert.strictEqual(
         await loadTreeFromCache(globalStoragePath, configPath),
@@ -580,6 +1067,7 @@ suite('MetadataTreeLifecycle', () => {
       assert.strictEqual(parseCall, 3, 'the next full load must parse instead of reusing stale full-load cache');
       assert.strictEqual(provider.getRootNodes()[0]?.properties.comment, 'fresh-full');
     } finally {
+      await coordinator.dispose();
       lifecycle.dispose();
       await fs.promises.rm(tempRoot, { recursive: true, force: true });
     }

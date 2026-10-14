@@ -27,7 +27,7 @@ import { INFOBASE_TREE_VIEW_ID, InfobaseTreeDataProvider } from '../infobases/in
 import { registerInfobaseTreeCommands } from '../infobases/registerInfobaseTreeCommands';
 import { registerBindingDialogCommands } from '../bindings/bindingDialog';
 import { rebuildBindingDecorationsForTree, registerBindingDecorationSync } from '../bindings/bindingTreeDecorations';
-import { MetadataTreeLifecycle } from './metadataTreeLifecycle';
+import { MetadataTreeFeatureLifecycle, MetadataTreeLifecycle } from './metadataTreeLifecycle';
 import { SubsystemCommandInterfaceProvider } from '../subsystemCommandInterfaceEditor';
 import { XdtoPackageEditorProvider } from '../xdtoPackageEditor';
 import { registerGitPhase4HeadChangeHandlers } from '../services/gitIntegration';
@@ -72,7 +72,7 @@ async function syncInfobaseTreeViewMessage(state: ExtensionState): Promise<void>
 function registerMetadataTreeProviders(
   context: vscode.ExtensionContext,
   state: ExtensionState,
-  lifecycle: MetadataTreeLifecycle
+  lifecycle: MetadataTreeFeatureLifecycle
 ): void {
   state.treeDataProvider = new MetadataTreeDataProvider();
 
@@ -220,12 +220,18 @@ function registerInfobaseFeatures(
 function registerReloadCoordinator(
   context: vscode.ExtensionContext,
   state: ExtensionState,
-  lifecycle: MetadataTreeLifecycle
+  lifecycle: Pick<MetadataTreeLifecycle, 'executeConfigurationReload'>
 ): void {
-  state.reloadCoordinator = new ReloadCoordinatorService(async ({ configPath, reason, operationId }) => {
+  state.reloadCoordinator = new ReloadCoordinatorService(async ({ configPath, reason, operationId, canPublish }) => {
     Logger.info('reload.run.started', { configPath, reason, operationId });
-    await lifecycle.invalidateCacheAndReload(configPath);
-    Logger.info('reload.run.completed', { configPath, reason, operationId, success: true });
+    const outcome = await lifecycle.executeConfigurationReload(configPath, canPublish);
+    Logger.info('reload.run.completed', {
+      configPath,
+      reason,
+      operationId,
+      status: outcome.status,
+    });
+    return outcome;
   });
   context.subscriptions.push({
     dispose: () => {
@@ -301,17 +307,15 @@ export async function registerExtensionWorkspace(
   context.subscriptions.push({ dispose: lifecycle.dispose });
   const workspaceFolderLifecycle = registerMetadataWorkspaceFolderLifecycle(lifecycle);
   context.subscriptions.push(workspaceFolderLifecycle);
-  const trackedLifecycle: MetadataTreeLifecycle = {
+  const trackedLifecycle: MetadataTreeFeatureLifecycle = {
     invalidateTreeCacheOnly: lifecycle.invalidateTreeCacheOnly,
-    invalidateCacheAndReload: lifecycle.invalidateCacheAndReload,
-    reloadConfiguration: lifecycle.reloadConfiguration,
     loadMetadataTree: () => workspaceFolderLifecycle.loadMetadataTree(),
     reloadOrchestratorHandlers: lifecycle.reloadOrchestratorHandlers,
     dispose: lifecycle.dispose,
   };
 
   registerMetadataTreeProviders(context, state, trackedLifecycle);
-  registerReloadCoordinator(context, state, trackedLifecycle);
+  registerReloadCoordinator(context, state, lifecycle);
   const requestConfigurationReload = createRequestConfigurationReload(state);
   registerEditorProviders(context, state);
   registerInfobaseFeatures(context, state);

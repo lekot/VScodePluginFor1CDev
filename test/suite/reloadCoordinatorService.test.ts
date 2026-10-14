@@ -124,6 +124,55 @@ suite('ReloadCoordinatorService', () => {
     coordinator.dispose();
   });
 
+  test('keeps same-ID active and pending handles unresolved when the active attempt is superseded', async () => {
+    const firstAttemptEntered = deferred<void>();
+    const secondAttemptEntered = deferred<void>();
+    const releaseFirstAttempt = deferred<void>();
+    let attemptCount = 0;
+    let firstSettled = false;
+    let secondSettled = false;
+    const coordinator = new ReloadCoordinatorService(async () => {
+      attemptCount += 1;
+      if (attemptCount === 1) {
+        firstAttemptEntered.resolve(undefined);
+        await releaseFirstAttempt.promise;
+        return { status: 'superseded' };
+      }
+      secondAttemptEntered.resolve(undefined);
+      return;
+    }, { defaultDebounceMs: 0 });
+
+    const activeHandle = coordinator.requestReload('C:/cfg-a', 'repository', {
+      operationId: 'same-operation-id',
+      debounceMs: 0,
+    });
+    activeHandle.completed.then(() => { firstSettled = true; });
+    await firstAttemptEntered.promise;
+
+    const pendingHandle = coordinator.requestReload('C:/cfg-a', 'create-command', {
+      operationId: 'same-operation-id',
+      debounceMs: 0,
+    });
+    pendingHandle.completed.then(() => { secondSettled = true; });
+    releaseFirstAttempt.resolve(undefined);
+    await secondAttemptEntered.promise;
+
+    assert.strictEqual(firstSettled, false, 'superseded active work must keep its completion handle pending');
+    assert.strictEqual(secondSettled, false, 'the pending handle must join the retry that will publish current state');
+    assert.strictEqual(coordinator.getState('C:/cfg-a').executedCount, 1, 'superseded attempts still count as executions');
+    assert.strictEqual(coordinator.getOperationResult('C:/cfg-a', 'same-operation-id'), null);
+    assert.strictEqual(coordinator.getState('C:/cfg-a').lastRunSucceeded, undefined);
+
+    const [activeResult, pendingResult] = await Promise.all([activeHandle.completed, pendingHandle.completed]);
+    assert.strictEqual(attemptCount, 2, 'active and pending requests must share one retry');
+    assert.strictEqual(activeResult.succeeded, true);
+    assert.strictEqual(pendingResult.succeeded, true);
+    assert.strictEqual(activeResult.reason, 'repository');
+    assert.strictEqual(pendingResult.reason, 'create-command');
+    assert.strictEqual(coordinator.getState('C:/cfg-a').executedCount, 2);
+    await coordinator.dispose();
+  });
+
   test('uses host path case rules to isolate configuration reload slots', async () => {
     const upperCaseRoot = '/workspace/Config';
     const lowerCaseRoot = '/workspace/config';
@@ -700,6 +749,7 @@ suite('ReloadCoordinatorService', () => {
       runs.push(ctx);
       runEntered.resolve(undefined);
       await releaseRun.promise;
+      return { status: 'published' };
     }, { defaultDebounceMs: 0, mutationWindowTtlMs: 250 });
     coordinator.markMutationWindow('C:/cfg-a', 'op-command', 250);
 
@@ -713,6 +763,7 @@ suite('ReloadCoordinatorService', () => {
     void watcher.completed.then(() => { watcherSettled = true; });
     await nextEventLoopTurn();
     assert.strictEqual(watcherSettled, false, 'watcher completion must follow the run that suppressed it');
+    assert.strictEqual(runs[0].canPublish(), true, 'a suppressed watcher must not stale the active publication token');
 
     releaseRun.resolve(undefined);
     const [commandResult, watcherResult] = await Promise.all([command.completed, watcher.completed]);

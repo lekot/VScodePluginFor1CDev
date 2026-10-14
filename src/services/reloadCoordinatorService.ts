@@ -3,6 +3,7 @@ import { Logger } from '../utils/logger';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
 import {
   ReloadOperationResult,
+  ReloadAttemptOutcome,
   ReloadRequestHandle,
   ReloadReason,
   ReloadRunContext,
@@ -27,6 +28,7 @@ interface ConfigReloadSlot {
   activeOperations: Map<string, ReloadReason> | undefined;
   activeWaiters: ReloadRequestWaiter[];
   operationResults: Map<string, ReloadOperationResult>;
+  freshnessGeneration: number;
 }
 
 interface ReloadRequestWaiter {
@@ -36,7 +38,7 @@ interface ReloadRequestWaiter {
   settled: boolean;
 }
 
-type ReloadRunner = (ctx: ReloadRunContext) => Promise<void>;
+type ReloadRunner = (ctx: ReloadRunContext) => Promise<void | ReloadAttemptOutcome>;
 
 const DEFAULT_DEBOUNCE_MS = 250;
 const DEFAULT_MUTATION_WINDOW_TTL_MS = 1500;
@@ -46,7 +48,7 @@ const OPERATION_RESULT_LIMIT = 50;
 
 export class ReloadCoordinatorService {
   private readonly slots = new Map<string, ConfigReloadSlot>();
-  private readonly inFlightReloads = new Set<Promise<void>>();
+  private readonly inFlightReloads = new Set<Promise<void | ReloadAttemptOutcome>>();
   private readonly defaultDebounceMs: number;
   private readonly mutationWindowTtlMs: number;
   private disposed = false;
@@ -121,6 +123,9 @@ export class ReloadCoordinatorService {
     }
 
     if (slot.state.inFlight) {
+      // A newly admitted trailing request invalidates the active runner's publication token.
+      // Suppressed watchers return above and intentionally keep the active batch current.
+      slot.freshnessGeneration += 1;
       slot.state.pending = true;
       slot.pendingReason = slot.pendingReason ?? reason;
       slot.pendingOperationId = slot.pendingOperationId ?? options?.operationId;
@@ -240,11 +245,18 @@ export class ReloadCoordinatorService {
     slot.state.startedAt = Date.now();
 
     let failure: ReturnType<typeof toReloadFailure> | undefined;
-    let reloadPromise: Promise<void> | undefined;
+    let outcome: void | ReloadAttemptOutcome = undefined;
+    let reloadPromise: Promise<void | ReloadAttemptOutcome> | undefined;
     try {
-      reloadPromise = this.runReload({ configPath: slot.configPath, reason, operationId });
+      const attemptGeneration = slot.freshnessGeneration;
+      reloadPromise = this.runReload({
+        configPath: slot.configPath,
+        reason,
+        operationId,
+        canPublish: () => !this.disposed && attemptGeneration === slot.freshnessGeneration,
+      });
       this.inFlightReloads.add(reloadPromise);
-      await reloadPromise;
+      outcome = await reloadPromise;
     } catch (error) {
       failure = toReloadFailure(error);
     } finally {
@@ -262,6 +274,34 @@ export class ReloadCoordinatorService {
 
     const completedAt = Date.now();
     slot.state.executedCount += 1;
+
+    if (!failure && outcome && outcome.status === 'superseded') {
+      // Keep every handle and reason alive: none of this attempt's work was published.
+      // Merge active and already pending batches before scheduling one immediate retry.
+      const mergedOperations = new Map(operations);
+      for (const [pendingOperationId, pendingReason] of slot.pendingOperations) {
+        if (!mergedOperations.has(pendingOperationId)) {
+          mergedOperations.set(pendingOperationId, pendingReason);
+        }
+      }
+      slot.pendingReason = reason;
+      slot.pendingOperationId = operationId ?? slot.pendingOperationId;
+      slot.pendingOperations = mergedOperations;
+      slot.pendingWaiters = [...waiters, ...slot.pendingWaiters];
+      slot.state.pending = true;
+      slot.state.lastRunSucceeded = undefined;
+      slot.state.lastError = undefined;
+      slot.state.lastFailure = undefined;
+      slot.state.inFlight = false;
+      slot.state.completedAt = completedAt;
+      slot.activeOperations = undefined;
+      slot.activeWaiters = [];
+      slot.timer = setTimeout(() => {
+        void this.executeSlot(slot);
+      }, 0);
+      return;
+    }
+
     slot.state.lastRunSucceeded = !failure;
     slot.state.lastError = failure?.message;
     slot.state.lastFailure = failure;
@@ -395,6 +435,7 @@ export class ReloadCoordinatorService {
       activeOperations: undefined,
       activeWaiters: [],
       operationResults: new Map(),
+      freshnessGeneration: 0,
     };
     this.slots.set(key, slot);
     return slot;

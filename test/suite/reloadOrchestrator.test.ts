@@ -51,7 +51,7 @@ function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<boolean> {
 
 function createDeps(
   coordinator: ReloadCoordinatorService | null,
-  options: { reconcileTimeoutMs?: number; onLegacyRefresh?: () => Promise<void> } = {},
+  options: { reconcileTimeoutMs?: number } = {},
 ): ReloadOrchestratorDeps {
   const state = new ExtensionState();
   state.reloadCoordinator = coordinator;
@@ -62,7 +62,6 @@ function createDeps(
   return {
     state,
     reconcileTimeoutMs: options.reconcileTimeoutMs,
-    invalidateCacheAndReload: options.onLegacyRefresh ?? (async () => {}),
   } as unknown as ReloadOrchestratorDeps;
 }
 
@@ -93,7 +92,7 @@ suite('reloadOrchestrator', () => {
     const coordinator = new ReloadCoordinatorService(async () => {
       runCount += 1;
     }, { defaultDebounceMs: 0 });
-    const deps = createDeps(coordinator, { onLegacyRefresh: async () => assert.fail('lifecycle fallback must not run') });
+    const deps = createDeps(coordinator);
     const calls = observeRequests(coordinator);
 
     try {
@@ -180,13 +179,12 @@ suite('reloadOrchestrator', () => {
         throw new Error('initial parse failure');
       }
     }, { defaultDebounceMs: 0 });
-    let legacyRefreshCount = 0;
-    const deps = createDeps(coordinator, { onLegacyRefresh: async () => { legacyRefreshCount += 1; } });
+    const deps = createDeps(coordinator);
     const calls = observeRequests(coordinator);
 
     try {
       scheduleDeleteReconcile(deps, 'C:/failed-delete', 'delete-initial', 'deleted-node', 'CatalogFailed');
-      assert.strictEqual(await waitFor(() => calls.length === 2 || legacyRefreshCount > 0), true);
+      assert.strictEqual(await waitFor(() => calls.length === 2), true);
       if (calls.length === 2) {
         await calls[1].handle.completed;
       }
@@ -196,7 +194,6 @@ suite('reloadOrchestrator', () => {
       assert.notStrictEqual(calls[1].options?.operationId, calls[0].options?.operationId);
       assert.strictEqual(calls[1].reason, 'delete-command');
       assert.deepStrictEqual(calls[1].options, { operationId: calls[1].options?.operationId, debounceMs: 0 });
-      assert.strictEqual(legacyRefreshCount, 0);
       assert.deepStrictEqual(vscodeTestState.informationLog, []);
       assert.deepStrictEqual(vscodeTestState.warningLog, [], 'recovery that converged should stay silent');
     } finally {
@@ -210,16 +207,14 @@ suite('reloadOrchestrator', () => {
       execution += 1;
       throw new Error(execution === 1 ? 'initial reload failed' : 'forced recovery failed');
     }, { defaultDebounceMs: 0 });
-    let legacyRefreshCount = 0;
-    const deps = createDeps(coordinator, { onLegacyRefresh: async () => { legacyRefreshCount += 1; } });
+    const deps = createDeps(coordinator);
     const calls = observeRequests(coordinator);
 
     try {
       scheduleDeleteReconcile(deps, 'C:/recovery-failure', 'delete-failed-recovery', 'deleted-node', 'CatalogRecovery');
-      assert.strictEqual(await waitFor(() => vscodeTestState.warningLog.length > 0 || legacyRefreshCount > 0), true);
+      assert.strictEqual(await waitFor(() => vscodeTestState.warningLog.length > 0), true);
 
       assert.strictEqual(calls.length, 2);
-      assert.strictEqual(legacyRefreshCount, 0);
       assert.deepStrictEqual(vscodeTestState.informationLog, []);
       assert.ok(vscodeTestState.warningLog.some((message) => message.includes('автообновление дерева не завершилось')));
       assert.match(Logger.getBufferedContent(), /rollbackApplied":false/);
@@ -269,18 +264,13 @@ suite('reloadOrchestrator', () => {
       }
       await recoveryGate.promise;
     }, { defaultDebounceMs: 0 });
-    let legacyRefreshCount = 0;
-    const deps = createDeps(coordinator, {
-      reconcileTimeoutMs: 25,
-      onLegacyRefresh: async () => { legacyRefreshCount += 1; },
-    });
+    const deps = createDeps(coordinator, { reconcileTimeoutMs: 25 });
     const calls = observeRequests(coordinator);
 
     try {
       scheduleDeleteReconcile(deps, 'C:/recovery-timeout', 'delete-recovery-timeout', 'deleted-node', 'CatalogRecoveryTimeout');
-      assert.strictEqual(await waitFor(() => vscodeTestState.warningLog.length > 0 || legacyRefreshCount > 0), true);
+      assert.strictEqual(await waitFor(() => vscodeTestState.warningLog.length > 0), true);
       assert.strictEqual(calls.length, 2);
-      assert.strictEqual(legacyRefreshCount, 0);
       assert.deepStrictEqual(vscodeTestState.informationLog, []);
       assert.match(Logger.getBufferedContent(), /refreshFailure.*RELOAD_TIMEOUT/);
 
@@ -297,8 +287,7 @@ suite('reloadOrchestrator', () => {
   test('disposed coordinator completion is negative and never falls back to direct lifecycle reload', async () => {
     const gate = deferred<void>();
     const coordinator = new ReloadCoordinatorService(async () => gate.promise, { defaultDebounceMs: 0 });
-    let legacyRefreshCount = 0;
-    const deps = createDeps(coordinator, { onLegacyRefresh: async () => { legacyRefreshCount += 1; } });
+    const deps = createDeps(coordinator);
     const calls = observeRequests(coordinator);
     let disposed = false;
     const originalGetResult = coordinator.getOperationResult.bind(coordinator);
@@ -322,11 +311,10 @@ suite('reloadOrchestrator', () => {
       const disposal = coordinator.dispose();
       gate.resolve();
       await disposal;
-      assert.strictEqual(await waitFor(() => calls.length >= 2 || legacyRefreshCount > 0, 500), true);
+      assert.strictEqual(await waitFor(() => calls.length >= 2, 500), true);
 
       assert.ok(calls.length >= 2, 'disposed initial result should attempt coordinator-owned recovery');
       assert.deepStrictEqual(vscodeTestState.informationLog, []);
-      assert.strictEqual(legacyRefreshCount, 0);
       assert.ok(vscodeTestState.warningLog.some((message) => message.includes('Не удалось подтвердить удаление')));
     } finally {
       gate.resolve();
@@ -335,13 +323,11 @@ suite('reloadOrchestrator', () => {
   });
 
   test('missing coordinator is a typed unavailable failure, with no lifecycle fallback', () => {
-    let legacyRefreshCount = 0;
-    const deps = createDeps(null, { onLegacyRefresh: async () => { legacyRefreshCount += 1; } });
+    const deps = createDeps(null);
 
     scheduleCoordinatedReload(deps, 'C:/unavailable', 'manual-refresh');
     scheduleDeleteReconcile(deps, 'C:/unavailable-delete', 'delete-unavailable', 'deleted-node', 'CatalogUnavailable');
 
-    assert.strictEqual(legacyRefreshCount, 0);
     assert.ok(
       // Logger buffering is the runtime observation point for the void compatibility adapter.
       require('../../src/utils/logger').Logger.getBufferedContent().includes('RELOAD_COORDINATOR_UNAVAILABLE'),
@@ -351,7 +337,6 @@ suite('reloadOrchestrator', () => {
       assert.strictEqual(warned, true);
       assert.deepStrictEqual(vscodeTestState.informationLog, []);
       assert.ok(vscodeTestState.warningLog.some((message) => message.includes('Не удалось подтвердить удаление')));
-      assert.strictEqual(legacyRefreshCount, 0);
     });
   });
 
