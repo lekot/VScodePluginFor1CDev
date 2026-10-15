@@ -96,6 +96,129 @@ suite('SKD validation coverage and XSD contract — #247', () => {
         assert.strictEqual(result.data.xsdChecked, true);
     });
 
+    test('validates params: requires non-empty templatePath', async () => {
+        const ops = new SkdOperations({ extensionPath: repoRoot });
+        const result = await ops.skdValidate({ templatePath: '' });
+        assert.strictEqual(result.success, false);
+        assert.strictEqual((result as { error: string }).error, 'параметр templatePath обязателен');
+    });
+
+    test('passes detailed, maxErrors, and outFile arguments to powershell runner', async () => {
+        let capturedArgs: string[] = [];
+        const ops = new SkdOperations({
+            extensionPath: repoRoot,
+            runPowerShellScript: async (options) => {
+                capturedArgs = [...options.args];
+                return {
+                    stdout: '=== Validation OK: Template.xml (15 checks; XSD not checked: no schemas) ===\n',
+                    stderr: '',
+                    exitCode: 0,
+                };
+            },
+        });
+
+        const result = await ops.skdValidate({
+            templatePath: '/dummy/Template.xml',
+            detailed: true,
+            maxErrors: 10,
+            outFile: '/dummy/out.json',
+        });
+        assertValidateResult(result);
+        assert.ok(capturedArgs.includes('-Detailed'));
+        assert.ok(capturedArgs.includes('-MaxErrors'));
+        assert.strictEqual(capturedArgs[capturedArgs.indexOf('-MaxErrors') + 1], '10');
+        assert.ok(capturedArgs.includes('-OutFile'));
+        assert.strictEqual(capturedArgs[capturedArgs.indexOf('-OutFile') + 1], '/dummy/out.json');
+    });
+
+    test('handles process failure when exitCode !== 0 and no validation report in stdout', async () => {
+        const ops = new SkdOperations({
+            extensionPath: repoRoot,
+            runPowerShellScript: async () => ({
+                stdout: '',
+                stderr: 'Template file not found: /nonexistent/Template.xml',
+                exitCode: 1,
+            }),
+        });
+
+        const result = await ops.skdValidate({ templatePath: '/nonexistent/Template.xml' });
+        assert.strictEqual(result.success, false);
+        assert.ok((result as { error: string }).error.includes('Template file not found'));
+    });
+
+    test('falls back to exit code message when exitCode !== 0, no report, and empty stdout/stderr', async () => {
+        const ops = new SkdOperations({
+            extensionPath: repoRoot,
+            runPowerShellScript: async () => ({
+                stdout: '',
+                stderr: '',
+                exitCode: 2,
+            }),
+        });
+
+        const result = await ops.skdValidate({ templatePath: '/dummy/Template.xml' });
+        assert.strictEqual(result.success, false);
+        assert.strictEqual((result as { error: string }).error, 'skd-validate failed with exit code 2');
+    });
+
+    test('treats warning in validation report as valid=false', async () => {
+        const ops = new SkdOperations({
+            extensionPath: repoRoot,
+            runPowerShellScript: async () => ({
+                stdout: [
+                    '[OK]  XML parsed successfully',
+                    '[WARN]  Expression field1 has potential syntax issue',
+                    '=== Result: 0 errors, 1 warnings (15 checks; XSD not checked: no schemas) ===',
+                ].join('\n') + '\n',
+                stderr: '',
+                exitCode: 0,
+            }),
+        });
+
+        const result = await ops.skdValidate({ templatePath: '/dummy/Template.xml' });
+        assertValidateResult(result);
+        assert.strictEqual(result.data.valid, false);
+        assert.strictEqual(result.data.warningCount, 1);
+        assert.strictEqual(result.data.errorCount, 0);
+    });
+
+    test('parses alternative XSD not checked format', async () => {
+        const ops = new SkdOperations({
+            extensionPath: repoRoot,
+            runPowerShellScript: async () => ({
+                stdout: [
+                    'XSD: 2.15 — not checked: missing schema cache',
+                    '=== Result: 0 errors, 0 warnings ===',
+                ].join('\n') + '\n',
+                stderr: '',
+                exitCode: 0,
+            }),
+        });
+
+        const result = await ops.skdValidate({ templatePath: '/dummy/Template.xml' });
+        assertValidateResult(result);
+        assert.strictEqual(result.data.coverage, 'partial');
+        assert.strictEqual(result.data.xsdChecked, false);
+        assert.strictEqual(result.data.xsdReason, 'missing schema cache');
+    });
+
+    test('defaults to no schemas when output has no XSD mentions', async () => {
+        const ops = new SkdOperations({
+            extensionPath: repoRoot,
+            runPowerShellScript: async () => ({
+                stdout: '=== Result: 0 errors, 0 warnings ===\n',
+                stderr: '',
+                exitCode: 0,
+            }),
+        });
+
+        const result = await ops.skdValidate({ templatePath: '/dummy/Template.xml' });
+        assertValidateResult(result);
+        assert.strictEqual(result.data.coverage, 'partial');
+        assert.strictEqual(result.data.xsdChecked, false);
+        assert.strictEqual(result.data.xsdReason, 'no schemas');
+    });
+
     test('real PowerShell execution on standalone template returns partial coverage with xsdChecked=false', async function () {
         this.timeout(15000);
         const pwsh = await resolvePowerShellExecutable();
