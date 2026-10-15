@@ -328,6 +328,37 @@ function X {
 	$script:xml.AppendLine($text) | Out-Null
 }
 
+function Save-FileAtomically([string]$destinationPath, [string]$fileContent, [System.Text.Encoding]$encoding) {
+	$targetDir = [System.IO.Path]::GetDirectoryName($destinationPath)
+	if ($targetDir -and -not (Test-Path -LiteralPath $targetDir)) {
+		[System.IO.Directory]::CreateDirectory($targetDir) | Out-Null
+	}
+	$guid = [System.Guid]::NewGuid().ToString('N')
+	$tempPath = "$destinationPath.tmp.$guid"
+	$backupPath = "$destinationPath.bak.$guid"
+
+	try {
+		[System.IO.File]::WriteAllText($tempPath, $fileContent, $encoding)
+		if (Test-Path -LiteralPath $destinationPath) {
+			try {
+				[System.IO.File]::Replace($tempPath, $destinationPath, $backupPath)
+			} catch [System.PlatformNotSupportedException] {
+				[System.IO.File]::Copy($destinationPath, $backupPath, $true)
+				[System.IO.File]::Copy($tempPath, $destinationPath, $true)
+			}
+		} else {
+			[System.IO.File]::Move($tempPath, $destinationPath)
+		}
+	} finally {
+		if (Test-Path -LiteralPath $tempPath) {
+			try { [System.IO.File]::Delete($tempPath) } catch {}
+		}
+		if (Test-Path -LiteralPath $backupPath) {
+			try { [System.IO.File]::Delete($backupPath) } catch {}
+		}
+	}
+}
+
 function Esc-Xml {
 	param([string]$s)
 	# Эскейп ЗНАЧЕНИЯ АТРИБУТА: & < > и кавычка — внутри "..." литеральная " невалидна.
@@ -3853,7 +3884,7 @@ if ($parentDir -and -not (Test-Path $parentDir)) {
 
 $content = $script:xml.ToString()
 $utf8Bom = New-Object System.Text.UTF8Encoding $true
-[System.IO.File]::WriteAllText($OutputPath, $content.TrimEnd("`r", "`n"), $utf8Bom)
+Save-FileAtomically $OutputPath $content.TrimEnd("`r", "`n") $utf8Bom
 
 # --- 14. Statistics ---
 
