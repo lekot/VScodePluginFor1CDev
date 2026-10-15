@@ -1521,22 +1521,24 @@ suite('MetadataTreeDataProvider Test Suite', () => {
   });
 
   // ADR 0001 / Plan 7.1: Configuration resourceUri → Configuration.xml in configDir
-  test('getTreeItem for Configuration with filePath sets resourceUri to Configuration.xml in configDir', () => {
+  test('getTreeItem for Configuration source files sets resourceUri to Configuration.xml in configDir', () => {
     const configDir = path.join('C:', 'reps', 'myconfig');
-    const node: TreeNode = {
-      id: 'root',
-      name: 'Configuration',
-      type: MetadataType.Configuration,
-      properties: {},
-      filePath: path.join(configDir, 'ConfigDumpInfo.xml'),
-    };
-    const treeItem = provider.getTreeItem(node);
-    assert.ok(treeItem.resourceUri, 'resourceUri should be set for Configuration with configDir');
-    assert.strictEqual(
-      normalizeFsPathForCompare(treeItem.resourceUri!.fsPath),
-      normalizeFsPathForCompare(path.join(configDir, 'Configuration.xml')),
-      'resourceUri must point to Configuration.xml in configDir (not ConfigDumpInfo.xml)'
-    );
+    for (const sourceFile of ['Configuration.xml', 'ConfigDumpInfo.xml']) {
+      const node: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join(configDir, sourceFile),
+      };
+      const treeItem = provider.getTreeItem(node);
+      assert.ok(treeItem.resourceUri, `resourceUri should be set for Configuration with ${sourceFile}`);
+      assert.strictEqual(
+        normalizeFsPathForCompare(treeItem.resourceUri!.fsPath),
+        normalizeFsPathForCompare(path.join(configDir, 'Configuration.xml')),
+        `resourceUri must point to Configuration.xml in configDir when source is ${sourceFile}`
+      );
+    }
   });
 
   test('getTreeItem for Configuration without filePath does not set resourceUri', () => {
