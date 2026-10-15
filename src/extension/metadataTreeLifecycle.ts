@@ -362,7 +362,18 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     canPublish: () => boolean,
   ): Promise<ReloadAttemptOutcome> {
     throwIfDisposed();
+    const fullLoadAtRequest = loadInProgress?.then(
+      () => ({ status: 'completed' as const }),
+      (error: unknown) => ({ status: 'failed' as const, error }),
+    );
     await invalidateTreeCacheOnly(configPath);
+    if (fullLoadAtRequest) {
+      const result = await fullLoadAtRequest;
+      if (result.status === 'failed') {
+        throw result.error;
+      }
+      throwIfDisposed();
+    }
     while (loadInProgress) {
       await loadInProgress;
       throwIfDisposed();

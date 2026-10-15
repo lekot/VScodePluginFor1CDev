@@ -962,10 +962,18 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
 
-      const foregroundChildren = await provider.getChildren(root.children![0]);
-      assert.deepStrictEqual(foregroundChildren.map((n) => n.name), ['Goods']);
+      let foregroundSettled = false;
+      const foregroundLoad = Promise.resolve(provider.getChildren(root.children![0])).then((children) => {
+        foregroundSettled = true;
+        return children;
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      assert.strictEqual(foregroundSettled, false, 'foreground expansion joins the in-flight warmup parse');
+      assert.strictEqual(parseCalls.filter((typeName) => typeName === 'Catalogs').length, 1);
 
       releaseWarmupCatalogs();
+      const foregroundChildren = await foregroundLoad;
+      assert.deepStrictEqual(foregroundChildren.map((n) => n.name), ['Goods']);
       await new Promise<void>((resolve) => setTimeout(resolve, 20));
 
       assert.ok(!parseCalls.includes('Documents'), 'foreground lazy load must pause remaining warmup items immediately');
@@ -1975,6 +1983,8 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         filePath: path.join(configPath, 'Configuration.xml'),
         children: [catalogNode, documentsNode],
       };
+      catalogNode.parent = rootNode;
+      documentsNode.parent = rootNode;
 
       provider.setRootNode(rootNode, loadContext);
       const result = await provider.getReferenceableObjectsForTypeEditor();
@@ -2037,6 +2047,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         filePath: path.join(configPath, 'Configuration.xml'),
         children: [documentsNode],
       };
+      documentsNode.parent = rootNode;
 
       provider.setRootNode(rootNode, loadContext);
       await provider.getReferenceableObjectsForTypeEditor();

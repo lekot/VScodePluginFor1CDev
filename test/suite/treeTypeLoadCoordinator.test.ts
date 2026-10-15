@@ -1041,9 +1041,21 @@ suite('Tree type-index load ownership runtime', () => {
       .map((filePath) => path.relative(sourceRoot, filePath).replace(/\\/g, '/'));
     assert.deepStrictEqual(parserOwners, ['providers/treeTypeLoadCoordinator.ts']);
 
+    const rawParserOwners = sourceFiles
+      .filter((filePath) => /(?:DesignerParser|EdtParser)\.parseTypeIndex\s*\(/.test(fs.readFileSync(filePath, 'utf8')))
+      .map((filePath) => path.relative(sourceRoot, filePath).replace(/\\/g, '/'))
+      .sort();
+    assert.deepStrictEqual(rawParserOwners, ['agent/agentRoleRights.ts', 'parsers/metadataParser.ts']);
+
     for (const loaderFile of ['providers/treeReferenceLoader.ts', 'providers/objectTypeLoader.ts']) {
       const source = fs.readFileSync(path.join(sourceRoot, loaderFile), 'utf8');
       assert.doesNotMatch(source, /MetadataParser|parseTypeIndex\s*\(/, `${loaderFile} must remain a pure projection`);
+      assert.doesNotMatch(source, /\.children\s*=/, `${loaderFile} must not publish tree children`);
+      assert.doesNotMatch(
+        source,
+        /\.(?:buildCache|removeNode|replaceNode|clearLoadContexts|setLoadContext|setLoadContexts)\s*\(/,
+        `${loaderFile} must not mutate the tree cache`,
+      );
     }
   });
 });

@@ -14,9 +14,13 @@ suite('optimisticNodeBuilder', () => {
     };
 
     let refreshCalls = 0;
+    let invalidationCalls = 0;
     const state = {
       treeDataProvider: {
         resolveNodeForUi: () => target,
+        invalidatePendingTypeLoad: () => {
+          invalidationCalls += 1;
+        },
         refresh: () => {
           refreshCalls += 1;
         },
@@ -30,6 +34,7 @@ suite('optimisticNodeBuilder', () => {
 
     assert.strictEqual(target.children?.length, 1);
     assert.strictEqual(target.children?.[0].name, 'Products');
+    assert.strictEqual(invalidationCalls, 1);
     assert.strictEqual(refreshCalls, 1);
   });
 
@@ -53,6 +58,9 @@ suite('optimisticNodeBuilder', () => {
     const state = {
       treeDataProvider: {
         resolveNodeForUi: () => target,
+        invalidatePendingTypeLoad: () => {
+          throw new Error('duplicate append must not retire a type load');
+        },
         refresh: () => {
           refreshCalls += 1;
         },
