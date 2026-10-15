@@ -344,6 +344,7 @@ export const coreSuiteFiles: string[] = [
   'suite/diskCache.test.js',
   'suite/treeCacheCollision.test.js',
   'suite/treeResolvedContext.test.js',
+  'suite/treeTypeLoadCoordinator.test.js',
   'suite/workspaceRegistryCoordinator.test.js',
   'suite/webviewCspSecurity.test.js',
   'suite/smokeFileCleanup.test.js',
