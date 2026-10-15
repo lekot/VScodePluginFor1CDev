@@ -7,7 +7,7 @@ import type { ReferenceableGroup } from '../types/typeDefinitions';
 import { MetadataParser } from '../parsers/metadataParser';
 import { ConfigFormat } from '../parsers/formatDetector';
 import { MESSAGES } from '../constants/messages';
-import { CONFIGURATION_XML } from '../constants/fileNames';
+import { CONFIGURATION_XML, CONFIG_DUMP_INFO_XML } from '../constants/fileNames';
 import {
   ensureR6PlaceholdersForInstanceNode,
   ensureTabularSectionColumnsPlaceholder,
@@ -295,7 +295,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (!filePath) {
       return null;
     }
-    return path.basename(filePath).toLocaleLowerCase() === CONFIGURATION_XML.toLocaleLowerCase()
+    const fileName = path.basename(filePath).toLocaleLowerCase();
+    return fileName === CONFIGURATION_XML.toLocaleLowerCase()
+      || fileName === CONFIG_DUMP_INFO_XML.toLocaleLowerCase()
       ? path.resolve(path.dirname(filePath))
       : path.resolve(filePath);
   }

@@ -50,10 +50,17 @@ suite('Tree resolved load context', () => {
   const originalDetect = FormatDetector.detect;
   const originalParseStructureOnly = MetadataParser.parseStructureOnly;
   const originalParseTypeIndex = MetadataParser.parseTypeIndex;
+  const activeProviders = new Set<MetadataTreeDataProvider>();
+
+  function createTrackedProvider(): MetadataTreeDataProvider {
+    const provider = new MetadataTreeDataProvider();
+    activeProviders.add(provider);
+    return provider;
+  }
 
   function createState(): { state: ExtensionState; provider: MetadataTreeDataProvider } {
     const state = new ExtensionState();
-    const provider = new MetadataTreeDataProvider();
+    const provider = createTrackedProvider();
     state.treeDataProvider = provider;
     return { state, provider };
   }
@@ -71,9 +78,16 @@ suite('Tree resolved load context', () => {
       async () => ({ status: 'authoritative', items: [], issues: [] });
   }
 
-  setup(() => resetVscodeTestState());
+  setup(() => {
+    activeProviders.clear();
+    resetVscodeTestState();
+  });
 
   teardown(() => {
+    for (const provider of activeProviders) {
+      provider.dispose();
+    }
+    activeProviders.clear();
     (FormatDetector.discoverAllConfigurationRoots as unknown as typeof FormatDetector.discoverAllConfigurationRoots) =
       originalDiscoverAllConfigurationRoots;
     (FormatDetector.discoverAllConfigurationPackageFiles as unknown as typeof FormatDetector.discoverAllConfigurationPackageFiles) =
@@ -436,7 +450,7 @@ suite('Tree resolved load context', () => {
 
   test('keys contexts by root object, so a stale root cannot inherit a replacement context', () => {
     const cache = new TreeCacheService();
-    const provider = new MetadataTreeDataProvider();
+    const provider = createTrackedProvider();
     const oldRoot = makeRoot('config:configuration-a', 'Configuration', 'C:\\workspace\\A');
     const newRoot = makeRoot('config:configuration-a', 'Configuration', 'C:\\workspace\\A');
     const contextOld = { configurationId: 'configuration-a', configPath: 'C:\\workspace\\old', format: ConfigFormat.Designer };
@@ -454,7 +468,7 @@ suite('Tree resolved load context', () => {
   });
 
   test('replaces only the active root with the requested ConfigurationId', () => {
-    const provider = new MetadataTreeDataProvider();
+    const provider = createTrackedProvider();
     const rootA = makeRoot('config:configuration-a', 'Configuration A', 'C:\\workspace\\A');
     const rootB = makeRoot('config:configuration-b', 'Configuration B', 'C:\\workspace\\B');
     (rootA as any).configurationId = 'configuration-a';
@@ -479,7 +493,7 @@ suite('Tree resolved load context', () => {
   });
 
   test('stale nodes retain root identity for scoped lookup after another root is replaced', () => {
-    const provider = new MetadataTreeDataProvider();
+    const provider = createTrackedProvider();
     const createRoot = (configurationId: string): { root: TreeNode; shared: TreeNode } => {
       const shared: TreeNode = {
         id: 'Catalogs.Shared',
@@ -525,7 +539,7 @@ suite('Tree resolved load context', () => {
   });
 
   test('stale selected root reloads both editor scopes through the active root context', async () => {
-    const provider = new MetadataTreeDataProvider();
+    const provider = createTrackedProvider();
     const createRoot = (configurationId: string, configPath: string): TreeNode => {
       const catalogs: TreeNode = {
         id: 'Catalogs',

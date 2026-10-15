@@ -59,6 +59,10 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     provider = new MetadataTreeDataProvider();
   });
 
+  teardown(() => {
+    provider.dispose();
+  });
+
   test('Provider should be initialized', () => {
     assert.ok(provider);
   });
@@ -1943,6 +1947,8 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     };
 
     try {
+      const configPath = path.join('C:', 'reps', 'myconfig');
+      const loadContext = fakeTreeLoadContext(configPath, ConfigFormat.Designer, 'test:type-editor-empty');
       const catalogNode: TreeNode = {
         id: 'Catalogs',
         name: 'Catalogs',
@@ -1959,15 +1965,16 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       };
 
       const rootNode: TreeNode = {
-        id: 'root',
+        id: `config:${loadContext.configurationId}`,
         name: 'Configuration',
         type: MetadataType.Configuration,
         properties: {},
-        filePath: path.join('C:', 'reps', 'myconfig', 'Configuration.xml'),
+        configurationId: loadContext.configurationId,
+        filePath: path.join(configPath, 'Configuration.xml'),
         children: [catalogNode, documentsNode],
       };
 
-      provider.setRootNode(rootNode);
+      provider.setRootNode(rootNode, loadContext);
       const result = await provider.getReferenceableObjectsForTypeEditor();
 
       const docRef = result.find((g) => g.referenceKind === 'DocumentRef');
@@ -2009,6 +2016,8 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     };
 
     try {
+      const configPath = path.join('C:', 'reps', 'myconfig');
+      const loadContext = fakeTreeLoadContext(configPath, ConfigFormat.Designer, 'test:type-editor-cache');
       const documentsNode: TreeNode = {
         id: 'Documents',
         name: 'Documents',
@@ -2018,15 +2027,16 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       };
 
       const rootNode: TreeNode = {
-        id: 'root',
+        id: `config:${loadContext.configurationId}`,
         name: 'Configuration',
         type: MetadataType.Configuration,
         properties: {},
-        filePath: path.join('C:', 'reps', 'myconfig', 'Configuration.xml'),
+        configurationId: loadContext.configurationId,
+        filePath: path.join(configPath, 'Configuration.xml'),
         children: [documentsNode],
       };
 
-      provider.setRootNode(rootNode);
+      provider.setRootNode(rootNode, loadContext);
       await provider.getReferenceableObjectsForTypeEditor();
       assert.ok(parseCalls > 0, 'first call should hit parseTypeIndex');
       const afterFirst = parseCalls;
@@ -2181,11 +2191,14 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         children: [],
       };
 
+      const contextA = fakeTreeLoadContext(path.join('C:', 'reps', 'configA'), ConfigFormat.Designer, 'A');
+
       const rootA: TreeNode = {
         id: 'config:A',
         name: 'Configuration A',
         type: MetadataType.Configuration,
         properties: {},
+        configurationId: contextA.configurationId,
         filePath: path.join('C:', 'reps', 'configA', 'Configuration.xml'),
         children: [catalogsA, documentsA],
       };
@@ -2225,11 +2238,14 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         ],
       };
 
+      const contextB = fakeTreeLoadContext(path.join('C:', 'reps', 'configB'), ConfigFormat.Designer, 'B');
+
       const rootB: TreeNode = {
         id: 'config:B',
         name: 'Configuration B',
         type: MetadataType.Configuration,
         properties: {},
+        configurationId: contextB.configurationId,
         filePath: path.join('C:', 'reps', 'configB', 'Configuration.xml'),
         children: [catalogsB, documentsB],
       };
@@ -2237,7 +2253,10 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       catalogsB.parent = rootB;
       documentsB.parent = rootB;
 
-      provider.setRootNodes([rootA, rootB], undefined);
+      provider.setRootNodes([rootA, rootB], new Map([
+        [rootA, contextA],
+        [rootB, contextB],
+      ]));
 
       const result = await provider.getReferenceableObjectsForTypeEditor(documentsA);
       const docRef = result.find((g) => g.referenceKind === 'DocumentRef');

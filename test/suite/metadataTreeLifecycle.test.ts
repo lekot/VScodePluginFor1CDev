@@ -34,6 +34,8 @@ suite('MetadataTreeLifecycle', () => {
   const originalDetect = FormatDetector.detect;
   const originalParseStructureOnly = MetadataParser.parseStructureOnly;
   const originalInvalidateTypeContentsCache = MetadataParser.invalidateTypeContentsCache;
+  const activeLifecycles = new Set<ReturnType<typeof createMetadataTreeLifecycle>>();
+  const activeProviders = new Set<MetadataTreeDataProvider>();
 
   interface Deferred<T> {
     promise: Promise<T>;
@@ -77,6 +79,7 @@ suite('MetadataTreeLifecycle', () => {
   } {
     const state = new ExtensionState();
     const provider = new MetadataTreeDataProvider();
+    activeProviders.add(provider);
     const messages: Array<string | undefined> = [];
     provider.setMessageUpdater((message) => messages.push(message));
     state.treeDataProvider = provider;
@@ -94,6 +97,12 @@ suite('MetadataTreeLifecycle', () => {
     return { state, provider, messages };
   }
 
+  function createTrackedLifecycle(state: ExtensionState): ReturnType<typeof createMetadataTreeLifecycle> {
+    const lifecycle = createMetadataTreeLifecycle(state);
+    activeLifecycles.add(lifecycle);
+    return lifecycle;
+  }
+
   function createReloadCoordinator(lifecycle: ReturnType<typeof createMetadataTreeLifecycle>): ReloadCoordinatorService {
     return new ReloadCoordinatorService(async ({ configPath, canPublish }) =>
       lifecycle.executeConfigurationReload(configPath, canPublish), { defaultDebounceMs: 0 });
@@ -108,11 +117,21 @@ suite('MetadataTreeLifecycle', () => {
   }
 
   setup(() => {
+    activeLifecycles.clear();
+    activeProviders.clear();
     resetVscodeTestState();
     stubDiscovery();
   });
 
   teardown(() => {
+    for (const lifecycle of activeLifecycles) {
+      lifecycle.dispose();
+    }
+    activeLifecycles.clear();
+    for (const provider of activeProviders) {
+      provider.dispose();
+    }
+    activeProviders.clear();
     (FormatDetector.discoverAllConfigurationRoots as unknown as typeof FormatDetector.discoverAllConfigurationRoots) =
       originalDiscoverAllConfigurationRoots;
     (FormatDetector.discoverAllConfigurationPackageFiles as unknown as typeof FormatDetector.discoverAllConfigurationPackageFiles) =
@@ -140,7 +159,7 @@ suite('MetadataTreeLifecycle', () => {
     };
     provider.setRootNode(existingRoot);
 
-    await createMetadataTreeLifecycle(state).loadMetadataTree();
+    await createTrackedLifecycle(state).loadMetadataTree();
 
     assert.deepStrictEqual(vscodeTestState.warningLog, []);
     assert.deepStrictEqual(provider.getRootNodes(), []);
@@ -153,7 +172,7 @@ suite('MetadataTreeLifecycle', () => {
     vscodeTestState.mockWorkspaceFolders = [];
     const { state, provider, messages } = createStateWithProvider();
 
-    await createMetadataTreeLifecycle(state).loadMetadataTree();
+    await createTrackedLifecycle(state).loadMetadataTree();
 
     assert.deepStrictEqual(vscodeTestState.warningLog, [MESSAGES.NO_WORKSPACE]);
     assert.deepStrictEqual(provider.getRootNodes(), []);
@@ -173,7 +192,7 @@ suite('MetadataTreeLifecycle', () => {
     const activeWatcher = { dispose: () => { watcherDisposals += 1; } } as any;
     state.metadataWatchers = [activeWatcher];
 
-    await assert.rejects(createMetadataTreeLifecycle(state).loadMetadataTree());
+    await assert.rejects(createTrackedLifecycle(state).loadMetadataTree());
 
     assert.strictEqual(vscodeTestState.warningLog.length, 0);
     assert.strictEqual(vscodeTestState.errorLog.length, 1);
@@ -204,7 +223,7 @@ suite('MetadataTreeLifecycle', () => {
     state.metadataWatchers = [activeWatcher];
 
     await assert.rejects(
-      createMetadataTreeLifecycle(state).loadMetadataTree(),
+      createTrackedLifecycle(state).loadMetadataTree(),
       ConfigurationDiscoveryError
     );
 
@@ -236,7 +255,7 @@ suite('MetadataTreeLifecycle', () => {
     const activeWatcher = { dispose: () => { watcherDisposals += 1; } } as any;
     state.metadataWatchers = [activeWatcher];
 
-    await createMetadataTreeLifecycle(state).loadMetadataTree();
+    await createTrackedLifecycle(state).loadMetadataTree();
 
     assert.strictEqual(watcherDisposals, 1);
     assert.strictEqual(state.metadataWatchers.length, 1);
@@ -273,7 +292,7 @@ suite('MetadataTreeLifecycle', () => {
       async () => ConfigFormat.Designer;
 
     const { state, provider } = createStateWithProvider();
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createTrackedLifecycle(state);
     try {
       await lifecycle.loadMetadataTree();
       const rootsBeforeReload = provider.getRootNodes();
@@ -341,7 +360,7 @@ suite('MetadataTreeLifecycle', () => {
       async () => ConfigFormat.Designer;
 
     const { state, provider } = createStateWithProvider();
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createTrackedLifecycle(state);
     const coordinator = createReloadCoordinator(lifecycle);
     try {
       await lifecycle.loadMetadataTree();
@@ -432,7 +451,7 @@ suite('MetadataTreeLifecycle', () => {
       async () => ConfigFormat.Designer;
 
     const { state, provider } = createStateWithProvider();
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createTrackedLifecycle(state);
     const coordinator = createReloadCoordinator(lifecycle);
     try {
       await lifecycle.loadMetadataTree();
@@ -490,7 +509,7 @@ suite('MetadataTreeLifecycle', () => {
       warmupCalls.push(options);
     }) as any;
 
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createTrackedLifecycle(state);
     try {
       await lifecycle.loadMetadataTree();
       warmupCalls.length = 0;
@@ -546,7 +565,7 @@ suite('MetadataTreeLifecycle', () => {
       configurable: true,
       value: { globalStoragePath },
     });
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createTrackedLifecycle(state);
     const coordinator = createReloadCoordinator(lifecycle);
     try {
       await lifecycle.loadMetadataTree();
@@ -617,7 +636,7 @@ suite('MetadataTreeLifecycle', () => {
     (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
 
     const { state, provider } = createStateWithProvider();
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createTrackedLifecycle(state);
     let runnerAttempts = 0;
     const coordinator = new ReloadCoordinatorService(async ({ configPath: requestedConfigPath, canPublish }) => {
       runnerAttempts += 1;
@@ -717,7 +736,7 @@ suite('MetadataTreeLifecycle', () => {
     (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
 
     const { state, provider } = createStateWithProvider();
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createTrackedLifecycle(state);
     let runnerAttempts = 0;
     const coordinator = new ReloadCoordinatorService(async ({ configPath: requestedConfigPath, canPublish }) => {
       runnerAttempts += 1;
@@ -813,7 +832,7 @@ suite('MetadataTreeLifecycle', () => {
       configurable: true,
       value: { globalStoragePath },
     });
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createTrackedLifecycle(state);
     const coordinator = new ReloadCoordinatorService(async ({ configPath: requestedConfigPath, canPublish }) => {
       runnerAttempts += 1;
       return lifecycle.executeConfigurationReload(requestedConfigPath, canPublish);
@@ -913,7 +932,7 @@ suite('MetadataTreeLifecycle', () => {
       configurable: true,
       value: { globalStoragePath },
     });
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createTrackedLifecycle(state);
     const coordinator = new ReloadCoordinatorService(async ({ configPath: requestedConfigPath, canPublish }) => {
       runnerAttempts += 1;
       return lifecycle.executeConfigurationReload(requestedConfigPath, canPublish);
@@ -987,7 +1006,7 @@ suite('MetadataTreeLifecycle', () => {
     (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
 
     const { state, provider } = createStateWithProvider();
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createTrackedLifecycle(state);
     const coordinator = createReloadCoordinator(lifecycle);
     try {
       await lifecycle.loadMetadataTree();
@@ -1057,7 +1076,7 @@ suite('MetadataTreeLifecycle', () => {
       configurable: true,
       value: { globalStoragePath },
     });
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createTrackedLifecycle(state);
     const coordinator = createReloadCoordinator(lifecycle);
     try {
       const fullLoad = lifecycle.loadMetadataTree();
@@ -1112,7 +1131,7 @@ suite('MetadataTreeLifecycle', () => {
       async () => ConfigFormat.Designer;
 
     const { state, provider } = createStateWithProvider();
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createTrackedLifecycle(state);
     const loading = lifecycle.loadMetadataTree();
     await parseStartedPromise;
     lifecycle.dispose();
