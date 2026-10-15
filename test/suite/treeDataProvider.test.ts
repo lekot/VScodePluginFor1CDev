@@ -1522,7 +1522,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
   // ADR 0001 / Plan 7.1: Configuration resourceUri → Configuration.xml in configDir
   test('getTreeItem for Configuration source files sets resourceUri to Configuration.xml in configDir', () => {
-    const configDir = path.join('C:', 'reps', 'myconfig');
+    const configDir = path.resolve('test-configurations', 'myconfig');
     for (const sourceFile of ['Configuration.xml', 'ConfigDumpInfo.xml']) {
       const node: TreeNode = {
         id: 'root',
@@ -1698,8 +1698,8 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       return { root, objectNode };
     };
 
-    const cfgA = makeConfig('config:A', path.join('C:', 'cfgA'), 'Shared');
-    const cfgB = makeConfig('config:B', path.join('C:', 'cfgB'), 'Shared');
+    const cfgA = makeConfig('config:A', path.resolve('test-configurations', 'cfgA'), 'Shared');
+    const cfgB = makeConfig('config:B', path.resolve('test-configurations', 'cfgB'), 'Shared');
     provider.setRootNodes([cfgA.root, cfgB.root]);
 
     const resolved = provider.findRootObjectForCompositionRef('Catalog.Shared', cfgB.objectNode);
@@ -1708,7 +1708,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     assert.ok(resolvedConfigPath, 'Resolved node should have a config path');
     assert.strictEqual(
       normalizeFsPathForCompare(resolvedConfigPath!),
-      normalizeFsPathForCompare(path.join('C:', 'cfgB'))
+      normalizeFsPathForCompare(path.resolve('test-configurations', 'cfgB'))
     );
   });
 
@@ -3160,7 +3160,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
   });
 
   test('getConfigPathForNode walks up to Configuration node with filePath', () => {
-    const cfgPath = path.join('C:', 'proj', 'cfg');
+    const cfgPath = path.resolve('test-configurations', 'proj', 'cfg');
     const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, filePath: path.join(cfgPath, 'Configuration.xml') };
     const catalogs: TreeNode = { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, parent: root };
     const cat: TreeNode = { id: 'Catalogs.Cat1', name: 'Cat1', type: MetadataType.Catalog, properties: {}, parent: catalogs };

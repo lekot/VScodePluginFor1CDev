@@ -568,16 +568,19 @@ suite('Tree resolved load context', () => {
       documents.parent = root;
       return root;
     };
-    const rootA = createRoot('configuration-a', 'C:\\workspace\\A');
-    const oldRootB = createRoot('configuration-b', 'C:\\workspace\\B-old');
-    const currentRootB = createRoot('configuration-b', 'C:\\workspace\\B-current');
+    const rootAPath = path.resolve('test-workspace', 'A');
+    const oldRootBPath = path.resolve('test-workspace', 'B-old');
+    const currentRootBPath = path.resolve('test-workspace', 'B-current');
+    const rootA = createRoot('configuration-a', rootAPath);
+    const oldRootB = createRoot('configuration-b', oldRootBPath);
+    const currentRootB = createRoot('configuration-b', currentRootBPath);
     provider.setRootNodes([rootA, oldRootB], new Map([
-      [rootA, fakeContext('configuration-a', 'C:\\workspace\\A')],
-      [oldRootB, fakeContext('configuration-b', 'C:\\workspace\\B-old')],
+      [rootA, fakeContext('configuration-a', rootAPath)],
+      [oldRootB, fakeContext('configuration-b', oldRootBPath)],
     ]) as any);
     provider.setRootNodes([rootA, currentRootB], new Map([
-      [rootA, fakeContext('configuration-a', 'C:\\workspace\\A')],
-      [currentRootB, fakeContext('configuration-b', 'C:\\workspace\\B-current', ConfigFormat.EDT)],
+      [rootA, fakeContext('configuration-a', rootAPath)],
+      [currentRootB, fakeContext('configuration-b', currentRootBPath, ConfigFormat.EDT)],
     ]) as any);
     assert.strictEqual((provider as any).cache.getLoadContext(oldRootB), undefined);
 
@@ -594,14 +597,14 @@ suite('Tree resolved load context', () => {
 
     const references = await provider.getReferenceableObjectsForTypeEditor(oldRootB);
     const objects = await provider.getObjectableObjectsForEditor(oldRootB);
-    const expectedRootB = 'C:\\workspace\\B-current';
+    const expectedRootB = currentRootBPath;
     assert.ok(references.find((group) => group.referenceKind === 'CatalogRef')?.objectNames.includes('B-current'));
     assert.ok(objects.find((group) => group.objectKind === 'CatalogObject')?.objectNames.includes('B-current'));
     assert.ok(parseCalls.length > 0);
     assert.ok(parseCalls.every((call) => call.configPath === expectedRootB && call.format === ConfigFormat.EDT));
-    assert.ok(!parseCalls.some((call) => call.configPath === 'C:\\workspace\\A'));
+    assert.ok(!parseCalls.some((call) => call.configPath === rootAPath));
 
-    const foreignRoot = createRoot('configuration-foreign', 'C:\\workspace\\Foreign');
+    const foreignRoot = createRoot('configuration-foreign', path.resolve('test-workspace', 'Foreign'));
     const isScopeFailure = (error: unknown): boolean =>
       typeof error === 'object'
       && error !== null
