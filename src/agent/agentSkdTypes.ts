@@ -89,14 +89,18 @@ export interface SkdInfoResult {
 /**
  * Допустимые операции редактирования СКД (skd-edit.ps1: -Operation ValidateSet).
  */
-export type SkdEditOperation =
-    | 'add-field' | 'add-total' | 'add-calculated-field' | 'add-parameter' | 'add-filter'
-    | 'add-dataParameter' | 'add-order' | 'add-selection' | 'add-dataSetLink'
-    | 'add-dataSet' | 'add-variant' | 'add-conditionalAppearance'
-    | 'set-query' | 'set-outputParameter' | 'set-structure'
-    | 'modify-field' | 'modify-filter' | 'modify-dataParameter'
-    | 'clear-selection' | 'clear-order' | 'clear-filter'
-    | 'remove-field' | 'remove-total' | 'remove-calculated-field' | 'remove-parameter' | 'remove-filter';
+export const SKD_EDIT_OPERATIONS = [
+    'add-field', 'add-total', 'add-calculated-field', 'add-parameter', 'add-filter',
+    'add-dataParameter', 'add-order', 'add-selection', 'add-dataSetLink',
+    'add-dataSet', 'add-variant', 'add-conditionalAppearance', 'add-drilldown',
+    'set-query', 'patch-query', 'set-outputParameter', 'set-structure',
+    'modify-field', 'modify-filter', 'modify-dataParameter', 'modify-parameter', 'modify-structure', 'set-field-role',
+    'rename-parameter', 'reorder-parameters',
+    'clear-selection', 'clear-order', 'clear-filter', 'clear-conditionalAppearance',
+    'remove-field', 'remove-total', 'remove-calculated-field', 'remove-parameter', 'remove-filter',
+] as const;
+
+export type SkdEditOperation = (typeof SKD_EDIT_OPERATIONS)[number];
 
 /**
  * Параметры атомарного редактирования СКД.
