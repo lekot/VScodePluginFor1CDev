@@ -26,6 +26,7 @@ export const coreSuiteFiles: string[] = [
   'suite/supportCommands.test.js',
   'suite/supportTreeDecorations.test.js',
   'suite/agentSupportOperations.test.js',
+  'suite/skdSupportPolicy.test.js',
   'suite/agentDeployPartialResult.test.js',
   'suite/formXmlParser.test.js',
   'suite/formXmlWriter.test.js',
