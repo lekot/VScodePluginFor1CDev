@@ -8,6 +8,7 @@ import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import { optimisticAppendCreatedNode } from '../../src/helpers/optimisticNodeBuilder';
 import { ExtensionState } from '../../src/state/extensionState';
 import { createMetadataTreeLifecycle } from '../../src/extension/metadataTreeLifecycle';
+import * as diskCache from '../../src/utils/diskCache';
 import { fakeTreeLoadContext } from '../helpers/fakeTreeLoadContext';
 
 interface Deferred<T> {
@@ -750,6 +751,84 @@ suite('Tree type-index load ownership runtime', () => {
       releaseInvalidation.resolve();
       await invalidation;
       lifecycle.dispose();
+    }
+  });
+
+  test('configuration invalidation starts parser fencing before the first tree-disk await', async () => {
+    const provider = createProvider();
+    const fixture = createRootFixture('disk-await-invalidation');
+    provider.setRootNodes([fixture.root], new Map([[fixture.root, contextFor(fixture)]]));
+    const state = new ExtensionState();
+    state.treeDataProvider = provider;
+    Object.defineProperty(state, '_extensionContext', {
+      configurable: true,
+      value: { globalStoragePath: path.join(os.tmpdir(), 'tree-type-load-owner-disk-cache') },
+    });
+    const lifecycle = createMetadataTreeLifecycle(state);
+    const diskStarted = deferred<void>();
+    const releaseDisk = deferred<void>();
+    const releaseParserInvalidation = deferred<void>();
+    const releaseParse = deferred<TreeNode[]>();
+    const parseStarted = deferred<void>();
+    let parseCalls = 0;
+    let parserInvalidationCalls = 0;
+    const originalInvalidateTreeCache = diskCache.invalidateTreeCache;
+    (diskCache as unknown as { invalidateTreeCache: typeof diskCache.invalidateTreeCache }).invalidateTreeCache = async () => {
+      diskStarted.resolve();
+      await releaseDisk.promise;
+    };
+    MetadataParser.invalidateTypeContentsCache = async () => {
+      parserInvalidationCalls += 1;
+      await releaseParserInvalidation.promise;
+    };
+    MetadataParser.parseTypeIndex = async () => {
+      parseCalls += 1;
+      if (parseCalls === 1) {
+        parseStarted.resolve();
+        return releaseParse.promise;
+      }
+      return [child('Catalogs.DuringInvalidation')];
+    };
+    let invalidation: Promise<void> | undefined;
+    let staleLoad: Promise<TreeNode[]> | undefined;
+
+    try {
+      staleLoad = Promise.resolve(provider.getChildren(fixture.catalogs));
+      await parseStarted.promise;
+      invalidation = lifecycle.invalidateTreeCacheOnly(fixture.configPath);
+      await diskStarted.promise;
+      assert.strictEqual(
+        parserInvalidationCalls,
+        1,
+        'parser fencing must start synchronously before the first tree-cache disk await',
+      );
+
+      const suspendedRequest = Promise.resolve(provider.getChildren(fixture.catalogs));
+      await assert.rejects(
+        suspendedRequest,
+        (error: unknown) => resultErrorCode(error) === 'TREE_LOAD_SUPERSEDED',
+      );
+      assert.strictEqual(parseCalls, 1, 'suspension must happen before the first tree-cache disk await');
+      assert.deepStrictEqual(fixture.catalogs.children, [], 'the old visible root stays intact during invalidation');
+
+      releaseParse.resolve([child('Catalogs.BeforeInvalidation')]);
+      const staleResult = await Promise.allSettled([staleLoad]);
+      assert.strictEqual(staleResult[0]?.status, 'rejected');
+      if (staleResult[0]?.status === 'rejected') {
+        assert.strictEqual(resultErrorCode(staleResult[0].reason), 'TREE_LOAD_SUPERSEDED');
+      }
+    } finally {
+      releaseDisk.resolve();
+      releaseParserInvalidation.resolve();
+      releaseParse.resolve([]);
+      if (staleLoad) {
+        await Promise.allSettled([staleLoad]);
+      }
+      if (invalidation) {
+        await invalidation;
+      }
+      lifecycle.dispose();
+      (diskCache as unknown as { invalidateTreeCache: typeof diskCache.invalidateTreeCache }).invalidateTreeCache = originalInvalidateTreeCache;
     }
   });
 });
