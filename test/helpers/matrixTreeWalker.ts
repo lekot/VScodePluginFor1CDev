@@ -1,3 +1,4 @@
+import { fakeTreeLoadContext } from './fakeTreeLoadContext';
 import { TreeNode } from '../../src/models/treeNode';
 import { MetadataParser } from '../../src/parsers/metadataParser';
 import { ConfigFormat, FormatDetector } from '../../src/parsers/formatDetector';
@@ -24,13 +25,13 @@ export async function buildDesignerMatrixContext(workDir: string): Promise<Desig
 
   let root = await MetadataParser.parseStructureOnly(workDir);
   const format = await FormatDetector.detect(workDir);
-  root = normalizeEmptyPlaceholderTree(root, { configPath: workDir, format });
+  root = normalizeEmptyPlaceholderTree(root, fakeTreeLoadContext(workDir, format));
 
   root.id = 'config:test-matrix';
   root.name = 'Configuration';
 
   const provider = new MetadataTreeDataProvider();
-  provider.setRootNode(root, { configPath: workDir, format: ConfigFormat.Designer });
+  provider.setRootNode(root, fakeTreeLoadContext(workDir, ConfigFormat.Designer));
 
   return { provider, root, configPath: workDir };
 }

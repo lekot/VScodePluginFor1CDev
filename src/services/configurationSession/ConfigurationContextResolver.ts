@@ -22,6 +22,7 @@ export interface TreeNodeLike {
   readonly id?: string;
   readonly name?: string;
   readonly type?: string;
+  readonly configurationId?: ConfigurationId;
   readonly parent?: TreeNodeLike;
   readonly properties?: Record<string, unknown>;
   readonly filePath?: string;
@@ -83,6 +84,10 @@ export class ConfigurationContextResolver {
     let candidateConfigId: string | undefined;
 
     while (current) {
+      if (typeof current.configurationId === 'string' && current.configurationId.length > 0) {
+        candidateConfigId = current.configurationId;
+        break;
+      }
       if (typeof current.properties?.configurationId === 'string' && current.properties.configurationId.length > 0) {
         candidateConfigId = current.properties.configurationId;
         break;

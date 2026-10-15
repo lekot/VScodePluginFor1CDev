@@ -19,6 +19,7 @@ import { MetadataParser } from '../../src/parsers/metadataParser';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
 import { ExtensionState } from '../../src/state/extensionState';
+import { fakeTreeLoadContext } from '../helpers/fakeTreeLoadContext';
 import {
   fireWorkspaceFoldersChanged,
   resetVscodeTestState,
@@ -79,6 +80,17 @@ suite('MetadataTreeLifecycle', () => {
     const messages: Array<string | undefined> = [];
     provider.setMessageUpdater((message) => messages.push(message));
     state.treeDataProvider = provider;
+    state.configurationContextResolver = {
+      resolveFromResource: async (configPath: string, capability: string) => {
+        assert.strictEqual(capability, 'read');
+        const context = fakeTreeLoadContext(configPath, ConfigFormat.Designer);
+        return {
+          configurationId: context.configurationId,
+          rootPath: context.configPath,
+          format: context.format,
+        };
+      },
+    } as any;
     return { state, provider, messages };
   }
 

@@ -1,3 +1,4 @@
+import { fakeTreeLoadContext } from '../helpers/fakeTreeLoadContext';
 import * as assert from 'assert';
 import * as fc from 'fast-check';
 import * as path from 'path';
@@ -6,6 +7,7 @@ import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { MetadataParser } from '../../src/parsers/metadataParser';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
+import type { TreeLoadContext } from '../../src/types/treeLoadContext';
 import { isTabularSectionColumnsContainer } from '../../src/utils/treeNormalization';
 import {
   createMetadataUniverseIdentityIndex,
@@ -81,7 +83,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       children: [catalogs],
     };
     catalogs.parent = root;
-    provider.setRootNode(root, { configPath, format: ConfigFormat.Designer });
+    provider.setRootNode(root, fakeTreeLoadContext(configPath, ConfigFormat.Designer));
     (provider as unknown as { getChildren: () => Promise<TreeNode[]> }).getChildren = () => {
       throw new Error('completion lookup must not invoke getChildren');
     };
@@ -117,7 +119,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     };
     commonGroup.parent = root;
     commonModules.parent = commonGroup;
-    provider.setRootNode(root, { configPath, format: ConfigFormat.Designer });
+    provider.setRootNode(root, fakeTreeLoadContext(configPath, ConfigFormat.Designer));
 
     assert.deepStrictEqual(
       provider.getLoadedTypeObjectsForResource(
@@ -145,7 +147,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       children: [unloadedCatalogs],
     };
     unloadedCatalogs.parent = root;
-    provider.setRootNode(root, { configPath, format: ConfigFormat.Designer });
+    provider.setRootNode(root, fakeTreeLoadContext(configPath, ConfigFormat.Designer));
     const resourcePath = path.join(configPath, 'Documents', 'Invoice', 'Ext', 'ObjectModule.bsl');
 
     assert.deepStrictEqual(provider.getLoadedTypeObjectsForResource(resourcePath, 'Catalogs'), { status: 'notLoaded' });
@@ -178,7 +180,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       children: [replacedCatalogs],
     };
     replacedCatalogs.parent = replacedRoot;
-    provider.setRootNode(replacedRoot, { configPath, format: ConfigFormat.Designer });
+    provider.setRootNode(replacedRoot, fakeTreeLoadContext(configPath, ConfigFormat.Designer));
     assert.deepStrictEqual(
       provider.getLoadedTypeObjectsForResource(resourcePath, 'Catalogs'),
       { status: 'loaded', names: ['AfterReload'] },
@@ -218,12 +220,9 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     };
     mainCatalogs.parent = mainRoot;
     extensionCatalogs.parent = extensionRoot;
-    const contexts = new Map<string, { configPath: string; format: ConfigFormat }>([
-      ['main-root', { configPath: mainPath, format: ConfigFormat.Designer }],
-      ['extension-root', {
-        configPath: process.platform === 'win32' ? extensionPath.toUpperCase() : extensionPath,
-        format: ConfigFormat.Designer,
-      }],
+    const contexts = new Map<TreeNode, TreeLoadContext>([
+      [mainRoot, fakeTreeLoadContext(mainPath, ConfigFormat.Designer)],
+      [extensionRoot, fakeTreeLoadContext(process.platform === 'win32' ? extensionPath.toUpperCase() : extensionPath, ConfigFormat.Designer)],
     ]);
     provider.setRootNodes([mainRoot, extensionRoot], contexts);
     const resourcePath = path.join(extensionPath, 'CommonModules', 'Caller', 'Ext', 'Module.bsl');
@@ -256,7 +255,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       children: [],
       filePath: path.join(configPath, 'Configuration.xml'),
     };
-    provider.setRootNode(rootNode, { configPath, format: ConfigFormat.Designer });
+    provider.setRootNode(rootNode, fakeTreeLoadContext(configPath, ConfigFormat.Designer));
     provider.setSupportStateCache({
       get: () => ({} as CachedSupportStatus),
     });
@@ -296,7 +295,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       properties: {},
     };
     rootNode.children = [objectNode];
-    provider.setRootNode(rootNode, { configPath, format: ConfigFormat.Designer });
+    provider.setRootNode(rootNode, fakeTreeLoadContext(configPath, ConfigFormat.Designer));
     provider.setSupportStateCache({
       get: () => ({} as CachedSupportStatus),
     });
@@ -396,10 +395,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       properties: {},
       children: [],
     };
-    provider.setRootNode(rootNode, {
-      configPath: relativeConfigPath,
-      format: ConfigFormat.Designer,
-    });
+    provider.setRootNode(rootNode, fakeTreeLoadContext(relativeConfigPath, ConfigFormat.Designer));
 
     const [actual] = provider.getConfigRootPaths();
     const resolved = path.resolve(relativeConfigPath);
@@ -413,56 +409,36 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     );
   });
 
-  test('configuration root replacement preserves empty and trimmed path identity semantics', () => {
-    const emptyPathRoot: TreeNode = {
-      id: 'empty-path-root',
+  test('configuration root replacement requires one matching identity across root, request, and context', () => {
+    const configurationId = 'cfg-replacement' as ConfigurationId;
+    const root: TreeNode = {
+      id: `config:${configurationId}`,
+      configurationId,
       name: 'Configuration',
       type: MetadataType.Configuration,
       properties: {},
     };
-    const emptyPathReplacement: TreeNode = {
-      id: 'empty-path-replacement',
+    const replacement: TreeNode = {
+      id: `config:${configurationId}`,
+      configurationId,
       name: 'Configuration replacement',
       type: MetadataType.Configuration,
       properties: {},
     };
-    provider.setRootNode(emptyPathRoot);
+    const validContext = fakeTreeLoadContext('C:\\cfg', ConfigFormat.Designer, configurationId);
+    provider.setRootNode(root, validContext);
 
-    assert.strictEqual(
-      provider.replaceConfigurationRoot('', emptyPathReplacement, {
-        configPath: '',
-        format: ConfigFormat.Designer,
-      }),
-      true,
-      'missing and empty provider paths retain their existing empty identity',
-    );
+    const wrongContext = fakeTreeLoadContext('C:\\other', ConfigFormat.EDT, 'cfg-other');
+    const wrongMarker: TreeNode = { ...replacement, configurationId: 'cfg-other' as ConfigurationId };
+    assert.strictEqual(provider.replaceConfigurationRoot(configurationId, replacement, wrongContext), false);
+    assert.strictEqual(provider.replaceConfigurationRoot(configurationId, wrongMarker, validContext), false);
+    assert.strictEqual(provider.replaceConfigurationRoot('cfg-other' as ConfigurationId, replacement, validContext), false);
+    assert.deepStrictEqual(provider.getRootNodes(), [root], 'rejected replacements must leave roots untouched');
+    assert.deepStrictEqual((provider as any).cache.getLoadContext(root), validContext);
 
-    const configPath = path.resolve('TrimmedConfigurationRoot');
-    const trimmedPathRoot: TreeNode = {
-      id: 'trimmed-path-root',
-      name: 'Configuration',
-      type: MetadataType.Configuration,
-      properties: {},
-    };
-    const trimmedPathReplacement: TreeNode = {
-      id: 'trimmed-path-replacement',
-      name: 'Configuration replacement',
-      type: MetadataType.Configuration,
-      properties: {},
-    };
-    provider.setRootNode(trimmedPathRoot, {
-      configPath: `  ${configPath}  `,
-      format: ConfigFormat.Designer,
-    });
-
-    assert.strictEqual(
-      provider.replaceConfigurationRoot(configPath, trimmedPathReplacement, {
-        configPath,
-        format: ConfigFormat.Designer,
-      }),
-      true,
-      'trimmed provider context paths still match their resolved configuration root',
-    );
+    assert.strictEqual(provider.replaceConfigurationRoot(configurationId, replacement, validContext), true);
+    assert.deepStrictEqual(provider.getRootNodes(), [replacement]);
+    assert.strictEqual((provider as any).cache.getLoadContext(replacement).configurationId, configurationId);
   });
 
   test('getChildren should return empty array when no root node', async () => {
@@ -557,7 +533,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     cat.children = [tabularFolder];
     tabularFolder.children = [tsInstance];
 
-    provider.setRootNode(rootNode, { configPath: cfgPath, format: ConfigFormat.Designer });
+    provider.setRootNode(rootNode, fakeTreeLoadContext(cfgPath, ConfigFormat.Designer));
 
     const item = provider.getTreeItem(tsInstance);
     assert.strictEqual(
@@ -848,7 +824,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         ],
       };
       oldRoot.children![0].parent = oldRoot;
-      provider.setRootNode(oldRoot, { configPath: path.join('C:', 'cfgA'), format: ConfigFormat.Designer });
+      provider.setRootNode(oldRoot, fakeTreeLoadContext(path.join('C:', 'cfgA'), ConfigFormat.Designer));
 
       const staleCatalogsRef = oldRoot.children![0];
 
@@ -863,7 +839,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         ],
       };
       newRoot.children![0].parent = newRoot;
-      provider.setRootNode(newRoot, { configPath: path.join('C:', 'cfgA'), format: ConfigFormat.Designer });
+      provider.setRootNode(newRoot, fakeTreeLoadContext(path.join('C:', 'cfgA'), ConfigFormat.Designer));
 
       const children = await provider.getChildren(staleCatalogsRef);
       assert.deepStrictEqual(children.map((n) => n.name), ['ReloadedCatalog']);
@@ -919,7 +895,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       common.children![0].parent = common;
       root.children = [common];
 
-      provider.setRootNode(root, { configPath: cfgPath, format: ConfigFormat.Designer });
+      provider.setRootNode(root, fakeTreeLoadContext(cfgPath, ConfigFormat.Designer));
 
       const rolesNode = common.children![0];
       const children = await provider.getChildren(rolesNode);
@@ -975,7 +951,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       for (const child of root.children!) {
         child.parent = root;
       }
-      provider.setRootNode(root, { configPath: cfgPath, format: ConfigFormat.Designer });
+      provider.setRootNode(root, fakeTreeLoadContext(cfgPath, ConfigFormat.Designer));
       provider.startTypeContentsCacheWarmup(0);
 
       while (!parseCalls.includes('Catalogs')) {
@@ -1030,7 +1006,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     staleFolder.parent = staleRoot;
 
     try {
-      provider.setRootNode(staleRoot, { configPath, format: ConfigFormat.Designer });
+      provider.setRootNode(staleRoot, fakeTreeLoadContext(configPath, ConfigFormat.Designer));
       provider.startTypeContentsCacheWarmup({ delayMs: 0, budgetMs: 1000 });
       await parseStartedPromise;
 
@@ -1042,7 +1018,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         filePath: path.join(configPath, 'Configuration.xml'),
         children: [],
       };
-      provider.setRootNode(currentRoot, { configPath, format: ConfigFormat.Designer });
+      provider.setRootNode(currentRoot, fakeTreeLoadContext(configPath, ConfigFormat.Designer));
       releaseParse();
       await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -1084,7 +1060,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     }
 
     try {
-      provider.setRootNode(root, { configPath, format: ConfigFormat.Designer });
+      provider.setRootNode(root, fakeTreeLoadContext(configPath, ConfigFormat.Designer));
       await (provider as any).warmUpTypeContentsCache(
         [root],
         (provider as any).typeContentsWarmupGeneration,
@@ -1127,7 +1103,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     }
 
     try {
-      provider.setRootNode(root, { configPath, format: ConfigFormat.Designer });
+      provider.setRootNode(root, fakeTreeLoadContext(configPath, ConfigFormat.Designer));
       provider.startTypeContentsCacheWarmup({ delayMs: 0, budgetMs: 5, slicePauseMs: 5 } as any);
 
       for (let i = 0; i < 30 && parseCalls.length < 3; i++) {
@@ -1177,8 +1153,8 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     rootB.children![0].parent = rootB;
 
     const contextMap = new Map([
-      ['root-a', { configPath: cfgA, format: ConfigFormat.Designer }],
-      ['root-b', { configPath: cfgB, format: ConfigFormat.Designer }],
+      [rootA, fakeTreeLoadContext(cfgA, ConfigFormat.Designer)],
+      [rootB, fakeTreeLoadContext(cfgB, ConfigFormat.Designer)],
     ]);
 
     try {
@@ -1218,7 +1194,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     root.children![0].parent = root;
 
     try {
-      provider.setRootNode(root, { configPath, format: ConfigFormat.Designer });
+      provider.setRootNode(root, fakeTreeLoadContext(configPath, ConfigFormat.Designer));
       provider.startTypeContentsCacheWarmup({ delayMs: 0 });
       for (let i = 0; i < 20 && parseCalls.length < 1; i++) {
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
@@ -1273,8 +1249,8 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     rootB.children![1].parent = rootB;
 
     const contextMap = new Map([
-      ['root-a', { configPath: cfgA, format: ConfigFormat.Designer }],
-      ['root-b', { configPath: cfgB, format: ConfigFormat.Designer }],
+      [rootA, fakeTreeLoadContext(cfgA, ConfigFormat.Designer)],
+      [rootB, fakeTreeLoadContext(cfgB, ConfigFormat.Designer)],
     ]);
 
     try {
@@ -1314,7 +1290,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
     const firedElements: Array<TreeNode | undefined | null | void> = [];
     try {
-      provider.setRootNode(root, { configPath: cfgPath, format: ConfigFormat.Designer });
+      provider.setRootNode(root, fakeTreeLoadContext(cfgPath, ConfigFormat.Designer));
       const sub = provider.onDidChangeTreeData((element) => {
         firedElements.push(element);
       });
@@ -1371,7 +1347,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
     const firedElements: Array<TreeNode | undefined | null | void> = [];
     try {
-      provider.setRootNode(root, { configPath: cfgPath, format: ConfigFormat.Designer });
+      provider.setRootNode(root, fakeTreeLoadContext(cfgPath, ConfigFormat.Designer));
       const sub = provider.onDidChangeTreeData((element) => {
         firedElements.push(element);
       });
@@ -1428,8 +1404,8 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     rootB.children![0].parent = rootB;
 
     const contextMap = new Map([
-      ['root-a', { configPath: cfgA, format: ConfigFormat.Designer }],
-      ['root-b', { configPath: cfgB, format: ConfigFormat.Designer }],
+      [rootA, fakeTreeLoadContext(cfgA, ConfigFormat.Designer)],
+      [rootB, fakeTreeLoadContext(cfgB, ConfigFormat.Designer)],
     ]);
 
     try {
@@ -2131,7 +2107,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       catalogNode.parent = rootNode;
       documentsNode.parent = rootNode;
 
-      provider.setRootNode(rootNode, { configPath: path.join('C:', 'reps', 'myconfig'), format: ConfigFormat.Designer });
+      provider.setRootNode(rootNode, fakeTreeLoadContext(path.join('C:', 'reps', 'myconfig'), ConfigFormat.Designer));
       provider.startTypeContentsCacheWarmup(0);
 
       for (let i = 0; i < 20 && calls.length < 2; i++) {
@@ -3027,7 +3003,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       children: [parent],
     };
     parent.parent = root;
-    provider.setRootNode(root, { configPath: path.join('C:', 'cfgA'), format: ConfigFormat.Designer });
+    provider.setRootNode(root, fakeTreeLoadContext(path.join('C:', 'cfgA'), ConfigFormat.Designer));
 
     const token = provider.applyOptimisticDelete(second, 'op-1');
     assert.ok(token, 'Optimistic token should be created');
@@ -3058,7 +3034,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       children: [parent],
     };
     parent.parent = root;
-    provider.setRootNode(root, { configPath: path.join('C:', 'cfgA'), format: ConfigFormat.Designer });
+    provider.setRootNode(root, fakeTreeLoadContext(path.join('C:', 'cfgA'), ConfigFormat.Designer));
 
     const token = provider.applyOptimisticDelete(second, 'op-stale');
     assert.ok(token);
@@ -3103,8 +3079,8 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     provider.setRootNodes(
       [a.root, b.root],
       new Map([
-        [a.root.id, { configPath: path.join('C:', 'cfgA'), format: ConfigFormat.Designer }],
-        [b.root.id, { configPath: path.join('C:', 'cfgB'), format: ConfigFormat.Designer }],
+        [a.root, fakeTreeLoadContext(path.join('C:', 'cfgA'), ConfigFormat.Designer)],
+        [b.root, fakeTreeLoadContext(path.join('C:', 'cfgB'), ConfigFormat.Designer)],
       ])
     );
 
@@ -3150,7 +3126,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
   test('getConfigPath returns configPath from load context', () => {
     const cfgPath = path.join('C:', 'proj', 'cfg');
     const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, filePath: path.join(cfgPath, 'Configuration.xml') };
-    provider.setRootNode(root, { configPath: cfgPath, format: ConfigFormat.Designer });
+    provider.setRootNode(root, fakeTreeLoadContext(cfgPath, ConfigFormat.Designer));
     assert.strictEqual(provider.getConfigPath(), cfgPath);
   });
 

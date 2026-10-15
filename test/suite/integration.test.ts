@@ -1,3 +1,4 @@
+import { fakeTreeLoadContext } from '../helpers/fakeTreeLoadContext';
 import * as assert from 'assert';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -92,7 +93,7 @@ suite('Integration', () => {
 
     const provider = new MetadataTreeDataProvider();
     const format = await MetadataParser.getFormat(fixturesPath);
-    provider.setRootNode(rootNode, { configPath: fixturesPath, format });
+    provider.setRootNode(rootNode, fakeTreeLoadContext(fixturesPath, format));
 
     const children = await provider.getChildren();
     assert.strictEqual(children.length, 1);
@@ -139,7 +140,7 @@ suite('Integration', () => {
       const format = await MetadataParser.getFormat(tmpConfigPath);
 
       const rootBefore = await MetadataParser.parse(tmpConfigPath);
-      provider.setRootNode(rootBefore, { configPath: tmpConfigPath, format });
+      provider.setRootNode(rootBefore, fakeTreeLoadContext(tmpConfigPath, format));
 
       const rootVisible = (await provider.getChildren())[0];
       const topTypes = await provider.getChildren(rootVisible);
@@ -151,7 +152,7 @@ suite('Integration', () => {
       await createElement(staleCatalogsRef, createdName);
 
       const rootAfter = await MetadataParser.parse(tmpConfigPath);
-      provider.setRootNode(rootAfter, { configPath: tmpConfigPath, format });
+      provider.setRootNode(rootAfter, fakeTreeLoadContext(tmpConfigPath, format));
 
       const documentsChildren = await provider.getChildren(staleCatalogsRef);
       assert.ok(
@@ -293,7 +294,7 @@ suite('Integration', () => {
 
     const provider = new MetadataTreeDataProvider();
     const format = await MetadataParser.getFormat(fixturesPath);
-    provider.setRootNode(rootNode, { configPath: fixturesPath, format });
+    provider.setRootNode(rootNode, fakeTreeLoadContext(fixturesPath, format));
 
     // Find a subsystem node
     const children = await provider.getChildren();
@@ -347,7 +348,7 @@ suite('Integration', () => {
 
     const provider = new MetadataTreeDataProvider();
     const format = await MetadataParser.getFormat(fixturesPath);
-    provider.setRootNode(rootNode, { configPath: fixturesPath, format });
+    provider.setRootNode(rootNode, fakeTreeLoadContext(fixturesPath, format));
 
     // Get initial children count
     const initialChildren = await provider.getChildren();
@@ -407,7 +408,7 @@ suite('Integration', () => {
 
     const provider = new MetadataTreeDataProvider();
     const format = await MetadataParser.getFormat(fixturesPath);
-    provider.setRootNode(rootNode, { configPath: fixturesPath, format });
+    provider.setRootNode(rootNode, fakeTreeLoadContext(fixturesPath, format));
 
     // Find a subsystem
     const children = await provider.getChildren();
@@ -464,7 +465,7 @@ suite('Integration', () => {
 
     const provider = new MetadataTreeDataProvider();
     const format = await MetadataParser.getFormat(fixturesPath);
-    provider.setRootNode(rootNode, { configPath: fixturesPath, format });
+    provider.setRootNode(rootNode, fakeTreeLoadContext(fixturesPath, format));
 
     // Create an empty subsystem node
     const emptySubsystem = {
@@ -513,7 +514,7 @@ suite('Integration', () => {
 
     const provider = new MetadataTreeDataProvider();
     const format = await MetadataParser.getFormat(fixturesPath);
-    provider.setRootNode(rootNode, { configPath: fixturesPath, format });
+    provider.setRootNode(rootNode, fakeTreeLoadContext(fixturesPath, format));
 
     // Create nested subsystem structure
     const parentSubsystem: TreeNode = {

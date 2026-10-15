@@ -5,7 +5,6 @@ import { MetadataParser } from '../parsers/metadataParser';
 import {
   ConfigurationDiscoveryError,
   FormatDetector,
-  ConfigFormat,
 } from '../parsers/formatDetector';
 import { MetadataWatcherService } from '../services/metadataWatcherService';
 import { loadTreeFromCache, saveTreeToCache, invalidateTreeCache } from '../utils/diskCache';
@@ -14,6 +13,7 @@ import { MESSAGES } from '../constants/messages';
 import { normalizeEmptyPlaceholderTree } from '../utils/treeNormalization';
 import { Logger } from '../utils/logger';
 import type { ReloadAttemptOutcome } from '../types/reloadContracts';
+import type { TreeLoadContext } from '../types/treeLoadContext';
 import {
   createReloadOrchestratorHandlers,
   ReloadOrchestratorHandlers,
@@ -65,6 +65,7 @@ export type MetadataTreeFeatureLifecycle = Omit<MetadataTreeLifecycle, 'executeC
 export type MetadataReloadErrorCode =
   | 'RELOAD_DISPOSED'
   | 'CONFIGURATION_NOT_LOADED'
+  | 'CONFIGURATION_CONTEXT_UNAVAILABLE'
   | 'CONFIGURATION_PARSE_FAILED';
 
 export class MetadataReloadError extends Error {
@@ -132,26 +133,61 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
       useTreeCache?: boolean;
       canWriteTreeCache?: () => boolean;
     } = {},
-  ): Promise<{ rootNode: TreeNode; context: { configPath: string; format: ConfigFormat } }> {
+  ): Promise<{ rootNode: TreeNode; context: TreeLoadContext }> {
+    const resolver = state.configurationContextResolver;
+    if (!resolver) {
+      throw new MetadataReloadError(
+        'CONFIGURATION_CONTEXT_UNAVAILABLE',
+        `Невозможно загрузить конфигурацию без резолвера контекста чтения: ${configRoot}`,
+        configRoot,
+      );
+    }
+
+    let context: TreeLoadContext;
+    try {
+      const resolved = await resolver.resolveFromResource(configRoot, 'read');
+      context = Object.freeze({
+        configurationId: resolved.configurationId,
+        configPath: resolved.rootPath,
+        format: resolved.format,
+      });
+    } catch (error) {
+      throw new MetadataReloadError(
+        'CONFIGURATION_CONTEXT_UNAVAILABLE',
+        `Не удалось определить контекст чтения конфигурации ${configRoot}: ${error instanceof Error ? error.message : String(error)}`,
+        configRoot,
+        error,
+      );
+    }
+
+    const configPath = context.configPath;
     const storagePath = state.extensionContext?.globalStoragePath ?? '';
     const useTreeCache = options.useTreeCache !== false;
     let rootNode: TreeNode | null = storagePath && useTreeCache
-      ? await loadTreeFromCache(storagePath, configRoot)
+      ? await loadTreeFromCache(storagePath, configPath)
       : null;
     if (!rootNode) {
-      rootNode = await MetadataParser.parseStructureOnly(configRoot);
+      rootNode = await MetadataParser.parseStructureOnly(configPath);
       if (storagePath && useTreeCache && (options.canWriteTreeCache?.() ?? true)) {
-        await saveTreeToCache(storagePath, configRoot, rootNode);
+        await saveTreeToCache(storagePath, configPath, rootNode);
       }
     }
-    const format = await FormatDetector.detect(configRoot);
-    rootNode = normalizeEmptyPlaceholderTree(rootNode, { configPath: configRoot, format });
-    const relativePath = getWorkspaceRelativePath(workspaceFolderPath, configRoot);
-    rootNode.id = `config:${path.normalize(configRoot).replace(/\\/g, '_')}`;
+    rootNode = normalizeEmptyPlaceholderTree(rootNode, { configPath, format: context.format });
+    const relativePath = getWorkspaceRelativePath(workspaceFolderPath, configPath);
+    rootNode.id = `config:${context.configurationId}`;
+    const rootProperties = { ...(rootNode.properties ?? {}) };
+    delete (rootProperties as Record<string, unknown>).configurationId;
+    rootNode.properties = rootProperties;
+    Object.defineProperty(rootNode, 'configurationId', {
+      value: context.configurationId,
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
     rootNode.name = relativePath && relativePath !== '.'
       ? `Configuration (~/${relativePath})`
       : 'Configuration';
-    return { rootNode, context: { configPath: configRoot, format } };
+    return { rootNode, context };
   }
 
   function createWatcher(configRoot: string): MetadataWatcherService {
@@ -218,7 +254,7 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
           progress.report({ increment: 0 });
 
           const roots: TreeNode[] = [];
-          const loadContextMap = new Map<string, { configPath: string; format: ConfigFormat }>();
+          const loadContextMap = new Map<TreeNode, TreeLoadContext>();
           const totalRootCount = configs.length + packages.length;
           const rootProgressIncrement = 100 / totalRootCount;
 
@@ -236,7 +272,7 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
               },
             );
             roots.push(rootNode);
-            loadContextMap.set(rootNode.id, context);
+            loadContextMap.set(rootNode, context);
             progress.report({ increment: rootProgressIncrement });
           }
 
@@ -257,7 +293,7 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
             throw new Error(MESSAGES.ERROR_PROVIDER_NOT_INITIALIZED);
           }
           if (roots.length === 1) {
-            provider.setRootNode(roots[0], loadContextMap.get(roots[0].id));
+            provider.setRootNode(roots[0], loadContextMap.get(roots[0]));
           } else {
             provider.setRootNodes(roots, loadContextMap);
           }
@@ -333,6 +369,9 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
         useTreeCache: false,
       });
     } catch (error) {
+      if (error instanceof MetadataReloadError && error.code === 'CONFIGURATION_CONTEXT_UNAVAILABLE') {
+        throw error;
+      }
       throw new MetadataReloadError(
         'CONFIGURATION_PARSE_FAILED',
         `Failed to reload configuration ${configPath}: ${error instanceof Error ? error.message : String(error)}`,
@@ -352,7 +391,7 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
       return { status: 'superseded' };
     }
     const provider = state.treeDataProvider;
-    if (!provider?.replaceConfigurationRoot(configPath, loaded.rootNode, loaded.context)) {
+    if (!provider?.replaceConfigurationRoot(loaded.context.configurationId, loaded.rootNode, loaded.context)) {
       throw new MetadataReloadError(
         'CONFIGURATION_NOT_LOADED',
         `Configuration is not present in the active tree: ${configPath}`,
