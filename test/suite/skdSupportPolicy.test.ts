@@ -13,10 +13,11 @@ import {
 
 type EditPolicy = 'deny' | 'warn' | 'off';
 type ScriptKind = 'skd-edit' | 'skd-compile';
+type CwdSource = 'target' | 'neutral' | 'foreign';
 
 interface DatabasePolicy {
     configSrc: string;
-    editingAllowedCheck: EditPolicy;
+    editingAllowedCheck?: EditPolicy;
 }
 
 interface ProjectPolicy {
@@ -35,11 +36,15 @@ interface RuntimeFixtureOptions {
     omitProjectFile?: boolean;
     configRootRelative?: string;
     cwdPolicy: EditPolicy;
+    absoluteDatabaseConfigSrc?: boolean;
+    driveRelativeDatabaseConfigSrc?: boolean;
+    driveOnlyDatabaseConfigSrc?: boolean;
+    rootRelativeDatabaseConfigSrc?: boolean;
 }
 
 interface RuntimeFixture {
     root: string;
-    cwd: string;
+    cwdBySource: Record<CwdSource, string>;
     targetPath: string;
     definitionPath: string;
 }
@@ -123,23 +128,19 @@ suite('SKD target support policy runtime matrix', function () {
     test('target policy wins over conflicting process CWD policy for deny, warn, and off', async function () {
         if (!available) { this.skip(); return; }
 
-        const cases: Array<{
-            name: string;
-            targetMode: EditPolicy;
-            cwdMode: EditPolicy;
-        }> = [
-            { name: 'deny blocks a CWD off bypass', targetMode: 'deny', cwdMode: 'off' },
-            { name: 'warn reports even when CWD is off', targetMode: 'warn', cwdMode: 'off' },
-            { name: 'off allows even when CWD is deny', targetMode: 'off', cwdMode: 'deny' },
-        ];
-
         const issues: string[] = [];
-        for (const scenario of cases) {
-            await runMatrixCase(scenario.name, {
-                cwdPolicy: scenario.cwdMode,
-                projectPolicy: { editingAllowedCheck: scenario.targetMode },
-            }, scenario.targetMode, issues);
-        }
+        await runMatrixCase('same deny target from target, neutral, and foreign CWD', {
+            cwdPolicy: 'off',
+            projectPolicy: { editingAllowedCheck: 'deny' },
+        }, 'deny', issues, ['target', 'neutral', 'foreign']);
+        await runMatrixCase('same off target from target, neutral, and foreign CWD', {
+            cwdPolicy: 'deny',
+            projectPolicy: { editingAllowedCheck: 'off' },
+        }, 'off', issues, ['target', 'neutral', 'foreign']);
+        await runMatrixCase('target warn reports even when foreign CWD is off', {
+            cwdPolicy: 'off',
+            projectPolicy: { editingAllowedCheck: 'warn' },
+        }, 'warn', issues);
         assert.deepStrictEqual(issues, [], issues.join('\n'));
     });
 
@@ -153,7 +154,7 @@ suite('SKD target support policy runtime matrix', function () {
                 editingAllowedCheck: 'deny',
                 databases: [{ configSrc: './База с пробелом', editingAllowedCheck: 'off' }],
             },
-        }, 'off', issues);
+        }, 'off', issues, ['neutral', 'foreign']);
         assert.deepStrictEqual(issues, [], issues.join('\n'));
     });
 
@@ -171,7 +172,101 @@ suite('SKD target support policy runtime matrix', function () {
                     { configSrc: './База с пробелом/Вложенная', editingAllowedCheck: 'off' },
                 ],
             },
-        }, 'off', issues);
+        }, 'off', issues, ['target']);
+        assert.deepStrictEqual(issues, [], issues.join('\n'));
+    });
+
+    test('most-specific database without an override falls back to project policy', async function () {
+        if (!available) { this.skip(); return; }
+
+        const issues: string[] = [];
+        await runMatrixCase('specific database without policy', {
+            cwdPolicy: 'off',
+            configRootRelative: path.join('Database', 'Nested'),
+            projectPolicy: {
+                editingAllowedCheck: 'deny',
+                databases: [
+                    { configSrc: './Database', editingAllowedCheck: 'off' },
+                    { configSrc: './Database/Nested' },
+                ],
+            },
+        }, 'deny', issues, ['target']);
+        assert.deepStrictEqual(issues, [], issues.join('\n'));
+    });
+
+    test('absolute configSrc retains its absolute meaning', async function () {
+        if (!available) { this.skip(); return; }
+
+        const issues: string[] = [];
+        await runMatrixCase('absolute database override', {
+            cwdPolicy: 'deny',
+            absoluteDatabaseConfigSrc: true,
+            projectPolicy: {
+                editingAllowedCheck: 'deny',
+                databases: [{ configSrc: './База с пробелом', editingAllowedCheck: 'off' }],
+            },
+        }, 'off', issues, ['target']);
+        assert.deepStrictEqual(issues, [], issues.join('\n'));
+    });
+
+    test('drive-relative configSrc is rejected instead of resolving from process CWD', async function () {
+        if (!available) { this.skip(); return; }
+        if (process.platform !== 'win32') {
+            console.warn('[PENDING] drive-relative configSrc semantics are specific to Windows paths.');
+            this.skip();
+            return;
+        }
+
+        const issues: string[] = [];
+        await runMatrixCase('drive-relative configSrc must deny from every CWD', {
+            cwdPolicy: 'off',
+            driveRelativeDatabaseConfigSrc: true,
+            projectPolicy: {
+                editingAllowedCheck: 'deny',
+                databases: [{ configSrc: 'База с пробелом', editingAllowedCheck: 'off' }],
+            },
+        }, 'deny', issues, ['target', 'neutral']);
+        assert.deepStrictEqual(issues, [], issues.join('\n'));
+    });
+
+    test('drive-only configSrc is rejected instead of resolving to the target CWD', async function () {
+        if (!available) { this.skip(); return; }
+        if (process.platform !== 'win32') {
+            console.warn('[PENDING] Drive-only configSrc semantics are specific to Windows paths.');
+            this.skip();
+            return;
+        }
+
+        const issues: string[] = [];
+        await runMatrixCase('drive-only configSrc must deny from every CWD', {
+            cwdPolicy: 'off',
+            configRootRelative: '.',
+            driveOnlyDatabaseConfigSrc: true,
+            projectPolicy: {
+                editingAllowedCheck: 'deny',
+                databases: [{ configSrc: '.', editingAllowedCheck: 'off' }],
+            },
+        }, 'deny', issues, ['target', 'neutral']);
+        assert.deepStrictEqual(issues, [], issues.join('\n'));
+    });
+
+    test('root-relative configSrc is rejected instead of resolving from the current drive', async function () {
+        if (!available) { this.skip(); return; }
+        if (process.platform !== 'win32') {
+            console.warn('[PENDING] Root-relative configSrc semantics are specific to Windows paths.');
+            this.skip();
+            return;
+        }
+
+        const issues: string[] = [];
+        await runMatrixCase('root-relative configSrc must deny from every CWD', {
+            cwdPolicy: 'off',
+            rootRelativeDatabaseConfigSrc: true,
+            projectPolicy: {
+                editingAllowedCheck: 'deny',
+                databases: [{ configSrc: './База с пробелом', editingAllowedCheck: 'off' }],
+            },
+        }, 'deny', issues, ['target', 'neutral']);
         assert.deepStrictEqual(issues, [], issues.join('\n'));
     });
 
@@ -186,7 +281,7 @@ suite('SKD target support policy runtime matrix', function () {
                 editingAllowedCheck: 'deny',
                 databases: [{ configSrc: './База с пробелом', editingAllowedCheck: 'off' }],
             },
-        }, 'deny', issues);
+        }, 'deny', issues, ['target']);
         assert.deepStrictEqual(issues, [], issues.join('\n'));
     });
 
@@ -202,7 +297,7 @@ suite('SKD target support policy runtime matrix', function () {
                 editingAllowedCheck: 'deny',
                 databases: [{ configSrc: './database', editingAllowedCheck: 'off' }],
             },
-        }, caseInsensitiveHost ? 'off' : 'deny', issues);
+        }, caseInsensitiveHost ? 'off' : 'deny', issues, ['target']);
         assert.deepStrictEqual(issues, [], issues.join('\n'));
     });
 
@@ -227,49 +322,62 @@ async function runMatrixCase(
     fixtureOptions: RuntimeFixtureOptions,
     expectedMode: EditPolicy,
     issues: string[],
+    cwdSources: readonly CwdSource[] = ['foreign'],
 ): Promise<void> {
     for (const executable of executables) {
         for (const scriptKind of ['skd-edit', 'skd-compile'] as const) {
             const fixture = await createRuntimeFixture(fixtureOptions);
             try {
-                const before = await fs.readFile(fixture.targetPath);
-                const result = await runProductionScript(executable.path, scriptKind, fixture);
-                const diagnostic = `${result.stdout}\n${result.stderr}`;
-                const label = `${caseName} (${executable.label}, ${scriptKind})`;
+                for (const cwdSource of cwdSources) {
+                    try {
+                        await fs.writeFile(fixture.targetPath, initialTemplateXml, 'utf8');
+                        const before = await fs.readFile(fixture.targetPath);
+                        const result = await runProductionScript(
+                            executable.path,
+                            scriptKind,
+                            fixture,
+                            fixture.cwdBySource[cwdSource],
+                        );
+                        const diagnostic = `${result.stdout}\n${result.stderr}`;
+                        const label = `${caseName} (${executable.label}, ${scriptKind}, ${cwdSource} CWD)`;
 
-                if (expectedMode === 'deny') {
-                    if (result.exitCode !== 1) {
-                        issues.push(`${label}: expected exit 1, got ${result.exitCode}. Output: ${compact(diagnostic)}`);
-                    }
-                    if (!diagnostic.includes('[support-guard]') || !diagnostic.includes('Редактирование отклонено')) {
-                        issues.push(`${label}: expected support guard diagnostic. Output: ${compact(diagnostic)}`);
-                    }
-                    const after = await fs.readFile(fixture.targetPath);
-                    if (!after.equals(before)) {
-                        issues.push(`${label}: denied operation changed target bytes`);
-                    }
-                    continue;
-                }
+                        if (expectedMode === 'deny') {
+                            if (result.exitCode !== 1) {
+                                issues.push(`${label}: expected exit 1, got ${result.exitCode}. Output: ${compact(diagnostic)}`);
+                            }
+                            if (!diagnostic.includes('[support-guard]') || !diagnostic.includes('Редактирование отклонено')) {
+                                issues.push(`${label}: expected support guard diagnostic. Output: ${compact(diagnostic)}`);
+                            }
+                            const after = await fs.readFile(fixture.targetPath);
+                            if (!after.equals(before)) {
+                                issues.push(`${label}: denied operation changed target bytes`);
+                            }
+                            continue;
+                        }
 
-                if (result.exitCode !== 0) {
-                    issues.push(`${label}: expected successful write, got exit ${result.exitCode}. Output: ${compact(diagnostic)}`);
-                    continue;
-                }
-                const after = await fs.readFile(fixture.targetPath);
-                if (after.equals(before)) {
-                    issues.push(`${label}: successful operation left target bytes unchanged`);
-                }
-                const validation = XMLValidator.validate(after.toString('utf8'));
-                if (validation !== true) {
-                    issues.push(`${label}: successful operation did not write well-formed XML: ${JSON.stringify(validation)}`);
-                }
-                const hasGuardDiagnostic = diagnostic.includes('[support-guard]');
-                if (expectedMode === 'warn') {
-                    if (!hasGuardDiagnostic || !diagnostic.includes('ПРЕДУПРЕЖДЕНИЕ')) {
-                        issues.push(`${label}: expected support guard warning after a successful write. Output: ${compact(diagnostic)}`);
+                        if (result.exitCode !== 0) {
+                            issues.push(`${label}: expected successful write, got exit ${result.exitCode}. Output: ${compact(diagnostic)}`);
+                            continue;
+                        }
+                        const after = await fs.readFile(fixture.targetPath);
+                        if (after.equals(before)) {
+                            issues.push(`${label}: successful operation left target bytes unchanged`);
+                        }
+                        const validation = XMLValidator.validate(after.toString('utf8'));
+                        if (validation !== true) {
+                            issues.push(`${label}: successful operation did not write well-formed XML: ${JSON.stringify(validation)}`);
+                        }
+                        const hasGuardDiagnostic = diagnostic.includes('[support-guard]');
+                        if (expectedMode === 'warn') {
+                            if (!hasGuardDiagnostic || !diagnostic.includes('ПРЕДУПРЕЖДЕНИЕ')) {
+                                issues.push(`${label}: expected support guard warning after a successful write. Output: ${compact(diagnostic)}`);
+                            }
+                        } else if (hasGuardDiagnostic) {
+                            issues.push(`${label}: off policy unexpectedly emitted a support guard diagnostic. Output: ${compact(diagnostic)}`);
+                        }
+                    } catch (error) {
+                        issues.push(`${caseName} (${executable.label}, ${scriptKind}, ${cwdSource} CWD): ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
                     }
-                } else if (hasGuardDiagnostic) {
-                    issues.push(`${label}: off policy unexpectedly emitted a support guard diagnostic. Output: ${compact(diagnostic)}`);
                 }
             } catch (error) {
                 issues.push(`${caseName} (${executable.label}, ${scriptKind}): ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
@@ -285,11 +393,14 @@ async function createRuntimeFixture(options: RuntimeFixtureOptions): Promise<Run
     const projectRoot = path.join(root, projectRootName);
     const configRoot = path.join(projectRoot, options.configRootRelative ?? 'База с пробелом');
     const targetPath = path.join(configRoot, templateRelativePath);
-    const cwd = path.join(root, 'Другой проект с отличающейся политикой', 'Рабочая папка');
+    const foreignProjectRoot = path.join(root, 'Другой проект с отличающейся политикой');
+    const foreignCwd = path.join(foreignProjectRoot, 'Рабочая папка');
+    const neutralCwd = path.join(root, 'Нейтральная папка');
     const definitionPath = path.join(root, 'definition.json');
 
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
-    await fs.mkdir(cwd, { recursive: true });
+    await fs.mkdir(foreignCwd, { recursive: true });
+    await fs.mkdir(neutralCwd, { recursive: true });
     await fs.writeFile(path.join(configRoot, 'Configuration.xml'),
         `<MetaDataObject><Configuration uuid="${protectedObjectUuid}" /></MetaDataObject>`, 'utf8');
     await fs.mkdir(path.join(configRoot, 'Ext'), { recursive: true });
@@ -303,20 +414,41 @@ async function createRuntimeFixture(options: RuntimeFixtureOptions): Promise<Run
 
     if (!options.omitProjectFile) {
         const projectFile = path.join(projectRoot, '.v8-project.json');
-        const content = options.projectFileContent ?? JSON.stringify(options.projectPolicy ?? {});
+        const projectPolicy = options.projectPolicy ?? {};
+        const databases = projectPolicy.databases?.map((database) => ({
+            ...database,
+            configSrc: options.driveRelativeDatabaseConfigSrc
+                ? `${path.parse(projectRoot).root.slice(0, 2)}${database.configSrc}`
+                : options.driveOnlyDatabaseConfigSrc
+                    ? path.parse(projectRoot).root.slice(0, 2)
+                    : options.rootRelativeDatabaseConfigSrc
+                        ? '\\' + path.relative(path.parse(projectRoot).root, path.resolve(projectRoot, database.configSrc))
+                : options.absoluteDatabaseConfigSrc
+                    ? path.resolve(projectRoot, database.configSrc)
+                    : database.configSrc,
+        }));
+        const content = options.projectFileContent ?? JSON.stringify(
+            databases ? { ...projectPolicy, databases } : projectPolicy,
+        );
         await fs.writeFile(projectFile, content, 'utf8');
     }
-    await fs.writeFile(path.join(root, 'Другой проект с отличающейся политикой', '.v8-project.json'), JSON.stringify({
+    await fs.writeFile(path.join(foreignProjectRoot, '.v8-project.json'), JSON.stringify({
         editingAllowedCheck: options.cwdPolicy,
     }), 'utf8');
 
-    return { root, cwd, targetPath, definitionPath };
+    return {
+        root,
+        cwdBySource: { target: projectRoot, neutral: neutralCwd, foreign: foreignCwd },
+        targetPath,
+        definitionPath,
+    };
 }
 
 async function runProductionScript(
     executable: string,
     scriptKind: ScriptKind,
     fixture: RuntimeFixture,
+    cwd: string,
 ): Promise<ProcessResult> {
     const scriptPath = path.resolve(__dirname, '..', '..', '..', 'resources', 'skd', `${scriptKind}.ps1`);
     const args = scriptKind === 'skd-edit'
@@ -329,12 +461,12 @@ async function runProductionScript(
         ]
         : [
             '-NoLogo', '-NoProfile', '-NonInteractive', '-File', scriptPath,
-            '-Value', definitionJson,
+            '-DefinitionFile', fixture.definitionPath,
             '-OutputPath', fixture.targetPath,
         ];
 
     return await new Promise<ProcessResult>((resolve, reject) => {
-        const child = spawn(executable, args, { cwd: fixture.cwd, windowsHide: true });
+        const child = spawn(executable, args, { cwd, windowsHide: true });
         const stdout: Buffer[] = [];
         const stderr: Buffer[] = [];
         let timedOut = false;
