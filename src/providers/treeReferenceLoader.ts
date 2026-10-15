@@ -1,14 +1,12 @@
 import * as path from 'path';
 import { compareCodeUnits } from '../utils/compareCodeUnits';
 import { TreeNode, MetadataType } from '../models/treeNode';
-import { Logger } from '../utils/logger';
 import type { ReferenceableGroup } from '../types/typeDefinitions';
-import { MetadataParser } from '../parsers/metadataParser';
-import { ConfigFormat } from '../parsers/formatDetector';
 import { METADATA_TYPE_TO_REFERENCE_KIND } from '../constants/metadataTypeReferenceKinds';
 import { TreeCacheService } from './treeCacheService';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
 import type { ConfigurationId } from '../services/configurationSession/types';
+import { getTypeIndexFolders, isTypeIndexLoaded } from './typeFolderSelector';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
@@ -27,6 +25,10 @@ const REF_KIND_ORDER = [
   'ChartOfAccountsRef',
   'ChartOfCalculationTypesRef',
 ];
+
+export function isReferenceableTypeFolder(typeFolder: TreeNode): boolean {
+  return REFERENCEABLE_METADATA_TYPES.has(typeFolder.type);
+}
 
 function resolveTypeEditorConfigRoot(
   node: TreeNode | undefined,
@@ -116,28 +118,20 @@ export function getTypeEditorReferenceableScopeKey(
 }
 
 /**
- * Number of referenceable type folders that still need disk parse (empty children).
+ * Number of referenceable type folders that still need an index load.
  */
 export function countPendingReferenceableTypeLoads(
   node: TreeNode | undefined,
-  rootNodes: readonly TreeNode[],
-  cache: TreeCacheService
+  rootNodes: readonly TreeNode[]
 ): number {
   const rootsToUse = resolveRootsToUse(node, rootNodes);
   let n = 0;
   for (const root of rootsToUse) {
-    if (!root.children || root.children.length === 0) {
-      continue;
-    }
-    const loadContext = cache.getLoadContext(root);
-    if (!loadContext) {
-      continue;
-    }
-    for (const typeNode of root.children) {
-      if (!REFERENCEABLE_METADATA_TYPES.has(typeNode.type)) {
+    for (const typeNode of getTypeIndexFolders(root)) {
+      if (!isReferenceableTypeFolder(typeNode)) {
         continue;
       }
-      if (typeNode.children && typeNode.children.length > 0) {
+      if (isTypeIndexLoaded(typeNode)) {
         continue;
       }
       n++;
@@ -184,14 +178,11 @@ export function getReferenceableObjects(rootNodes: readonly TreeNode[]): Referen
   }));
 }
 
-function aggregateReferenceableGroupsFromRoots(rootsToUse: readonly TreeNode[]): ReferenceableGroup[] {
+export function projectReferenceableObjectsForTypeEditor(rootsToUse: readonly TreeNode[]): ReferenceableGroup[] {
   const byKind = new Map<string, Set<string>>();
   for (const root of rootsToUse) {
-    if (!root.children) {
-      continue;
-    }
-    for (const child of root.children) {
-      if (!REFERENCEABLE_METADATA_TYPES.has(child.type)) {
+    for (const child of getTypeIndexFolders(root)) {
+      if (!isReferenceableTypeFolder(child)) {
         continue;
       }
       const referenceKind = METADATA_TYPE_TO_REFERENCE_KIND[child.type];
@@ -210,76 +201,3 @@ function aggregateReferenceableGroupsFromRoots(rootsToUse: readonly TreeNode[]):
   }));
 }
 
-/**
- * Returns referenceable objects for the type editor, ensuring that the underlying
- * metadata type nodes (Catalogs/Documents/Enums/...) are loaded.
- *
- * Problem: parseStructureOnly() creates type nodes with empty `children` (lazy loading).
- * If type editor gets an empty list, it can't offer "DocumentRef.<...>" selection.
- */
-export async function getReferenceableObjectsForTypeEditor(
-  node: TreeNode | undefined,
-  rootNodes: readonly TreeNode[],
-  cache: TreeCacheService
-): Promise<ReferenceableGroup[]> {
-  const rootsToUse = resolveRootsToUse(node, rootNodes);
-
-  if (!rootsToUse.length) {
-    return [];
-  }
-
-  type LoadTask = { typeNode: TreeNode; configPath: string; format: ConfigFormat };
-  const loadTasks: LoadTask[] = [];
-
-  for (const root of rootsToUse) {
-    if (!root.children || root.children.length === 0) {
-      continue;
-    }
-
-    const loadContext = cache.getLoadContext(root);
-    if (!loadContext) {
-      continue;
-    }
-    const configPath = loadContext.configPath;
-
-    for (const typeNode of root.children) {
-      if (!REFERENCEABLE_METADATA_TYPES.has(typeNode.type)) {
-        continue;
-      }
-      if (typeNode.children && typeNode.children.length > 0) {
-        continue;
-      }
-      loadTasks.push({ typeNode, configPath, format: loadContext.format });
-    }
-  }
-
-  if (loadTasks.length > 0) {
-    const settled = await Promise.all(
-      loadTasks.map(async ({ typeNode, configPath, format }) => {
-        try {
-          const children = await MetadataParser.parseTypeIndex(configPath, typeNode.id, { format });
-          return { typeNode, children };
-        } catch (e) {
-          Logger.warn('Failed to eager load referenceable type contents for type editor', {
-            configPath,
-            typeNodeId: typeNode.id,
-            error: e instanceof Error ? e.message : String(e),
-          });
-          return { typeNode, children: [] as TreeNode[] };
-        }
-      })
-    );
-
-    for (const { typeNode, children } of settled) {
-      for (const c of children) {
-        c.parent = typeNode;
-      }
-      typeNode.children = children;
-      for (const c of children) {
-        cache.buildCache(c);
-      }
-    }
-  }
-
-  return aggregateReferenceableGroupsFromRoots(rootsToUse);
-}

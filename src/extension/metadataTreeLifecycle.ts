@@ -118,10 +118,25 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     // Increment synchronously, before the first await, so an in-flight parser
     // cannot repopulate the just-invalidated shared cache.
     cacheEpoch += 1;
-    if (state.extensionContext?.globalStoragePath) {
-      await invalidateTreeCache(state.extensionContext.globalStoragePath, configPath);
+    state.treeDataProvider?.invalidateTypeLoadsForConfiguration(configPath);
+
+    const invoke = (operation: () => Promise<void>): Promise<void> => {
+      try {
+        return Promise.resolve(operation());
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    };
+    // Start parser invalidation first so its epoch advances before any disk I/O can suspend.
+    const parserInvalidation = invoke(() => MetadataParser.invalidateTypeContentsCache(configPath));
+    const diskInvalidation = state.extensionContext?.globalStoragePath
+      ? invoke(() => invalidateTreeCache(state.extensionContext!.globalStoragePath, configPath))
+      : Promise.resolve();
+    const results = await Promise.allSettled([diskInvalidation, parserInvalidation]);
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failure) {
+      throw failure.reason;
     }
-    await MetadataParser.invalidateTypeContentsCache(configPath);
   }
 
   const reloadOrchestratorHandlers = createReloadOrchestratorHandlers({ state });
