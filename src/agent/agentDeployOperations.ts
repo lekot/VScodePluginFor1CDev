@@ -18,7 +18,8 @@ import type { ProcessTreeTerminationOutcome } from '../services/ibcmd/processTre
 import type { ConfigurationBinding } from '../bindings/models/configurationBinding';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import { MetadataType, type TreeNode } from '../models/treeNode';
-import { detectChangedConfigFiles, type IncrementalChangeDetectorDeps } from '../services/ibcmd/incrementalChangeDetector';
+import { detectChangedConfigFiles, findDeepestContainingRepository, type IncrementalChangeDetectorDeps } from '../services/ibcmd/incrementalChangeDetector';
+import { validateDeployRelativeFiles } from '../services/ibcmd/deployPathValidator';
 import { runInfobaseConfigExportStatus } from '../infobases/infobaseConfigCommands';
 import { createProcessOutputLineReporter } from '../services/process/processOutputLineReporter';
 import type { AgentResult, ConfigurationScopedParams } from './types';
@@ -237,6 +238,11 @@ export class AgentDeployOperations {
                 return { success: false, error: 'Список файлов не задан.' };
             }
 
+            const validation = await validateDeployRelativeFiles(configRoot, params.files);
+            if (!validation.ok) {
+                return { success: false, error: validation.error };
+            }
+
             const cancellation = createCancellationScope(execution.token);
             const processOutput = createProcessOutputLineReporter(execution.reportStage);
             const progress = createAgentProgress(execution.reportStage);
@@ -290,12 +296,7 @@ export class AgentDeployOperations {
                     if (!gitApi) { return undefined; }
                     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- vscode.git extension API is untyped
                     const repos: any[] = gitApi.repositories ?? [];
-                    return repos.find((r: { rootUri?: { fsPath?: string } }) => {
-                        const rootPath: string = r?.rootUri?.fsPath ?? '';
-                        const normalRoot = rootPath.replace(/\\/g, '/').toLowerCase();
-                        const normalConfig = configRoot.replace(/\\/g, '/').toLowerCase();
-                        return normalConfig.startsWith(normalRoot);
-                    }) ?? repos[0];
+                    return findDeepestContainingRepository(repos, configRoot);
                 },
             };
 

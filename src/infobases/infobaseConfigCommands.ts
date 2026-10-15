@@ -28,6 +28,7 @@ import {
   ibcmdOfflineConnectionFromPrepared,
   type IbcmdConfigCliCredentials,
 } from '../services/ibcmd/ibcmdInfobaseConfigArgs';
+import { validateDeployRelativeFiles } from '../services/ibcmd/deployPathValidator';
 import {
   interpretIbcmdInfobaseOutcome,
   type IbcmdInfobaseConfigOpKind,
@@ -782,6 +783,17 @@ export async function runInfobaseConfigIncrementalImport(
   }
   if (entryUser || (entryPassword !== undefined && entryPassword.length > 0)) {
     importCredentials = { user: entryUser || undefined, password: entryPassword };
+  }
+
+  const validation = await validateDeployRelativeFiles(params.configRoot, params.relativeFiles);
+  if (!validation.ok) {
+    await prep.dispose();
+    return {
+      status: 'error',
+      exitCode: null,
+      userMessage: validation.error ?? 'Файл выходит за границы конфигурации.',
+      logExcerpt: '',
+    };
   }
 
   const connection = ibcmdOfflineConnectionFromPrepared(prep);

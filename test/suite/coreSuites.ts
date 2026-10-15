@@ -347,6 +347,8 @@ export const coreSuiteFiles: string[] = [
   'suite/smokeFileCleanup.test.js',
   'suite/smokeStartupDiagnostics.test.js',
   'suite/copyTestFixtures.test.js',
+  'suite/incrementalChangeDetector.test.js',
+  'suite/deployPathContainment.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),
