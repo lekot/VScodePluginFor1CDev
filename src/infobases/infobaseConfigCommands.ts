@@ -725,6 +725,16 @@ export interface IncrementalImportParams {
 export async function runInfobaseConfigIncrementalImport(
   params: IncrementalImportParams,
 ): Promise<IbcmdInfobaseOperationResult> {
+  const validation = await validateDeployRelativeFiles(params.configRoot, params.relativeFiles);
+  if (!validation.ok) {
+    return {
+      status: 'error',
+      exitCode: null,
+      userMessage: validation.error ?? 'Файл выходит за границы конфигурации.',
+      logExcerpt: '',
+    };
+  }
+
   const ibcmd = getIbcmdService();
   const pathResult = await ibcmd.resolveExecutablePathAsync();
   if (pathResult.kind !== 'resolved') {
@@ -785,16 +795,10 @@ export async function runInfobaseConfigIncrementalImport(
     importCredentials = { user: entryUser || undefined, password: entryPassword };
   }
 
-  const validation = await validateDeployRelativeFiles(params.configRoot, params.relativeFiles);
-  if (!validation.ok) {
-    await prep.dispose();
-    return {
-      status: 'error',
-      exitCode: null,
-      userMessage: validation.error ?? 'Файл выходит за границы конфигурации.',
-      logExcerpt: '',
-    };
-  }
+
+
+
+
 
   const connection = ibcmdOfflineConnectionFromPrepared(prep);
   const importFilesArgs = buildInfobaseConfigImportFilesArgs(

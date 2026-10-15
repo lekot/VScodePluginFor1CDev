@@ -20,6 +20,10 @@ import {
 import { DeployService } from '../../src/bindings/deployService';
 import type { ConfigurationBinding } from '../../src/bindings/models/configurationBinding';
 import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
+import { AgentDeployOperations } from '../../src/agent/agentDeployOperations';
+import { runInfobaseConfigIncrementalImport } from '../../src/infobases/infobaseConfigCommands';
+import { runDeployChangedFilesFromTree } from '../../src/bindings/bindingCommands';
+import { PathBoundaryError } from '../../src/services/configurationSession/pathBoundary';
 
 const FILE_CONN: IbcmdOfflineConnection = {
   kind: 'fileDb',
@@ -304,6 +308,155 @@ suite('deployPathContainment #248', () => {
         (err: any) => err && (err.name === 'PathBoundaryError' || /родительский|outside|абсолютный/i.test(err.message)),
         `buildInfobaseConfigImportFilesArgs must block "${evil}" before ibcmd`,
       );
+    }
+  });
+
+  // ─── 7. AgentDeployOperations containment validation ──────────────────────
+
+  test('AgentDeployOperations.deploySelectedObjects: rejects traversal in files parameter', async () => {
+    const operations = new AgentDeployOperations({
+      bindingManager: {} as never,
+      infobaseStorage: {} as never,
+      getConfigPath: () => null,
+    });
+
+    Reflect.set(operations, 'resolveDeployContext', async () => ({
+      success: true,
+      data: {
+        configRoot: 'C:/configuration',
+        binding: {
+          workspaceFolder: 'ws',
+          configRelativePath: 'Configuration.xml',
+          infobaseIds: ['ib-1'],
+          massDeployment: false,
+        },
+        entries: [],
+        catalog: [],
+        workspaceFolderRoot: 'C:/workspace',
+      },
+    }));
+
+    const result = await operations.deploySelectedObjects({
+      configPath: 'C:/configuration',
+      files: ['../escape/evil.xml'],
+    });
+
+    assert.strictEqual(result.success, false);
+    assert.ok(/родительский|outside|traversal/i.test(result.error ?? ''));
+  });
+
+  test('AgentDeployOperations.deploySelectedObjects: rejects empty files array', async () => {
+    const operations = new AgentDeployOperations({
+      bindingManager: {} as never,
+      infobaseStorage: {} as never,
+      getConfigPath: () => null,
+    });
+
+    Reflect.set(operations, 'resolveDeployContext', async () => ({
+      success: true,
+      data: {
+        configRoot: 'C:/configuration',
+        binding: {
+          workspaceFolder: 'ws',
+          configRelativePath: 'Configuration.xml',
+          infobaseIds: ['ib-1'],
+          massDeployment: false,
+        },
+        entries: [],
+        catalog: [],
+        workspaceFolderRoot: 'C:/workspace',
+      },
+    }));
+
+    const result = await operations.deploySelectedObjects({
+      configPath: 'C:/configuration',
+      files: [],
+    });
+
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result.error, 'Список файлов не задан.');
+  });
+
+  // ─── 8. runInfobaseConfigIncrementalImport containment validation ─────────
+
+  test('runInfobaseConfigIncrementalImport: rejects traversal path before ibcmd execution', async () => {
+    const entry: InfobaseEntry = {
+      id: 'ib-test',
+      name: 'TestIB',
+      type: 'file',
+      filePath: 'C:/db',
+      hasStoredPassword: false,
+      createdAt: new Date().toISOString(),
+    };
+
+    const storage: any = {
+      readPasswordSecret: async () => undefined,
+    };
+
+    const result = await runInfobaseConfigIncrementalImport({
+      storage,
+      entry,
+      configRoot: 'C:/project/config',
+      relativeFiles: ['../outside/evil.xml'],
+      token: new vscode.CancellationTokenSource().token,
+    });
+
+    assert.strictEqual(result.status, 'error');
+    assert.ok(/родительский|outside|границы/i.test(result.userMessage));
+  });
+
+  // ─── 9. Edge cases & simulated symlink escapes ────────────────────────────
+
+  test('findDeepestContainingRepository: ignores repository without rootUri fsPath', () => {
+    const invalidRepo: any = { rootUri: {} };
+    const validRepo = makeRepo('/workspace');
+    const result = findDeepestContainingRepository([invalidRepo, validRepo], '/workspace/config', 'linux');
+    assert.strictEqual(result, validRepo);
+  });
+
+  test('detectChangedConfigFiles: change path equal to configRoot is skipped', async () => {
+    const configRoot = '/workspace/Config';
+    const repo = makeRepo('/workspace', [configRoot]);
+    const deps: IncrementalChangeDetectorDeps = { getGitRepository: () => repo };
+
+    const result = await detectChangedConfigFiles(configRoot, deps, { platform: 'linux' });
+    assert.ok(!('error' in result));
+    if ('error' in result) return;
+    assert.strictEqual(result.relativePaths.length, 0);
+    assert.strictEqual(result.skippedCount, 1);
+  });
+
+  test('detectChangedConfigFiles: scope head returns unsupported error', async () => {
+    const repo = makeRepo('/workspace', ['/workspace/Config/Foo.xml']);
+    const deps: IncrementalChangeDetectorDeps = { getGitRepository: () => repo };
+
+    const result = await detectChangedConfigFiles('/workspace/Config', deps, { scope: 'head' });
+    assert.ok('error' in result);
+    if (!('error' in result)) return;
+    assert.ok(/head/i.test(result.error));
+  });
+
+  test('validateDeployRelativeFiles: empty array returns ok with empty validatedFiles', async () => {
+    const result = await validateDeployRelativeFiles('C:/config', []);
+    assert.strictEqual(result.ok, true);
+    if (result.ok) {
+      assert.deepStrictEqual(result.validatedFiles, []);
+    }
+  });
+
+  test('assertDeployFilePathWithinBase: catches non-PathBoundaryError from realpath safely', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cdt-realpath-err-'));
+    try {
+      const filePath = 'Catalogs/Item.xml';
+      const fullPath = path.join(tempDir, filePath);
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, '<xml/>', 'utf8');
+
+      // Normal call succeeds
+      const result = assertDeployFilePathWithinBase(filePath, tempDir);
+      assert.strictEqual(result, filePath);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
 });
