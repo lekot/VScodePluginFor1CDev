@@ -114,4 +114,46 @@ suite('diskCache (#194)', () => {
     const loadedAfter = await loadTreeFromCache(globalStoragePath, configPath);
     assert.strictEqual(loadedAfter, null);
   });
+
+  test('invalidates cache when Configuration.xml has same size and same mtime but different content (#245)', async () => {
+    const contentA = '<Configuration>v1_alpha</Configuration>';
+    const contentB = '<Configuration>v1_bravo</Configuration>';
+    assert.strictEqual(contentA.length, contentB.length, 'Precondition: test contents must have identical byte length');
+
+    await fs.promises.writeFile(configXmlPath, contentA, 'utf8');
+    await saveTreeToCache(globalStoragePath, configPath, sampleRoot);
+    const statBefore = await fs.promises.stat(configXmlPath);
+
+    // Overwrite with contentB (identical length), restore exact same timestamp
+    await fs.promises.writeFile(configXmlPath, contentB, 'utf8');
+    await fs.promises.utimes(configXmlPath, statBefore.atime, statBefore.mtime);
+
+    const statAfter = await fs.promises.stat(configXmlPath);
+    assert.strictEqual(statAfter.size, statBefore.size, 'Precondition: sizes must match');
+
+    // Ensure cache entry timestamp matches file timestamp precisely so mtime check passes
+    const cacheDir = path.join(globalStoragePath, '1cviewer-tree-cache');
+    const files = await fs.promises.readdir(cacheDir);
+    const cacheFile = path.join(cacheDir, files[0]);
+    const raw = JSON.parse(await fs.promises.readFile(cacheFile, 'utf8'));
+    raw.timestamp = statAfter.mtimeMs;
+    await fs.promises.writeFile(cacheFile, JSON.stringify(raw), 'utf8');
+
+    const loaded = await loadTreeFromCache(globalStoragePath, configPath);
+    assert.strictEqual(loaded, null, 'Cache must be invalidated when content hash differs, even with same size and mtime');
+  });
+
+  test('rejects legacy cache entry when contentHash is missing (fail-closed) (#245)', async () => {
+    await saveTreeToCache(globalStoragePath, configPath, sampleRoot);
+
+    const cacheDir = path.join(globalStoragePath, '1cviewer-tree-cache');
+    const files = await fs.promises.readdir(cacheDir);
+    const cacheFile = path.join(cacheDir, files[0]);
+    const raw = JSON.parse(await fs.promises.readFile(cacheFile, 'utf8'));
+    delete raw.contentHash;
+    await fs.promises.writeFile(cacheFile, JSON.stringify(raw), 'utf8');
+
+    const loaded = await loadTreeFromCache(globalStoragePath, configPath);
+    assert.strictEqual(loaded, null, 'Legacy cache without contentHash must be rejected');
+  });
 });

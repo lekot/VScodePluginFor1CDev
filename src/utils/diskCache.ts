@@ -11,6 +11,7 @@ interface CacheEntry {
   tree: string;
   timestamp?: number; // mtime of Configuration.xml when cache was created
   fileSize?: number; // size in bytes of Configuration.xml when cache was created
+  contentHash?: string; // sha256 of Configuration.xml content when cache was created (#245)
   version?: string; // Cache format version for future migrations
 }
 
@@ -67,6 +68,16 @@ export async function loadTreeFromCache(
         Logger.info('Cache invalidated: Configuration.xml modified since cache creation');
         return null;
       }
+      if (!entry.contentHash) {
+        Logger.info('Cache invalidated: legacy cache entry without content hash (#245)');
+        return null;
+      }
+      const fileBytes = await fs.promises.readFile(configXmlPath);
+      const currentHash = crypto.createHash('sha256').update(fileBytes).digest('hex');
+      if (currentHash !== entry.contentHash) {
+        Logger.info('Cache invalidated: Configuration.xml content hash mismatch (#245)');
+        return null;
+      }
     } catch (err) {
       // Configuration.xml doesn't exist or can't be accessed - invalidate cache
       Logger.debug('Cache invalidated: Configuration.xml not accessible');
@@ -120,11 +131,14 @@ export async function saveTreeToCache(
     // Get Configuration.xml mtime for cache validation
     let timestamp: number | undefined;
     let fileSize: number | undefined;
+    let contentHash: string | undefined;
     try {
       const configXmlPath = path.join(configPath, CONFIGURATION_XML);
       const stats = await fs.promises.stat(configXmlPath);
       timestamp = stats.mtimeMs;
       fileSize = stats.size;
+      const fileBytes = await fs.promises.readFile(configXmlPath);
+      contentHash = crypto.createHash('sha256').update(fileBytes).digest('hex');
     } catch {
       // If we can't get timestamp, cache will still work but won't validate freshness
       Logger.debug('Could not get Configuration.xml timestamp for cache');
@@ -135,6 +149,7 @@ export async function saveTreeToCache(
       tree: serializeTree(root),
       timestamp,
       fileSize,
+      contentHash,
       version: CACHE_VERSION
     };
     await fs.promises.writeFile(filePath, JSON.stringify(entry), 'utf-8');
