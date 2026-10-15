@@ -277,21 +277,49 @@ export class SkdOperations {
         const truncatedOutput = successfulOutputTruncationFailure(result);
         if (truncatedOutput) { return truncatedOutput; }
 
-        if (result.exitCode !== 0) {
-            // exitCode 1 can mean file not found — still return as structured result
+        const rawOutput = result.stdout;
+        const hasValidationReport = /===\s*(?:Validation|Result:)/i.test(rawOutput);
+
+        if (result.exitCode !== 0 && !hasValidationReport) {
+            // exitCode 1 without validation report means file not found or PowerShell script error
             const errMsg = result.stderr.trim() || result.stdout.trim() || `skd-validate failed with exit code ${result.exitCode}`;
             return { success: false, error: errMsg };
         }
 
-        const rawOutput = result.stdout;
         const errorCount = countMatches(rawOutput, /^\[ERROR\]/m);
         const warningCount = countMatches(rawOutput, /^\[WARN\]/m);
         const valid = errorCount === 0 && warningCount === 0;
+
+        const xsdNotCheckedMatch = rawOutput.match(/XSD not checked:\s*([^;\r\n]+?)(?:\)\s*===|$)/i)
+            ?? rawOutput.match(/XSD:[^—\n\r]*—\s*not checked(?::\s*([^\n\r]+))?/i);
+
+        let xsdChecked = false;
+        let xsdReason: string | undefined;
+        let coverage: 'full' | 'partial' = 'partial';
+
+        if (xsdNotCheckedMatch) {
+            xsdChecked = false;
+            xsdReason = (xsdNotCheckedMatch[1] ?? xsdNotCheckedMatch[0]).trim();
+            coverage = 'partial';
+        } else {
+            const hasXsdMention = /\bXSD\s+\d+(\.\d+)*\b/i.test(rawOutput);
+            if (hasXsdMention) {
+                xsdChecked = true;
+                coverage = 'full';
+            } else {
+                xsdChecked = false;
+                coverage = 'partial';
+                xsdReason = 'no schemas';
+            }
+        }
 
         return {
             success: true,
             data: {
                 valid,
+                coverage,
+                xsdChecked,
+                ...(xsdReason !== undefined ? { xsdReason } : {}),
                 errorCount,
                 warningCount,
                 rawOutput,
