@@ -57,5 +57,11 @@ export function serializeTree(root: TreeNode): string {
  */
 export function deserializeTree(json: string): TreeNode {
   const s = JSON.parse(json) as SerializedNode;
-  return serializableToNode(s);
+  const root = serializableToNode(s);
+  if (root.type === 'Configuration' && Object.prototype.hasOwnProperty.call(root.properties, 'configurationId')) {
+    const properties = { ...root.properties };
+    delete (properties as Record<string, unknown>).configurationId;
+    root.properties = properties;
+  }
+  return root;
 }

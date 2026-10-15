@@ -7,7 +7,7 @@ import type { ReferenceableGroup } from '../types/typeDefinitions';
 import { MetadataParser } from '../parsers/metadataParser';
 import { ConfigFormat } from '../parsers/formatDetector';
 import { MESSAGES } from '../constants/messages';
-import { CONFIGURATION_XML } from '../constants/fileNames';
+import { CONFIGURATION_XML, CONFIG_DUMP_INFO_XML } from '../constants/fileNames';
 import {
   ensureR6PlaceholdersForInstanceNode,
   ensureTabularSectionColumnsPlaceholder,
@@ -26,6 +26,8 @@ import {
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { getStandardModuleFileName, type StandardModuleKind } from '../constants/metadataModuleDescriptors';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
+import type { ConfigurationId } from '../services/configurationSession/types';
+import type { TreeLoadContext } from '../types/treeLoadContext';
 import { TreeFilterService, FILTERABLE_METADATA_TYPES } from './treeFilterService';
 import { TreeCacheService } from './treeCacheService';
 import { buildTreeItem } from './treeItemBuilder';
@@ -285,7 +287,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (root.type !== MetadataType.Configuration) {
       return null;
     }
-    const configured = this.cache.getLoadContext(root.id)?.configPath?.trim();
+    const configured = this.cache.getLoadContext(root)?.configPath?.trim();
     if (configured) {
       return path.resolve(configured);
     }
@@ -293,7 +295,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (!filePath) {
       return null;
     }
-    return path.basename(filePath).toLocaleLowerCase() === CONFIGURATION_XML.toLocaleLowerCase()
+    const fileName = path.basename(filePath).toLocaleLowerCase();
+    return fileName === CONFIGURATION_XML.toLocaleLowerCase()
+      || fileName === CONFIG_DUMP_INFO_XML.toLocaleLowerCase()
       ? path.resolve(path.dirname(filePath))
       : path.resolve(filePath);
   }
@@ -408,7 +412,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       return;
     }
 
-    const ctx = this.cache.getLoadContext(configRoot.id);
+    const ctx = this.cache.getLoadContext(configRoot);
     if (!ctx) {
       Logger.info('No load context found');
       return;
@@ -473,7 +477,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     // Find config root and load context
     const configRoot = this.cache.getConfigurationRoot(subsystemNode);
     if (!configRoot) {return;}
-    const ctx = this.cache.getLoadContext(configRoot.id);
+    const ctx = this.cache.getLoadContext(configRoot);
     if (!ctx) {return;}
 
     // For each folder, find the type-node in the tree and load its children if not yet loaded.
@@ -627,7 +631,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * Set single root node and refresh tree (backward compat).
    * @param loadContext When provided, type nodes load their children on first expand (lazy loading).
    */
-  setRootNode(node: TreeNode, loadContext?: { configPath: string; format: ConfigFormat }): void {
+  setRootNode(node: TreeNode, loadContext?: TreeLoadContext): void {
     if (!node) {
       Logger.error('Cannot set null or undefined root node');
       return;
@@ -635,7 +639,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.cancelTypeContentsCacheWarmup();
     this.rootNodes = [node];
     this.cache.clearLoadContexts();
-    if (loadContext) {this.cache.setLoadContext(node.id, loadContext);}
+    if (loadContext) {this.cache.setLoadContext(node, this.snapshotLoadContext(loadContext));}
     this.cache.clear();
     this.cache.buildCache(node);
     this.clearTypeEditorReferenceableCache();
@@ -653,11 +657,18 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   setRootNodes(
     nodes: TreeNode[],
-    loadContextMap?: Map<string, { configPath: string; format: ConfigFormat }>
+    loadContextMap?: Map<TreeNode, TreeLoadContext>
   ): void {
     this.cancelTypeContentsCacheWarmup();
     this.rootNodes = nodes;
-    this.cache.setLoadContexts(loadContextMap ?? new Map());
+    const publishedContexts = new Map<TreeNode, TreeLoadContext>();
+    for (const node of nodes) {
+      const context = loadContextMap?.get(node);
+      if (context) {
+        publishedContexts.set(node, this.snapshotLoadContext(context));
+      }
+    }
+    this.cache.setLoadContexts(publishedContexts);
     this.cache.clear();
     for (const node of nodes) {this.cache.buildCache(node);}
     this.clearTypeEditorReferenceableCache();
@@ -686,6 +697,14 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   getRootNodes(): readonly TreeNode[] {
     return this.rootNodes;
+  }
+
+  private snapshotLoadContext(context: TreeLoadContext): TreeLoadContext {
+    return Object.freeze({
+      configurationId: context.configurationId,
+      configPath: context.configPath,
+      format: context.format,
+    });
   }
 
   /**
@@ -719,7 +738,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     const targetPath = path.resolve(resourcePath);
     const matchingRoots = this.rootNodes
       .map((root) => {
-        const configPath = this.cache.getLoadContext(root.id)?.configPath;
+        const configPath = this.cache.getLoadContext(root)?.configPath;
         if (!configPath) {
           return undefined;
         }
@@ -742,16 +761,23 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   /** Atomically replaces one loaded configuration root and preserves every other root/context. */
   replaceConfigurationRoot(
-    configPath: string,
+    configurationId: ConfigurationId,
     node: TreeNode,
-    loadContext: { configPath: string; format: ConfigFormat },
+    loadContext: TreeLoadContext,
   ): boolean {
-    const normalizedConfigPath = normalizeConfigIdentity(configPath);
+    // Reject a mismatched replacement before looking up or mutating the active
+    // roots. The stable root ID and the private context must describe the same
+    // configuration that the caller asked to replace.
+    if (
+      loadContext.configurationId !== configurationId
+      || node.configurationId !== configurationId
+    ) {
+      return false;
+    }
     const index = this.rootNodes.findIndex((root) => {
-      const contextPath = this.cache.getLoadContext(root.id)?.configPath;
-      const rootPath = contextPath ?? (root.filePath ? path.dirname(root.filePath) : undefined);
+      const context = this.cache.getLoadContext(root);
       return root.type === MetadataType.Configuration
-        && normalizeConfigIdentity(rootPath) === normalizedConfigPath;
+        && context?.configurationId === configurationId;
     });
     if (index < 0) {
       return false;
@@ -759,8 +785,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
     const previousRoot = this.rootNodes[index]!;
     const contexts = this.cache.getLoadContexts();
-    contexts.delete(previousRoot.id);
-    contexts.set(node.id, loadContext);
+    contexts.delete(previousRoot);
+    contexts.set(node, this.snapshotLoadContext(loadContext));
     const roots = [...this.rootNodes];
     roots[index] = node;
     this.setRootNodes(roots, contexts);
@@ -772,7 +798,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * Used by composition editor to see all objects before lazy expand.
    */
   async eagerLoadAllTypeFolders(configRoot: TreeNode): Promise<void> {
-    const ctx = this.cache.getLoadContext(configRoot.id);
+    const ctx = this.cache.getLoadContext(configRoot);
     if (!ctx) { return; }
 
     if (!configRoot.children) { return; }
@@ -887,7 +913,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         this.scheduleWarmupContinuation(roots.slice(rIdx), generation, budgetMs, slicePauseMs);
         return;
       }
-      const ctx = this.cache.getLoadContext(root.id);
+      const ctx = this.cache.getLoadContext(root);
       if (!ctx) {
         continue;
       }
@@ -976,7 +1002,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   getConfigPath(): string | null {
     const first = this.rootNodes[0];
     if (!first) {return null;}
-    return this.cache.getLoadContext(first.id)?.configPath ?? first.filePath ?? null;
+    return this.cache.getLoadContext(first)?.configPath ?? first.filePath ?? null;
   }
 
   /**
@@ -1039,7 +1065,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   getConfigPathForNode(node: TreeNode): string | null {
     let n: TreeNode | undefined = node;
     while (n) {
-      if (n.type === MetadataType.Configuration && n.filePath) {return path.dirname(n.filePath);}
+      if (n.type === MetadataType.Configuration) {
+        return this.getConfigRootPath(n);
+      }
       n = n.parent;
     }
     return null;
@@ -1117,10 +1145,14 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   private getConfigRootIdentity(root: TreeNode | null): string {
     if (!root) {return '';}
-    const fromLoadContext = this.cache.getLoadContext(root.id)?.configPath;
-    if (fromLoadContext) {return fromLoadContext.replace(/\\/g, '/').toLowerCase();}
-    if (root.filePath) {return path.dirname(root.filePath).replace(/\\/g, '/').toLowerCase();}
-    return root.id.replace(/\\/g, '/').toLowerCase();
+    const context = this.cache.getLoadContext(root);
+    if (context) {return 'configuration:' + context.configurationId;}
+    if (root.configurationId) {
+      return 'configuration:' + root.configurationId;
+    }
+    const configPath = this.getConfigRootPath(root);
+    if (configPath) {return 'path:' + configurationPathKey(configPath);}
+    return 'node:' + root.id;
   }
 
   private getNodeRootIdentity(node: TreeNode): string {
@@ -1132,7 +1164,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       return false;
     }
     const configRoot = this.cache.getConfigurationRoot(element);
-    if (!configRoot || !this.cache.getLoadContext(configRoot.id)) {
+    if (!configRoot || !this.cache.getLoadContext(configRoot)) {
       return false;
     }
     const p = element.parent;
@@ -1150,7 +1182,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   private isLazyElementNode(element: TreeNode): boolean {
     const configRoot = this.cache.getConfigurationRoot(element);
-    if (!configRoot || !this.cache.getLoadContext(configRoot.id) || element.properties._lazy !== true) {
+    if (!configRoot || !this.cache.getLoadContext(configRoot) || element.properties._lazy !== true) {
       return false;
     }
     if (!element.children || element.children.length === 0) {return true;}
@@ -1244,7 +1276,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       // Lazy load: type node with no children yet
       if (this.isLazyTypeNode(activeElement)) {
         const configRoot = this.cache.getConfigurationRoot(activeElement);
-        const ctx = configRoot ? this.cache.getLoadContext(configRoot.id) : undefined;
+        const ctx = configRoot ? this.cache.getLoadContext(configRoot) : undefined;
         if (!ctx) {return Promise.resolve([]);}
         this.cancelTypeContentsCacheWarmup();
         return this.populateTypeFolderIndex(activeElement, ctx).then((children) => {
@@ -1268,7 +1300,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       // Lazy load: element node with _lazy and no children yet (Attributes, Forms, Ext, etc.)
       if (this.isLazyElementNode(activeElement)) {
         const configRoot = this.cache.getConfigurationRoot(activeElement);
-        const ctx = configRoot ? this.cache.getLoadContext(configRoot.id) : undefined;
+        const ctx = configRoot ? this.cache.getLoadContext(configRoot) : undefined;
         if (!ctx) {return Promise.resolve([]);}
         const format = ctx.format;
         if (format == null) {
@@ -1327,7 +1359,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       }
 
       const configRoot = this.cache.getConfigurationRoot(activeElement);
-      const ctx = configRoot ? this.cache.getLoadContext(configRoot.id) : undefined;
+      const ctx = configRoot ? this.cache.getLoadContext(configRoot) : undefined;
       if (ctx) {
         ensureR6PlaceholdersForInstanceNode(activeElement, { configPath: ctx.configPath, format: ctx.format });
       }
@@ -1401,12 +1433,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       return null;
     }
     const candidates = this.cache.getCandidatesById(expectedId);
-    const configPath = this.getConfigPathForNode(scopeNode);
+    const scopeIdentity = this.getNodeRootIdentity(scopeNode);
     if (candidates.length === 0) {
       return this.cache.findById(expectedId);
     }
-    if (configPath) {
-      const scoped = candidates.find((candidate) => this.getConfigPathForNode(candidate) === configPath);
+    if (scopeIdentity) {
+      const scoped = candidates.find((candidate) => this.getNodeRootIdentity(candidate) === scopeIdentity);
       return scoped ?? null;
     }
     return candidates[0] ?? null;
@@ -1428,15 +1460,15 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (candidates.length === 0) {
       return false;
     }
-    const scopeConfigPath = this.getConfigPathForNode(scopeNode);
-    if (!scopeConfigPath) {
+    const scopeIdentity = this.getNodeRootIdentity(scopeNode);
+    if (!scopeIdentity) {
       return false;
     }
-    const inSameConfig = candidates.some((candidate) => this.getConfigPathForNode(candidate) === scopeConfigPath);
+    const inSameConfig = candidates.some((candidate) => this.getNodeRootIdentity(candidate) === scopeIdentity);
     if (inSameConfig) {
       return false;
     }
-    return candidates.some((candidate) => this.getConfigPathForNode(candidate) !== scopeConfigPath);
+    return candidates.some((candidate) => this.getNodeRootIdentity(candidate) !== scopeIdentity);
   }
 
   /** Resolve possibly stale node reference to active in-memory node. */
@@ -1751,15 +1783,15 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   private async findConfigRootByPath(configRoot: string): Promise<TreeNode | null> {
     const normalizedTarget = path.resolve(configRoot);
     for (const root of this.rootNodes) {
-      const ctx = this.cache.getLoadContext(root.id);
+      const ctx = this.cache.getLoadContext(root);
       if (ctx) {
-        if (path.resolve(ctx.configPath) === normalizedTarget) {
+        if (configurationPathKey(ctx.configPath) === configurationPathKey(normalizedTarget)) {
           return root;
         }
       } else if (root.filePath) {
         // Fallback: Configuration.xml lives directly in configPath
         const rootDir = path.resolve(path.dirname(root.filePath));
-        if (rootDir === normalizedTarget) {
+        if (configurationPathKey(rootDir) === configurationPathKey(normalizedTarget)) {
           return root;
         }
       }
@@ -1788,8 +1820,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       if (root.properties.extensionPurpose === undefined) {
         continue;
       }
-      const ctx = this.cache.getLoadContext(root.id);
-      if (ctx && path.resolve(ctx.configPath) === expectedPath) {
+      const ctx = this.cache.getLoadContext(root);
+      if (ctx && configurationPathKey(ctx.configPath) === configurationPathKey(expectedPath)) {
         return root;
       }
     }

@@ -1,3 +1,4 @@
+import { fakeTreeLoadContext } from '../helpers/fakeTreeLoadContext';
 import * as assert from 'assert';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -57,8 +58,8 @@ suite('TreeCacheService and name search multi-root collision (#193)', () => {
     nodeB.parent = rootB;
 
     cache.setLoadContexts(new Map([
-      ['root-main', { configPath: pathA, format: ConfigFormat.Designer }],
-      ['root-ext', { configPath: pathB, format: ConfigFormat.Designer }],
+      [rootA, fakeTreeLoadContext(pathA, ConfigFormat.Designer)],
+      [rootB, fakeTreeLoadContext(pathB, ConfigFormat.Designer)],
     ]));
   });
 
@@ -128,8 +129,8 @@ suite('TreeCacheService and name search multi-root collision (#193)', () => {
   test('handleGotoHandlerMessage resolves to the same configuration root as current node (#193)', async () => {
     const provider = new MetadataTreeDataProvider();
     provider.setRootNodes([rootA, rootB], new Map([
-      ['root-main', { configPath: pathA, format: ConfigFormat.Designer }],
-      ['root-ext', { configPath: pathB, format: ConfigFormat.Designer }],
+      [rootA, fakeTreeLoadContext(pathA, ConfigFormat.Designer)],
+      [rootB, fakeTreeLoadContext(pathB, ConfigFormat.Designer)],
     ]));
 
     const openedUris: vscode.Uri[] = [];
@@ -179,8 +180,8 @@ suite('TreeCacheService and name search multi-root collision (#193)', () => {
   test('optimistic delete removes node from nameIndex and rollback restores single instance (#193 review)', () => {
     const provider = new MetadataTreeDataProvider();
     provider.setRootNodes([rootA, rootB], new Map([
-      ['root-main', { configPath: pathA, format: ConfigFormat.Designer }],
-      ['root-ext', { configPath: pathB, format: ConfigFormat.Designer }],
+      [rootA, fakeTreeLoadContext(pathA, ConfigFormat.Designer)],
+      [rootB, fakeTreeLoadContext(pathB, ConfigFormat.Designer)],
     ]));
 
     // 1. Before delete: search returns both nodes
@@ -233,8 +234,8 @@ suite('TreeCacheService and name search multi-root collision (#193)', () => {
 
     const provider = new MetadataTreeDataProvider();
     provider.setRootNodes([rootA, rootB], new Map([
-      ['root-main', { configPath: pathA, format: ConfigFormat.Designer }],
-      ['root-ext', { configPath: pathB, format: ConfigFormat.Designer }],
+      [rootA, fakeTreeLoadContext(pathA, ConfigFormat.Designer)],
+      [rootB, fakeTreeLoadContext(pathB, ConfigFormat.Designer)],
     ]));
 
     assert.strictEqual(provider.findNodesByName('ChildAttr').length, 1);
@@ -290,8 +291,8 @@ suite('TreeCacheService and name search multi-root collision (#193)', () => {
   test('handleGotoHandlerMessage does not navigate to deleted node after optimistic delete', async () => {
     const provider = new MetadataTreeDataProvider();
     provider.setRootNodes([rootA, rootB], new Map([
-      ['root-main', { configPath: pathA, format: ConfigFormat.Designer }],
-      ['root-ext', { configPath: pathB, format: ConfigFormat.Designer }],
+      [rootA, fakeTreeLoadContext(pathA, ConfigFormat.Designer)],
+      [rootB, fakeTreeLoadContext(pathB, ConfigFormat.Designer)],
     ]));
 
     // Optimistically delete nodeA
@@ -346,8 +347,8 @@ suite('TreeCacheService and name search multi-root collision (#193)', () => {
     folderB.parent = rootB;
 
     provider.setRootNodes([rootA, rootB], new Map([
-      ['root-main', { configPath: pathA, format: ConfigFormat.Designer }],
-      ['root-ext', { configPath: pathB, format: ConfigFormat.Designer }],
+      [rootA, fakeTreeLoadContext(pathA, ConfigFormat.Designer)],
+      [rootB, fakeTreeLoadContext(pathB, ConfigFormat.Designer)],
     ]));
 
     // Initially both nodeA and nodeB are in cache

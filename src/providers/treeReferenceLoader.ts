@@ -7,6 +7,8 @@ import { MetadataParser } from '../parsers/metadataParser';
 import { ConfigFormat } from '../parsers/formatDetector';
 import { METADATA_TYPE_TO_REFERENCE_KIND } from '../constants/metadataTypeReferenceKinds';
 import { TreeCacheService } from './treeCacheService';
+import { configurationPathKey } from '../utils/configurationPathIdentity';
+import type { ConfigurationId } from '../services/configurationSession/types';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
@@ -34,14 +36,42 @@ function resolveTypeEditorConfigRoot(
     return null;
   }
   let cur: TreeNode | undefined = node;
+  let selectedConfigRoot: TreeNode | undefined;
   while (cur) {
-    const curNode: TreeNode = cur;
-    if (curNode.type === MetadataType.Configuration && rootNodes.some((r) => r.id === curNode.id)) {
-      return curNode;
+    if (cur.type === MetadataType.Configuration) {
+      selectedConfigRoot = cur;
+      break;
     }
-    cur = curNode.parent;
+    cur = cur.parent;
   }
-  return null;
+  if (!selectedConfigRoot) {
+    throw new TreeConfigurationScopeUnavailableError();
+  }
+  const activeRoot = rootNodes.find((root) => root === selectedConfigRoot);
+  if (activeRoot) {
+    return activeRoot;
+  }
+  if (selectedConfigRoot.configurationId) {
+    const replacement = rootNodes.find((root) =>
+      root.type === MetadataType.Configuration
+      && root.configurationId === selectedConfigRoot.configurationId,
+    );
+    if (replacement) {
+      return replacement;
+    }
+  }
+  throw new TreeConfigurationScopeUnavailableError(selectedConfigRoot.configurationId);
+}
+
+export class TreeConfigurationScopeUnavailableError extends Error {
+  readonly code = 'TREE_CONFIGURATION_SCOPE_UNAVAILABLE';
+
+  constructor(configurationId?: ConfigurationId) {
+    super(configurationId
+      ? `Выбранная конфигурация ${configurationId} отсутствует в опубликованном дереве.`
+      : 'Не удалось определить выбранную конфигурацию в опубликованном дереве.');
+    this.name = 'TreeConfigurationScopeUnavailableError';
+  }
 }
 
 export function resolveRootsToUse(
@@ -53,11 +83,17 @@ export function resolveRootsToUse(
 }
 
 function configRootScopeFingerprint(root: TreeNode, cache: TreeCacheService): string {
-  const p =
-    cache.getLoadContext(root.id)?.configPath ??
-    (root.filePath ? path.dirname(root.filePath) : null) ??
-    root.id;
-  return String(p).replace(/\\/g, '/').toLowerCase();
+  const context = cache.getLoadContext(root);
+  if (context) {
+    return 'configuration:' + context.configurationId;
+  }
+  if (root.configurationId) {
+    return 'configuration:' + root.configurationId;
+  }
+  if (root.filePath) {
+    return 'path:' + configurationPathKey(path.dirname(root.filePath));
+  }
+  return 'node:' + root.id;
 }
 
 /**
@@ -93,9 +129,8 @@ export function countPendingReferenceableTypeLoads(
     if (!root.children || root.children.length === 0) {
       continue;
     }
-    const configPath =
-      cache.getLoadContext(root.id)?.configPath ?? (root.filePath ? path.dirname(root.filePath) : null);
-    if (!configPath) {
+    const loadContext = cache.getLoadContext(root);
+    if (!loadContext) {
       continue;
     }
     for (const typeNode of root.children) {
@@ -193,7 +228,7 @@ export async function getReferenceableObjectsForTypeEditor(
     return [];
   }
 
-  type LoadTask = { typeNode: TreeNode; configPath: string; format?: ConfigFormat };
+  type LoadTask = { typeNode: TreeNode; configPath: string; format: ConfigFormat };
   const loadTasks: LoadTask[] = [];
 
   for (const root of rootsToUse) {
@@ -201,12 +236,11 @@ export async function getReferenceableObjectsForTypeEditor(
       continue;
     }
 
-    const loadContext = cache.getLoadContext(root.id);
-    const configPath = loadContext?.configPath ?? (root.filePath ? path.dirname(root.filePath) : null);
-
-    if (!configPath) {
+    const loadContext = cache.getLoadContext(root);
+    if (!loadContext) {
       continue;
     }
+    const configPath = loadContext.configPath;
 
     for (const typeNode of root.children) {
       if (!REFERENCEABLE_METADATA_TYPES.has(typeNode.type)) {
@@ -215,7 +249,7 @@ export async function getReferenceableObjectsForTypeEditor(
       if (typeNode.children && typeNode.children.length > 0) {
         continue;
       }
-      loadTasks.push({ typeNode, configPath, format: loadContext?.format });
+      loadTasks.push({ typeNode, configPath, format: loadContext.format });
     }
   }
 

@@ -1,3 +1,4 @@
+import { fakeTreeLoadContext } from '../helpers/fakeTreeLoadContext';
 import * as assert from 'assert';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
@@ -446,7 +447,7 @@ suite('BSL platform completion', () => {
       children: [commonModules],
     };
     const tree = new MetadataTreeDataProvider();
-    tree.setRootNode(root, { configPath: configRoot, format: ConfigFormat.Designer });
+    tree.setRootNode(root, fakeTreeLoadContext(configRoot, ConfigFormat.Designer));
     const englishUserNames = new BslCompletionProvider(extensionRoot(), () => tree);
     const documentPath = path.join(configRoot, 'CommonModules', 'Caller', 'Ext', 'Module.bsl');
     const source = 'Процедура МояЛокальнаяПроцедура() Экспорт\nКонецПроцедуры\nМойМод';
@@ -551,8 +552,8 @@ suite('BSL platform completion', () => {
     const parent = rootNode('parent-language-root', 'en');
     const nested = rootNode('nested-language-root', 'ru');
     provider.setRootNodes([parent, nested], new Map([
-      [parent.id, { configPath: parentPath, format: ConfigFormat.Designer }],
-      [nested.id, { configPath: nestedPath, format: ConfigFormat.Designer }],
+      [parent, fakeTreeLoadContext(parentPath, ConfigFormat.Designer)],
+      [nested, fakeTreeLoadContext(nestedPath, ConfigFormat.Designer)],
     ]));
 
     assert.strictEqual(provider.getLanguageForResource(path.join(parentPath, 'CommonModules', 'A', 'Module.bsl')), 'en');
@@ -1042,7 +1043,7 @@ suite('BSL platform completion', () => {
       children: [commonModules],
     };
     const tree = new MetadataTreeDataProvider();
-    tree.setRootNode(root, { configPath: configRoot, format: ConfigFormat.Designer });
+    tree.setRootNode(root, fakeTreeLoadContext(configRoot, ConfigFormat.Designer));
     const provider = new BslCompletionProvider(extensionRoot(), () => tree);
     const documentPath = path.join(configRoot, 'CommonModules', 'Caller', 'Ext', 'Module.bsl');
     const source = 'Процедура ЛокальнаяПроцедура()\nКонецПроцедуры\nмойМодул';
@@ -1075,10 +1076,7 @@ suite('BSL platform completion', () => {
     );
 
     const coldTree = new MetadataTreeDataProvider();
-    coldTree.setRootNode({ ...root, id: 'cold-completion-tree-root', children: [{ ...commonModules, properties: {} }] }, {
-      configPath: configRoot,
-      format: ConfigFormat.Designer,
-    });
+    coldTree.setRootNode({ ...root, id: 'cold-completion-tree-root', children: [{ ...commonModules, properties: {} }] }, fakeTreeLoadContext(configRoot, ConfigFormat.Designer));
     const coldProvider = new BslCompletionProvider(extensionRoot(), () => coldTree);
     assert.ok(
       !labels(await completeWithLocalDocument(coldProvider, document, 'мойМодул')).includes('мойМодульэ'),

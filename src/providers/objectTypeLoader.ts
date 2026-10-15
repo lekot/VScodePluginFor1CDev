@@ -1,9 +1,8 @@
-import * as path from 'path';
 import { TreeNode } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import type { ObjectableGroup } from '../types/objectTypeDefinitions';
 import { MetadataParser } from '../parsers/metadataParser';
-import { ConfigFormat } from '../parsers/formatDetector';
+import type { ConfigFormat } from '../parsers/formatDetector';
 import { METADATA_TYPE_TO_OBJECT_KIND, OBJECT_KIND_ORDER, ALL_MANAGER_KINDS } from '../constants/metadataTypeObjectKinds';
 import { resolveRootsToUse } from './treeReferenceLoader';
 import { TreeCacheService } from './treeCacheService';
@@ -88,12 +87,11 @@ export async function getObjectableObjectsForEditor(
       continue;
     }
 
-    const loadContext = cache.getLoadContext(root.id);
-    const configPath = loadContext?.configPath ?? (root.filePath ? path.dirname(root.filePath) : null);
-
-    if (!configPath) {
+    const loadContext = cache.getLoadContext(root);
+    if (!loadContext) {
       continue;
     }
+    const configPath = loadContext.configPath;
 
     for (const typeNode of root.children) {
       if (!OBJECTABLE_METADATA_TYPES.has(typeNode.type)) {
@@ -102,7 +100,7 @@ export async function getObjectableObjectsForEditor(
       if (typeNode.children && typeNode.children.length > 0) {
         continue;
       }
-      loadTasks.push({ typeNode, configPath, format: loadContext?.format });
+      loadTasks.push({ typeNode, configPath, format: loadContext.format });
     }
   }
 

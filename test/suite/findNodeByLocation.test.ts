@@ -1,3 +1,4 @@
+import { fakeTreeLoadContext } from '../helpers/fakeTreeLoadContext';
 /**
  * Unit tests for MetadataTreeDataProvider.findNodeByLocation (issue #88).
  *
@@ -150,8 +151,8 @@ function buildFakeTree(): { provider: MetadataTreeDataProvider; configRoot: Tree
   const provider = new MetadataTreeDataProvider();
   provider.setRootNodes([configRoot], new Map([
     [
-      configRoot.id,
-      { configPath: CONFIG_ROOT, format: ConfigFormat.Designer },
+      configRoot,
+      fakeTreeLoadContext(CONFIG_ROOT, ConfigFormat.Designer),
     ],
   ]));
 
@@ -419,8 +420,8 @@ function buildFakeTreeWithExtension(): MetadataTreeDataProvider {
   provider.setRootNodes(
     [mainRoot, extRoot],
     new Map([
-      ['config:main', { configPath: CONFIG_ROOT, format: ConfigFormat.Designer }],
-      ['config:ext', { configPath: EXT_CONFIG_ROOT, format: ConfigFormat.Designer }],
+      [mainRoot, fakeTreeLoadContext(CONFIG_ROOT, ConfigFormat.Designer)],
+      [extRoot, fakeTreeLoadContext(EXT_CONFIG_ROOT, ConfigFormat.Designer)],
     ])
   );
   return provider;
@@ -488,7 +489,7 @@ suite('MetadataTreeDataProvider.findNodeByLocation — subsystem type guard (iss
     const provider = new MetadataTreeDataProvider();
     provider.setRootNodes(
       [configRoot],
-      new Map([['Configuration', { configPath: CONFIG_ROOT, format: ConfigFormat.Designer }]])
+      new Map([[configRoot, fakeTreeLoadContext(CONFIG_ROOT, ConfigFormat.Designer)]])
     );
 
     const loc: MetadataLocation = {

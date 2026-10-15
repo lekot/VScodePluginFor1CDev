@@ -113,11 +113,11 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
   });
 
   test('resolveBindingTargetForConfigurationTreeNode returns undefined when URI is outside workspace folders', () => {
-    const wsRoot = path.join('C:', 'reps', 'ws-bind');
+    const wsRoot = path.resolve('test-workspaces', 'ws-bind');
     vscodeTestState.mockWorkspaceFolders = [
       { name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) },
     ];
-    const cfgDir = path.join('D:', 'other', 'cfg');
+    const cfgDir = path.resolve('other-workspaces', 'cfg');
     const node: TreeNode = {
       id: 'root',
       name: 'Configuration',
@@ -129,7 +129,7 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
   });
 
   test('resolveBindingTargetForConfigurationTreeNode returns workspace name and normalized relative path', () => {
-    const wsRoot = path.join('C:', 'reps', 'ws-bind');
+    const wsRoot = path.resolve('test-workspaces', 'ws-bind');
     vscodeTestState.mockWorkspaceFolders = [
       { name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) },
     ];
@@ -233,7 +233,7 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
       name: 'Configuration',
       type: MetadataType.Configuration,
       properties: {},
-      filePath: path.join('D:', 'orphan', 'Configuration.xml'),
+      filePath: path.join(path.resolve('orphaned-workspaces', 'cfg'), 'Configuration.xml'),
     };
     await openBindingDialogForConfigurationFromTree(node, state, panel, tree);
     assert.strictEqual(showCalls, 0);
@@ -241,7 +241,7 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
   });
 
   test('openBindingDialogForConfigurationFromTree calls panel.show with resolved target', async () => {
-    const wsRoot = path.join('C:', 'reps', 'ws-dialog');
+    const wsRoot = path.resolve('test-workspaces', 'ws-dialog');
     vscodeTestState.mockWorkspaceFolders = [{ name: 'W', index: 0, uri: vscode.Uri.file(wsRoot) }];
     const cfgDir = path.join(wsRoot, 'app');
     const node: TreeNode = {
@@ -286,7 +286,7 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
   });
 
   test('getTreeItem Configuration: badge and binding tooltip when decorations map has entry', () => {
-    const wsRoot = path.join('C:', 'reps', 'ws-deco');
+    const wsRoot = path.resolve('test-workspaces', 'ws-deco');
     vscodeTestState.mockWorkspaceFolders = [{ name: 'WF', index: 0, uri: vscode.Uri.file(wsRoot) }];
     const cfgDir = path.join(wsRoot, 'conf');
     const node: TreeNode = {
@@ -319,7 +319,7 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
   });
 
   test('getTreeItem Configuration: boundCount 0 in map still shows «не настроена» (no badge)', () => {
-    const wsRoot = path.join('C:', 'reps', 'ws-zero');
+    const wsRoot = path.resolve('test-workspaces', 'ws-zero');
     vscodeTestState.mockWorkspaceFolders = [{ name: 'WF', index: 0, uri: vscode.Uri.file(wsRoot) }];
     const node: TreeNode = {
       id: 'root',
@@ -338,7 +338,7 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
   });
 
   test('getTreeItem Configuration: tooltip when no bindings suggests context menu', () => {
-    const wsRoot = path.join('C:', 'reps', 'ws-empty');
+    const wsRoot = path.resolve('test-workspaces', 'ws-empty');
     vscodeTestState.mockWorkspaceFolders = [{ name: 'WF', index: 0, uri: vscode.Uri.file(wsRoot) }];
     const node: TreeNode = {
       id: 'root',
@@ -356,7 +356,7 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
   });
 
   test('getTreeItem Configuration with filePath sets resourceUri when workspace folder resolves (stub)', () => {
-    const wsRoot = path.join('C:', 'reps', 'myconfig');
+    const wsRoot = path.resolve('test-workspaces', 'myconfig');
     vscodeTestState.mockWorkspaceFolders = [{ name: 'X', index: 0, uri: vscode.Uri.file(wsRoot) }];
     const configDir = path.join(wsRoot, 'nested');
     const node: TreeNode = {

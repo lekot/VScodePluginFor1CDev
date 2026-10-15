@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
-import { ConfigFormat } from '../parsers/formatDetector';
+import type { TreeLoadContext } from '../types/treeLoadContext';
+import { configurationPathKey } from '../utils/configurationPathIdentity';
 
 /**
  * Encapsulates node caching and lookup logic for the metadata tree.
@@ -12,8 +13,8 @@ export class TreeCacheService {
   private nodeCandidatesById = new Map<string, TreeNode[]>();
   /** Normalized name (lowercase) → node ids, for fast search. */
   private nameIndex = new Map<string, TreeNode[]>();
-  /** Per-root load context for lazy loading (key = root node id). */
-  loadContextByRootId = new Map<string, { configPath: string; format: ConfigFormat }>();
+  /** Per-published-root load context; root object identity prevents stale ID aliasing. */
+  private loadContextByRoot = new Map<TreeNode, TreeLoadContext>();
 
   // --- Cache management ---
 
@@ -24,23 +25,33 @@ export class TreeCacheService {
   }
 
   clearLoadContexts(): void {
-    this.loadContextByRootId.clear();
+    this.loadContextByRoot.clear();
   }
 
-  setLoadContexts(map: Map<string, { configPath: string; format: ConfigFormat }>): void {
-    this.loadContextByRootId = new Map(map);
+  setLoadContexts(map: Map<TreeNode, TreeLoadContext>): void {
+    this.loadContextByRoot = new Map(
+      Array.from(map, ([root, context]) => [root, this.snapshotLoadContext(context)]),
+    );
   }
 
-  setLoadContext(nodeId: string, ctx: { configPath: string; format: ConfigFormat }): void {
-    this.loadContextByRootId.set(nodeId, ctx);
+  setLoadContext(root: TreeNode, ctx: TreeLoadContext): void {
+    this.loadContextByRoot.set(root, this.snapshotLoadContext(ctx));
   }
 
-  getLoadContext(nodeId: string): { configPath: string; format: ConfigFormat } | undefined {
-    return this.loadContextByRootId.get(nodeId);
+  getLoadContext(root: TreeNode): TreeLoadContext | undefined {
+    return this.loadContextByRoot.get(root);
   }
 
-  getLoadContexts(): Map<string, { configPath: string; format: ConfigFormat }> {
-    return new Map(this.loadContextByRootId);
+  getLoadContexts(): Map<TreeNode, TreeLoadContext> {
+    return new Map(this.loadContextByRoot);
+  }
+
+  private snapshotLoadContext(context: TreeLoadContext): TreeLoadContext {
+    return Object.freeze({
+      configurationId: context.configurationId,
+      configPath: context.configPath,
+      format: context.format,
+    });
   }
 
   get size(): number {
@@ -214,15 +225,27 @@ export class TreeCacheService {
   }
 
   private normalizeIdentityPath(value: string | undefined): string {
-    return (value ?? '').replace(/\\/g, '/').toLowerCase();
+    if (!value) {
+      return '';
+    }
+    const pathKey = configurationPathKey(value);
+    for (const context of this.loadContextByRoot.values()) {
+      if (configurationPathKey(context.configPath) === pathKey) {
+        return `configuration:${context.configurationId}`;
+      }
+    }
+    return `path:${pathKey}`;
   }
 
   private getConfigRootIdentity(root: TreeNode | null): string {
     if (!root) {return '';}
-    const fromLoadContext = this.loadContextByRootId.get(root.id)?.configPath;
-    if (fromLoadContext) {return this.normalizeIdentityPath(fromLoadContext);}
-    if (root.filePath) {return this.normalizeIdentityPath(path.dirname(root.filePath));}
-    return this.normalizeIdentityPath(root.id);
+    const context = this.loadContextByRoot.get(root);
+    if (context) {return `configuration:${context.configurationId}`;}
+    if (root.configurationId) {
+      return `configuration:${root.configurationId}`;
+    }
+    if (root.filePath) {return `path:${configurationPathKey(path.dirname(root.filePath))}`;}
+    return `node:${root.id}`;
   }
 
   getNodeRootIdentity(node: TreeNode): string {

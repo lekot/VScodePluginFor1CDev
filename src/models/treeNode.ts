@@ -1,4 +1,5 @@
 import type { MetadataObjectPathSegment } from '../types/metadataObjectPath';
+import type { ConfigurationId } from '../services/configurationSession/types';
 
 /**
  * Typed property bag for TreeNode.
@@ -126,6 +127,8 @@ export interface TreeNodeProperties {
  */
 export interface TreeNode {
   id: string;
+  /** Stable runtime identity for a published configuration root; never part of metadata properties. */
+  readonly configurationId?: ConfigurationId;
   name: string;
   type: MetadataType;
   parent?: TreeNode;
