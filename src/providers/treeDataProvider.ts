@@ -1565,7 +1565,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     const publishedRoots = this.rootNodes;
     const rootsToUse = resolveRootsToUse(node, publishedRoots);
     const allRootsScope = node === undefined;
-    const scopeSnapshot = this.typeLoadCoordinator.captureScope(rootsToUse, allRootsScope);
+    const typeFolders = rootsToUse.flatMap((root) => getTypeIndexFolders(root)).filter(isReferenceableTypeFolder);
+    const scopeSnapshot = this.typeLoadCoordinator.captureScope(rootsToUse, allRootsScope, typeFolders);
     const scopeKey = getTypeEditorReferenceableScopeKey(node, publishedRoots, this.cache);
 
     if (scopeKey) {
@@ -1580,7 +1581,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     const pendingLoads = countPendingReferenceableTypeLoads(node, publishedRoots);
 
     const run = async (): Promise<ReferenceableGroup[]> => {
-      await this.loadEditorTypeIndexes(rootsToUse, isReferenceableTypeFolder);
+      await this.loadEditorTypeIndexes(typeFolders);
       this.assertTypeEditorScopeCurrent(scopeSnapshot);
       const groups = projectReferenceableObjectsForTypeEditor(rootsToUse);
       if (scopeKey && this.typeLoadCoordinator.isScopeCurrent(scopeSnapshot)) {
@@ -1625,7 +1626,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     const publishedRoots = this.rootNodes;
     const rootsToUse = resolveRootsToUse(node, publishedRoots);
     const allRootsScope = node === undefined;
-    const scopeSnapshot = this.typeLoadCoordinator.captureScope(rootsToUse, allRootsScope);
+    const typeFolders = rootsToUse.flatMap((root) => getTypeIndexFolders(root)).filter(isObjectableTypeFolder);
+    const scopeSnapshot = this.typeLoadCoordinator.captureScope(rootsToUse, allRootsScope, typeFolders);
     const scopeKey = getTypeEditorReferenceableScopeKey(node, publishedRoots, this.cache);
 
     if (scopeKey) {
@@ -1637,7 +1639,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       }
     }
 
-    await this.loadEditorTypeIndexes(rootsToUse, isObjectableTypeFolder);
+    await this.loadEditorTypeIndexes(typeFolders);
     this.assertTypeEditorScopeCurrent(scopeSnapshot);
     const groups = projectObjectableObjectsForEditor(rootsToUse);
     if (scopeKey && this.typeLoadCoordinator.isScopeCurrent(scopeSnapshot)) {
@@ -1653,17 +1655,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   private async loadEditorTypeIndexes(
-    roots: readonly TreeNode[],
-    acceptsTypeFolder: (folder: TreeNode) => boolean,
+    typeFolders: readonly TreeNode[],
   ): Promise<void> {
-    const requests: Promise<TreeNode[]>[] = [];
-    for (const root of roots) {
-      for (const typeFolder of getTypeIndexFolders(root)) {
-        if (acceptsTypeFolder(typeFolder) && !isTypeIndexLoaded(typeFolder)) {
-          requests.push(this.loadTypeFolderIndex(typeFolder));
-        }
-      }
-    }
+    const requests = typeFolders
+      .filter((typeFolder) => !isTypeIndexLoaded(typeFolder))
+      .map((typeFolder) => this.loadTypeFolderIndex(typeFolder));
     await Promise.all(requests);
   }
 

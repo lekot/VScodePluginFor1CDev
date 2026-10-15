@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
@@ -754,6 +755,194 @@ suite('Tree type-index load ownership runtime', () => {
     }
   });
 
+  test('a suspended root stays fenced when another root is replaced', async () => {
+    const provider = createProvider();
+    const fixtureA = createRootFixture('suspended-preserved-A');
+    const fixtureB = createRootFixture('replaced-B');
+    const replacementB = createRootFixture('replacement-B');
+    replacementB.root.id = fixtureB.root.id;
+    replacementB.root.name = fixtureB.root.name;
+    Object.defineProperty(replacementB.root, 'configurationId', {
+      configurable: true,
+      enumerable: true,
+      value: fixtureB.configurationId,
+    });
+
+    provider.setRootNodes(
+      [fixtureA.root, fixtureB.root],
+      new Map([
+        [fixtureA.root, contextFor(fixtureA)],
+        [fixtureB.root, contextFor(fixtureB)],
+      ]),
+    );
+    const state = new ExtensionState();
+    state.treeDataProvider = provider;
+    Object.defineProperty(state, '_extensionContext', {
+      configurable: true,
+      value: { globalStoragePath: path.join(os.tmpdir(), 'tree-type-load-owner-preserved-root-cache') },
+    });
+    const lifecycle = createMetadataTreeLifecycle(state);
+    const diskStarted = deferred<void>();
+    const releaseDisk = deferred<void>();
+    const parserInvalidationStarted = deferred<void>();
+    const releaseParserInvalidation = deferred<void>();
+    const mutableDiskCache = diskCache as unknown as { invalidateTreeCache: typeof diskCache.invalidateTreeCache };
+    const originalInvalidateTreeCache = diskCache.invalidateTreeCache;
+    mutableDiskCache.invalidateTreeCache = async () => {
+      diskStarted.resolve();
+      await releaseDisk.promise;
+    };
+    MetadataParser.invalidateTypeContentsCache = async () => {
+      parserInvalidationStarted.resolve();
+      await releaseParserInvalidation.promise;
+    };
+    MetadataParser.parseTypeIndex = async (_configPath, typeName) => [child(`${typeName}.Current`,'Current')];
+    let invalidation: Promise<void> | undefined;
+
+    try {
+      invalidation = lifecycle.invalidateTreeCacheOnly(fixtureA.configPath);
+      await Promise.all([diskStarted.promise, parserInvalidationStarted.promise]);
+
+      provider.setRootNodes(
+        [fixtureA.root, replacementB.root],
+        new Map([
+          [fixtureA.root, contextFor(fixtureA)],
+          [replacementB.root, fakeTreeLoadContext(
+            fixtureB.configPath,
+            ConfigFormat.Designer,
+            fixtureB.configurationId,
+          )],
+        ]),
+      );
+
+      const preservedRootRequests = await Promise.allSettled([
+        Promise.resolve(provider.getChildren(fixtureA.catalogs)),
+        provider.getReferenceableObjectsForTypeEditor(fixtureA.root),
+      ]);
+      assert.ok(preservedRootRequests.every((result) => result.status === 'rejected'));
+      for (const result of preservedRootRequests) {
+        if (result.status === 'rejected') {
+          assert.strictEqual(resultErrorCode(result.reason), 'TREE_LOAD_SUPERSEDED');
+        }
+      }
+
+      const replacementChildren = await provider.getChildren(replacementB.catalogs);
+      assert.deepStrictEqual(replacementChildren.map((node) => node.name), ['Current']);
+    } finally {
+      releaseDisk.resolve();
+      releaseParserInvalidation.resolve();
+      if (invalidation) {
+        await invalidation;
+      }
+      lifecycle.dispose();
+      mutableDiskCache.invalidateTreeCache = originalInvalidateTreeCache;
+    }
+  });
+
+  test('both editor scopes reject when an already-loaded type folder is invalidated during another load', async () => {
+    const provider = createProvider();
+    const fixture = createRootFixture('editor-node-version');
+    const documents: TreeNode = {
+      id: 'Documents',
+      name: 'Документы',
+      type: MetadataType.Document,
+      properties: {},
+      children: [],
+      parent: fixture.root,
+    };
+    fixture.root.children?.push(documents);
+    const existingCatalog = child('Catalogs.Existing', 'Existing');
+    existingCatalog.parent = fixture.catalogs;
+    fixture.catalogs.children = [existingCatalog];
+    fixture.catalogs.properties = { _indexLoaded: true } as TreeNode['properties'];
+    provider.setRootNodes([fixture.root], new Map([[fixture.root, contextFor(fixture)]]));
+
+    const parseStarted = deferred<void>();
+    const releaseDocuments = deferred<TreeNode[]>();
+    MetadataParser.parseTypeIndex = async (_configPath, typeName) => {
+      if (typeName === 'Documents') {
+        parseStarted.resolve();
+        return releaseDocuments.promise;
+      }
+      return [child(`${typeName}.Fresh`, 'Fresh')];
+    };
+
+    const pending = [
+      provider.getReferenceableObjectsForTypeEditor(fixture.root),
+      provider.getObjectableObjectsForEditor(fixture.root),
+    ];
+    try {
+      await parseStarted.promise;
+      provider.invalidateLoadedChildren(fixture.catalogs);
+      releaseDocuments.resolve([child('Documents.Existing', 'Existing')]);
+
+      const staleResults = await Promise.allSettled(pending);
+      assert.ok(staleResults.every((result) => result.status === 'rejected'));
+      for (const result of staleResults) {
+        if (result.status === 'rejected') {
+          assert.strictEqual(resultErrorCode(result.reason), 'TREE_LOAD_SUPERSEDED');
+        }
+      }
+
+      const [references, objects] = await Promise.all([
+        provider.getReferenceableObjectsForTypeEditor(fixture.root),
+        provider.getObjectableObjectsForEditor(fixture.root),
+      ]);
+      assert.ok(references.find((group) => group.referenceKind === 'CatalogRef')?.objectNames.includes('Fresh'));
+      assert.ok(objects.some((group) => group.objectNames.includes('Fresh')));
+    } finally {
+      releaseDocuments.resolve([]);
+      await Promise.allSettled(pending);
+    }
+  });
+
+  for (const transition of ['replacement', 'dispose'] as const) {
+    test(`late parser rejection reports ${transition} instead of an active load failure`, async () => {
+      const provider = createProvider();
+      const fixture = createRootFixture(`late-rejection-${transition}`);
+      provider.setRootNodes([fixture.root], new Map([[fixture.root, contextFor(fixture)]]));
+      const parseStarted = deferred<void>();
+      const rejectParse = deferred<TreeNode[]>();
+      MetadataParser.parseTypeIndex = async () => {
+        parseStarted.resolve();
+        return rejectParse.promise;
+      };
+
+      const pending = Promise.resolve(provider.getChildren(fixture.catalogs));
+      await parseStarted.promise;
+      if (transition === 'replacement') {
+        const replacement = createRootFixture(`late-rejection-${transition}-replacement`);
+        replacement.root.id = fixture.root.id;
+        replacement.root.name = fixture.root.name;
+        Object.defineProperty(replacement.root, 'configurationId', {
+          configurable: true,
+          enumerable: true,
+          value: fixture.configurationId,
+        });
+        provider.setRootNodes(
+          [replacement.root],
+          new Map([[replacement.root, fakeTreeLoadContext(
+            fixture.configPath,
+            ConfigFormat.Designer,
+            fixture.configurationId,
+          )]]),
+        );
+      } else {
+        provider.dispose();
+      }
+
+      rejectParse.reject(new Error('late injected parser rejection'));
+      const result = await Promise.allSettled([pending]);
+      assert.strictEqual(result[0]?.status, 'rejected');
+      if (result[0]?.status === 'rejected') {
+        assert.strictEqual(
+          resultErrorCode(result[0].reason),
+          transition === 'dispose' ? 'TREE_LOAD_DISPOSED' : 'TREE_LOAD_SUPERSEDED',
+        );
+      }
+    });
+  }
+
   test('configuration invalidation starts parser fencing before the first tree-disk await', async () => {
     const provider = createProvider();
     const fixture = createRootFixture('disk-await-invalidation');
@@ -829,6 +1018,32 @@ suite('Tree type-index load ownership runtime', () => {
       }
       lifecycle.dispose();
       (diskCache as unknown as { invalidateTreeCache: typeof diskCache.invalidateTreeCache }).invalidateTreeCache = originalInvalidateTreeCache;
+    }
+  });
+
+  test('type-index parser and publication stay behind the shared coordinator', () => {
+    const sourceRoot = path.resolve(__dirname, '../../..', 'src');
+    const sourceFiles: string[] = [];
+    const visit = (directory: string): void => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const entryPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          visit(entryPath);
+        } else if (entry.isFile() && entry.name.endsWith('.ts')) {
+          sourceFiles.push(entryPath);
+        }
+      }
+    };
+    visit(sourceRoot);
+
+    const parserOwners = sourceFiles
+      .filter((filePath) => /MetadataParser\.parseTypeIndex\s*\(/.test(fs.readFileSync(filePath, 'utf8')))
+      .map((filePath) => path.relative(sourceRoot, filePath).replace(/\\/g, '/'));
+    assert.deepStrictEqual(parserOwners, ['providers/treeTypeLoadCoordinator.ts']);
+
+    for (const loaderFile of ['providers/treeReferenceLoader.ts', 'providers/objectTypeLoader.ts']) {
+      const source = fs.readFileSync(path.join(sourceRoot, loaderFile), 'utf8');
+      assert.doesNotMatch(source, /MetadataParser|parseTypeIndex\s*\(/, `${loaderFile} must remain a pure projection`);
     }
   });
 });

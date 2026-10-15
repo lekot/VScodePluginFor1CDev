@@ -4,7 +4,7 @@ import {
   type TreeTypeLoadResult,
 } from '../types/treeTypeLoadResult';
 import { MetadataParser } from '../parsers/metadataParser';
-import { TreeNode } from '../models/treeNode';
+import { MetadataType, type TreeNode } from '../models/treeNode';
 import { ensureR6PlaceholdersForInstanceNode } from '../utils/treeNormalization';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
 import { TreeCacheService } from './treeCacheService';
@@ -26,12 +26,21 @@ interface NodeLoadState {
 interface ScopeRootSnapshot {
   readonly root: TreeNode;
   readonly record: RootRecord | undefined;
+  readonly folderVersions: readonly FolderVersion[];
 }
 
-export interface TreeTypeLoadScopeSnapshot {
+interface FolderVersion {
+  readonly folder: TreeNode;
+  readonly version: number;
+}
+
+interface ScopeSnapshotState {
   readonly roots: readonly ScopeRootSnapshot[];
   readonly allRootsScope: boolean;
 }
+
+const scopeSnapshotBrand: unique symbol = Symbol('TreeTypeLoadScopeSnapshot');
+export type TreeTypeLoadScopeSnapshot = { readonly [scopeSnapshotBrand]: true };
 
 function sameContext(left: TreeLoadContext, right: TreeLoadContext): boolean {
   return left.configurationId === right.configurationId
@@ -55,6 +64,7 @@ export class TreeTypeLoadCoordinator {
   private publishedRoots: TreeNode[] = [];
   private rootRecords = new Map<TreeNode, RootRecord>();
   private readonly nodeStates = new WeakMap<TreeNode, NodeLoadState>();
+  private readonly scopeSnapshots = new WeakMap<TreeTypeLoadScopeSnapshot, ScopeSnapshotState>();
   private disposed = false;
 
   constructor(
@@ -70,12 +80,16 @@ export class TreeTypeLoadCoordinator {
     const nextRecords = new Map<TreeNode, RootRecord>();
     for (const root of roots) {
       const context = contexts.get(root);
-      if (!context || root.type !== 'Configuration' || root.configurationId !== context.configurationId) {
+      if (
+        !context
+        || root.type !== MetadataType.Configuration
+        || (root.configurationId !== undefined && root.configurationId !== context.configurationId)
+      ) {
         continue;
       }
 
       const existing = this.rootRecords.get(root);
-      if (existing?.status === 'active' && sameContext(existing.context, context)) {
+      if (existing && existing.status !== 'retired' && sameContext(existing.context, context)) {
         nextRecords.set(root, existing);
       } else {
         if (existing) {
@@ -98,36 +112,54 @@ export class TreeTypeLoadCoordinator {
     this.rootRecords = nextRecords;
   }
 
-  captureScope(roots: readonly TreeNode[], allRootsScope: boolean): TreeTypeLoadScopeSnapshot {
-    return Object.freeze({
+  captureScope(
+    roots: readonly TreeNode[],
+    allRootsScope: boolean,
+    relevantFolders: readonly TreeNode[] = [],
+  ): TreeTypeLoadScopeSnapshot {
+    const snapshot = Object.freeze({ [scopeSnapshotBrand]: true }) as TreeTypeLoadScopeSnapshot;
+    this.scopeSnapshots.set(snapshot, {
       roots: Object.freeze(roots.map((root) => Object.freeze({
         root,
         record: this.rootRecords.get(root),
+        folderVersions: Object.freeze(relevantFolders
+          .filter((folder) => this.cache.getConfigurationRoot(folder) === root)
+          .map((folder) => Object.freeze({
+            folder,
+            version: this.nodeStates.get(folder)?.version ?? 0,
+          }))),
       }))),
       allRootsScope,
     });
+    return snapshot;
   }
 
   isScopeCurrent(snapshot: TreeTypeLoadScopeSnapshot): boolean {
-    if (this.disposed) {
+    const state = this.scopeSnapshots.get(snapshot);
+    if (!state || this.disposed) {
       return false;
     }
-    if (snapshot.allRootsScope) {
-      if (snapshot.roots.length !== this.publishedRoots.length) {
+    if (state.allRootsScope) {
+      if (state.roots.length !== this.publishedRoots.length) {
         return false;
       }
-      for (let index = 0; index < snapshot.roots.length; index += 1) {
-        if (snapshot.roots[index]?.root !== this.publishedRoots[index]) {
+      for (let index = 0; index < state.roots.length; index += 1) {
+        if (state.roots[index]?.root !== this.publishedRoots[index]) {
           return false;
         }
       }
     }
-    return snapshot.roots.every(({ root, record }) => {
+    return state.roots.every(({ root, record, folderVersions }) => {
       if (!this.publishedRoots.includes(root) || !this.cache.contains(root)) {
         return false;
       }
       const current = this.rootRecords.get(root);
-      return current === record && (!current || current.status === 'active');
+      if (current !== record || (current && current.status !== 'active')) {
+        return false;
+      }
+      return folderVersions.every(({ folder, version }) =>
+        this.cache.contains(folder) && (this.nodeStates.get(folder)?.version ?? 0) === version,
+      );
     });
   }
 
@@ -269,6 +301,18 @@ export class TreeTypeLoadCoordinator {
       this.onPublished(typeFolder);
       return { status: 'loaded', children };
     } catch (cause) {
+      if (this.disposed) {
+        return {
+          status: 'disposed',
+          error: loadError('TREE_LOAD_DISPOSED', 'Загрузчик дерева уже остановлен.'),
+        };
+      }
+      if (!this.isCurrent(record, typeFolder, state, nodeVersion)) {
+        return {
+          status: 'superseded',
+          error: loadError('TREE_LOAD_SUPERSEDED', 'Ошибка загрузки относится к устаревшему дереву конфигурации.'),
+        };
+      }
       return {
         status: 'failed',
         error: loadError(
