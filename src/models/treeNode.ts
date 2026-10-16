@@ -114,6 +114,8 @@ export interface TreeNodeProperties {
   Value?: unknown;
   code?: string;
   isFolder?: boolean;
+  /** SHA-256 digest of Configuration.xml when this node/tree was parsed. */
+  contentHash?: string;
 }
 
 /**
