@@ -378,6 +378,12 @@ export class MetadataParser {
     format: ConfigFormat,
     element: TreeNode
   ): Promise<TreeNode[]> {
+    if (element?.properties) {
+      delete element.properties._parseError;
+    }
+    if (element.parent?.properties) {
+      delete element.parent.properties._parseError;
+    }
     const id = element.id;
     const parent = element.parent;
 
@@ -415,6 +421,9 @@ export class MetadataParser {
           : format === ConfigFormat.EDT
             ? await EdtParser.loadChildrenForElement(configPath, typeFolderId, objectName, parent)
             : [];
+      if (parent.properties?._parseError) {
+        throw parent.properties._parseError;
+      }
       const sectionNode = siblings.find((c) => c.id === id);
       if (sectionNode?.children) {
         for (const c of sectionNode.children) {
@@ -439,6 +448,9 @@ export class MetadataParser {
       loaded = await EdtParser.loadChildrenForElement(configPath, typeName, elementName, element);
     } else {
       return [];
+    }
+    if (element?.properties?._parseError) {
+      throw element.properties._parseError;
     }
 
     // Lazy expand of a tabular section instance: parsers may return [] when there are no columns;

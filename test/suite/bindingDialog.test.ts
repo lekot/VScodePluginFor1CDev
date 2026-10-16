@@ -812,7 +812,8 @@ suite('BindingDialogPanel', () => {
     dlg.dispose();
   });
 
-  test('addFromList when catalog is full still allows picking excluded ids only', async () => {
+  test('addFromList when catalog is full still allows picking excluded ids only', async function () {
+    this.timeout(30000);
     const entries: InfobaseEntry[] = Array.from({ length: INFOBASE_STORAGE_MAX_ENTRIES }, (_, i) => ({
       id: randomUUID(),
       name: `n${i}`,

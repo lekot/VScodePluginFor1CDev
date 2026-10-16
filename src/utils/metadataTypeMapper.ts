@@ -1,6 +1,7 @@
 import { MetadataType } from '../models/treeNode';
 import {
   getMetadataTypeDescriptorByFolder,
+  getMetadataTypeDescriptorByRootTag,
   getMetadataTypeDescriptorByType,
   METADATA_TYPE_DESCRIPTORS,
 } from '../constants/metadataTypeDescriptors';
@@ -16,7 +17,7 @@ export class MetadataTypeMapper {
    * @returns MetadataType enum value
    */
   static map(typeString: string): MetadataType {
-    return getMetadataTypeDescriptorByFolder(typeString)?.type ?? MetadataType.Unknown;
+    return getMetadataTypeDescriptorByFolder(typeString)?.type ?? getMetadataTypeDescriptorByRootTag(typeString)?.type ?? MetadataType.Unknown;
   }
 
   /**

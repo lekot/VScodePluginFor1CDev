@@ -9,7 +9,7 @@ import { MetadataParser } from '../parsers/metadataParser';
 import { FormatDetector, ConfigFormat } from '../parsers/formatDetector';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { MetadataObject } from './models/metadataObject';
-import { RightsMap } from './models/roleModel';
+import { RightsMap, RoleModel } from './models/roleModel';
 import { Logger } from '../utils/logger';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { CONFIGURATION_XML } from '../constants/fileNames';
@@ -55,7 +55,7 @@ const RIGHTS_ASSIGNABLE_TYPES: MetadataType[] = [
 ];
 
 /** Types for which we load attribute-level rights rows (same scope as R6 lazy Attributes in the tree). */
-const OBJECT_TYPES_FOR_ATTRIBUTE_RIGHTS: MetadataType[] = [
+export const OBJECT_TYPES_FOR_ATTRIBUTE_RIGHTS: MetadataType[] = [
   MetadataType.Catalog,
   MetadataType.Document,
   MetadataType.DataProcessor,
@@ -76,7 +76,7 @@ function folderNameForMetadataType(t: MetadataType): string | null {
 /**
  * Best-effort synonym or name from Configuration.xml for the configuration root rights row.
  */
-async function readConfigurationRootDisplayName(configRootPath: string): Promise<string> {
+export async function readConfigurationRootDisplayName(configRootPath: string): Promise<string> {
   const configXmlPath = path.join(configRootPath, CONFIGURATION_XML);
   try {
     const text = await fs.promises.readFile(configXmlPath, 'utf-8');
@@ -157,9 +157,165 @@ async function loadAttributeRowsForElement(
     }
     return rows;
   } catch (err) {
-    Logger.debug(`Attribute rights rows skipped for ${element.fullName}`, err);
+    Logger.warn(`Failed to load attribute rows for ${element.fullName}`, err);
+    throw err;
+  }
+}
+
+/**
+ * Sort metadata objects: configuration first, then main objects, then attributes; then type and name.
+ */
+export function sortMetadataObjects(objects: MetadataObject[]): void {
+  objects.sort((a, b) => {
+    const rank = (o: MetadataObject): number => {
+      if (o.rowKind === 'configurationRoot') {
+        return 0;
+      }
+      if (o.rowKind === 'attribute') {
+        return 2;
+      }
+      return 1;
+    };
+    const ra = rank(a);
+    const rb = rank(b);
+    if (ra !== rb) {
+      return ra - rb;
+    }
+    const typeComparison = a.type.localeCompare(b.type);
+    if (typeComparison !== 0) {
+      return typeComparison;
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/**
+ * Load attribute rows for a single metadata object by its semantic full name.
+ */
+export async function loadAttributeRowsForObject(
+  configPath: string,
+  format: ConfigFormat,
+  objectFullName: string,
+  currentRights: RightsMap
+): Promise<MetadataObject[]> {
+  const dotIdx = objectFullName.indexOf('.');
+  if (dotIdx <= 0) {
     return [];
   }
+  const typeStr = objectFullName.slice(0, dotIdx);
+  const name = objectFullName.slice(dotIdx + 1);
+  const mappedType = MetadataTypeMapper.map(typeStr) || (typeStr as MetadataType);
+  if (!OBJECT_TYPES_FOR_ATTRIBUTE_RIGHTS.includes(mappedType)) {
+    return [];
+  }
+  const element: MetadataObject = {
+    fullName: objectFullName,
+    type: mappedType,
+    name,
+    displayName: name,
+    hasRights: objectFullName in currentRights,
+    rowKind: 'object',
+  };
+  return await loadAttributeRowsForElement(configPath, format, element, currentRights);
+}
+
+/**
+ * Rapidly constructs initial table rows from RoleModel without parsing all configuration XMLs.
+ * Delivers Configuration root row and all rows that have rights already assigned in the role.
+ */
+export async function loadInitialRoleObjects(
+  roleModel: RoleModel,
+  configPath: string
+): Promise<MetadataObject[]> {
+  const configDisplayName = await readConfigurationRootDisplayName(configPath);
+  const configurationRow: MetadataObject = {
+    fullName: CONFIGURATION_RIGHTS_FULL_NAME,
+    type: MetadataType.Configuration,
+    name: 'Configuration',
+    displayName: `${configDisplayName} (root)`,
+    hasRights: CONFIGURATION_RIGHTS_FULL_NAME in roleModel.rights,
+    rowKind: 'configurationRoot',
+  };
+
+  const rows: MetadataObject[] = [configurationRow];
+
+  for (const objectName of Object.keys(roleModel.rights)) {
+    if (objectName === CONFIGURATION_RIGHTS_FULL_NAME) {
+      continue;
+    }
+
+    if (objectName.includes('.Attribute.')) {
+      const parts = objectName.split('.Attribute.');
+      const parentFull = parts[0];
+      const attrName = parts[1];
+      const dotIdx = parentFull.indexOf('.');
+      const parentType = dotIdx > 0 ? parentFull.slice(0, dotIdx) : parentFull;
+      const parentObjName = dotIdx > 0 ? parentFull.slice(dotIdx + 1) : parentFull;
+
+      rows.push({
+        fullName: objectName,
+        type: MetadataType.Attribute,
+        name: attrName,
+        displayName: attrName,
+        hasRights: true,
+        rowKind: 'attribute',
+        parentLabel: `${parentObjName} (${parentType})`,
+      });
+    } else {
+      const dotIdx = objectName.indexOf('.');
+      const typeStr = dotIdx > 0 ? objectName.slice(0, dotIdx) : objectName;
+      const name = dotIdx > 0 ? objectName.slice(dotIdx + 1) : objectName;
+      const mappedType = MetadataTypeMapper.map(typeStr) || (typeStr as MetadataType);
+
+      rows.push({
+        fullName: objectName,
+        type: mappedType,
+        name,
+        displayName: name,
+        hasRights: true,
+        rowKind: 'object',
+        attributesState: 'notLoaded',
+      });
+    }
+  }
+
+  sortMetadataObjects(rows);
+  return rows;
+}
+
+/**
+ * Loads metadata objects index using fast parseTypeIndex (directory inspection without parsing object XMLs).
+ */
+export async function loadTypeIndexObjects(
+  configPath: string,
+  currentRights: RightsMap = {}
+): Promise<MetadataObject[]> {
+  const format = await FormatDetector.detect(configPath);
+  const rootNode = await MetadataParser.parseStructureOnly(configPath);
+  const baseObjects: MetadataObject[] = [];
+
+  if (rootNode.children) {
+    for (const typeNode of rootNode.children) {
+      if (!RIGHTS_ASSIGNABLE_TYPES.includes(typeNode.type)) {
+        continue;
+      }
+      const indexedNodes = await MetadataParser.parseTypeIndex(configPath, typeNode.name, { format });
+      for (const node of indexedNodes) {
+        const fullName = `${node.type}.${node.name}`;
+        baseObjects.push({
+          fullName,
+          type: node.type,
+          name: node.name,
+          displayName: (node.properties?.synonym as string) || node.name,
+          hasRights: fullName in currentRights,
+          rowKind: 'object',
+          attributesState: 'notLoaded',
+        });
+      }
+    }
+  }
+
+  return baseObjects;
 }
 
 /**
@@ -215,7 +371,7 @@ export async function loadMetadataObjects(
       await Promise.all(
         baseObjects
           .filter((o) => OBJECT_TYPES_FOR_ATTRIBUTE_RIGHTS.includes(o.type))
-          .map((el) => loadAttributeRowsForElement(effectiveConfigPath, format, el, currentRights))
+          .map((el) => loadAttributeRowsForElement(effectiveConfigPath, format, el, currentRights).catch(() => []))
       )
     ).flat();
 
@@ -232,7 +388,7 @@ export async function loadMetadataObjects(
     const metadataObjects: MetadataObject[] = [configurationRow, ...baseObjects, ...attributeRows];
 
     // Step 4: Sort — configuration first, then main objects, then attributes; then type/name
-    metadataObjects.sort((a, b) => {
+    sortMetadataObjects(metadataObjects); /*
       const rank = (o: MetadataObject): number => {
         if (o.rowKind === 'configurationRoot') {return 0;}
         if (o.rowKind === 'attribute') {return 2;}
@@ -248,7 +404,7 @@ export async function loadMetadataObjects(
         return typeComparison;
       }
       return a.name.localeCompare(b.name);
-    });
+    */
 
     Logger.info(`Loaded ${metadataObjects.length} metadata objects`);
     return metadataObjects;
