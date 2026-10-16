@@ -325,6 +325,33 @@
             color: var(--vscode-inputValidation-infoForeground);
             border: 1px solid var(--vscode-inputValidation-infoBorder);
         }
+
+        .attr-expander {
+            display: inline-block;
+            width: 16px;
+            cursor: pointer;
+            user-select: none;
+            color: var(--vscode-foreground);
+            font-size: 10px;
+            margin-right: 4px;
+        }
+
+        .attr-expander:hover {
+            color: var(--vscode-textLink-activeForeground);
+        }
+
+        .attr-status-hint {
+            color: var(--vscode-descriptionForeground);
+            font-size: 0.85em;
+            font-style: italic;
+        }
+
+        .attr-status-error {
+            color: var(--vscode-errorForeground);
+            font-size: 0.85em;
+            cursor: pointer;
+            text-decoration: underline;
+        }
     </style>
 </head>
 <body>
@@ -398,6 +425,12 @@
                 searchQuery: '',
                 typeFilter: ''
             };
+            var currentSessionId = '';
+            var currentDataRevision = 0;
+            var isFirstTableReady = false;
+            var expandedObjects = new Set();
+            var searchQuerySeq = 0;
+            var requestSeq = 0;
 
             /** Set from extension `objectsLoaded` when no configuration path — Save is disabled. */
             let saveDisabledByHost = false;
@@ -492,6 +525,43 @@
             document.getElementById('typeFilter').addEventListener('change', handleTypeFilter);
             document.getElementById('saveButton').addEventListener('click', handleSave);
             document.getElementById('cancelButton').addEventListener('click', handleCancel);
+            document.getElementById('tableBody').addEventListener('click', function(e) {
+                var expander = e.target.closest('.attr-expander');
+                var retry = e.target.closest('.attr-status-error');
+                var targetObjFullName = expander ? expander.getAttribute('data-object') : (retry ? retry.getAttribute('data-object') : null);
+                if (!targetObjFullName) return;
+
+                var obj = allObjects.find(function(o) { return o.fullName === targetObjFullName; });
+                if (!obj) return;
+
+                if (expander) {
+                    if (expandedObjects.has(targetObjFullName)) {
+                        expandedObjects.delete(targetObjFullName);
+                        renderTable();
+                        return;
+                    }
+                    expandedObjects.add(targetObjFullName);
+                }
+
+                if (obj.attributesState === 'loaded') {
+                    renderTable();
+                    return;
+                }
+
+                obj.attributesState = 'loading';
+                obj.attributesError = undefined;
+                renderTable();
+
+                requestSeq++;
+                vscode.postMessage({
+                    command: 'loadObjectAttributes',
+                    data: {
+                        sessionId: currentSessionId,
+                        requestId: 'attr-req-' + requestSeq,
+                        objectFullName: targetObjFullName
+                    }
+                });
+            });
 
             // Ctrl+S to save
             document.addEventListener('keydown', function(e) {
@@ -521,7 +591,7 @@
                         break;
                     }
 
-                    case 'objectsLoaded':
+                    case 'objectsLoaded': /*
                         allObjects = data.objects || [];
                         if (Array.isArray(data.uiRights)) {
                             roleData.uiRights = data.uiRights;
@@ -537,7 +607,99 @@
                         initializeUI();
                         renderTable();
                         syncSaveButtonState();
+                        */ {
+                        var incomingSessionId = data.sessionId;
+                        var incomingRevision = data.dataRevision || 0;
+                        if (incomingSessionId) {
+                            if (currentSessionId && incomingSessionId !== currentSessionId) {
+                                currentSessionId = incomingSessionId;
+                                expandedObjects.clear();
+                                isFirstTableReady = false;
+                            } else if (!currentSessionId) {
+                                currentSessionId = incomingSessionId;
+                            }
+                        }
+                        currentDataRevision = incomingRevision;
+
+                        if (Array.isArray(data.uiRights)) {
+                            roleData.uiRights = data.uiRights;
+                        }
+
+                        if (data.phase === 'initial' || !allObjects || allObjects.length === 0) {
+                            allObjects = data.objects || [];
+                        } else {
+                            var incoming = data.objects || [];
+                            var existingByFullName = {};
+                            for (var i = 0; i < allObjects.length; i++) {
+                                existingByFullName[allObjects[i].fullName] = allObjects[i];
+                            }
+                            for (var j = 0; j < incoming.length; j++) {
+                                var inObj = incoming[j];
+                                var existing = existingByFullName[inObj.fullName];
+                                if (!existing) {
+                                    allObjects.push(inObj);
+                                    existingByFullName[inObj.fullName] = inObj;
+                                } else {
+                                    existing.displayName = inObj.displayName;
+                                    existing.hasRights = inObj.hasRights;
+                                }
+                            }
+                            allObjects.sort(function(a, b) {
+                                var rankA = a.rowKind === 'configurationRoot' ? 0 : (a.rowKind === 'attribute' ? 2 : 1);
+                                var rankB = b.rowKind === 'configurationRoot' ? 0 : (b.rowKind === 'attribute' ? 2 : 1);
+                                if (rankA !== rankB) return rankA - rankB;
+                                var tc = a.type.localeCompare(b.type);
+                                if (tc !== 0) return tc;
+                                return a.name.localeCompare(b.name);
+                            });
+                        }
+
+                        tableInitialLoading = false;
+                        saveDisabledByHost = data.saveDisabled === true;
+                        setLoadingOverlay(false);
+                        if (data.error) {
+                            setMetadataLoadError(data.error);
+                        } else {
+                            setMetadataLoadError('');
+                        }
+                        initializeUI();
+                        renderTable();
+                        syncSaveButtonState();
                         break;
+                    }
+
+                    case 'loadObjectAttributesResult': {
+                        if (data.sessionId && data.sessionId !== currentSessionId) {
+                            break;
+                        }
+                        var targetName = data.objectFullName;
+                        var target = allObjects.find(function(o) { return o.fullName === targetName; });
+                        if (target) {
+                            if (data.state === 'loaded') {
+                                target.attributesState = 'loaded';
+                                target.attributes = data.attributes || [];
+                            } else {
+                                target.attributesState = 'failed';
+                                target.attributesError = data.error || 'Failed to load attributes';
+                            }
+                            if (expandedObjects.has(targetName)) {
+                                renderTable();
+                            }
+                        }
+                        break;
+                    }
+
+                    case 'searchProgress': {
+                        if (data.sessionId && data.sessionId !== currentSessionId) break;
+                        if (data.queryId && data.queryId < searchQuerySeq) break;
+                        if (Array.isArray(data.matchingObjectNames) && data.matchingObjectNames.length > 0) {
+                            for (var m = 0; m < data.matchingObjectNames.length; m++) {
+                                expandedObjects.add(data.matchingObjectNames[m]);
+                            }
+                            renderTable();
+                        }
+                        break;
+                    }
                     
                     case 'updateSuccess':
                         // Rights updated successfully
@@ -617,7 +779,23 @@
                 if (obj.parentLabel) {
                     parentLine = '<span class="parent-hint">' + escapeHtml(obj.parentLabel) + '</span>';
                 }
-                tdName.innerHTML = displayName + '<span class="object-type">(' + type + ')</span>' + parentLine;
+                var expanderHtml = '';
+                var canHaveAttributes = ['Catalog', 'Document', 'DataProcessor', 'ChartOfCharacteristicTypes'].includes(obj.type) && obj.rowKind !== 'attribute' && obj.rowKind !== 'configurationRoot';
+                if (canHaveAttributes) {
+                    var isExpanded = expandedObjects.has(obj.fullName);
+                    var icon = isExpanded ? '▼' : '▶';
+                    expanderHtml = '<span class="attr-expander" data-object="' + escapeHtml(obj.fullName) + '">' + icon + '</span>';
+                }
+                var statusHtml = '';
+                if (obj.attributesState === 'loading') {
+                    statusHtml = ' <span class="attr-status-hint">(loading attributes...)</span>';
+                } else if (obj.attributesState === 'failed') {
+                    statusHtml = ' <span class="attr-status-error" data-object="' + escapeHtml(obj.fullName) + '" title="' + escapeHtml(obj.attributesError || '') + '">(retry)</span>';
+                }
+                if (obj.rowKind === 'attribute') {
+                    tdName.style.paddingLeft = '28px';
+                }
+                tdName.innerHTML = expanderHtml + displayName + '<span class="object-type">(' + type + ')</span>' + parentLine + statusHtml;
                 tdName.title = obj.fullName;
                 tr.appendChild(tdName);
 
@@ -639,6 +817,32 @@
                 tableBody.appendChild(tr);
             }
 
+            function notifyRenderProgress(busy, rowCount) {
+                if (!busy && !isFirstTableReady) {
+                    isFirstTableReady = true;
+                    vscode.postMessage({
+                        command: 'tableRenderProgress',
+                        data: {
+                            sessionId: currentSessionId,
+                            dataRevision: currentDataRevision,
+                            firstTableReady: true,
+                            busy: false,
+                            rowCount: rowCount
+                        }
+                    });
+                    return;
+                }
+                vscode.postMessage({
+                    command: 'tableRenderProgress',
+                    data: {
+                        sessionId: currentSessionId,
+                        dataRevision: currentDataRevision,
+                        busy: busy,
+                        rowCount: rowCount
+                    }
+                });
+            }
+
             function renderTable() {
                 if (!roleData) {
                     return;
@@ -653,7 +857,7 @@
 
                 if (filteredObjects.length === 0) {
                     emptyState.style.display = 'block';
-                    vscode.postMessage({ command: 'tableRenderProgress', data: { busy: false } });
+                    notifyRenderProgress(false, 0);
                     return;
                 }
 
@@ -665,19 +869,16 @@
                     for (let i = 0; i < filteredObjects.length; i++) {
                         appendRightsTableRow(tableBody, filteredObjects[i], rightTypes);
                     }
-                    vscode.postMessage({ command: 'tableRenderProgress', data: { busy: false } });
+                    notifyRenderProgress(false, filteredObjects.length);
                     return;
                 }
 
-                vscode.postMessage({
-                    command: 'tableRenderProgress',
-                    data: { busy: true, rowCount: filteredObjects.length }
-                });
+                notifyRenderProgress(true, filteredObjects.length);
 
                 let idx = 0;
                 function pump() {
                     if (seq !== renderTableSeq) {
-                        vscode.postMessage({ command: 'tableRenderProgress', data: { busy: false } });
+                        notifyRenderProgress(false, filteredObjects.length);
                         return;
                     }
                     const end = Math.min(idx + TABLE_RENDER_CHUNK, filteredObjects.length);
@@ -687,37 +888,78 @@
                     if (idx < filteredObjects.length) {
                         requestAnimationFrame(pump);
                     } else {
-                        vscode.postMessage({ command: 'tableRenderProgress', data: { busy: false } });
+                        notifyRenderProgress(false, filteredObjects.length);
                     }
                 }
                 requestAnimationFrame(pump);
             }
 
             function applyFilters() {
-                let filtered = allObjects;
+                var query = filterState.searchQuery ? filterState.searchQuery.toLowerCase() : '';
+                var type = filterState.typeFilter || '';
+                var showAll = Boolean(filterState.showAll);
 
-                // Filter by showAll
-                if (!filterState.showAll) {
-                    filtered = filtered.filter(obj => 
-                        roleData.rights[obj.fullName] && 
-                        Object.values(roleData.rights[obj.fullName]).some(v => v === true)
-                    );
+                function hasAssignedRights(obj) {
+                    var r = roleData.rights[obj.fullName];
+                    return Boolean(r && Object.values(r).some(function(v) { return v === true; }));
                 }
 
-                // Filter by search query
-                if (filterState.searchQuery) {
-                    const query = filterState.searchQuery.toLowerCase();
-                    filtered = filtered.filter(obj => 
-                        obj.name.toLowerCase().includes(query) ||
-                        (obj.displayName && obj.displayName.toLowerCase().includes(query)) ||
-                        (obj.fullName && obj.fullName.toLowerCase().includes(query)) ||
-                        (obj.parentLabel && obj.parentLabel.toLowerCase().includes(query))
-                    );
+                function matchesQuery(obj) {
+                    if (!query) return true;
+                    return (obj.name && obj.name.toLowerCase().includes(query)) ||
+                           (obj.displayName && obj.displayName.toLowerCase().includes(query)) ||
+                           (obj.fullName && obj.fullName.toLowerCase().includes(query)) ||
+                           (obj.parentLabel && obj.parentLabel.toLowerCase().includes(query));
                 }
 
-                // Filter by type
-                if (filterState.typeFilter) {
-                    filtered = filtered.filter(obj => obj.type === filterState.typeFilter);
+                function matchesType(obj) {
+                    if (!type) return true;
+                    return obj.type === type;
+                }
+
+                var filtered = [];
+                for (var i = 0; i < allObjects.length; i++) {
+                    var obj = allObjects[i];
+
+                    if (obj.rowKind === 'attribute') {
+                        if ((showAll || hasAssignedRights(obj)) && matchesType(obj) && matchesQuery(obj)) {
+                            filtered.push(obj);
+                        }
+                        continue;
+                    }
+
+                    var parentRights = showAll || hasAssignedRights(obj);
+                    var parentQuery = matchesQuery(obj);
+                    var parentType = matchesType(obj);
+
+                    var isExpanded = expandedObjects.has(obj.fullName);
+                    var loadedAttrs = (obj.attributesState === 'loaded' && Array.isArray(obj.attributes)) ? obj.attributes : [];
+
+                    var matchingAttrs = [];
+                    if (isExpanded || query) {
+                        for (var a = 0; a < loadedAttrs.length; a++) {
+                            var attr = loadedAttrs[a];
+                            var attrRights = showAll || hasAssignedRights(attr);
+                            var attrQuery = matchesQuery(attr);
+                            if (attrRights && (parentQuery || attrQuery)) {
+                                matchingAttrs.push(attr);
+                            }
+                        }
+                    }
+
+                    var showParent = parentType && ((parentRights && parentQuery) || matchingAttrs.length > 0);
+                    if (showParent) {
+                        filtered.push(obj);
+                        if (isExpanded) {
+                            for (var k = 0; k < loadedAttrs.length; k++) {
+                                var child = loadedAttrs[k];
+                                var childRights = showAll || hasAssignedRights(child);
+                                if (childRights && (parentQuery || matchesQuery(child))) {
+                                    filtered.push(child);
+                                }
+                            }
+                        }
+                    }
                 }
 
                 return filtered;
@@ -736,9 +978,15 @@
 
             function handleSearchInput(event) {
                 filterState.searchQuery = event.target.value;
+                searchQuerySeq++;
                 vscode.postMessage({
                     command: 'search',
-                    data: { query: filterState.searchQuery }
+                    data: {
+                        sessionId: currentSessionId,
+                        queryId: searchQuerySeq,
+                        query: filterState.searchQuery,
+                        type: filterState.typeFilter
+                    }
                 });
                 if (searchDebounceTimer) {
                     clearTimeout(searchDebounceTimer);

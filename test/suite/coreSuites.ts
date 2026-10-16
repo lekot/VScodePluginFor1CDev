@@ -56,6 +56,8 @@ export const coreSuiteFiles: string[] = [
   'suite/metadataTypeMapper.test.js',
   'suite/metadataTypeRegistryCompleteness.test.js',
   'suite/metadataLoader.test.js',
+  'suite/rolesEditorLazyLoading.test.js',
+  'suite/rolesEditorLoadingProtocol.test.js',
   'suite/xmlChildObjects.test.js',
   'suite/xmlParser.test.js',
   'suite/xmlPropertyUtils.test.js',

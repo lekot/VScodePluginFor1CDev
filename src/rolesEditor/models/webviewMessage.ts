@@ -28,7 +28,9 @@ export type WebviewCommand =
   | 'toggleFilter'
   | 'search'
   | 'filterByType'
-  | 'tableRenderProgress';
+  | 'tableRenderProgress'
+  | 'loadObjectAttributes'
+  | 'cancelSearch';
 
 /**
  * Message sent from webview to extension
@@ -50,10 +52,35 @@ export interface WebviewMessage {
  */
 export interface WebviewMessageData {
   /**
+   * Host-allocated session identifier correlating webview session lifecycle.
+   */
+  sessionId?: string;
+
+  /**
+   * Correlates async request/response pairs (e.g. loadObjectAttributes, savePayload).
+   */
+  requestId?: string;
+
+  /**
+   * Monotonically increasing revision of table data rendered in webview.
+   */
+  dataRevision?: number;
+
+  /**
+   * Incremental search query generation.
+   */
+  queryId?: number;
+
+  /**
    * Full name of the metadata object (for updateRight command)
    * Format: {MetadataType}.{ObjectName}
    */
   objectName?: string;
+
+  /**
+   * Semantic full name of target metadata object for attribute operations.
+   */
+  objectFullName?: string;
 
   /**
    * Type of right to update (for updateRight command)
@@ -94,22 +121,34 @@ export interface WebviewMessageData {
   restrictionTemplatesText?: string;
 
   /**
-   * Correlates extension `requestSavePayload` with webview `savePayload` (external save / flush RLS).
-   */
-  requestId?: string;
-
-  /**
    * Table render progress (for tableRenderProgress command)
    */
   busy?: boolean;
   rowCount?: number;
+
+  /**
+   * Set by webview when first usable table render has completed.
+   */
+  firstTableReady?: boolean;
 }
+
+/**
+ * Lifecycle phase for staged metadata loading.
+ */
+export type LoadPhase = 'initial' | 'index' | 'attributes' | 'complete';
+
+/**
+ * Correlated search state.
+ */
+export type SearchState = 'idle' | 'running' | 'complete' | 'incomplete' | 'cancelled';
 
 /**
  * Commands the extension posts to the rights editor webview (`postMessage`).
  */
 export type ExtensionToWebviewCommand =
   | 'objectsLoaded'
+  | 'loadObjectAttributesResult'
+  | 'searchProgress'
   | 'requestSavePayload'
   | 'updateSuccess'
   | 'updateError'
@@ -125,11 +164,38 @@ export type ExtensionToWebviewMessage =
   | {
       command: 'objectsLoaded';
       data: {
+        sessionId?: string;
+        dataRevision?: number;
+        phase?: LoadPhase;
+        isIndexComplete?: boolean;
         objects: MetadataObject[];
         uiRights?: UiRoleRightProjection[];
         error?: string;
         /** When true, metadata/config is unavailable — Save must not write (see provider). */
         saveDisabled?: boolean;
+      };
+    }
+  | {
+      command: 'loadObjectAttributesResult';
+      data: {
+        sessionId: string;
+        requestId: string;
+        objectFullName: string;
+        state: 'loaded' | 'failed';
+        attributes: readonly MetadataObject[];
+        error?: string;
+      };
+    }
+  | {
+      command: 'searchProgress';
+      data: {
+        sessionId: string;
+        queryId: number;
+        state: SearchState;
+        processed?: number;
+        total?: number;
+        matchingObjectNames?: readonly string[];
+        error?: string;
       };
     }
   | { command: 'requestSavePayload'; data: { requestId: string } }
@@ -165,3 +231,37 @@ export interface ValidationResult {
    */
   errors: string[];
 }
+
+const VALID_WEBVIEW_COMMANDS = new Set<WebviewCommand>([
+  'updateRight',
+  'save',
+  'savePayload',
+  'cancel',
+  'toggleFilter',
+  'search',
+  'filterByType',
+  'tableRenderProgress',
+  'loadObjectAttributes',
+  'cancelSearch',
+]);
+
+/**
+ * Runtime validation for incoming webview messages.
+ */
+export function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
+  if (!msg || typeof msg !== 'object') {
+    return false;
+  }
+  const m = msg as { command?: unknown; data?: unknown };
+  if (typeof m.command !== 'string') {
+    return false;
+  }
+  if (!VALID_WEBVIEW_COMMANDS.has(m.command as WebviewCommand)) {
+    return false;
+  }
+  if (m.data !== undefined && (typeof m.data !== 'object' || m.data === null)) {
+    return false;
+  }
+  return true;
+}
+

@@ -8,7 +8,12 @@ import { randomUUID } from 'crypto';
 import { XMLValidator } from 'fast-xml-parser';
 import { RoleModel } from './models/roleModel';
 import type { MetadataObject } from './models/metadataObject';
-import { WebviewMessage, type ExtensionToWebviewMessage, type UiRoleRightProjection } from './models/webviewMessage';
+import {
+  WebviewMessage,
+  isValidWebviewMessage,
+  type ExtensionToWebviewMessage,
+  type UiRoleRightProjection,
+} from './models/webviewMessage';
 import { RoleXmlParser } from './roleXmlParser';
 import { RoleXmlSerializer } from './roleXmlSerializer';
 import { RightsValidator } from './rightsValidator';
@@ -19,7 +24,15 @@ import {
   serializeRightsDomToXml,
   insertRestrictionTemplatesBeforeClosingRights,
 } from './rightsXmlEditWriter';
-import { loadMetadataObjects } from './metadataLoader';
+import {
+  // loadMetadataObjects,
+  loadInitialRoleObjects,
+  loadTypeIndexObjects,
+  sortMetadataObjects,
+  OBJECT_TYPES_FOR_ATTRIBUTE_RIGHTS,
+} from './metadataLoader';
+import { RolesMetadataLoadSession } from './rolesMetadataLoadSession';
+import { FormatDetector } from '../parsers/formatDetector';
 import { updateRight } from './rightsUpdateUtils';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
@@ -110,6 +123,10 @@ export class RolesRightsEditorProvider {
   private sessionGeneration = 0;
   private objectsLoadGeneration = 0;
   private tableRenderStatusDisposable: vscode.Disposable | undefined;
+  private activeSessionId: string | undefined;
+  private currentLoadSession: RolesMetadataLoadSession | undefined;
+  private currentDataRevision = 0;
+  private activeSearchQueryId = 0;
   /** Server-side mirror of the webview filter state — survives webview reloads. */
   private filterState: FilterState = createDefaultFilterState();
   /** Pending `requestSavePayload` → webview `savePayload` round-trips (external save / Ctrl+S). */
@@ -234,7 +251,7 @@ export class RolesRightsEditorProvider {
       this.configurationRootPath = resolvedConfigPath;
 
       try {
-        const objects = await loadMetadataObjects(
+        /* const objects = await loadMetadataObjects(
           roleFilePath,
           this.currentRoleModel.rights,
           resolvedConfigPath
@@ -247,7 +264,79 @@ export class RolesRightsEditorProvider {
         this.sendMessageToWebview({
           command: 'objectsLoaded',
           data: { objects: this.allObjects, uiRights: getUiRoleRightProjection() },
+        }); */
+        this.currentLoadSession?.dispose();
+        const sessionId = randomUUID();
+        this.activeSessionId = sessionId;
+        const format = await FormatDetector.detect(resolvedConfigPath);
+        const loadSession = new RolesMetadataLoadSession(
+          sessionId,
+          this.sessionGeneration,
+          resolvedConfigPath,
+          format
+        );
+        this.currentLoadSession = loadSession;
+
+        const initialObjects = await loadInitialRoleObjects(
+          this.currentRoleModel,
+          resolvedConfigPath
+        );
+        if (loadGeneration !== this.objectsLoadGeneration || this.activeSessionId !== sessionId) {
+          return;
+        }
+        this.allObjects = initialObjects;
+        this.currentDataRevision = 1;
+        Logger.info(`Loaded ${this.allObjects.length} initial role objects for session ${sessionId}`);
+        this.sendMessageToWebview({
+          command: 'objectsLoaded',
+          data: {
+            sessionId,
+            dataRevision: this.currentDataRevision,
+            phase: 'initial',
+            isIndexComplete: false,
+            objects: this.allObjects,
+            uiRights: getUiRoleRightProjection(),
+          },
         });
+
+        const targetRights = this.currentRoleModel.rights;
+        void (async () => {
+          try {
+            const indexed = await loadTypeIndexObjects(resolvedConfigPath, targetRights);
+            if (loadSession.isCancelled() || this.activeSessionId !== sessionId) {
+              return;
+            }
+            const existingMap = new Map<string, MetadataObject>(this.allObjects.map((o) => [o.fullName, o]));
+            for (const obj of indexed) {
+              if (!existingMap.has(obj.fullName)) {
+                existingMap.set(obj.fullName, obj);
+              }
+            }
+            const merged = Array.from(existingMap.values());
+            sortMetadataObjects(merged);
+            if (loadSession.isCancelled() || this.activeSessionId !== sessionId) {
+              return;
+            }
+            this.allObjects = merged;
+            this.currentDataRevision++;
+            this.sendMessageToWebview({
+              command: 'objectsLoaded',
+              data: {
+                sessionId,
+                dataRevision: this.currentDataRevision,
+                phase: 'index',
+                isIndexComplete: true,
+                objects: this.allObjects,
+                uiRights: getUiRoleRightProjection(),
+              },
+            });
+          } catch (indexErr) {
+            if (loadSession.isCancelled() || this.activeSessionId !== sessionId) {
+              return;
+            }
+            Logger.error('Failed to index metadata objects for rights editor', indexErr);
+          }
+        })();
       } catch (loadErr) {
         if (loadGeneration !== this.objectsLoadGeneration) {
           return;
@@ -257,7 +346,15 @@ export class RolesRightsEditorProvider {
         const message = loadErr instanceof Error ? loadErr.message : String(loadErr);
         this.sendMessageToWebview({
           command: 'objectsLoaded',
-          data: { objects: [] as MetadataObject[], uiRights: getUiRoleRightProjection(), error: message },
+          data: {
+            sessionId: this.activeSessionId,
+            dataRevision: ++this.currentDataRevision,
+            phase: 'initial',
+            isIndexComplete: false,
+            objects: [] as MetadataObject[],
+            uiRights: getUiRoleRightProjection(),
+            error: message,
+          },
         });
       }
     } catch (error) {
@@ -348,6 +445,8 @@ export class RolesRightsEditorProvider {
             allObjects = ${objectsJson};
             tableInitialLoading = ${loadingFlag};
             filterState = ${filterStateJson};
+            currentSessionId = ${JSON.stringify(this.activeSessionId ?? '')};
+            currentDataRevision = ${this.currentDataRevision};
             beginRightsEditorSession();`
     );
 
@@ -392,6 +491,12 @@ export class RolesRightsEditorProvider {
         case 'savePayload':
           this.handleSavePayloadResponse(message);
           break;
+        case 'loadObjectAttributes':
+          await this.handleLoadObjectAttributes(message);
+          break;
+        case 'cancelSearch':
+          this.handleCancelSearch(message);
+          break;
         default:
           Logger.warn(`Unknown command: ${message.command}`);
       }
@@ -401,6 +506,75 @@ export class RolesRightsEditorProvider {
       this.sendMessageToWebview({
         command: 'error',
         data: { message: errorMessage },
+      });
+    }
+  }
+
+  /**
+   * Handle on-demand loading of object attribute rights rows.
+   */
+  private async handleLoadObjectAttributes(message: WebviewMessage): Promise<void> {
+    const sessionId = message.data?.sessionId;
+    const requestId = message.data?.requestId;
+    const objectFullName = message.data?.objectFullName;
+
+    if (!sessionId || !requestId || !objectFullName) {
+      Logger.warn('Invalid loadObjectAttributes message: missing sessionId, requestId, or objectFullName');
+      return;
+    }
+
+    if (sessionId !== this.activeSessionId || !this.currentLoadSession || !this.currentRoleModel) {
+      Logger.debug(`Ignoring loadObjectAttributes for non-active session: ${sessionId}`);
+      return;
+    }
+
+    try {
+      const attributes = await this.currentLoadSession.loadObjectAttributes(
+        objectFullName,
+        this.currentRoleModel.rights
+      );
+
+      if (this.activeSessionId !== sessionId) {
+        return;
+      }
+
+      const target = this.allObjects.find((o) => o.fullName === objectFullName);
+      if (target) {
+        target.attributesState = 'loaded';
+        target.attributes = attributes;
+      }
+
+      this.sendMessageToWebview({
+        command: 'loadObjectAttributesResult',
+        data: {
+          sessionId,
+          requestId,
+          objectFullName,
+          state: 'loaded',
+          attributes,
+        },
+      });
+    } catch (err) {
+      if (this.activeSessionId !== sessionId) {
+        return;
+      }
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      const target = this.allObjects.find((o) => o.fullName === objectFullName);
+      if (target) {
+        target.attributesState = 'failed';
+        target.attributesError = errorMessage;
+      }
+
+      this.sendMessageToWebview({
+        command: 'loadObjectAttributesResult',
+        data: {
+          sessionId,
+          requestId,
+          objectFullName,
+          state: 'failed',
+          attributes: [],
+          error: errorMessage,
+        },
       });
     }
   }
@@ -783,13 +957,128 @@ export class RolesRightsEditorProvider {
   }
 
   /**
-   * Handle search message — mirrors searchQuery into server-side filterState.
+   * Handle search message — mirrors searchQuery and coordinates background attribute search.
    */
   private async handleSearch(message: WebviewMessage): Promise<void> {
     if (typeof message.data?.query === 'string') {
       this.filterState.searchQuery = message.data.query;
       Logger.debug(`handleSearch: searchQuery="${this.filterState.searchQuery}"`);
     }
+
+    const sessionId = message.data?.sessionId;
+    const queryId = message.data?.queryId ?? 0;
+    const query = (message.data?.query ?? '').trim().toLowerCase();
+
+    if (!sessionId || sessionId !== this.activeSessionId || !this.currentLoadSession || !this.currentRoleModel) {
+      return;
+    }
+
+    this.activeSearchQueryId = queryId;
+
+    if (!query || query.length < 2) {
+      return;
+    }
+
+    const session = this.currentLoadSession;
+    const currentRights = this.currentRoleModel.rights;
+
+    const candidateObjects = this.allObjects.filter(
+      (o) =>
+        OBJECT_TYPES_FOR_ATTRIBUTE_RIGHTS.includes(o.type as MetadataType) &&
+        o.rowKind !== 'attribute' &&
+        o.rowKind !== 'configurationRoot' &&
+        o.attributesState !== 'loaded'
+    );
+
+    if (candidateObjects.length === 0) {
+      return;
+    }
+
+    void (async () => {
+      const matchingObjectNames: string[] = [];
+      let processed = 0;
+
+      for (const obj of candidateObjects) {
+        if (session.isCancelled() || this.activeSessionId !== sessionId || this.activeSearchQueryId !== queryId) {
+          this.sendMessageToWebview({
+            command: 'searchProgress',
+            data: {
+              sessionId,
+              queryId,
+              state: 'cancelled',
+            },
+          });
+          return;
+        }
+
+        try {
+          const attrs = await session.loadObjectAttributes(obj.fullName, currentRights);
+          processed++;
+          obj.attributesState = 'loaded';
+          obj.attributes = attrs;
+
+          const hasMatchingAttr = attrs.some(
+            (a) =>
+              a.name.toLowerCase().includes(query) ||
+              (a.displayName && a.displayName.toLowerCase().includes(query))
+          );
+
+          if (hasMatchingAttr) {
+            matchingObjectNames.push(obj.fullName);
+            this.sendMessageToWebview({
+              command: 'loadObjectAttributesResult',
+              data: {
+                sessionId,
+                requestId: `search-${queryId}-${obj.fullName}`,
+                objectFullName: obj.fullName,
+                state: 'loaded',
+                attributes: attrs,
+              },
+            });
+            this.sendMessageToWebview({
+              command: 'searchProgress',
+              data: {
+                sessionId,
+                queryId,
+                state: 'running',
+                processed,
+                total: candidateObjects.length,
+                matchingObjectNames: [obj.fullName],
+              },
+            });
+          }
+        } catch (err) {
+          Logger.debug(`Search failed to load attributes for ${obj.fullName}`, err);
+        }
+      }
+
+      if (!session.isCancelled() && this.activeSessionId === sessionId && this.activeSearchQueryId === queryId) {
+        this.sendMessageToWebview({
+          command: 'searchProgress',
+          data: {
+            sessionId,
+            queryId,
+            state: 'complete',
+            processed,
+            total: candidateObjects.length,
+            matchingObjectNames,
+          },
+        });
+      }
+    })();
+  }
+
+  /**
+   * Handle cancelSearch message — increments activeSearchQueryId to discard in-flight results.
+   */
+  private handleCancelSearch(message: WebviewMessage): void {
+    const sessionId = message.data?.sessionId;
+    const queryId = message.data?.queryId;
+    if (sessionId === this.activeSessionId) {
+      this.activeSearchQueryId++;
+      Logger.debug(`Cancelled search query ${queryId} for session ${sessionId}`);
+    }
+
   }
 
   /**
@@ -846,7 +1135,7 @@ export class RolesRightsEditorProvider {
       return false;
     }
 
-    const validCommands = [
+    /* const validCommands = [
       'updateRight',
       'save',
       'savePayload',
@@ -855,8 +1144,8 @@ export class RolesRightsEditorProvider {
       'search',
       'filterByType',
       'tableRenderProgress',
-    ];
-    return validCommands.includes(m.command);
+    ]; */
+    return isValidWebviewMessage(msg);
   }
 
   /**
@@ -935,6 +1224,9 @@ export class RolesRightsEditorProvider {
       }
     }
 
+    this.currentLoadSession?.dispose();
+    this.currentLoadSession = undefined;
+    this.activeSessionId = undefined;
     this.currentRoleModel = undefined;
     this.allObjects = [];
     this.saveDisabledNoConfig = false;

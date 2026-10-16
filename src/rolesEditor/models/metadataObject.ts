@@ -45,4 +45,19 @@ export interface MetadataObject {
    * For attribute rows: human-readable parent object (e.g. "Products (Catalog)").
    */
   parentLabel?: string;
+
+  /**
+   * State of attribute-level rights loading for this object.
+   */
+  attributesState?: 'notLoaded' | 'loading' | 'loaded' | 'failed';
+
+  /**
+   * Error message if loading attributes failed.
+   */
+  attributesError?: string;
+
+  /**
+   * Loaded attribute rows for this object.
+   */
+  attributes?: MetadataObject[];
 }
