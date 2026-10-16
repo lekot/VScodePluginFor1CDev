@@ -121,10 +121,13 @@ export async function loadTreeFromCache(
 export async function saveTreeToCache(
   globalStoragePath: string,
   configPath: string,
-  root: TreeNode
+  root: TreeNode,
+  expectedContentHash?: string
 ): Promise<void> {
   try {
     const dir = getCacheDir(globalStoragePath);
+    const snapshotHash = expectedContentHash
+      ?? (typeof root.properties?.contentHash === 'string' ? root.properties.contentHash : undefined);
     await fs.promises.mkdir(dir, { recursive: true });
     const filePath = getCacheFilePath(globalStoragePath, configPath);
     
@@ -139,9 +142,30 @@ export async function saveTreeToCache(
       fileSize = stats.size;
       const fileBytes = await fs.promises.readFile(configXmlPath);
       contentHash = crypto.createHash('sha256').update(fileBytes).digest('hex');
+      if (snapshotHash && contentHash !== snapshotHash) {
+        Logger.warn('Skipping tree cache save: Configuration.xml changed between parsing and cache publication (#245)', {
+          configPath: configPath.slice(-40),
+          snapshotHash,
+          currentHash: contentHash,
+        });
+        try {
+          await fs.promises.unlink(filePath);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
     } catch {
       // If we can't get timestamp, cache will still work but won't validate freshness
       Logger.debug('Could not get Configuration.xml timestamp for cache');
+      if (snapshotHash) {
+        try {
+          await fs.promises.unlink(filePath);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
     }
     
     const entry: CacheEntry = { 

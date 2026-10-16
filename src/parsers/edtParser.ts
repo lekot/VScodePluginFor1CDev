@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
@@ -133,6 +134,8 @@ export class EdtParser {
     try {
       const configMdoPath = path.join(srcPath, 'Configuration', 'Configuration.mdo');
       await fs.promises.access(configMdoPath);
+      const fileBytes = await fs.promises.readFile(configMdoPath);
+      rootNode.properties.contentHash = crypto.createHash('sha256').update(fileBytes).digest('hex');
       const configXml = await XmlParser.parseFileAsync(configMdoPath);
       rootNode.properties.bslLanguage = resolveEdtBslLanguage(configXml);
       const extProps = extractExtensionProperties(configXml);

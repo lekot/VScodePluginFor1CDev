@@ -8,6 +8,7 @@ import {
   saveTreeToCache,
   invalidateTreeCache,
 } from '../../src/utils/diskCache';
+import { MetadataParser } from '../../src/parsers/metadataParser';
 
 suite('diskCache (#194)', () => {
   let tmpDir: string;
@@ -155,5 +156,48 @@ suite('diskCache (#194)', () => {
 
     const loaded = await loadTreeFromCache(globalStoragePath, configPath);
     assert.strictEqual(loaded, null, 'Legacy cache without contentHash must be rejected');
+  });
+
+  test('does not write stale cache if Configuration.xml was modified between parse and save (#245)', async () => {
+    const contentA = '<Configuration>v1_alpha</Configuration>';
+    const contentB = '<Configuration>v1_bravo</Configuration>';
+    assert.strictEqual(contentA.length, contentB.length, 'Precondition: identical length');
+
+    await fs.promises.writeFile(configXmlPath, contentA, 'utf8');
+    const treeA = await MetadataParser.parseStructureOnly(configPath);
+    const statBefore = await fs.promises.stat(configXmlPath);
+
+    // File mutates on disk between parse and save (same size, same timestamp)
+    await fs.promises.writeFile(configXmlPath, contentB, 'utf8');
+    await fs.promises.utimes(configXmlPath, statBefore.atime, statBefore.mtime);
+
+    // Save treeA after mutation occurred
+    await saveTreeToCache(globalStoragePath, configPath, treeA);
+
+    // Loading from cache must NOT return treeA for file content B!
+    const loaded = await loadTreeFromCache(globalStoragePath, configPath);
+    assert.strictEqual(loaded, null, 'Cache must not be saved when Configuration.xml mutated between parse and save');
+  });
+
+  test('skips cache write when explicit expectedContentHash does not match file on disk', async () => {
+    await fs.promises.writeFile(configXmlPath, '<Configuration>v1</Configuration>', 'utf8');
+    const tree = await MetadataParser.parseStructureOnly(configPath);
+
+    await saveTreeToCache(globalStoragePath, configPath, tree, '0000000000000000000000000000000000000000000000000000000000000000');
+
+    const loaded = await loadTreeFromCache(globalStoragePath, configPath);
+    assert.strictEqual(loaded, null, 'Cache must not be saved when expectedContentHash does not match');
+  });
+
+  test('writes cache when explicit expectedContentHash matches file on disk', async () => {
+    await fs.promises.writeFile(configXmlPath, '<Configuration>v1</Configuration>', 'utf8');
+    const tree = await MetadataParser.parseStructureOnly(configPath);
+    const expectedHash = tree.properties?.contentHash as string;
+    assert.ok(expectedHash, 'Parsed tree must have contentHash');
+
+    await saveTreeToCache(globalStoragePath, configPath, tree, expectedHash);
+
+    const loaded = await loadTreeFromCache(globalStoragePath, configPath);
+    assert.ok(loaded, 'Cache must be saved when expectedContentHash matches');
   });
 });

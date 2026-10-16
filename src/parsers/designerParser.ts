@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
@@ -151,6 +152,8 @@ export class DesignerParser {
     try {
       const configXmlPath = this.getConfigurationXmlPath(configPath);
       await fs.promises.access(configXmlPath);
+      const fileBytes = await fs.promises.readFile(configXmlPath);
+      rootNode.properties.contentHash = crypto.createHash('sha256').update(fileBytes).digest('hex');
       const configXml = await XmlParser.parseFileAsync(configXmlPath);
       rootNode.properties.bslLanguage = await resolveDesignerBslLanguage(configPath, configXml);
       const extProps = extractExtensionProperties(configXml);
