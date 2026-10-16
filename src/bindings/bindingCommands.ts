@@ -25,7 +25,7 @@ import {
 import { showIbcmdInfobaseOutputChannel, runInfobaseConfigExportStatus } from '../infobases/infobaseConfigCommands';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDialog';
-import { detectChangedConfigFiles } from '../services/ibcmd/incrementalChangeDetector';
+import { detectChangedConfigFiles, findDeepestContainingRepository } from '../services/ibcmd/incrementalChangeDetector';
 import type { GitRepository } from '../services/ibcmd/incrementalChangeDetector';
 
 /** Минимальный контракт панели диалога (избегаем циклического импорта с bindingDialog). */
@@ -614,9 +614,9 @@ export async function runDeployChangedFilesFromTree(
       if (!api) {
         return undefined;
       }
-      return api.repositories.find(
-        (r) => configRoot.toLowerCase().startsWith(r.rootUri.fsPath.toLowerCase()),
-      );
+      return findDeepestContainingRepository(api.repositories, configRoot);
+
+
     },
   };
 

@@ -12,6 +12,7 @@
 
 import * as fs from 'fs';
 import type { PreparedIbcmdFileDb, PreparedIbcmdYaml } from '../../infobases/ibcmdConfigPathResolver';
+import { assertDeployFilePathWithinBase } from './deployPathValidator';
 
 /**
  * On Windows, `os.tmpdir()` / `path.resolve` may yield 8.3 short components (e.g. `2BA0~1`).
@@ -171,7 +172,8 @@ export function buildInfobaseConfigImportFilesArgs(
     args.push('--no-check');
   }
   for (const f of files) {
-    args.push(f);
+    const validated = assertDeployFilePathWithinBase(f, baseDir);
+    args.push(validated);
   }
   args.push(`--base-dir=${resolveIbcmdCliPathForWindowsSpawn(baseDir)}`);
   return args;

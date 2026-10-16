@@ -27,6 +27,7 @@ import { resolveInfobaseCanonicalIdentity } from '../infobases/infobaseCanonical
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { collectFilesForSelection, resolveIbcmdObjectId } from '../services/ibcmd/objectFileCollector';
 import { detectDeployGuards } from './deployPreflightGuards';
+import { validateDeployRelativeFiles } from '../services/ibcmd/deployPathValidator';
 import { expandBslSiblings } from './bslExpansion';
 import { checkRecentDeploy, computeFilesContentSignature, recordDeploy } from './deployDedupCache';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
@@ -912,6 +913,16 @@ export class DeployService {
     const deployFiles = supportPreflight?.relativeFiles ?? withSiblings;
     appendSupportFilePlan(supportPreflight);
 
+    const validation = await validateDeployRelativeFiles(configRoot, deployFiles);
+    if (!validation.ok) {
+      const s = summarizeDeployRun(
+        [{ infobaseId: '', name: '', status: 'error', message: validation.error ?? 'Файл выходит за границы конфигурации.' }],
+        false,
+      );
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+
     // Preflight guards: detect Configuration.xml inclusion and missing files.
     const guards = detectDeployGuards(deployFiles, configRoot);
     appendIbcmdOutputLine(`[preflight] hasConfigurationXml=${guards.hasConfigurationXml}, missingFiles=${guards.missingFiles.length}`);
@@ -1205,6 +1216,16 @@ export class DeployService {
     }
     const deployFiles = supportPreflight?.relativeFiles ?? params.relativeFiles;
     appendSupportFilePlan(supportPreflight);
+
+    const validation = await validateDeployRelativeFiles(configRoot, deployFiles);
+    if (!validation.ok) {
+      const s = summarizeDeployRun(
+        [{ infobaseId: '', name: '', status: 'error', message: validation.error ?? 'Файл выходит за границы конфигурации.' }],
+        false,
+      );
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
 
     const ibcmd = getIbcmdService();
     if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {

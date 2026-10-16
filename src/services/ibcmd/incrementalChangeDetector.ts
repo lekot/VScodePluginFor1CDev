@@ -10,6 +10,7 @@
  */
 
 import * as path from 'path';
+import { isSameOrDescendantPath } from '../../utils/configurationPathIdentity';
 
 // ---------------------------------------------------------------------------
 // Minimal local interfaces that mirror the VS Code built-in git extension API.
@@ -30,6 +31,38 @@ interface GitRepositoryState {
 export interface GitRepository {
   readonly rootUri: { readonly fsPath: string };
   readonly state: GitRepositoryState;
+}
+
+/**
+ * Finds the deepest/most specific Git repository containing targetPath.
+ * Respects platform case sensitivity and path segment boundaries.
+ * Returns undefined if targetPath does not belong to any repository (no arbitrary fallback).
+ */
+export function findDeepestContainingRepository<T extends { readonly rootUri: { readonly fsPath: string } }>(
+  repositories: readonly T[] | undefined,
+  targetPath: string,
+  platform: NodeJS.Platform = process.platform,
+): T | undefined {
+  if (!repositories || repositories.length === 0 || !targetPath) {
+    return undefined;
+  }
+
+  let bestRepo: T | undefined;
+  for (const repo of repositories) {
+    const repoRoot = repo?.rootUri?.fsPath;
+    if (!repoRoot) {
+      continue;
+    }
+    if (isSameOrDescendantPath(repoRoot, targetPath, platform)) {
+      if (!bestRepo) {
+        bestRepo = repo;
+      } else if (isSameOrDescendantPath(bestRepo.rootUri.fsPath, repoRoot, platform)) {
+        bestRepo = repo;
+      }
+    }
+  }
+
+  return bestRepo;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,13 +98,14 @@ export interface DetectedChanges {
 
 const DEFAULT_EXTENSIONS = ['.xml', '.bsl', '.os'];
 
-/** Returns true when `filePath` is located under `dir` (case-insensitive on Windows). */
-function isUnderDir(filePath: string, dir: string): boolean {
-  // Normalise separators before comparing.
-  const normalFile = filePath.replace(/\\/g, '/').toLowerCase();
-  const normalDir = dir.replace(/\\/g, '/').toLowerCase();
-  const prefix = normalDir.endsWith('/') ? normalDir : normalDir + '/';
-  return normalFile.startsWith(prefix);
+/** Returns true when `filePath` is located strictly inside `dir` (platform-aware). */
+function isDescendantOfDir(filePath: string, dir: string, platform: NodeJS.Platform = process.platform): boolean {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const rel = p.relative(dir, filePath);
+  if (rel === '' || rel === '.' || rel.startsWith('..') || p.isAbsolute(rel)) {
+    return false;
+  }
+  return isSameOrDescendantPath(dir, filePath, platform);
 }
 
 /**
@@ -79,7 +113,7 @@ function isUnderDir(filePath: string, dir: string): boolean {
  *
  * @param configRoot - Absolute path to the configuration root directory.
  * @param deps - Dependency injection: provides access to the git repository.
- * @param options - Optional overrides for scope and file extension filter.
+ * @param options - Optional overrides for scope, file extension filter, and platform.
  * @returns `DetectedChanges` on success, or `{ error: string }` when detection fails.
  */
 export async function detectChangedConfigFiles(
@@ -90,6 +124,8 @@ export async function detectChangedConfigFiles(
     scope?: 'working' | 'staged' | 'head';
     /** File extensions to include. Defaults to ['.xml', '.bsl', '.os']. */
     extensions?: string[];
+    /** Platform semantics override for containment checks. Defaults to host platform. */
+    platform?: NodeJS.Platform;
   },
 ): Promise<DetectedChanges | { error: string }> {
   const repo = deps.getGitRepository();
@@ -97,6 +133,7 @@ export async function detectChangedConfigFiles(
     return { error: 'Git репозиторий не обнаружен для workspace.' };
   }
 
+  const platform = options?.platform ?? process.platform;
   const scope = options?.scope ?? 'working';
 
   if (scope === 'head') {
@@ -126,11 +163,12 @@ export async function detectChangedConfigFiles(
   const absolutePaths: string[] = [];
   const relativePaths: string[] = [];
   let skippedCount = 0;
+  const p = platform === 'win32' ? path.win32 : path.posix;
 
   for (const change of rawChanges) {
     const absPath = change.uri.fsPath;
 
-    if (!isUnderDir(absPath, configRoot)) {
+    if (!isDescendantOfDir(absPath, configRoot, platform)) {
       skippedCount++;
       continue;
     }
@@ -141,8 +179,14 @@ export async function detectChangedConfigFiles(
       continue;
     }
 
+    const rel = p.relative(configRoot, absPath).replace(/\\/g, '/');
+    if (rel === '' || rel.startsWith('../') || rel === '..' || p.isAbsolute(rel)) {
+      skippedCount++;
+      continue;
+    }
+
     absolutePaths.push(absPath);
-    relativePaths.push(path.relative(configRoot, absPath).replace(/\\/g, '/'));
+    relativePaths.push(rel);
   }
 
   return {
