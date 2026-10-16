@@ -25,23 +25,58 @@ export function assertDeployFilePathWithinBase(
     throw new PathBoundaryError('PATH_OUTSIDE_ROOT', `Файл выходит за границы корня конфигурации: ${filePath}`, filePath);
   }
 
-  try {
-    if (fs.existsSync(baseDir)) {
-      const canonicalRoot = fs.realpathSync.native ? fs.realpathSync.native(baseDir) : fs.realpathSync(baseDir);
-      if (fs.existsSync(absoluteTarget)) {
-        const canonicalTarget = fs.realpathSync.native ? fs.realpathSync.native(absoluteTarget) : fs.realpathSync(absoluteTarget);
-        if (!isSameOrDescendantPath(canonicalRoot, canonicalTarget, platform)) {
-          throw new PathBoundaryError('PATH_OUTSIDE_ROOT', `Файл по ссылке указывает за пределы конфигурации: ${filePath}`, filePath);
-        }
-      }
+  if (fs.existsSync(baseDir)) {
+    let canonicalRoot: string;
+    try {
+      canonicalRoot = fs.realpathSync.native ? fs.realpathSync.native(baseDir) : fs.realpathSync(baseDir);
+    } catch (err) {
+      throw new PathBoundaryError(
+        'PATH_UNAVAILABLE',
+        `Не удалось проверить канонический корень конфигурации: ${err instanceof Error ? err.message : String(err)}`,
+        baseDir,
+      );
     }
-  } catch (err) {
-    if (err instanceof PathBoundaryError) {
-      throw err;
+
+    const canonicalTarget = canonicalizePathWithMissingSuffixSync(absoluteTarget);
+    if (!isSameOrDescendantPath(canonicalRoot, canonicalTarget, platform)) {
+      throw new PathBoundaryError('PATH_OUTSIDE_ROOT', `Файл по ссылке указывает за пределы конфигурации: ${filePath}`, filePath);
     }
   }
 
   return normalized;
+}
+
+/**
+ * Resolves an existing path or its nearest existing ancestor synchronously, preserving missing suffix.
+ * Fails closed on permissions (EACCES) or loop (ELOOP) errors with PathBoundaryError.
+ */
+export function canonicalizePathWithMissingSuffixSync(targetPath: string): string {
+  return canonicalizeTargetFromSync(path.resolve(targetPath), path.resolve(targetPath), []);
+}
+
+function canonicalizeTargetFromSync(originalTarget: string, cursor: string, missingSegments: string[]): string {
+  try {
+    const canonicalParent = fs.realpathSync.native ? fs.realpathSync.native(cursor) : fs.realpathSync(cursor);
+    return path.join(canonicalParent, ...[...missingSegments].reverse());
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      throw new PathBoundaryError(
+        'PATH_UNAVAILABLE',
+        `Не удалось проверить путь: ${error instanceof Error ? error.message : String(error)}`,
+        originalTarget,
+      );
+    }
+    const parent = path.dirname(cursor);
+    if (parent === cursor) {
+      throw new PathBoundaryError(
+        'PATH_UNAVAILABLE',
+        `Не найден существующий родитель: ${originalTarget}`,
+        originalTarget,
+      );
+    }
+    return canonicalizeTargetFromSync(originalTarget, parent, [...missingSegments, path.basename(cursor)]);
+  }
 }
 
 /**
@@ -69,8 +104,26 @@ export async function validateDeployRelativeFiles(
       }
 
       if (fs.existsSync(configRoot)) {
-        const canonicalRoot = await fs.promises.realpath(path.resolve(configRoot)).catch(() => path.resolve(configRoot));
-        const canonicalTarget = await canonicalizePathWithMissingSuffix(absoluteTarget).catch(() => absoluteTarget);
+        let canonicalRoot: string;
+        try {
+          canonicalRoot = await fs.promises.realpath(path.resolve(configRoot));
+        } catch (err) {
+          return {
+            ok: false,
+            error: `Не удалось проверить канонический корень конфигурации: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+
+        let canonicalTarget: string;
+        try {
+          canonicalTarget = await canonicalizePathWithMissingSuffix(absoluteTarget);
+        } catch (err) {
+          return {
+            ok: false,
+            error: `Не удалось проверить путь файла: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+
         if (!isSameOrDescendantPath(canonicalRoot, canonicalTarget, platform)) {
           return { ok: false, error: `Файл по ссылке указывает за пределы конфигурации: ${f}` };
         }

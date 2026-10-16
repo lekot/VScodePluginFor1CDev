@@ -205,6 +205,129 @@ suite('deployPathContainment #248', () => {
     }
   });
 
+  test('validateDeployRelativeFiles: fails closed with ok:false when realpath encounters EACCES or ELOOP', async () => {
+    const rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cdt-eacces-')));
+    try {
+      const origRealpath = fs.promises.realpath;
+      (fs.promises as any).realpath = async (p: fs.PathLike) => {
+        const str = p.toString();
+        if (str.includes('locked')) {
+          const err = new Error('Permission denied') as NodeJS.ErrnoException;
+          err.code = 'EACCES';
+          throw err;
+        }
+        return origRealpath(p);
+      };
+
+      try {
+        const res = await validateDeployRelativeFiles(rootDir, ['locked/file.xml']);
+        assert.strictEqual(res.ok, false, 'Must fail closed with ok:false on EACCES');
+        assert.ok(res.error && /EACCES|Permission denied|не удалось проверить/i.test(res.error));
+      } finally {
+        fs.promises.realpath = origRealpath;
+      }
+    } finally {
+      fs.rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test('validateDeployRelativeFiles: fails closed on ELOOP in canonical resolution', async () => {
+    const rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cdt-eloop-')));
+    try {
+      const origRealpath = fs.promises.realpath;
+      (fs.promises as any).realpath = async (p: fs.PathLike) => {
+        const str = p.toString();
+        if (str.includes('loop')) {
+          const err = new Error('Too many levels of symbolic links') as NodeJS.ErrnoException;
+          err.code = 'ELOOP';
+          throw err;
+        }
+        return origRealpath(p);
+      };
+
+      try {
+        const res = await validateDeployRelativeFiles(rootDir, ['loop/file.xml']);
+        assert.strictEqual(res.ok, false, 'Must fail closed with ok:false on ELOOP');
+        assert.ok(res.error && /ELOOP|symbolic links|не удалось проверить/i.test(res.error));
+      } finally {
+        fs.promises.realpath = origRealpath;
+      }
+    } finally {
+      fs.rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test('assertDeployFilePathWithinBase: throws PATH_UNAVAILABLE on EACCES or ELOOP', () => {
+    const rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cdt-sync-err-')));
+    try {
+      const nodeFs = require('fs');
+      const origRealpathSync = nodeFs.realpathSync;
+      const injectedRealpathSync: any = (p: fs.PathLike, options?: any) => {
+        const str = p.toString();
+        if (str.includes('locked')) {
+          const err = new Error('Permission denied') as NodeJS.ErrnoException;
+          err.code = 'EACCES';
+          throw err;
+        }
+        return origRealpathSync(p, options);
+      };
+      injectedRealpathSync.native = injectedRealpathSync;
+      nodeFs.realpathSync = injectedRealpathSync;
+
+      try {
+        assert.throws(
+          () => assertDeployFilePathWithinBase('locked/file.xml', rootDir),
+          (err: any) => {
+            return err instanceof PathBoundaryError && err.code === 'PATH_UNAVAILABLE';
+          },
+          'Expected PathBoundaryError with code PATH_UNAVAILABLE on EACCES',
+        );
+      } finally {
+        nodeFs.realpathSync = origRealpathSync;
+      }
+    } finally {
+      fs.rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test('validateDeployRelativeFiles and assertDeployFilePathWithinBase: reject real directory junction escaping root', async () => {
+    const rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cdt-junc-root-')));
+    const outsideDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cdt-junc-outside-')));
+    try {
+      const outsideFile = path.join(outsideDir, 'target.xml');
+      fs.writeFileSync(outsideFile, '<xml/>', 'utf8');
+
+      const junctionLink = path.join(rootDir, 'link');
+      let linkCreated = false;
+      try {
+        fs.symlinkSync(outsideDir, junctionLink, 'junction');
+        linkCreated = true;
+      } catch {
+        // Not on Windows or unsupported
+      }
+
+      if (linkCreated) {
+        // Async validator must reject junction escaping root
+        const res = await validateDeployRelativeFiles(rootDir, ['link/target.xml']);
+        assert.strictEqual(res.ok, false, 'Junction escaping root must be rejected');
+        assert.ok(/ссылке|outside|границы/i.test(res.error ?? ''));
+
+        // Sync validator must throw PathBoundaryError PATH_OUTSIDE_ROOT
+        assert.throws(
+          () => assertDeployFilePathWithinBase('link/target.xml', rootDir),
+          (err: any) => {
+            return err instanceof PathBoundaryError && err.code === 'PATH_OUTSIDE_ROOT';
+          },
+          'Sync validator must reject junction escaping root with PATH_OUTSIDE_ROOT',
+        );
+      }
+    } finally {
+      try { fs.unlinkSync(path.join(rootDir, 'link')); } catch {}
+      fs.rmSync(rootDir, { recursive: true, force: true });
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   // ─── 4. buildInfobaseConfigImportFilesArgs ─────────────────────────────────
 
   test('buildInfobaseConfigImportFilesArgs: throws when relative file contains .. traversal', () => {
@@ -444,7 +567,7 @@ suite('deployPathContainment #248', () => {
     }
   });
 
-  test('assertDeployFilePathWithinBase: catches non-PathBoundaryError from realpath safely', () => {
+  test('assertDeployFilePathWithinBase: succeeds on normal valid file', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cdt-realpath-err-'));
     try {
       const filePath = 'Catalogs/Item.xml';
