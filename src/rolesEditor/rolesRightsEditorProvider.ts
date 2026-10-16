@@ -1045,6 +1045,16 @@ export class RolesRightsEditorProvider {
         if (hasMatchingAttr && !matchedSet.has(obj.fullName)) {
           matchedSet.add(obj.fullName);
           matchingObjectNames.push(obj.fullName);
+          this.sendMessageToWebview({
+            command: 'loadObjectAttributesResult',
+            data: {
+              sessionId,
+              requestId: `cached-search-${queryId}-${obj.fullName}`,
+              objectFullName: obj.fullName,
+              state: 'loaded',
+              attributes: obj.attributes,
+            },
+          });
         }
       }
     }
@@ -1065,6 +1075,7 @@ export class RolesRightsEditorProvider {
 
     let processed = 0;
     let hasSearchErrors = false;
+    const attemptedInQuery = new Set<string>();
 
     while (!session.isCancelled() && this.activeSessionId === sessionId && this.activeSearchQueryId === queryId) {
       if (session.isCancelled() || this.activeSessionId !== sessionId || this.activeSearchQueryId !== queryId) {
@@ -1085,10 +1096,11 @@ export class RolesRightsEditorProvider {
           o.rowKind !== 'attribute' &&
           o.rowKind !== 'configurationRoot' &&
           o.attributesState !== 'loaded' &&
-          o.attributesState !== 'failed'
+          !attemptedInQuery.has(o.fullName)
       );
 
       if (nextObj) {
+        attemptedInQuery.add(nextObj.fullName);
         nextObj.attributesState = 'loading';
         try {
           const attrs = await session.loadObjectAttributes(nextObj.fullName, currentRights);
@@ -1147,7 +1159,14 @@ export class RolesRightsEditorProvider {
     }
 
     if (!session.isCancelled() && this.activeSessionId === sessionId && this.activeSearchQueryId === queryId) {
-      const finalState = hasSearchErrors || this.typeIndexError ? 'incomplete' : 'complete';
+      const hasFailedInScope = this.allObjects.some(
+        (o) =>
+          OBJECT_TYPES_FOR_ATTRIBUTE_RIGHTS.includes(o.type as MetadataType) &&
+          o.rowKind !== 'attribute' &&
+          o.rowKind !== 'configurationRoot' &&
+          o.attributesState === 'failed'
+      );
+      const finalState = hasSearchErrors || this.typeIndexError || hasFailedInScope ? 'incomplete' : 'complete';
       this.sendMessageToWebview({
         command: 'searchProgress',
         data: {

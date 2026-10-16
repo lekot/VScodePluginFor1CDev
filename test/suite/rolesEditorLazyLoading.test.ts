@@ -18,7 +18,9 @@ import type { ExtensionToWebviewMessage } from '../../src/rolesEditor/models/web
 import { BoundedConcurrencyQueue } from '../../src/rolesEditor/rolesMetadataLoadSession';
 import { FormatDetector, ConfigFormat } from '../../src/parsers/formatDetector';
 import { MetadataParser } from '../../src/parsers/metadataParser';
-import { MetadataType } from '../../src/models/treeNode';
+import { DesignerParser } from '../../src/parsers/designerParser';
+import { loadAttributeRowsForObject } from '../../src/rolesEditor/metadataLoader';
+import { TreeNode, MetadataType } from '../../src/models/treeNode';
 
 async function rmRf(dir: string): Promise<void> {
   const maxAttempts = 10;
@@ -971,4 +973,420 @@ suite('RolesEditor Lazy Loading & Staged Lifecycle (Issue #329)', () => {
       provider.dispose();
     }
   });
+
+  test('cached attribute search match delivers loadObjectAttributesResult so webview has attributes (Finding 1)', async () => {
+    const rolePath = path.join(tmpRoot, 'src', 'Roles', 'Operator.xml');
+    const rightsPath = path.join(tmpRoot, 'src', 'Roles', 'Operator', 'Ext', 'Rights.xml');
+    await fs.promises.mkdir(path.dirname(rightsPath), { recursive: true });
+    await fs.promises.mkdir(path.join(tmpRoot, 'Catalogs'), { recursive: true });
+
+    await fs.promises.writeFile(
+      path.join(tmpRoot, 'Configuration.xml'),
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration name="TestConfig"><ChildObjects><Catalog>CachedCatalog</Catalog></ChildObjects></Configuration></MetaDataObject>',
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      path.join(tmpRoot, 'Catalogs', 'CachedCatalog.xml'),
+      `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Catalog uuid="11111111-2222-3333-4444-555555555555">
+    <Properties><Name>CachedCatalog</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="22222222-3333-4444-5555-666666666666">
+        <Properties><Name>SpecialMatchField</Name></Properties>
+      </Attribute>
+      <Attribute uuid="33333333-4444-5555-6666-777777777777">
+        <Properties><Name>OtherField</Name></Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`,
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      rolePath,
+      '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Properties><Name>Operator</Name></Properties><Rights/></Role>',
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      rightsPath,
+      '<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"><object><name>Catalog.CachedCatalog</name><right><name>Read</name><value>true</value></right></object></Rights>',
+      'utf8'
+    );
+
+    const { panel, getPostedMessages, getOnMessageHandler } = createFakeWebviewPanel({ autoReplyFlushWith: '' });
+    const restorePanel = patchCreateWebviewPanel(panel);
+    const provider = new RolesRightsEditorProvider(createFakeExtensionContext());
+
+    try {
+      await provider.show(rolePath, tmpRoot);
+      const handler = getOnMessageHandler();
+      assert.ok(handler);
+
+      const postedBefore = getPostedMessages();
+      const initialMsg = postedBefore.find((m) => m.command === 'objectsLoaded');
+      const sessionId = (initialMsg as { data?: { sessionId?: string } })?.data?.sessionId;
+      assert.ok(sessionId);
+
+      // Explicitly load attributes first (e.g. user expanded row or previous request)
+      await handler({
+        command: 'loadObjectAttributes',
+        data: {
+          sessionId,
+          requestId: 'req-manual-1',
+          objectFullName: 'Catalog.CachedCatalog',
+        },
+      });
+
+      // Confirm attributes loaded initially
+      const loadResultMsg = getPostedMessages().find(
+        (m) => m.command === 'loadObjectAttributesResult' && (m.data as { requestId?: string })?.requestId === 'req-manual-1'
+      );
+      assert.ok(loadResultMsg, 'CachedCatalog attributes must be loaded initially');
+
+      // Now run search for 'specialmatch'
+      await handler({
+        command: 'search',
+        data: { sessionId, queryId: 401, query: 'specialmatch' },
+      });
+
+      await new Promise((r) => setTimeout(r, 60));
+
+      const messages = getPostedMessages();
+      // Must post searchProgress with matchingObjectNames
+      const progressMsgs = messages.filter(
+        (m) => m.command === 'searchProgress' && (m.data as { queryId?: number })?.queryId === 401
+      );
+      assert.ok(progressMsgs.length >= 1, 'Must post searchProgress for cached search');
+      const matching = progressMsgs.some(
+        (m) => (m.data as { matchingObjectNames?: string[] })?.matchingObjectNames?.includes('Catalog.CachedCatalog')
+      );
+      assert.strictEqual(matching, true, 'searchProgress must identify Catalog.CachedCatalog as matching');
+
+      // Finding 1 assertion:
+      // Webview MUST receive loadObjectAttributesResult for CachedCatalog so it can populate target.attributes and display rows!
+      const cachedAttrDeliveries = messages.filter(
+        (m) =>
+          m.command === 'loadObjectAttributesResult' &&
+          (m.data as { objectFullName?: string })?.objectFullName === 'Catalog.CachedCatalog' &&
+          (m.data as { requestId?: string })?.requestId !== 'req-manual-1'
+      );
+      assert.ok(
+        cachedAttrDeliveries.length >= 1,
+        'Webview MUST receive loadObjectAttributesResult for cached search matches'
+      );
+      const cachedDelivery = cachedAttrDeliveries[0].data as {
+        state: string;
+        attributes: Array<{ name: string }>;
+      };
+      assert.strictEqual(cachedDelivery.state, 'loaded');
+      assert.ok(
+        cachedDelivery.attributes.some((a) => a.name === 'SpecialMatchField'),
+        'Delivered cached attributes must contain SpecialMatchField'
+      );
+    } finally {
+      restorePanel();
+      provider.dispose();
+    }
+  });
+
+  test('access() failure in loadChildrenForElement propagates typed error instead of empty branch (Finding 2)', async () => {
+    const originalAccess = fs.promises.access;
+    try {
+      const parentNode: TreeNode = {
+        id: 'Catalogs.ForbiddenCatalog',
+        name: 'ForbiddenCatalog',
+        type: MetadataType.Catalog,
+        properties: {},
+        parent: { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {} },
+      };
+
+      // Injected access failure (e.g. EACCES permission denied)
+      const eaccesErr = new Error('EACCES: permission denied, access Catalogs\\ForbiddenCatalog.xml');
+      (eaccesErr as NodeJS.ErrnoException).code = 'EACCES';
+
+      (fs.promises.access as unknown as (p: fs.PathLike) => Promise<void>) = async (p: fs.PathLike) => {
+        if (typeof p === 'string' && p.includes('ForbiddenCatalog.xml')) {
+          throw eaccesErr;
+        }
+        return originalAccess(p);
+      };
+
+      // 1. loadChildrenForElement must record _parseError on element
+      await DesignerParser.loadChildrenForElement(
+        tmpRoot,
+        'Catalogs',
+        'ForbiddenCatalog',
+        parentNode
+      );
+      assert.ok(
+        parentNode.properties._parseError,
+        'DesignerParser.loadChildrenForElement must set element.properties._parseError on access error'
+      );
+      assert.strictEqual(
+        (parentNode.properties._parseError as NodeJS.ErrnoException).code,
+        'EACCES'
+      );
+
+      // 2. MetadataParser.loadElementChildren on Attributes must reject, not return empty []
+      const attributesSection: TreeNode = {
+        id: 'Attributes',
+        name: 'Attributes',
+        type: MetadataType.Attribute,
+        properties: {},
+        parent: parentNode,
+      };
+
+      await assert.rejects(
+        async () => {
+          await MetadataParser.loadElementChildren(tmpRoot, ConfigFormat.Designer, attributesSection);
+        },
+        (err: unknown) => {
+          return (err as NodeJS.ErrnoException)?.code === 'EACCES';
+        },
+        'loadElementChildren must reject with EACCES rather than returning empty []'
+      );
+
+      // 3. loadAttributeRowsForObject must reject rather than returning []
+      await assert.rejects(
+        async () => {
+          await loadAttributeRowsForObject(tmpRoot, ConfigFormat.Designer, 'Catalog.ForbiddenCatalog', {});
+        },
+        (err: unknown) => {
+          return (err as NodeJS.ErrnoException)?.code === 'EACCES';
+        },
+        'loadAttributeRowsForObject must propagate access failure'
+      );
+    } finally {
+      fs.promises.access = originalAccess;
+    }
+  });
+
+  test('repairing malformed XML clears _parseError and allows successful retry on same TreeNode (Finding 3)', async () => {
+    const catalogsDir = path.join(tmpRoot, 'Catalogs');
+    await fs.promises.mkdir(catalogsDir, { recursive: true });
+    const catalogXmlPath = path.join(catalogsDir, 'RepairableCatalog.xml');
+
+    // 1. Write malformed XML
+    await fs.promises.writeFile(catalogXmlPath, '<MetaDataObject><Catalog><UnclosedTag></Catalog></MetaDataObject>', 'utf8');
+
+    const parentNode: TreeNode = {
+      id: 'Catalogs.RepairableCatalog',
+      name: 'RepairableCatalog',
+      type: MetadataType.Catalog,
+      properties: {},
+      parent: { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {} },
+    };
+
+    const attributesSection: TreeNode = {
+      id: 'Attributes',
+      name: 'Attributes',
+      type: MetadataType.Attribute,
+      properties: {},
+      parent: parentNode,
+    };
+
+    // First attempt: should fail and set parentNode.properties._parseError
+    await assert.rejects(
+      async () => {
+        await MetadataParser.loadElementChildren(tmpRoot, ConfigFormat.Designer, attributesSection);
+      },
+      /Invalid XML/,
+      'First attempt with malformed XML must throw Invalid XML error'
+    );
+    assert.ok(parentNode.properties._parseError, 'parentNode must hold _parseError after first failure');
+
+    // 2. Repair XML with valid content containing an attribute
+    const validXml = `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Catalog uuid="12345678-1234-1234-1234-123456789abc">
+    <Properties><Name>RepairableCatalog</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="abcdef12-1234-1234-1234-123456789abc">
+        <Properties><Name>RepairedAttribute</Name></Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`;
+    await fs.promises.writeFile(catalogXmlPath, validXml, 'utf8');
+
+    // 3. Retry on the EXACT same parentNode instance: must succeed and clear _parseError
+    const children = await MetadataParser.loadElementChildren(
+      tmpRoot,
+      ConfigFormat.Designer,
+      attributesSection
+    );
+
+    assert.strictEqual(
+      parentNode.properties._parseError,
+      undefined,
+      'parentNode.properties._parseError must be cleared on successful retry'
+    );
+    assert.strictEqual(children.length, 1, 'Must return 1 attribute child after repair');
+    assert.strictEqual(children[0].name, 'RepairedAttribute');
+  });
+
+  test('subsequent search retries failed objects and declares incomplete while failed objects remain in scope (Finding 4)', async () => {
+    const rolePath = path.join(tmpRoot, 'src', 'Roles', 'Operator.xml');
+    const rightsPath = path.join(tmpRoot, 'src', 'Roles', 'Operator', 'Ext', 'Rights.xml');
+    await fs.promises.mkdir(path.dirname(rightsPath), { recursive: true });
+    await fs.promises.mkdir(path.join(tmpRoot, 'Catalogs'), { recursive: true });
+
+    await fs.promises.writeFile(
+      path.join(tmpRoot, 'Configuration.xml'),
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration name="TestConfig"><ChildObjects><Catalog>FlakyCatalog</Catalog><Catalog>StableCatalog</Catalog></ChildObjects></Configuration></MetaDataObject>',
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      path.join(tmpRoot, 'Catalogs', 'StableCatalog.xml'),
+      `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Catalog uuid="11111111-1111-1111-1111-111111111111">
+    <Properties><Name>StableCatalog</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="22222222-2222-2222-2222-222222222222">
+        <Properties><Name>CommonField</Name></Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`,
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      path.join(tmpRoot, 'Catalogs', 'FlakyCatalog.xml'),
+      `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Catalog uuid="99999999-9999-9999-9999-999999999999">
+    <Properties><Name>FlakyCatalog</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="88888888-8888-8888-8888-888888888888">
+        <Properties><Name>CommonField</Name></Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`,
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      rolePath,
+      '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Properties><Name>Operator</Name></Properties><Rights/></Role>',
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      rightsPath,
+      '<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"><object><name>Catalog.StableCatalog</name><right><name>Read</name><value>true</value></right></object></Rights>',
+      'utf8'
+    );
+
+    const { panel, getPostedMessages, getOnMessageHandler } = createFakeWebviewPanel({ autoReplyFlushWith: '' });
+    const restorePanel = patchCreateWebviewPanel(panel);
+    const provider = new RolesRightsEditorProvider(createFakeExtensionContext());
+
+    // Initially FlakyCatalog XML is locked / throws error
+    let flakyShouldFail = true;
+    let flakyLoadAttempts = 0;
+    const originalAccess = fs.promises.access;
+
+    try {
+      (fs.promises.access as unknown as (p: fs.PathLike) => Promise<void>) = async (p: fs.PathLike) => {
+        if (typeof p === 'string' && p.includes('FlakyCatalog.xml')) {
+          flakyLoadAttempts++;
+          if (flakyShouldFail) {
+            const err = new Error('EACCES: FlakyCatalog locked');
+            (err as NodeJS.ErrnoException).code = 'EACCES';
+            throw err;
+          }
+        }
+        return originalAccess(p);
+      };
+
+      await provider.show(rolePath, tmpRoot);
+      const handler = getOnMessageHandler();
+      assert.ok(handler);
+
+      const postedBefore = getPostedMessages();
+      const initialMsg = postedBefore.find((m) => m.command === 'objectsLoaded');
+      const sessionId = (initialMsg as { data?: { sessionId?: string } })?.data?.sessionId;
+      assert.ok(sessionId);
+
+      // Search 1: Query 501. FlakyCatalog fails.
+      await handler({
+        command: 'search',
+        data: { sessionId, queryId: 501, query: 'commonfield' },
+      });
+
+      await new Promise((r) => setTimeout(r, 60));
+
+      const query501Progress = getPostedMessages().filter(
+        (m) => m.command === 'searchProgress' && (m.data as { queryId?: number })?.queryId === 501
+      );
+      assert.ok(query501Progress.length >= 1);
+      const latest501 = query501Progress[query501Progress.length - 1];
+      assert.strictEqual((latest501.data as { state?: string }).state, 'incomplete');
+      const attemptsAfter501 = flakyLoadAttempts;
+      assert.ok(attemptsAfter501 >= 1, 'Must have attempted to load FlakyCatalog in query 501');
+
+      // Search 2: Query 502. FlakyCatalog is still failing.
+      // It must be RETRIED in query 502, and query 502 must end in 'incomplete', NOT 'complete'!
+      await handler({
+        command: 'search',
+        data: { sessionId, queryId: 502, query: 'commonfield' },
+      });
+
+      await new Promise((r) => setTimeout(r, 60));
+
+      assert.ok(
+        flakyLoadAttempts > attemptsAfter501,
+        'Search 502 must retry loading failed object FlakyCatalog'
+      );
+      const query502Progress = getPostedMessages().filter(
+        (m) => m.command === 'searchProgress' && (m.data as { queryId?: number })?.queryId === 502
+      );
+      const latest502 = query502Progress[query502Progress.length - 1];
+      assert.strictEqual(
+        (latest502.data as { state?: string }).state,
+        'incomplete',
+        'Search 502 must declare incomplete because FlakyCatalog is still failed'
+      );
+
+      // Now create valid FlakyCatalog XML and allow access
+      flakyShouldFail = false;
+      await fs.promises.writeFile(
+        path.join(tmpRoot, 'Catalogs', 'FlakyCatalog.xml'),
+        `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Catalog uuid="99999999-9999-9999-9999-999999999999">
+    <Properties><Name>FlakyCatalog</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="88888888-8888-8888-8888-888888888888">
+        <Properties><Name>CommonField</Name></Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`,
+        'utf8'
+      );
+
+      // Search 3: Query 503. FlakyCatalog succeeds on retry!
+      await handler({
+        command: 'search',
+        data: { sessionId, queryId: 503, query: 'commonfield' },
+      });
+
+      await new Promise((r) => setTimeout(r, 60));
+
+      const query503Progress = getPostedMessages().filter(
+        (m) => m.command === 'searchProgress' && (m.data as { queryId?: number })?.queryId === 503
+      );
+      const latest503 = query503Progress[query503Progress.length - 1];
+      assert.strictEqual(
+        (latest503.data as { state?: string }).state,
+        'complete',
+        'Search 503 must succeed completely after FlakyCatalog was repaired and reloaded'
+      );
+      const matches503 = (latest503.data as { matchingObjectNames?: string[] })?.matchingObjectNames ?? [];
+      assert.ok(matches503.includes('Catalog.FlakyCatalog'), 'FlakyCatalog must match in search 503');
+      assert.ok(matches503.includes('Catalog.StableCatalog'), 'StableCatalog must match in search 503');
+    } finally {
+      fs.promises.access = originalAccess;
+      restorePanel();
+      provider.dispose();
+    }
+  });
 });
+

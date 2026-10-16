@@ -304,6 +304,9 @@ export class DesignerParser {
     elementName: string,
     element?: TreeNode
   ): Promise<TreeNode[]> {
+    if (element?.properties) {
+      delete element.properties._parseError;
+    }
     let elementPath: string;
     let xmlPath: string;
     if (typeName === 'Subsystems' && element?.filePath) {
@@ -337,8 +340,10 @@ export class DesignerParser {
           element.properties._parseError = parseErr;
         }
       }
-    } catch {
-      // No XML
+    } catch (accessErr) {
+      if (element) {
+        element.properties._parseError = accessErr;
+      }
     }
 
     // Use a temporary container to leverage the shared child-building helpers.
@@ -351,6 +356,9 @@ export class DesignerParser {
     };
 
     if (xmlContent) {
+      if (element?.properties) {
+        delete element.properties._parseError;
+      }
       await this.applyXmlDerivedChildren(container, xmlContent, xmlPath, elementName);
       if (element) {
         const extracted = this.extractPropertiesFromElement(xmlContent);
