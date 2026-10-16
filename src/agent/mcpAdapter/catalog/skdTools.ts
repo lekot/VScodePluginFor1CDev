@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpToolDefinition } from './types';
 import { WRITE_OPEN } from './types';
 import { nonEmptyString } from './schemas';
+import { SKD_EDIT_OPERATIONS } from '../../agentSkdTypes';
 
 const skdCompileInput = z.strictObject({
   definitionFile: z.string().optional(),
@@ -29,15 +30,7 @@ const skdInfoInput = z.strictObject({
   background: z.boolean().default(true),
 });
 
-const skdEditOperation = z.enum([
-  'add-field', 'add-total', 'add-calculated-field', 'add-parameter', 'add-filter',
-  'add-dataParameter', 'add-order', 'add-selection', 'add-dataSetLink',
-  'add-dataSet', 'add-variant', 'add-conditionalAppearance',
-  'set-query', 'set-outputParameter', 'set-structure',
-  'modify-field', 'modify-filter', 'modify-dataParameter',
-  'clear-selection', 'clear-order', 'clear-filter',
-  'remove-field', 'remove-total', 'remove-calculated-field', 'remove-parameter', 'remove-filter',
-]);
+const skdEditOperation = z.enum(SKD_EDIT_OPERATIONS);
 
 const skdEditInput = z.strictObject({
   templatePath: nonEmptyString,
