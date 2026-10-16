@@ -88,21 +88,55 @@ function Find-V8Project([string]$startDir) {
 }
 function Get-EditMode([string]$cfgDir) {
 	try {
-		$pj = Find-V8Project (Get-Location).Path
-		if (-not $pj) { $pj = Find-V8Project $cfgDir }
+		$pj = Find-V8Project $cfgDir
 		if (-not $pj) { return 'deny' }
-		$proj = Get-Content -Raw $pj | ConvertFrom-Json
-		$cfgFull = [System.IO.Path]::GetFullPath($cfgDir).TrimEnd('\', '/')
+		$projectDir = [System.IO.Path]::GetDirectoryName($pj)
+		$proj = [System.IO.File]::ReadAllText($pj, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+		$cfgFull = [System.IO.Path]::GetFullPath($cfgDir)
+		$cfgRoot = [System.IO.Path]::GetPathRoot($cfgFull)
+		while ($cfgFull.Length -gt $cfgRoot.Length -and ($cfgFull.EndsWith('\') -or $cfgFull.EndsWith('/'))) {
+			$cfgFull = $cfgFull.Substring(0, $cfgFull.Length - 1)
+		}
+		$pathIsWindows = [System.IO.Path]::DirectorySeparatorChar -eq [char]'\'
+		$pathComparison = if ($pathIsWindows) {
+			[System.StringComparison]::OrdinalIgnoreCase
+		} else {
+			[System.StringComparison]::Ordinal
+		}
+		$separator = [System.IO.Path]::DirectorySeparatorChar.ToString()
+		$bestDatabase = $null
+		$bestRootLength = -1
 		if ($proj.databases) {
 			foreach ($db in $proj.databases) {
 				if ($db.configSrc) {
-					$src = [System.IO.Path]::GetFullPath($db.configSrc).TrimEnd('\', '/')
-					if ($cfgFull -eq $src -or $cfgFull.StartsWith($src + [System.IO.Path]::DirectorySeparatorChar)) {
-						if ($db.editingAllowedCheck) { return $db.editingAllowedCheck }
+					$rawConfigSrc = [string]$db.configSrc
+					$srcIsRooted = [System.IO.Path]::IsPathRooted($rawConfigSrc)
+					if ($pathIsWindows -and $srcIsRooted) {
+						$hasDriveRoot = $rawConfigSrc -match '^[A-Za-z]:[\\/]'
+						$hasUncRoot = $rawConfigSrc -match '^(?:\\\\|//)[^\\/]+[\\/][^\\/]+(?:[\\/]|$)'
+						if (-not ($hasDriveRoot -or $hasUncRoot)) { return 'deny' }
+					}
+					$srcPath = if ($srcIsRooted) {
+						$rawConfigSrc
+					} else {
+						Join-Path $projectDir $rawConfigSrc
+					}
+					$srcFull = [System.IO.Path]::GetFullPath($srcPath)
+					$srcRoot = [System.IO.Path]::GetPathRoot($srcFull)
+					while ($srcFull.Length -gt $srcRoot.Length -and ($srcFull.EndsWith('\') -or $srcFull.EndsWith('/'))) {
+						$srcFull = $srcFull.Substring(0, $srcFull.Length - 1)
+					}
+					$prefix = if ($srcFull.EndsWith($separator)) { $srcFull } else { $srcFull + $separator }
+					if ([string]::Equals($cfgFull, $srcFull, $pathComparison) -or $cfgFull.StartsWith($prefix, $pathComparison)) {
+						if ($srcFull.Length -gt $bestRootLength) {
+							$bestDatabase = $db
+							$bestRootLength = $srcFull.Length
+						}
 					}
 				}
 			}
 		}
+		if ($bestDatabase -and $bestDatabase.editingAllowedCheck) { return $bestDatabase.editingAllowedCheck }
 		if ($proj.editingAllowedCheck) { return $proj.editingAllowedCheck }
 		return 'deny'
 	} catch { return 'deny' }
