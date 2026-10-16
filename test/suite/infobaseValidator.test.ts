@@ -83,6 +83,39 @@ suite('normalizeFsPathForCompare', () => {
     const result = normalizeFsPathForCompare('/');
     assert.strictEqual(result, '/');
   });
+
+  test('POSIX: preserves case for different paths (/db/Prod vs /db/prod) #249', () => {
+    const a = normalizeFsPathForCompare('/db/Prod', 'linux');
+    const b = normalizeFsPathForCompare('/db/prod', 'linux');
+    assert.notStrictEqual(a, b);
+    assert.strictEqual(a, '/db/Prod');
+    assert.strictEqual(b, '/db/prod');
+  });
+
+  test('POSIX: preserves case for YAML config paths (/configs/Prod.yml vs /configs/prod.yml) #249', () => {
+    const a = normalizeFsPathForCompare('/configs/Prod.yml', 'linux');
+    const b = normalizeFsPathForCompare('/configs/prod.yml', 'linux');
+    assert.notStrictEqual(a, b);
+  });
+
+  test('POSIX: strips trailing slashes while preserving case #249', () => {
+    const a = normalizeFsPathForCompare('/db/Prod/', 'linux');
+    const b = normalizeFsPathForCompare('/db/Prod', 'linux');
+    assert.strictEqual(a, b);
+    assert.strictEqual(a, '/db/Prod');
+  });
+
+  test('Windows: case-insensitive for drive paths (C:\\DB\\Prod vs c:\\db\\prod) #249', () => {
+    const a = normalizeFsPathForCompare('C:\\DB\\Prod', 'win32');
+    const b = normalizeFsPathForCompare('c:\\db\\prod', 'win32');
+    assert.strictEqual(a, b);
+  });
+
+  test('Windows: case-insensitive for YAML config paths #249', () => {
+    const a = normalizeFsPathForCompare('C:\\Configs\\Prod.yml', 'win32');
+    const b = normalizeFsPathForCompare('c:\\configs\\prod.yml', 'win32');
+    assert.strictEqual(a, b);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -155,6 +188,26 @@ suite('infobaseDuplicateTargetKey', () => {
     const byPath = makeEntry({ type: 'file', filePath: 'C:/base', ibcmdConfigYamlPath: undefined });
     const byYaml = makeEntry({ type: 'file', filePath: undefined, ibcmdConfigYamlPath: 'C:/base' });
     assert.notStrictEqual(infobaseDuplicateTargetKey(byPath), infobaseDuplicateTargetKey(byYaml));
+  });
+
+  test('POSIX: generates distinct keys for case-sensitive file paths and YAML #249', () => {
+    const e1 = makeEntry({ type: 'file', filePath: '/db/Prod' });
+    const e2 = makeEntry({ type: 'file', filePath: '/db/prod' });
+    assert.notStrictEqual(infobaseDuplicateTargetKey(e1, 'linux'), infobaseDuplicateTargetKey(e2, 'linux'));
+
+    const y1 = makeEntry({ type: 'file', filePath: undefined, ibcmdConfigYamlPath: '/configs/Prod.yml' });
+    const y2 = makeEntry({ type: 'file', filePath: undefined, ibcmdConfigYamlPath: '/configs/prod.yml' });
+    assert.notStrictEqual(infobaseDuplicateTargetKey(y1, 'linux'), infobaseDuplicateTargetKey(y2, 'linux'));
+  });
+
+  test('Windows: generates identical keys for case-variant paths #249', () => {
+    const e1 = makeEntry({ type: 'file', filePath: 'C:\\DB\\Prod' });
+    const e2 = makeEntry({ type: 'file', filePath: 'c:\\db\\prod' });
+    assert.strictEqual(infobaseDuplicateTargetKey(e1, 'win32'), infobaseDuplicateTargetKey(e2, 'win32'));
+
+    const y1 = makeEntry({ type: 'file', filePath: undefined, ibcmdConfigYamlPath: 'C:\\Configs\\Prod.yml' });
+    const y2 = makeEntry({ type: 'file', filePath: undefined, ibcmdConfigYamlPath: 'c:\\configs\\prod.yml' });
+    assert.strictEqual(infobaseDuplicateTargetKey(y1, 'win32'), infobaseDuplicateTargetKey(y2, 'win32'));
   });
 });
 
@@ -312,6 +365,36 @@ suite('assertNoConflictingInfobaseTarget', () => {
     const b = makeEntry({ type: 'server', filePath: undefined, server: 'srv', database: 'db' });
     assert.throws(() => assertNoConflictingInfobaseTarget(b, [a]), InfobaseValidationError);
   });
+
+  test('POSIX: allows coexistence of case-different paths #249', () => {
+    const a = makeEntry({ filePath: '/db/prod' });
+    const b = makeEntry({ filePath: '/db/Prod' });
+    assert.doesNotThrow(() => assertNoConflictingInfobaseTarget(b, [a], undefined, 'linux'));
+  });
+
+  test('POSIX: allows coexistence of case-different YAML paths #249', () => {
+    const a = makeEntry({ filePath: undefined, ibcmdConfigYamlPath: '/configs/prod.yml' });
+    const b = makeEntry({ filePath: undefined, ibcmdConfigYamlPath: '/configs/Prod.yml' });
+    assert.doesNotThrow(() => assertNoConflictingInfobaseTarget(b, [a], undefined, 'linux'));
+  });
+
+  test('POSIX: still conflicts when path is identical (with or without trailing slash) #249', () => {
+    const a = makeEntry({ filePath: '/db/Prod' });
+    const b = makeEntry({ filePath: '/db/Prod/' });
+    assert.throws(() => assertNoConflictingInfobaseTarget(b, [a], undefined, 'linux'), InfobaseValidationError);
+  });
+
+  test('Windows: rejects coexistence of case-different paths #249', () => {
+    const a = makeEntry({ filePath: 'c:\\db\\prod' });
+    const b = makeEntry({ filePath: 'C:\\DB\\Prod' });
+    assert.throws(() => assertNoConflictingInfobaseTarget(b, [a], undefined, 'win32'), InfobaseValidationError);
+  });
+
+  test('Windows: rejects coexistence of case-different YAML paths #249', () => {
+    const a = makeEntry({ filePath: undefined, ibcmdConfigYamlPath: 'c:\\configs\\prod.yml' });
+    const b = makeEntry({ filePath: undefined, ibcmdConfigYamlPath: 'C:\\Configs\\Prod.yml' });
+    assert.throws(() => assertNoConflictingInfobaseTarget(b, [a], undefined, 'win32'), InfobaseValidationError);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -321,6 +404,26 @@ suite('assertNoConflictingInfobaseTarget', () => {
 suite('validateInfobaseEntryList', () => {
   test('empty list passes', () => {
     assert.doesNotThrow(() => validateInfobaseEntryList([]));
+  });
+
+  test('POSIX: allows list containing case-different paths and YAML #249', () => {
+    const a = makeEntry({ filePath: '/db/Prod' });
+    const b = makeEntry({ filePath: '/db/prod' });
+    const c = makeEntry({ filePath: undefined, ibcmdConfigYamlPath: '/configs/Prod.yml' });
+    const d = makeEntry({ filePath: undefined, ibcmdConfigYamlPath: '/configs/prod.yml' });
+    assert.doesNotThrow(() => validateInfobaseEntryList([a, b, c, d], 'linux'));
+  });
+
+  test('Windows: rejects list containing case-different paths #249', () => {
+    const a = makeEntry({ filePath: 'C:\\DB\\Prod' });
+    const b = makeEntry({ filePath: 'c:\\db\\prod' });
+    assert.throws(() => validateInfobaseEntryList([a, b], 'win32'), InfobaseValidationError);
+  });
+
+  test('Windows: rejects list containing case-different YAML paths #249', () => {
+    const a = makeEntry({ filePath: undefined, ibcmdConfigYamlPath: 'C:\\Configs\\Prod.yml' });
+    const b = makeEntry({ filePath: undefined, ibcmdConfigYamlPath: 'c:\\configs\\prod.yml' });
+    assert.throws(() => validateInfobaseEntryList([a, b], 'win32'), InfobaseValidationError);
   });
 
   test('single valid entry passes', () => {

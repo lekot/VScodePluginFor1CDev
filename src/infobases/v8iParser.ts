@@ -249,20 +249,20 @@ export function formatV8iEntryPreview(entry: V8iParsedEntry): string {
  * превращаться в `cwd/C:/...`, иначе {@link infobaseDuplicateTargetKey} не совпадёт
  * с уже сохранёнными записями (CI Linux). См. `infobaseDuplicateTargetKey`.
  */
-export function filePathFromV8iForInfobase(raw: string): string {
+export function filePathFromV8iForInfobase(raw: string, platform: NodeJS.Platform = process.platform): string {
   const t = raw.trim();
   if (!t) {
     return t;
   }
   const winDrive = /^[A-Za-z]:[/\\]/.test(t);
   const unc = /^\\\\[^\\/]+[/\\]/.test(t);
-  if (process.platform === 'win32') {
-    return path.resolve(t);
+  if (platform === 'win32') {
+    return path.win32.resolve(t);
   }
   if (winDrive || unc) {
-    return normalizeFsPathForCompare(t);
+    return normalizeFsPathForCompare(t, 'win32');
   }
-  return path.resolve(t);
+  return path.posix.resolve(t);
 }
 
 /** Преобразование успешно разобранной записи `.v8i` в черновик {@link InfobaseEntry} (без `id` / `createdAt`). */

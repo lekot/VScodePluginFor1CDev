@@ -1,6 +1,6 @@
-import * as path from 'path';
 import type { InfobaseEntry, InfobaseFolder } from './models/infobaseEntry';
 import { INFOBASE_STORAGE_MAX_ENTRIES } from './constants';
+import { filesystemPathKey } from '../utils/configurationPathIdentity';
 
 /** Optional UUID v4 check (recommended for new records). */
 const UUID_V4_RE =
@@ -57,32 +57,38 @@ export function validateInfobaseEntry(entry: InfobaseEntry): void {
   }
 }
 
-/** Normalized path for duplicate checks (Windows drive letter lowercased, slashes unified). */
-export function normalizeFsPathForCompare(p: string): string {
+/** Normalized path for duplicate checks (platform-aware case sensitivity, slashes unified). */
+export function normalizeFsPathForCompare(p: string, platform: NodeJS.Platform = process.platform): string {
   const t = p.trim();
   if (!t) {
     return '';
   }
-  let n = path.normalize(t).replace(/\\/g, '/').toLowerCase();
-  while (n.length > 1 && n.endsWith('/')) {
-    n = n.slice(0, -1);
+  if (/^[/\\]+$/.test(t)) {
+    return '/';
   }
-  return n;
+  const isWinDrive = /^[A-Za-z]:[/\\]/.test(t);
+  const isUnc = /^\\\\[^\\/]+[/\\]/.test(t);
+  const effectivePlatform = (platform === 'win32' || isWinDrive || isUnc) ? 'win32' : platform;
+  let key = filesystemPathKey(t, effectivePlatform).replace(/\\/g, '/');
+  while (key.length > 1 && key.endsWith('/')) {
+    key = key.slice(0, -1);
+  }
+  return key;
 }
 
 /**
  * Stable key for “same physical infobase” detection (plan §1D #14).
  * Empty string if the entry has no comparable target yet (should not happen after {@link validateInfobaseEntry}).
  */
-export function infobaseDuplicateTargetKey(entry: InfobaseEntry): string {
+export function infobaseDuplicateTargetKey(entry: InfobaseEntry, platform: NodeJS.Platform = process.platform): string {
   if (entry.type === 'file') {
     const fp = entry.filePath?.trim();
     if (fp) {
-      return `file:path:${normalizeFsPathForCompare(fp)}`;
+      return `file:path:${normalizeFsPathForCompare(fp, platform)}`;
     }
     const yaml = entry.ibcmdConfigYamlPath?.trim();
     if (yaml) {
-      return `file:yaml:${normalizeFsPathForCompare(yaml)}`;
+      return `file:yaml:${normalizeFsPathForCompare(yaml, platform)}`;
     }
     return '';
   }
@@ -104,10 +110,10 @@ export function infobaseDuplicateTargetKey(entry: InfobaseEntry): string {
   return '';
 }
 
-function validateDuplicateTargets(entries: InfobaseEntry[]): void {
+function validateDuplicateTargets(entries: InfobaseEntry[], platform: NodeJS.Platform = process.platform): void {
   const keyToId = new Map<string, string>();
   for (const e of entries) {
-    const k = infobaseDuplicateTargetKey(e);
+    const k = infobaseDuplicateTargetKey(e, platform);
     if (!k) {
       continue;
     }
@@ -128,8 +134,9 @@ export function assertNoConflictingInfobaseTarget(
   candidate: InfobaseEntry,
   existing: InfobaseEntry[],
   excludeId?: string,
+  platform: NodeJS.Platform = process.platform,
 ): void {
-  const key = infobaseDuplicateTargetKey(candidate);
+  const key = infobaseDuplicateTargetKey(candidate, platform);
   if (!key) {
     return;
   }
@@ -137,7 +144,7 @@ export function assertNoConflictingInfobaseTarget(
     if (excludeId !== undefined && e.id === excludeId) {
       continue;
     }
-    if (infobaseDuplicateTargetKey(e) === key) {
+    if (infobaseDuplicateTargetKey(e, platform) === key) {
       throw new InfobaseValidationError(
         `Такая база уже есть в списке («${e.name}»). Укажите другой каталог, сервер или URL.`,
       );
@@ -148,7 +155,10 @@ export function assertNoConflictingInfobaseTarget(
 /**
  * Validates a full list before persistence: caps, duplicates, per-entry rules.
  */
-export function validateInfobaseEntryList(entries: InfobaseEntry[]): void {
+export function validateInfobaseEntryList(
+  entries: InfobaseEntry[],
+  platform: NodeJS.Platform = process.platform,
+): void {
   if (entries.length > INFOBASE_STORAGE_MAX_ENTRIES) {
     throw new InfobaseValidationError(
       `At most ${INFOBASE_STORAGE_MAX_ENTRIES} infobase entries are allowed.`,
@@ -162,7 +172,7 @@ export function validateInfobaseEntryList(entries: InfobaseEntry[]): void {
     }
     seen.add(e.id);
   }
-  validateDuplicateTargets(entries);
+  validateDuplicateTargets(entries, platform);
 }
 
 const MAX_FOLDERS = 500;
@@ -223,9 +233,13 @@ export function validateInfobaseFolders(folders: InfobaseFolder[]): void {
 }
 
 /** Каталог баз + папки (WOW Phase 4 #60). */
-export function validateInfobaseCatalog(entries: InfobaseEntry[], folders: InfobaseFolder[]): void {
+export function validateInfobaseCatalog(
+  entries: InfobaseEntry[],
+  folders: InfobaseFolder[],
+  platform: NodeJS.Platform = process.platform,
+): void {
   validateInfobaseFolders(folders);
-  validateInfobaseEntryList(entries);
+  validateInfobaseEntryList(entries, platform);
   const folderIds = new Set(folders.map((f) => f.id));
   for (const e of entries) {
     const fid = e.folderId?.trim();
