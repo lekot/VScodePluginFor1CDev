@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { XMLValidator } from 'fast-xml-parser';
 
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
@@ -324,7 +325,18 @@ export class DesignerParser {
     let xmlContent: Record<string, unknown> | null = null;
     try {
       await fs.promises.access(xmlPath);
-      xmlContent = await XmlParser.parseFileAsync(xmlPath);
+      try {
+        const rawXml = await fs.promises.readFile(xmlPath, 'utf8');
+        const validation = XMLValidator.validate(rawXml);
+        if (validation !== true) {
+          throw new Error(`Invalid XML in ${xmlPath}: ${typeof validation === 'object' && validation.err ? validation.err.msg : 'Malformed XML'}`);
+        }
+        xmlContent = XmlParser.parseString(rawXml);
+      } catch (parseErr) {
+        if (element) {
+          element.properties._parseError = parseErr;
+        }
+      }
     } catch {
       // No XML
     }
@@ -627,6 +639,9 @@ export class DesignerParser {
       // Update filePath to point to XML file regardless of parse success
       elementNode.filePath = xmlPath;
       xmlContent = xmlResult.xmlContent;
+      if (xmlResult.error) {
+        elementNode.properties._parseError = xmlResult.error;
+      }
       if (xmlContent !== null) {
         elementNode.properties = { ...elementNode.properties, ...xmlResult.properties };
         if (xmlResult.objectBelonging.objectBelonging !== undefined) {
@@ -681,6 +696,7 @@ export class DesignerParser {
     xmlContent: Record<string, unknown> | null;
     properties: Record<string, unknown>;
     objectBelonging: ReturnType<typeof extractObjectBelonging>;
+    error?: unknown;
   } | null> {
     try {
       await fs.promises.access(xmlPath);
@@ -694,7 +710,7 @@ export class DesignerParser {
       return { xmlContent, properties, objectBelonging };
     } catch (error) {
       Logger.warn(`Error parsing element XML ${xmlPath}`, error);
-      return { xmlContent: null, properties: {}, objectBelonging: {} };
+      return { xmlContent: null, properties: {}, objectBelonging: {}, error };
     }
   }
 

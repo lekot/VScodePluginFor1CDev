@@ -415,6 +415,9 @@ export class MetadataParser {
           : format === ConfigFormat.EDT
             ? await EdtParser.loadChildrenForElement(configPath, typeFolderId, objectName, parent)
             : [];
+      if (parent.properties?._parseError) {
+        throw parent.properties._parseError;
+      }
       const sectionNode = siblings.find((c) => c.id === id);
       if (sectionNode?.children) {
         for (const c of sectionNode.children) {

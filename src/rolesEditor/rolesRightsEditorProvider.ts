@@ -6,7 +6,7 @@ import { hashContent } from '../services/configurationSession/atomicFileStorage'
 import { projectMutationFailure, unwrapMutationReceipt } from '../services/configurationSession/mutationReceiptError';
 import { randomUUID } from 'crypto';
 import { XMLValidator } from 'fast-xml-parser';
-import { RoleModel } from './models/roleModel';
+import { RoleModel, type RightsMap } from './models/roleModel';
 import type { MetadataObject } from './models/metadataObject';
 import {
   WebviewMessage,
@@ -127,6 +127,10 @@ export class RolesRightsEditorProvider {
   private currentLoadSession: RolesMetadataLoadSession | undefined;
   private currentDataRevision = 0;
   private activeSearchQueryId = 0;
+  private isTypeIndexComplete = false;
+  private typeIndexError: string | undefined;
+
+  private typeIndexWaiters: Array<() => void> = [];
   /** Server-side mirror of the webview filter state — survives webview reloads. */
   private filterState: FilterState = createDefaultFilterState();
   /** Pending `requestSavePayload` → webview `savePayload` round-trips (external save / Ctrl+S). */
@@ -265,10 +269,16 @@ export class RolesRightsEditorProvider {
           command: 'objectsLoaded',
           data: { objects: this.allObjects, uiRights: getUiRoleRightProjection() },
         }); */
+        const format = await FormatDetector.detect(resolvedConfigPath);
+        if (loadGeneration !== this.objectsLoadGeneration) {
+          return;
+        }
         this.currentLoadSession?.dispose();
         const sessionId = randomUUID();
         this.activeSessionId = sessionId;
-        const format = await FormatDetector.detect(resolvedConfigPath);
+        this.isTypeIndexComplete = false;
+        this.typeIndexError = undefined;
+        this.notifyTypeIndexComplete();
         const loadSession = new RolesMetadataLoadSession(
           sessionId,
           this.sessionGeneration,
@@ -319,6 +329,8 @@ export class RolesRightsEditorProvider {
             }
             this.allObjects = merged;
             this.currentDataRevision++;
+            this.isTypeIndexComplete = true;
+            this.typeIndexError = undefined;
             this.sendMessageToWebview({
               command: 'objectsLoaded',
               data: {
@@ -330,11 +342,15 @@ export class RolesRightsEditorProvider {
                 uiRights: getUiRoleRightProjection(),
               },
             });
+            this.notifyTypeIndexComplete();
           } catch (indexErr) {
             if (loadSession.isCancelled() || this.activeSessionId !== sessionId) {
               return;
             }
             Logger.error('Failed to index metadata objects for rights editor', indexErr);
+            this.isTypeIndexComplete = true;
+            this.typeIndexError = indexErr instanceof Error ? indexErr.message : String(indexErr);
+            this.notifyTypeIndexComplete();
           }
         })();
       } catch (loadErr) {
@@ -959,6 +975,23 @@ export class RolesRightsEditorProvider {
   /**
    * Handle search message — mirrors searchQuery and coordinates background attribute search.
    */
+  private notifyTypeIndexComplete(): void {
+    const waiters = this.typeIndexWaiters;
+    this.typeIndexWaiters = [];
+    for (const resolve of waiters) {
+      resolve();
+    }
+  }
+
+  private waitForTypeIndexOrCancel(sessionId: string, queryId: number): Promise<void> {
+    if (this.isTypeIndexComplete || this.activeSessionId !== sessionId || this.activeSearchQueryId !== queryId) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      this.typeIndexWaiters.push(resolve);
+    });
+  }
+
   private async handleSearch(message: WebviewMessage): Promise<void> {
     if (typeof message.data?.query === 'string') {
       this.filterState.searchQuery = message.data.query;
@@ -975,6 +1008,7 @@ export class RolesRightsEditorProvider {
 
     this.activeSearchQueryId = queryId;
 
+
     if (!query || query.length < 2) {
       return;
     }
@@ -982,7 +1016,153 @@ export class RolesRightsEditorProvider {
     const session = this.currentLoadSession;
     const currentRights = this.currentRoleModel.rights;
 
-    const candidateObjects = this.allObjects.filter(
+    void this.executeSearch(sessionId, queryId, query, session, currentRights);
+  }
+
+  private async executeSearch(
+    sessionId: string,
+    queryId: number,
+    query: string,
+    session: RolesMetadataLoadSession,
+    currentRights: RightsMap
+  ): Promise<void> {
+    const matchingObjectNames: string[] = [];
+    const matchedSet = new Set<string>();
+
+    for (const obj of this.allObjects) {
+      if (
+        OBJECT_TYPES_FOR_ATTRIBUTE_RIGHTS.includes(obj.type as MetadataType) &&
+        obj.rowKind !== 'attribute' &&
+        obj.rowKind !== 'configurationRoot' &&
+        obj.attributesState === 'loaded' &&
+        Array.isArray(obj.attributes)
+      ) {
+        const hasMatchingAttr = obj.attributes.some(
+          (a) =>
+            a.name.toLowerCase().includes(query) ||
+            (a.displayName && a.displayName.toLowerCase().includes(query))
+        );
+        if (hasMatchingAttr && !matchedSet.has(obj.fullName)) {
+          matchedSet.add(obj.fullName);
+          matchingObjectNames.push(obj.fullName);
+        }
+      }
+    }
+
+    if (matchingObjectNames.length > 0) {
+      this.sendMessageToWebview({
+        command: 'searchProgress',
+        data: {
+          sessionId,
+          queryId,
+          state: 'running',
+          processed: 0,
+          total: this.allObjects.length,
+          matchingObjectNames: [...matchingObjectNames],
+        },
+      });
+    }
+
+    let processed = 0;
+    let hasSearchErrors = false;
+
+    while (!session.isCancelled() && this.activeSessionId === sessionId && this.activeSearchQueryId === queryId) {
+      if (session.isCancelled() || this.activeSessionId !== sessionId || this.activeSearchQueryId !== queryId) {
+        this.sendMessageToWebview({
+          command: 'searchProgress',
+          data: {
+            sessionId,
+            queryId,
+            state: 'cancelled',
+          },
+        });
+        return;
+      }
+
+      const nextObj = this.allObjects.find(
+        (o) =>
+          OBJECT_TYPES_FOR_ATTRIBUTE_RIGHTS.includes(o.type as MetadataType) &&
+          o.rowKind !== 'attribute' &&
+          o.rowKind !== 'configurationRoot' &&
+          o.attributesState !== 'loaded' &&
+          o.attributesState !== 'failed'
+      );
+
+      if (nextObj) {
+        nextObj.attributesState = 'loading';
+        try {
+          const attrs = await session.loadObjectAttributes(nextObj.fullName, currentRights);
+          processed++;
+          nextObj.attributesState = 'loaded';
+          nextObj.attributes = attrs;
+
+          const hasMatchingAttr = attrs.some(
+            (a) =>
+              a.name.toLowerCase().includes(query) ||
+              (a.displayName && a.displayName.toLowerCase().includes(query))
+          );
+
+          if (hasMatchingAttr) {
+            if (!matchedSet.has(nextObj.fullName)) {
+              matchedSet.add(nextObj.fullName);
+              matchingObjectNames.push(nextObj.fullName);
+            }
+            this.sendMessageToWebview({
+              command: 'loadObjectAttributesResult',
+              data: {
+                sessionId,
+                requestId: `search-${queryId}-${nextObj.fullName}`,
+                objectFullName: nextObj.fullName,
+                state: 'loaded',
+                attributes: attrs,
+              },
+            });
+            this.sendMessageToWebview({
+              command: 'searchProgress',
+              data: {
+                sessionId,
+                queryId,
+                state: 'running',
+                processed,
+                total: processed,
+                matchingObjectNames: [nextObj.fullName],
+              },
+            });
+          }
+        } catch (err) {
+          hasSearchErrors = true;
+          nextObj.attributesState = 'failed';
+          nextObj.attributesError = err instanceof Error ? err.message : String(err);
+          Logger.debug(`Search failed to load attributes for ${nextObj.fullName}`, err);
+        }
+        continue;
+      }
+
+      if (!this.isTypeIndexComplete) {
+        await this.waitForTypeIndexOrCancel(sessionId, queryId);
+        continue;
+      }
+
+      break;
+    }
+
+    if (!session.isCancelled() && this.activeSessionId === sessionId && this.activeSearchQueryId === queryId) {
+      const finalState = hasSearchErrors || this.typeIndexError ? 'incomplete' : 'complete';
+      this.sendMessageToWebview({
+        command: 'searchProgress',
+        data: {
+          sessionId,
+          queryId,
+          state: finalState,
+          processed,
+          total: processed,
+          matchingObjectNames,
+        },
+      });
+    }
+  }
+
+  /*
       (o) =>
         OBJECT_TYPES_FOR_ATTRIBUTE_RIGHTS.includes(o.type as MetadataType) &&
         o.rowKind !== 'attribute' &&
@@ -1066,7 +1246,7 @@ export class RolesRightsEditorProvider {
         });
       }
     })();
-  }
+  } */
 
   /**
    * Handle cancelSearch message — increments activeSearchQueryId to discard in-flight results.
@@ -1076,6 +1256,8 @@ export class RolesRightsEditorProvider {
     const queryId = message.data?.queryId;
     if (sessionId === this.activeSessionId) {
       this.activeSearchQueryId++;
+
+      this.notifyTypeIndexComplete();
       Logger.debug(`Cancelled search query ${queryId} for session ${sessionId}`);
     }
 
@@ -1234,6 +1416,10 @@ export class RolesRightsEditorProvider {
     this.sessionExpectedHash = undefined;
     this.sessionExpectedState = undefined;
     this.sessionGeneration++;
+    this.isTypeIndexComplete = true;
+    this.typeIndexError = undefined;
+
+    this.notifyTypeIndexComplete();
     this.filterState = createDefaultFilterState();
   }
 }

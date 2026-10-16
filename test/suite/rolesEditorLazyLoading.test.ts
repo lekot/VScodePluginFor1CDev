@@ -15,6 +15,10 @@ import {
   patchCreateWebviewPanel,
 } from '../helpers/rightsEditorTestHarness';
 import type { ExtensionToWebviewMessage } from '../../src/rolesEditor/models/webviewMessage';
+import { BoundedConcurrencyQueue } from '../../src/rolesEditor/rolesMetadataLoadSession';
+import { FormatDetector, ConfigFormat } from '../../src/parsers/formatDetector';
+import { MetadataParser } from '../../src/parsers/metadataParser';
+import { MetadataType } from '../../src/models/treeNode';
 
 async function rmRf(dir: string): Promise<void> {
   const maxAttempts = 10;
@@ -553,6 +557,416 @@ suite('RolesEditor Lazy Loading & Staged Lifecycle (Issue #329)', () => {
         },
       });
     } finally {
+      restorePanel();
+      provider.dispose();
+    }
+  });
+
+  test('BoundedConcurrencyQueue rejects pending queued promises when cleared and avoids leaks (Finding 5)', async () => {
+    const queue = new BoundedConcurrencyQueue(1);
+    let task1Settled = false;
+    let releaseTask1!: () => void;
+    const task1Promise = new Promise<void>((resolve) => {
+      releaseTask1 = resolve;
+    });
+
+    const run1 = queue.run(async () => {
+      await task1Promise;
+      task1Settled = true;
+      return 'task1';
+    });
+
+    let task2Started = false;
+    const run2 = queue.run(async () => {
+      task2Started = true;
+      return 'task2';
+    });
+
+    let task3Started = false;
+    const run3 = queue.run(async () => {
+      task3Started = true;
+      return 'task3';
+    });
+
+    queue.clear();
+    releaseTask1();
+    await run1;
+    assert.strictEqual(task1Settled, true);
+
+    await assert.rejects(async () => await run2, /cleared|cancelled|disposed/i);
+    await assert.rejects(async () => await run3, /cleared|cancelled|disposed/i);
+    assert.strictEqual(task2Started, false, 'Cancelled task 2 must not run');
+    assert.strictEqual(task3Started, false, 'Cancelled task 3 must not run');
+  });
+
+  test('attribute loading fails typed on parsing error, does not cache false-positive empty, and allows retry (Finding 4)', async () => {
+    const rolePath = path.join(tmpRoot, 'src', 'Roles', 'Operator.xml');
+    const rightsPath = path.join(tmpRoot, 'src', 'Roles', 'Operator', 'Ext', 'Rights.xml');
+    await fs.promises.mkdir(path.dirname(rightsPath), { recursive: true });
+    await fs.promises.mkdir(path.join(tmpRoot, 'Catalogs'), { recursive: true });
+
+    await fs.promises.writeFile(
+      path.join(tmpRoot, 'Configuration.xml'),
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration name="TestConfig"><ChildObjects><Catalog>Broken</Catalog></ChildObjects></Configuration></MetaDataObject>',
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      path.join(tmpRoot, 'Catalogs', 'Broken.xml'),
+      '<MetaDataObject><Catalog><Properties><Name>Broken</Name></Properties><ChildObjects><Attribute>>>MALFORMED',
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      rolePath,
+      '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Properties><Name>Operator</Name></Properties><Rights/></Role>',
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      rightsPath,
+      '<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"><object><name>Catalog.Broken</name><right><name>Read</name><value>true</value></right></object></Rights>',
+      'utf8'
+    );
+
+    const { panel, getPostedMessages, getOnMessageHandler } = createFakeWebviewPanel({ autoReplyFlushWith: '' });
+    const restorePanel = patchCreateWebviewPanel(panel);
+    const provider = new RolesRightsEditorProvider(createFakeExtensionContext());
+
+    try {
+      await provider.show(rolePath, tmpRoot);
+      const handler = getOnMessageHandler();
+      assert.ok(handler);
+
+      const postedBefore = getPostedMessages();
+      const initialMsg = postedBefore.find((m) => m.command === 'objectsLoaded');
+      const sessionId = (initialMsg as { data?: { sessionId?: string } })?.data?.sessionId;
+      assert.ok(sessionId);
+
+      await handler({
+        command: 'loadObjectAttributes',
+        data: {
+          sessionId,
+          requestId: 'req-err-1',
+          objectFullName: 'Catalog.Broken',
+        },
+      });
+
+      const postedAfterError = getPostedMessages();
+      const failureMsg = postedAfterError.find(
+        (m) => m.command === 'loadObjectAttributesResult' && (m.data as { requestId?: string })?.requestId === 'req-err-1'
+      );
+      assert.ok(failureMsg, 'Must post loadObjectAttributesResult on error');
+      const failureData = failureMsg.data as { state?: string; error?: string };
+      assert.strictEqual(failureData.state, 'failed', 'State must be failed on XML or I/O error');
+      assert.ok(failureData.error, 'Error message must be present');
+
+      await fs.promises.writeFile(
+        path.join(tmpRoot, 'Catalogs', 'Broken.xml'),
+        `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Catalog uuid="11111111-1111-1111-1111-111111111111">
+    <Properties><Name>Broken</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="22222222-2222-2222-2222-222222222222">
+        <Properties><Name>FixedAttr</Name></Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`,
+        'utf8'
+      );
+
+      await handler({
+        command: 'loadObjectAttributes',
+        data: {
+          sessionId,
+          requestId: 'req-retry-1',
+          objectFullName: 'Catalog.Broken',
+        },
+      });
+
+      const postedAfterRetry = getPostedMessages();
+      const retryMsg = postedAfterRetry.find(
+        (m) => m.command === 'loadObjectAttributesResult' && (m.data as { requestId?: string })?.requestId === 'req-retry-1'
+      );
+      assert.ok(retryMsg, 'Must post loadObjectAttributesResult on retry');
+      const retryData = retryMsg.data as { state?: string; attributes?: unknown[] };
+      assert.strictEqual(retryData.state, 'loaded', 'Retry must succeed');
+      assert.strictEqual(retryData.attributes?.length, 1);
+    } finally {
+      restorePanel();
+      provider.dispose();
+    }
+  });
+
+  test('stale async format detection in show(A) does not overwrite active session B (Finding 1)', async () => {
+    const rootA = path.join(tmpRoot, 'ConfigA');
+    const rootB = path.join(tmpRoot, 'ConfigB');
+    await fs.promises.mkdir(path.join(rootA, 'src', 'Roles', 'RoleA', 'Ext'), { recursive: true });
+    await fs.promises.mkdir(path.join(rootB, 'src', 'Roles', 'RoleB', 'Ext'), { recursive: true });
+
+    await fs.promises.writeFile(path.join(rootA, 'Configuration.xml'), '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration name="ConfigA"/></MetaDataObject>', 'utf8');
+    await fs.promises.writeFile(path.join(rootB, 'Configuration.xml'), '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration name="ConfigB"/></MetaDataObject>', 'utf8');
+
+    const roleAPath = path.join(rootA, 'src', 'Roles', 'RoleA.xml');
+    const roleBPath = path.join(rootB, 'src', 'Roles', 'RoleB.xml');
+    await fs.promises.writeFile(roleAPath, '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Properties><Name>RoleA</Name></Properties><Rights/></Role>', 'utf8');
+    await fs.promises.writeFile(roleBPath, '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Properties><Name>RoleB</Name></Properties><Rights/></Role>', 'utf8');
+    await fs.promises.writeFile(path.join(rootA, 'src', 'Roles', 'RoleA', 'Ext', 'Rights.xml'), '<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"/>', 'utf8');
+    await fs.promises.writeFile(path.join(rootB, 'src', 'Roles', 'RoleB', 'Ext', 'Rights.xml'), '<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"/>', 'utf8');
+
+    const { panel, getPostedMessages } = createFakeWebviewPanel({ autoReplyFlushWith: '' });
+    const restorePanel = patchCreateWebviewPanel(panel);
+    const provider = new RolesRightsEditorProvider(createFakeExtensionContext());
+
+    const originalDetect = FormatDetector.detect;
+    let releaseDetectA!: () => void;
+    const detectABarrier = new Promise<void>((resolve) => {
+      releaseDetectA = resolve;
+    });
+
+    try {
+      (FormatDetector.detect as unknown as (p: string) => Promise<ConfigFormat>) = async (configPath: string) => {
+        if (configPath === rootA) {
+          await detectABarrier;
+        }
+        return ConfigFormat.Designer;
+      };
+
+      const showAPromise = provider.show(roleAPath, rootA);
+      await new Promise((r) => setTimeout(r, 20));
+
+      await provider.show(roleBPath, rootB);
+
+      const messagesAfterB = getPostedMessages();
+      const roleBMsg = messagesAfterB.find((m) => m.command === 'objectsLoaded');
+      const sessionBId = (roleBMsg as { data?: { sessionId?: string } })?.data?.sessionId;
+      assert.ok(sessionBId);
+
+      releaseDetectA();
+      await showAPromise;
+
+      assert.strictEqual(
+        (provider as unknown as { activeSessionId: string }).activeSessionId,
+        sessionBId,
+        'Active session must remain B after stale A completes'
+      );
+      assert.strictEqual(
+        (provider as unknown as { currentLoadSession: { configPath: string } }).currentLoadSession?.configPath,
+        rootB,
+        'Active load session configPath must remain rootB'
+      );
+    } finally {
+      releaseDetectA?.();
+      (FormatDetector.detect as unknown as typeof FormatDetector.detect) = originalDetect;
+      restorePanel();
+      provider.dispose();
+    }
+  });
+
+  test('repeated search scans cached attributes and delivers matchingObjectNames and complete for new queryId (Finding 2)', async () => {
+    const rolePath = path.join(tmpRoot, 'src', 'Roles', 'Operator.xml');
+    const rightsPath = path.join(tmpRoot, 'src', 'Roles', 'Operator', 'Ext', 'Rights.xml');
+    await fs.promises.mkdir(path.dirname(rightsPath), { recursive: true });
+    await fs.promises.mkdir(path.join(tmpRoot, 'Catalogs'), { recursive: true });
+
+    await fs.promises.writeFile(
+      path.join(tmpRoot, 'Configuration.xml'),
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration name="TestConfig"><ChildObjects><Catalog>Товары</Catalog></ChildObjects></Configuration></MetaDataObject>',
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      path.join(tmpRoot, 'Catalogs', 'Товары.xml'),
+      `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Catalog uuid="12345678-1234-1234-1234-123456789abc">
+    <Properties><Name>Товары</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="22345678-1234-1234-1234-123456789abc">
+        <Properties><Name>Артикул</Name></Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`,
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      rolePath,
+      '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Properties><Name>Operator</Name></Properties><Rights/></Role>',
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      rightsPath,
+      '<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"><object><name>Catalog.Товары</name><right><name>Read</name><value>true</value></right></object></Rights>',
+      'utf8'
+    );
+
+    const { panel, getPostedMessages, getOnMessageHandler } = createFakeWebviewPanel({ autoReplyFlushWith: '' });
+    const restorePanel = patchCreateWebviewPanel(panel);
+    const provider = new RolesRightsEditorProvider(createFakeExtensionContext());
+
+    try {
+      await provider.show(rolePath, tmpRoot);
+      const handler = getOnMessageHandler();
+      assert.ok(handler);
+
+      const postedBefore = getPostedMessages();
+      const initialMsg = postedBefore.find((m) => m.command === 'objectsLoaded');
+      const sessionId = (initialMsg as { data?: { sessionId?: string } })?.data?.sessionId;
+      assert.ok(sessionId);
+
+      // Search 1: mismatch
+      await handler({
+        command: 'search',
+        data: { sessionId, queryId: 201, query: 'несуществующий' },
+      });
+      await new Promise((r) => setTimeout(r, 60));
+
+      // Search 2: match for already cached attribute
+      await handler({
+        command: 'search',
+        data: { sessionId, queryId: 202, query: 'артикул' },
+      });
+      await new Promise((r) => setTimeout(r, 60));
+
+      const messages = getPostedMessages();
+      const query202Progress = messages.filter(
+        (m) => m.command === 'searchProgress' && (m.data as { queryId?: number })?.queryId === 202
+      );
+      assert.ok(query202Progress.length >= 1, 'Must emit searchProgress for query 202');
+      const hasMatch = query202Progress.some((m) =>
+        (m.data as { matchingObjectNames?: string[] })?.matchingObjectNames?.includes('Catalog.Товары')
+      );
+      assert.strictEqual(hasMatch, true, 'Query 202 must find Catalog.Товары even if already read into cache');
+
+      const latest202 = query202Progress[query202Progress.length - 1];
+      assert.strictEqual((latest202.data as { state?: string }).state, 'complete');
+
+      // Search 3: empty result when all objects already loaded
+      await handler({
+        command: 'search',
+        data: { sessionId, queryId: 203, query: 'снова_нет' },
+      });
+      await new Promise((r) => setTimeout(r, 60));
+
+      const query203Progress = getPostedMessages().filter(
+        (m) => m.command === 'searchProgress' && (m.data as { queryId?: number })?.queryId === 203
+      );
+      assert.ok(query203Progress.length >= 1, 'Query 203 must receive progress even when all objects are loaded');
+      const latest203 = query203Progress[query203Progress.length - 1];
+      assert.strictEqual((latest203.data as { state?: string }).state, 'complete');
+    } finally {
+      restorePanel();
+      provider.dispose();
+    }
+  });
+
+  test('search does not complete until type index finishes and includes merged index objects in search (Finding 3)', async () => {
+    const rolePath = path.join(tmpRoot, 'src', 'Roles', 'Operator.xml');
+    const rightsPath = path.join(tmpRoot, 'src', 'Roles', 'Operator', 'Ext', 'Rights.xml');
+    await fs.promises.mkdir(path.dirname(rightsPath), { recursive: true });
+    await fs.promises.mkdir(path.join(tmpRoot, 'Catalogs'), { recursive: true });
+
+    await fs.promises.writeFile(
+      path.join(tmpRoot, 'Configuration.xml'),
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration name="TestConfig"><ChildObjects><Catalog>Existing</Catalog><Catalog>DelayedIndex</Catalog></ChildObjects></Configuration></MetaDataObject>',
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      path.join(tmpRoot, 'Catalogs', 'Existing.xml'),
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="11111111-1111-1111-1111-111111111111"><Properties><Name>Existing</Name></Properties></Catalog></MetaDataObject>',
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      path.join(tmpRoot, 'Catalogs', 'DelayedIndex.xml'),
+      `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Catalog uuid="22222222-2222-2222-2222-222222222222">
+    <Properties><Name>DelayedIndex</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="33333333-3333-3333-3333-333333333333">
+        <Properties><Name>UniqueTargetCode</Name></Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>`,
+      'utf8'
+    );
+    await fs.promises.writeFile(
+      rolePath,
+      '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Properties><Name>Operator</Name></Properties><Rights/></Role>',
+      'utf8'
+    );
+    // Role only has rights on Existing initially
+    await fs.promises.writeFile(
+      rightsPath,
+      '<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"><object><name>Catalog.Existing</name><right><name>Read</name><value>true</value></right></object></Rights>',
+      'utf8'
+    );
+
+    const { panel, getPostedMessages, getOnMessageHandler } = createFakeWebviewPanel({ autoReplyFlushWith: '' });
+    const restorePanel = patchCreateWebviewPanel(panel);
+    const provider = new RolesRightsEditorProvider(createFakeExtensionContext());
+
+    const originalParseTypeIndex = MetadataParser.parseTypeIndex;
+    let releaseIndex!: () => void;
+    const indexBarrier = new Promise<void>((resolve) => {
+      releaseIndex = resolve;
+    });
+
+    try {
+      (MetadataParser.parseTypeIndex as unknown as (c: string, t: string) => Promise<import('../../src/models/treeNode').TreeNode[]>) = async (c: string, t: string) => {
+        if (t === 'Catalogs') {
+          await indexBarrier;
+          return [
+            { id: 'Catalogs.Existing', name: 'Existing', type: MetadataType.Catalog, properties: {} },
+            { id: 'Catalogs.DelayedIndex', name: 'DelayedIndex', type: MetadataType.Catalog, properties: {} },
+          ];
+        }
+        return [];
+      };
+
+      await provider.show(rolePath, tmpRoot);
+      const handler = getOnMessageHandler();
+      assert.ok(handler);
+
+      const postedBefore = getPostedMessages();
+      const initialMsg = postedBefore.find((m) => m.command === 'objectsLoaded');
+      const sessionId = (initialMsg as { data?: { sessionId?: string } })?.data?.sessionId;
+      assert.ok(sessionId);
+
+      // Start search for 'uniquetargetcode' before index completes
+      await handler({
+        command: 'search',
+        data: { sessionId, queryId: 301, query: 'uniquetargetcode' },
+      });
+
+      await new Promise((r) => setTimeout(r, 40));
+
+      // Verify complete is NOT sent prematurely while index is still building
+      const messagesBeforeIndex = getPostedMessages();
+      const completeBeforeIndex = messagesBeforeIndex.find(
+        (m) => m.command === 'searchProgress' && (m.data as { queryId?: number; state?: string })?.queryId === 301 && (m.data as { state?: string })?.state === 'complete'
+      );
+      assert.strictEqual(
+        completeBeforeIndex,
+        undefined,
+        'Search must NOT declare complete before type index completes'
+      );
+
+      // Release index so DelayedIndex is merged into allObjects
+      releaseIndex();
+      await new Promise((r) => setTimeout(r, 150));
+
+      const messagesAfterIndex = getPostedMessages();
+      const query301Messages = messagesAfterIndex.filter(
+        (m) => m.command === 'searchProgress' && (m.data as { queryId?: number })?.queryId === 301
+      );
+      const hasMatch = query301Messages.some((m) =>
+        (m.data as { matchingObjectNames?: string[] })?.matchingObjectNames?.includes('Catalog.DelayedIndex')
+      );
+      assert.strictEqual(hasMatch, true, 'Search must discover DelayedIndex after index merge');
+
+      const latest301 = query301Messages[query301Messages.length - 1];
+      assert.strictEqual((latest301.data as { state?: string }).state, 'complete');
+    } finally {
+      releaseIndex?.();
+      (MetadataParser.parseTypeIndex as unknown as typeof MetadataParser.parseTypeIndex) = originalParseTypeIndex;
       restorePanel();
       provider.dispose();
     }

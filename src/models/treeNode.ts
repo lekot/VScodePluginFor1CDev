@@ -17,6 +17,8 @@ export interface TreeNodeProperties {
   comment?: string;
   /** Marks the node as lazily loaded — children not yet fetched. */
   _lazy?: boolean;
+  /** Recorded parsing error when file exists on disk but XML parsing fails. */
+  _parseError?: unknown;
   /** UUID of the metadata object. Stored as-is from the parsed XML (may be any scalar). */
   uuid?: unknown;
   /**

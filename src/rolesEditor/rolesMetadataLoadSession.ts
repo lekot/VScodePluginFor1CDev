@@ -10,33 +10,53 @@ import { RightsMap } from './models/roleModel';
 import { loadAttributeRowsForObject } from './metadataLoader';
 import { Logger } from '../utils/logger';
 
+interface QueueSlot {
+  resolve: () => void;
+  reject: (err: Error) => void;
+}
+
 /**
  * Bounded concurrency queue to prevent overwhelming I/O with parallel XML parsing.
  */
 export class BoundedConcurrencyQueue {
   private activeCount = 0;
-  private readonly queue: Array<() => void> = [];
+  private readonly queue: QueueSlot[] = [];
+  private isCleared = false;
 
   constructor(public readonly concurrency: number = 4) {}
 
   public async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.isCleared) {
+      throw new Error('Operation cancelled: queue is cleared');
+    }
     if (this.activeCount >= this.concurrency) {
-      await new Promise<void>((resolve) => this.queue.push(resolve));
+      await new Promise<void>((resolve, reject) => {
+        this.queue.push({ resolve, reject });
+      });
+    }
+    if (this.isCleared) {
+      throw new Error('Operation cancelled: queue is cleared');
     }
     this.activeCount++;
     try {
       return await fn();
     } finally {
       this.activeCount--;
-      const next = this.queue.shift();
-      if (next) {
-        next();
+      if (!this.isCleared) {
+        const next = this.queue.shift();
+        if (next) {
+          next.resolve();
+        }
       }
     }
   }
 
-  public clear(): void {
-    this.queue.length = 0;
+  public clear(reason = 'Operation cancelled: queue is cleared'): void {
+    this.isCleared = true;
+    const pending = this.queue.splice(0, this.queue.length);
+    for (const slot of pending) {
+      slot.reject(new Error(reason));
+    }
   }
 }
 

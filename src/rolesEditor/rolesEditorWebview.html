@@ -368,6 +368,7 @@
             </div>
             <div class="control-group">
                 <input type="text" id="searchInput" placeholder="Search objects...">
+                <span id="searchStatus" class="attr-status-hint" style="display: none; margin-left: 6px;"></span>
             </div>
             <div class="control-group">
                 <label for="typeFilter">Type:</label>
@@ -692,6 +693,19 @@
                     case 'searchProgress': {
                         if (data.sessionId && data.sessionId !== currentSessionId) break;
                         if (data.queryId && data.queryId < searchQuerySeq) break;
+                        var searchStatusEl = document.getElementById('searchStatus');
+                        if (searchStatusEl) {
+                            if (data.state === 'running') {
+                                searchStatusEl.textContent = '(searching attributes...)';
+                                searchStatusEl.style.display = 'inline';
+                            } else if (data.state === 'incomplete') {
+                                searchStatusEl.textContent = '(search incomplete)';
+                                searchStatusEl.style.display = 'inline';
+                            } else {
+                                searchStatusEl.textContent = '';
+                                searchStatusEl.style.display = 'none';
+                            }
+                        }
                         if (Array.isArray(data.matchingObjectNames) && data.matchingObjectNames.length > 0) {
                             for (var m = 0; m < data.matchingObjectNames.length; m++) {
                                 expandedObjects.add(data.matchingObjectNames[m]);
@@ -978,6 +992,13 @@
 
             function handleSearchInput(event) {
                 filterState.searchQuery = event.target.value;
+                if (!filterState.searchQuery || filterState.searchQuery.trim().length < 2) {
+                    var sEl = document.getElementById('searchStatus');
+                    if (sEl) {
+                        sEl.textContent = '';
+                        sEl.style.display = 'none';
+                    }
+                }
                 searchQuerySeq++;
                 vscode.postMessage({
                     command: 'search',

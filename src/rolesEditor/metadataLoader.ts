@@ -157,8 +157,8 @@ async function loadAttributeRowsForElement(
     }
     return rows;
   } catch (err) {
-    Logger.debug(`Attribute rights rows skipped for ${element.fullName}`, err);
-    return [];
+    Logger.warn(`Failed to load attribute rows for ${element.fullName}`, err);
+    throw err;
   }
 }
 
@@ -371,7 +371,7 @@ export async function loadMetadataObjects(
       await Promise.all(
         baseObjects
           .filter((o) => OBJECT_TYPES_FOR_ATTRIBUTE_RIGHTS.includes(o.type))
-          .map((el) => loadAttributeRowsForElement(effectiveConfigPath, format, el, currentRights))
+          .map((el) => loadAttributeRowsForElement(effectiveConfigPath, format, el, currentRights).catch(() => []))
       )
     ).flat();
 
