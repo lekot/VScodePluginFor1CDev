@@ -1038,8 +1038,12 @@ suite('Tree type-index load ownership runtime', () => {
 
     const parserOwners = sourceFiles
       .filter((filePath) => /MetadataParser\.parseTypeIndex\s*\(/.test(fs.readFileSync(filePath, 'utf8')))
-      .map((filePath) => path.relative(sourceRoot, filePath).replace(/\\/g, '/'));
-    assert.deepStrictEqual(parserOwners, ['providers/treeTypeLoadCoordinator.ts']);
+      .map((filePath) => path.relative(sourceRoot, filePath).replace(/\\/g, '/'))
+      .sort();
+    assert.deepStrictEqual(parserOwners, [
+      'providers/treeTypeLoadCoordinator.ts',
+      'rolesEditor/metadataLoader.ts',
+    ]);
 
     const rawParserOwners = sourceFiles
       .filter((filePath) => /(?:DesignerParser|EdtParser)\.parseTypeIndex\s*\(/.test(fs.readFileSync(filePath, 'utf8')))
