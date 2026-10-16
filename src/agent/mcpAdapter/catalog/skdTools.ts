@@ -74,7 +74,7 @@ export const SKD_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: 'cdt_skd_validate',
-    description: 'Validate an SKD template through PowerShell; outFile may write a local report. Returns a task receipt by default; set background=false to wait synchronously.',
+    description: 'Validate an SKD template through PowerShell; outFile may write a local report. Note that process success=true means execution succeeded, while result.valid indicates check results, and result.coverage (\'full\' | \'partial\') / xsdChecked indicate whether platform XSD schema validation was executed. Returns a task receipt by default; set background=false to wait synchronously.',
     command: '1c-metadata-tree.agent.skd.validate',
     inputSchema: skdValidateInput,
     annotations: WRITE_OPEN,
