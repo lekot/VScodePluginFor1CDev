@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import * as crypto from 'crypto';
+
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
@@ -18,9 +18,15 @@ import {
 import { buildSubsystemTree } from './subsystemTreeBuilder';
 import { getMetadataTypeDescriptorByFolder } from '../constants/metadataTypeDescriptors';
 import {
-  extractExtensionProperties,
+  applyExtensionProperties,
+
   extractObjectBelonging,
 } from '../extensionSupport/extensionXmlParser';
+import {
+  createStructureRootNode,
+  readConfigurationFileAndHash,
+  populateStructureTypeNodes,
+} from './structureParserUtils';
 import { STANDARD_MODULES } from '../constants/moduleTypes';
 import { resolveEdtBslLanguage } from './configurationBslLanguage';
 import { INLINE_METADATA_CHILD_TYPES } from '../constants/inlineMetadataChildren';
@@ -65,13 +71,13 @@ export class EdtParser {
         await fs.promises.access(configMdoPath);
         const configXml = await XmlParser.parseFileAsync(configMdoPath);
         rootNode.properties.bslLanguage = resolveEdtBslLanguage(configXml);
-        const extProps = extractExtensionProperties(configXml);
-        if (extProps.extensionPurpose !== undefined) {
-          rootNode.properties.extensionPurpose = extProps.extensionPurpose;
-        }
-        if (extProps.namePrefix !== undefined) {
-          rootNode.properties.namePrefix = extProps.namePrefix;
-        }
+        applyExtensionProperties(rootNode.properties, configXml);
+
+
+
+
+
+
       } catch {
         // Not an extension or .mdo not found — skip
       }
@@ -121,54 +127,55 @@ export class EdtParser {
       throw new Error(`EDT src directory not found at ${srcPath}`);
     }
 
-    const rootNode: TreeNode = {
-      id: 'root',
-      name: 'Configuration',
-      type: MetadataType.Configuration,
-      properties: { bslLanguage: 'ru' },
-      children: [],
-      filePath: path.join(srcPath, 'Configuration', 'Configuration.mdo'),
-    };
+    const configMdoPath = path.join(srcPath, 'Configuration', 'Configuration.mdo');
+    const rootNode = createStructureRootNode(configMdoPath);
+
+
+
+
+
+
+
 
     // Try to read extension properties from Configuration.mdo (EDT format)
     try {
-      const configMdoPath = path.join(srcPath, 'Configuration', 'Configuration.mdo');
-      await fs.promises.access(configMdoPath);
-      const fileBytes = await fs.promises.readFile(configMdoPath);
-      rootNode.properties.contentHash = crypto.createHash('sha256').update(fileBytes).digest('hex');
-      const configXml = XmlParser.parseString(fileBytes.toString('utf-8'));
+      const { contentHash, xmlString } = await readConfigurationFileAndHash(configMdoPath);
+      rootNode.properties.contentHash = contentHash;
+      const configXml = XmlParser.parseString(xmlString);
+
+
       rootNode.properties.bslLanguage = resolveEdtBslLanguage(configXml);
-      const extProps = extractExtensionProperties(configXml);
-      if (extProps.extensionPurpose !== undefined) {
-        rootNode.properties.extensionPurpose = extProps.extensionPurpose;
-      }
-      if (extProps.namePrefix !== undefined) {
-        rootNode.properties.namePrefix = extProps.namePrefix;
-      }
+      applyExtensionProperties(rootNode.properties, configXml);
+
+
+
+
+
+
     } catch {
       // Not an extension or .mdo not found — skip
     }
 
-    const metadataTypes = MetadataTypeMapper.getMetadataTypes();
-    for (const typeName of metadataTypes) {
-      const typePath = path.join(srcPath, typeName);
-      try {
-        await fs.promises.access(typePath);
-      } catch {
-        continue;
-      }
-      const metadataType = MetadataTypeMapper.map(typeName);
-      const typeNode: TreeNode = {
-        id: typeName,
-        name: typeName,
-        type: metadataType,
-        properties: { type: typeName },
-        children: [],
-        filePath: typePath,
-      };
-      typeNode.parent = rootNode;
-      rootNode.children!.push(typeNode);
-    }
+    await populateStructureTypeNodes(srcPath, rootNode);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     Logger.info('EDT structure-only parsing completed');
     return rootNode;

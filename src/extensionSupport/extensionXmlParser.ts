@@ -14,39 +14,60 @@ import { ExtensionNodeProperties } from './extensionTypes';
  *   </Configuration>
  * </MetaDataObject>
  */
-export function extractExtensionProperties(parsedXml: Record<string, unknown>): ExtensionNodeProperties {
-  const result: ExtensionNodeProperties = {};
-
+/**
+ * Navigates into root MetaDataObject (if present) and returns the first element's Properties holder
+ * or the element itself (for EDT format).
+ */
+function findFirstPropertiesHolder(parsedXml: Record<string, unknown>): Record<string, unknown> | undefined {
   const root = (parsedXml.MetaDataObject && typeof parsedXml.MetaDataObject === 'object'
     ? parsedXml.MetaDataObject
     : parsedXml) as Record<string, unknown>;
 
-  // Navigate: root key -> Configuration -> Properties
   for (const [key, value] of Object.entries(root)) {
-    if (key === '@_' || key.startsWith('#')) {
-      continue;
-    }
-    if (typeof value !== 'object' || value === null) {
+    if (key === '@_' || key.startsWith('#') || typeof value !== 'object' || value === null) {
       continue;
     }
     const element = value as Record<string, unknown>;
-    const properties = (element.Properties as Record<string, unknown> | undefined) ?? element;
+    return (element.Properties as Record<string, unknown> | undefined) ?? element;
+  }
+  return undefined;
+}
 
-    const purpose = properties.ConfigurationExtensionPurpose ?? properties.configurationExtensionPurpose ?? properties.extensionPurpose;
-    if (typeof purpose === 'string' && (purpose === 'Patch' || purpose === 'Customization' || purpose === 'AddOn')) {
-      result.extensionPurpose = purpose;
-    }
+export function extractExtensionProperties(parsedXml: Record<string, unknown>): ExtensionNodeProperties {
+  const result: ExtensionNodeProperties = {};
+  const properties = findFirstPropertiesHolder(parsedXml);
+  if (!properties) {
+    return result;
+  }
 
-    const prefix = properties.NamePrefix ?? properties.namePrefix;
-    if (typeof prefix === 'string' && prefix.length > 0) {
-      result.namePrefix = prefix;
-    }
+  const purpose = properties.ConfigurationExtensionPurpose ?? properties.configurationExtensionPurpose ?? properties.extensionPurpose;
+  if (typeof purpose === 'string' && (purpose === 'Patch' || purpose === 'Customization' || purpose === 'AddOn')) {
+    result.extensionPurpose = purpose;
+  }
 
-    // Found the first relevant element — stop
-    break;
+  const prefix = properties.NamePrefix ?? properties.namePrefix;
+  if (typeof prefix === 'string' && prefix.length > 0) {
+    result.namePrefix = prefix;
   }
 
   return result;
+}
+
+/**
+ * Applies extension-specific properties (extensionPurpose, namePrefix) from parsed XML
+ * onto the target properties dictionary if defined.
+ */
+export function applyExtensionProperties(
+  target: { extensionPurpose?: string; namePrefix?: string },
+  parsedXml: Record<string, unknown>
+): void {
+  const extProps = extractExtensionProperties(parsedXml);
+  if (extProps.extensionPurpose !== undefined) {
+    target.extensionPurpose = extProps.extensionPurpose;
+  }
+  if (extProps.namePrefix !== undefined) {
+    target.namePrefix = extProps.namePrefix;
+  }
 }
 
 /**
@@ -67,32 +88,19 @@ export function extractObjectBelonging(
   parsedXml: Record<string, unknown>
 ): Pick<ExtensionNodeProperties, 'objectBelonging' | 'extendedConfigurationObject'> {
   const result: Pick<ExtensionNodeProperties, 'objectBelonging' | 'extendedConfigurationObject'> = {};
+  const properties = findFirstPropertiesHolder(parsedXml);
+  if (!properties) {
+    return result;
+  }
 
-  const root = (parsedXml.MetaDataObject && typeof parsedXml.MetaDataObject === 'object'
-    ? parsedXml.MetaDataObject
-    : parsedXml) as Record<string, unknown>;
+  const belonging = properties.ObjectBelonging ?? properties.objectBelonging;
+  if (belonging === 'Adopted') {
+    result.objectBelonging = 'Adopted';
+  }
 
-  for (const [key, value] of Object.entries(root)) {
-    if (key === '@_' || key.startsWith('#')) {
-      continue;
-    }
-    if (typeof value !== 'object' || value === null) {
-      continue;
-    }
-    const element = value as Record<string, unknown>;
-    const properties = (element.Properties as Record<string, unknown> | undefined) ?? element;
-
-    const belonging = properties.ObjectBelonging ?? properties.objectBelonging;
-    if (belonging === 'Adopted') {
-      result.objectBelonging = 'Adopted';
-    }
-
-    const extendedObj = properties.ExtendedConfigurationObject ?? properties.extendedConfigurationObject;
-    if (typeof extendedObj === 'string' && extendedObj.length > 0) {
-      result.extendedConfigurationObject = extendedObj;
-    }
-
-    break;
+  const extendedObj = properties.ExtendedConfigurationObject ?? properties.extendedConfigurationObject;
+  if (typeof extendedObj === 'string' && extendedObj.length > 0) {
+    result.extendedConfigurationObject = extendedObj;
   }
 
   return result;

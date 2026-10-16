@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import * as crypto from 'crypto';
+
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
@@ -22,9 +22,15 @@ import { CONFIGURATION_XML } from '../constants/fileNames';
 import { resolveDesignerBslLanguage } from './configurationBslLanguage';
 import { STANDARD_MODULES } from '../constants/moduleTypes';
 import {
-  extractExtensionProperties,
+  applyExtensionProperties,
+
   extractObjectBelonging,
 } from '../extensionSupport/extensionXmlParser';
+import {
+  createStructureRootNode,
+  readConfigurationFileAndHash,
+  populateStructureTypeNodes,
+} from './structureParserUtils';
 import { INLINE_METADATA_CHILD_TYPES } from '../constants/inlineMetadataChildren';
 import type { MetadataObjectPathSegment } from '../types/metadataObjectPath';
 import { listNamedMetadataChildren } from '../utils/xml/nestedMetadataObjects';
@@ -94,13 +100,13 @@ export class DesignerParser {
       await fs.promises.access(configXmlPath);
       const configXml = await XmlParser.parseFileAsync(configXmlPath);
       rootNode.properties.bslLanguage = await resolveDesignerBslLanguage(configPath, configXml);
-      const extProps = extractExtensionProperties(configXml);
-      if (extProps.extensionPurpose !== undefined) {
-        rootNode.properties.extensionPurpose = extProps.extensionPurpose;
-      }
-      if (extProps.namePrefix !== undefined) {
-        rootNode.properties.namePrefix = extProps.namePrefix;
-      }
+      applyExtensionProperties(rootNode.properties, configXml);
+
+
+
+
+
+
     } catch {
       // Not an extension or Configuration.xml not found — skip
     }
@@ -139,54 +145,55 @@ export class DesignerParser {
    * @returns Root node with type nodes that have empty children
    */
   static async parseStructureOnly(configPath: string): Promise<TreeNode> {
-    const rootNode: TreeNode = {
-      id: 'root',
-      name: 'Configuration',
-      type: MetadataType.Configuration,
-      properties: { bslLanguage: 'ru' },
-      children: [],
-      filePath: this.getConfigurationXmlPath(configPath),
-    };
+    const configXmlPath = this.getConfigurationXmlPath(configPath);
+    const rootNode = createStructureRootNode(configXmlPath);
+
+
+
+
+
+
+
 
     // Try to read extension properties from Configuration.xml
     try {
-      const configXmlPath = this.getConfigurationXmlPath(configPath);
-      await fs.promises.access(configXmlPath);
-      const fileBytes = await fs.promises.readFile(configXmlPath);
-      rootNode.properties.contentHash = crypto.createHash('sha256').update(fileBytes).digest('hex');
-      const configXml = XmlParser.parseString(fileBytes.toString('utf-8'));
+      const { contentHash, xmlString } = await readConfigurationFileAndHash(configXmlPath);
+      rootNode.properties.contentHash = contentHash;
+      const configXml = XmlParser.parseString(xmlString);
+
+
       rootNode.properties.bslLanguage = await resolveDesignerBslLanguage(configPath, configXml);
-      const extProps = extractExtensionProperties(configXml);
-      if (extProps.extensionPurpose !== undefined) {
-        rootNode.properties.extensionPurpose = extProps.extensionPurpose;
-      }
-      if (extProps.namePrefix !== undefined) {
-        rootNode.properties.namePrefix = extProps.namePrefix;
-      }
+      applyExtensionProperties(rootNode.properties, configXml);
+
+
+
+
+
+
     } catch {
       // Not an extension or Configuration.xml not found — skip
     }
 
-    const metadataTypes = MetadataTypeMapper.getMetadataTypes();
-    for (const typeName of metadataTypes) {
-      const typePath = path.join(configPath, typeName);
-      try {
-        await fs.promises.access(typePath);
-      } catch {
-        continue;
-      }
-      const metadataType = MetadataTypeMapper.map(typeName);
-      const typeNode: TreeNode = {
-        id: typeName,
-        name: typeName,
-        type: metadataType,
-        properties: { type: typeName },
-        children: [],
-        filePath: typePath,
-      };
-      typeNode.parent = rootNode;
-      rootNode.children!.push(typeNode);
-    }
+    await populateStructureTypeNodes(configPath, rootNode);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     Logger.info('Designer structure-only parsing completed');
     return rootNode;
