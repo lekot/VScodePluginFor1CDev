@@ -217,6 +217,40 @@ function Assert-EditAllowed([string]$targetPath, [string]$require) {
 
 Assert-EditAllowed $resolvedPath 'editable'
 
+function Save-FileAtomically([string]$destinationPath, [string]$fileContent, [System.Text.Encoding]$encoding) {
+	$targetDir = [System.IO.Path]::GetDirectoryName($destinationPath)
+	if ($targetDir -and -not (Test-Path -LiteralPath $targetDir)) {
+		[System.IO.Directory]::CreateDirectory($targetDir) | Out-Null
+	}
+	$guid = [System.Guid]::NewGuid().ToString('N')
+	$tempPath = "$destinationPath.tmp.$guid"
+	$backupPath = "$destinationPath.bak.$guid"
+	$committed = $false
+
+	try {
+		[System.IO.File]::WriteAllText($tempPath, $fileContent, $encoding)
+		if (Test-Path -LiteralPath $destinationPath) {
+			[System.IO.File]::Replace($tempPath, $destinationPath, $backupPath)
+		} else {
+			[System.IO.File]::Move($tempPath, $destinationPath)
+		}
+		$committed = $true
+	} finally {
+		if (Test-Path -LiteralPath $tempPath) {
+			try { [System.IO.File]::Delete($tempPath) } catch {}
+		}
+		if (Test-Path -LiteralPath $backupPath) {
+			if ($committed) {
+				try { [System.IO.File]::Delete($backupPath) } catch {}
+			} else {
+				if (-not (Test-Path -LiteralPath $destinationPath)) {
+					try { [System.IO.File]::Move($backupPath, $destinationPath) } catch {}
+				}
+			}
+		}
+	}
+}
+
 function Esc-Xml {
 	param([string]$s)
 	# Эскейп ЗНАЧЕНИЯ АТРИБУТА: & < > и кавычка — внутри "..." литеральная " невалидна.
@@ -4152,9 +4186,9 @@ switch ($Operation) {
 			$rawText = $rawText.Insert($ins.pos, $ins.text)
 		}
 
-		# Write directly — skip DOM save
+		# Write atomically — skip DOM save
 		$enc = New-Object System.Text.UTF8Encoding($true)
-		[System.IO.File]::WriteAllText($resolvedPath, $rawText, $enc)
+		Save-FileAtomically $resolvedPath $rawText $enc
 		$script:Dirty = $true; Write-Host "[OK] Saved $resolvedPath"
 		exit 0
 	}
@@ -4189,6 +4223,6 @@ $targetEol = if ((Test-Path -LiteralPath $resolvedPath) -and ([System.IO.File]::
 $content = ($content -replace "`r`n", "`n") -replace "`n", $targetEol
 
 $enc = New-Object System.Text.UTF8Encoding($true)
-[System.IO.File]::WriteAllText($resolvedPath, $content, $enc)
+Save-FileAtomically $resolvedPath $content $enc
 
 Write-Host "[OK] Saved $resolvedPath"

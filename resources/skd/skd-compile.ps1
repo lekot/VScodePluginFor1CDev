@@ -328,6 +328,40 @@ function X {
 	$script:xml.AppendLine($text) | Out-Null
 }
 
+function Save-FileAtomically([string]$destinationPath, [string]$fileContent, [System.Text.Encoding]$encoding) {
+	$targetDir = [System.IO.Path]::GetDirectoryName($destinationPath)
+	if ($targetDir -and -not (Test-Path -LiteralPath $targetDir)) {
+		[System.IO.Directory]::CreateDirectory($targetDir) | Out-Null
+	}
+	$guid = [System.Guid]::NewGuid().ToString('N')
+	$tempPath = "$destinationPath.tmp.$guid"
+	$backupPath = "$destinationPath.bak.$guid"
+	$committed = $false
+
+	try {
+		[System.IO.File]::WriteAllText($tempPath, $fileContent, $encoding)
+		if (Test-Path -LiteralPath $destinationPath) {
+			[System.IO.File]::Replace($tempPath, $destinationPath, $backupPath)
+		} else {
+			[System.IO.File]::Move($tempPath, $destinationPath)
+		}
+		$committed = $true
+	} finally {
+		if (Test-Path -LiteralPath $tempPath) {
+			try { [System.IO.File]::Delete($tempPath) } catch {}
+		}
+		if (Test-Path -LiteralPath $backupPath) {
+			if ($committed) {
+				try { [System.IO.File]::Delete($backupPath) } catch {}
+			} else {
+				if (-not (Test-Path -LiteralPath $destinationPath)) {
+					try { [System.IO.File]::Move($backupPath, $destinationPath) } catch {}
+				}
+			}
+		}
+	}
+}
+
 function Esc-Xml {
 	param([string]$s)
 	# Эскейп ЗНАЧЕНИЯ АТРИБУТА: & < > и кавычка — внутри "..." литеральная " невалидна.
@@ -3853,7 +3887,7 @@ if ($parentDir -and -not (Test-Path $parentDir)) {
 
 $content = $script:xml.ToString()
 $utf8Bom = New-Object System.Text.UTF8Encoding $true
-[System.IO.File]::WriteAllText($OutputPath, $content.TrimEnd("`r", "`n"), $utf8Bom)
+Save-FileAtomically $OutputPath $content.TrimEnd("`r", "`n") $utf8Bom
 
 # --- 14. Statistics ---
 
