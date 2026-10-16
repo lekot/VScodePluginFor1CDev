@@ -51,7 +51,11 @@ class CancellationError extends Error {
 }
 
 const Uri = {
-  file: (fsPath: string) => ({ fsPath, scheme: 'file' as const }),
+  file: (fsPath: string) => ({
+    fsPath,
+    scheme: 'file' as const,
+    toString: () => `file:///${fsPath.replace(/\\/g, '/').replace(/^\//, '')}`,
+  }),
   joinPath: (base: { fsPath: string; scheme: string }, ...pathSegments: string[]) => {
     const joined = path.join(base.fsPath, ...pathSegments);
     return {
@@ -976,7 +980,11 @@ export const vscodeExtensionsTestState: {
   getExtensionImpl: null,
 };
 
+export class TabInputCustom { constructor(public readonly uri: unknown, public readonly viewType: string) {} }
+export class TabInputText { constructor(public readonly uri: unknown) {} }
 export const vscodeStub = {
+  TabInputCustom,
+  TabInputText,
   TreeItemCollapsibleState,
   TreeItem,
   Uri,

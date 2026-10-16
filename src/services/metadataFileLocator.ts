@@ -4,6 +4,7 @@
  */
 
 import * as path from 'path';
+import { canonicalizeFsPath, isSamePath, isSameOrDescendantPath } from '../utils/configurationPathIdentity';
 import { getStandardModuleByFileName, type StandardModuleKind } from '../constants/metadataModuleDescriptors';
 import { METADATA_TYPE_DESCRIPTORS } from '../constants/metadataTypeDescriptors';
 
@@ -77,24 +78,60 @@ export function locateMetadataFile(
 
   // Find the longest matching config root prefix
   let bestRoot: string | undefined;
+  let bestRel: string | undefined;
+  let bestCanonicalRoot: string | undefined;
+  let bestCanonicalRel: string | undefined;
+
   for (const root of configRoots) {
     const normalizedRoot = path.normalize(root);
-    // path.relative returns a path without leading .. when file is under root
-    const rel = path.relative(normalizedRoot, normalizedFile);
+    const canonicalRoot = canonicalizeFsPath(normalizedRoot);
+    const canonicalFile = canonicalizeFsPath(normalizedFile);
+    let rel = path.relative(normalizedRoot, normalizedFile);
+    const canonicalRel = path.relative(canonicalRoot, canonicalFile);
+
     if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      continue; // not under this root
+      if (!canonicalRel.startsWith('..') && !path.isAbsolute(canonicalRel)) {
+        rel = canonicalRel;
+      }
     }
-    if (bestRoot === undefined || normalizedRoot.length > path.normalize(bestRoot).length) {
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      continue;
+    }
+
+    let isBetter = false;
+    if (bestRoot === undefined || bestCanonicalRoot === undefined || bestCanonicalRel === undefined) {
+      isBetter = true;
+    } else if (isSameOrDescendantPath(bestCanonicalRoot, canonicalRoot) && !isSamePath(bestCanonicalRoot, canonicalRoot)) {
+      // canonicalRoot is strictly deeper in the filesystem hierarchy
+      isBetter = true;
+    } else if (isSameOrDescendantPath(canonicalRoot, bestCanonicalRoot) && !isSamePath(canonicalRoot, bestCanonicalRoot)) {
+      // bestCanonicalRoot is strictly deeper in the filesystem hierarchy
+      isBetter = false;
+    } else {
+      const candidateSegments = canonicalRel.split(path.sep).filter(Boolean).length;
+      const bestSegments = bestCanonicalRel.split(path.sep).filter(Boolean).length;
+      if (candidateSegments < bestSegments) {
+        isBetter = true;
+      } else if (candidateSegments === bestSegments && canonicalRel.length < bestCanonicalRel.length) {
+        isBetter = true;
+      }
+    }
+
+    if (isBetter) {
       bestRoot = root;
+      bestRel = rel;
+      bestCanonicalRoot = canonicalRoot;
+      bestCanonicalRel = canonicalRel;
     }
   }
 
-  if (bestRoot === undefined) {
+
+  if (bestRoot === undefined || bestRel === undefined) {
     return null;
   }
 
   const normalizedRoot = path.normalize(bestRoot);
-  const relative = path.relative(normalizedRoot, normalizedFile);
+  const relative = bestRel;
   let segments = relative.split(path.sep);
 
   let extensionName = getExtensionNameFromRoot(normalizedRoot);

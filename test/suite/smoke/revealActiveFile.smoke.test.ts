@@ -207,6 +207,15 @@ suite('Smoke: revealActiveFileInTree command', () => {
       await vscode.commands.executeCommand('1c-metadata-tree.revealActiveFileInTree');
       await new Promise((r) => setTimeout(r, 1500));
 
+      const selectedName = await vscode.commands.executeCommand<string | null>(
+        '1c-metadata-tree.getSelectionNameForTest'
+      );
+      assert.strictEqual(
+        selectedName,
+        'CatalogGoodsA',
+        'Selected node should be CatalogGoodsA but got: ' + selectedName
+      );
+
       const openedPath = await pollOpenXmlUntilMatch('CatalogGoodsA', 8000);
 
       assert.ok(

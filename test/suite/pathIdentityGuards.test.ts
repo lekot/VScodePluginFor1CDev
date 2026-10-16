@@ -1,10 +1,12 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as path from 'path';
 import {
   filesystemPathKey,
   configurationPathKey,
   isSamePath,
   isSameOrDescendantPath,
+  canonicalizeFsPath,
 } from '../../src/utils/configurationPathIdentity';
 import { getRepositoryStateMutationLockKey } from '../../src/services/configurationRepository/repositoryStores';
 
@@ -52,6 +54,28 @@ suite('Platform-Aware Path Identity & Containment Guards (#207)', () => {
       assert.strictEqual(isSamePath('C:\\a\\b\\C', 'c:\\a\\b\\c', 'win32'), true);
       assert.strictEqual(isSamePath('C:\\a\\b\\c\\', 'c:\\a\\b\\c', 'win32'), true);
     });
+
+    test('Windows: 8.3 short-name aliases are recognized as same path (#328)', function () {
+      if (process.platform !== 'win32' || !process.env.TEMP) {
+        this.skip();
+        return;
+      }
+      const shortPath = process.env.TEMP;
+      let longPath: string;
+      try {
+        longPath = fs.realpathSync.native(shortPath);
+      } catch {
+        this.skip();
+        return;
+      }
+      if (shortPath.toLowerCase() === longPath.toLowerCase()) {
+        this.skip();
+        return;
+      }
+
+      assert.strictEqual(isSamePath(shortPath, longPath, 'win32'), true);
+      assert.strictEqual(isSamePath(path.join(shortPath, 'sub'), path.join(longPath, 'sub'), 'win32'), true);
+    });
   });
 
   suite('isSameOrDescendantPath (Segment Boundary Containment)', () => {
@@ -92,6 +116,67 @@ suite('Platform-Aware Path Identity & Containment Guards (#207)', () => {
     test('Windows: accepts descendant even if casing differs', () => {
       assert.strictEqual(isSameOrDescendantPath('C:\\Workspace\\Config', 'c:\\workspace\\config\\sub', 'win32'), true);
       assert.strictEqual(isSameOrDescendantPath('c:\\workspace\\config', 'C:\\WORKSPACE\\CONFIG\\SUB\\file.xml', 'win32'), true);
+    });
+
+    test('Windows: accepts descendant across 8.3 short-name aliases (#328)', function () {
+      if (process.platform !== 'win32' || !process.env.TEMP) {
+        this.skip();
+        return;
+      }
+      const shortRoot = process.env.TEMP;
+      let longRoot: string;
+      try {
+        longRoot = fs.realpathSync.native(shortRoot);
+      } catch {
+        this.skip();
+        return;
+      }
+      if (shortRoot.toLowerCase() === longRoot.toLowerCase()) {
+        this.skip();
+        return;
+      }
+
+      const shortChild = path.join(shortRoot, 'SubFolder', 'Child.xml');
+      const longChild = path.join(longRoot, 'SubFolder', 'Child.xml');
+
+      // Parent short, child long
+      assert.strictEqual(isSameOrDescendantPath(shortRoot, longChild, 'win32'), true);
+      // Parent long, child short
+      assert.strictEqual(isSameOrDescendantPath(longRoot, shortChild, 'win32'), true);
+    });
+
+    test('canonical fallback: handles relative paths where lexical fails but filesystem matches', () => {
+      const tempDir = fs.mkdtempSync(path.join(path.resolve('.'), 'tmp-canonical-'));
+      try {
+        const sub = path.join(tempDir, 'sub');
+        fs.mkdirSync(sub, { recursive: true });
+        const child = path.join(sub, 'child.xml');
+        fs.writeFileSync(child, '<xml/>');
+        assert.strictEqual(isSameOrDescendantPath(tempDir, child), true);
+        assert.strictEqual(isSameOrDescendantPath(sub, tempDir), false);
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  suite('canonicalizeFsPath', () => {
+    test('resolves existing path to canonical path', () => {
+      const real = canonicalizeFsPath(__dirname);
+      assert.ok(real);
+      assert.strictEqual(typeof real, 'string');
+    });
+
+    test('resolves non-existent file path inside existing ancestor directory', () => {
+      const candidate = path.join(__dirname, 'nonexistent-child-file.xml');
+      const canonical = canonicalizeFsPath(candidate);
+      assert.ok(canonical.endsWith('nonexistent-child-file.xml'));
+    });
+
+    test('falls back to resolved path when entire ancestor tree does not exist', () => {
+      const synthetic = path.resolve('/nonexistent_root_dir_abc_123/sub/child.xml');
+      const canonical = canonicalizeFsPath(synthetic);
+      assert.strictEqual(canonical, synthetic);
     });
   });
 
