@@ -343,6 +343,7 @@ export const coreSuiteFiles: string[] = [
   'suite/deployReadonlyLock.test.js',
   'suite/diskCache.test.js',
   'suite/treeCacheCollision.test.js',
+  'suite/treePosixRootIdentity.test.js',
   'suite/treeResolvedContext.test.js',
   'suite/treeTypeLoadCoordinator.test.js',
   'suite/workspaceRegistryCoordinator.test.js',

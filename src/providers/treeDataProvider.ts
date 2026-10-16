@@ -6,7 +6,7 @@ import { Logger } from '../utils/logger';
 import type { ReferenceableGroup } from '../types/typeDefinitions';
 import { MetadataParser } from '../parsers/metadataParser';
 import { MESSAGES } from '../constants/messages';
-import { CONFIGURATION_XML, CONFIG_DUMP_INFO_XML } from '../constants/fileNames';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 import {
   ensureR6PlaceholdersForInstanceNode,
   ensureTabularSectionColumnsPlaceholder,
@@ -118,11 +118,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   private rootNodes: TreeNode[] = [];
 
   private readonly filter = new TreeFilterService();
-  private readonly cache = new TreeCacheService();
-  private readonly typeLoadCoordinator = new TreeTypeLoadCoordinator(
-    this.cache,
-    () => this.clearTypeEditorReferenceableCache(),
-  );
+  private readonly cache: TreeCacheService;
+  private readonly typeLoadCoordinator: TreeTypeLoadCoordinator;
+
+
+
   /** Snapshot of referenceable names per scope for TypeEditor (invalidated with tree reload / structure). */
   private readonly typeEditorReferenceableCache = new Map<string, ReferenceableGroup[]>();
   /** Snapshot of objectable object groups per scope for ObjectTypeEditor (invalidated with tree reload / structure). */
@@ -140,7 +140,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   private repositoryStateReader: RepositoryStateReader | undefined;
   private repositoryDecorationResolver: RepositoryDecorationResolver = resolveRepositoryTreeDecoration;
 
-  constructor() {
+  constructor(private readonly platform: NodeJS.Platform = process.platform) {
+    this.cache = new TreeCacheService(this.platform);
+    this.typeLoadCoordinator = new TreeTypeLoadCoordinator(
+      this.cache,
+      () => this.clearTypeEditorReferenceableCache(),
+    );
     Logger.info('MetadataTreeDataProvider initialized');
   }
 
@@ -296,22 +301,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   private getConfigRootPath(root: TreeNode): string | null {
-    if (root.type !== MetadataType.Configuration) {
-      return null;
-    }
-    const configured = this.cache.getLoadContext(root)?.configPath?.trim();
-    if (configured) {
-      return path.resolve(configured);
-    }
-    const filePath = root.filePath?.trim();
-    if (!filePath) {
-      return null;
-    }
-    const fileName = path.basename(filePath).toLocaleLowerCase();
-    return fileName === CONFIGURATION_XML.toLocaleLowerCase()
-      || fileName === CONFIG_DUMP_INFO_XML.toLocaleLowerCase()
-      ? path.resolve(path.dirname(filePath))
-      : path.resolve(filePath);
+    return this.cache.getConfigRootPath(root);
   }
 
   private isExtensionInfobaseBindingRoot(element: TreeNode): boolean {
@@ -983,7 +973,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       .filter((root): root is string => root !== null);
     const seen = new Set<string>();
     return roots.filter((root) => {
-      const key = normalizeConfigIdentity(root);
+      const key = normalizeConfigIdentity(root, this.platform);
       if (seen.has(key)) {
         return false;
       }
@@ -1016,10 +1006,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   /** Refreshes only the loaded root affected by a support-file watcher event. */
   refreshSupportForRoot(configRoot: string): void {
-    const identity = normalizeConfigIdentity(configRoot);
+    const identity = normalizeConfigIdentity(configRoot, this.platform);
     const root = this.rootNodes.find(
       (candidate) =>
-        normalizeConfigIdentity(this.getConfigRootPath(candidate) ?? undefined) === identity
+        normalizeConfigIdentity(this.getConfigRootPath(candidate) ?? undefined, this.platform) === identity
     );
     if (root) {
       this.refresh(root);
@@ -1112,15 +1102,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   private getConfigRootIdentity(root: TreeNode | null): string {
-    if (!root) {return '';}
-    const context = this.cache.getLoadContext(root);
-    if (context) {return 'configuration:' + context.configurationId;}
-    if (root.configurationId) {
-      return 'configuration:' + root.configurationId;
-    }
-    const configPath = this.getConfigRootPath(root);
-    if (configPath) {return 'path:' + configurationPathKey(configPath);}
-    return 'node:' + root.id;
+    return root ? this.cache.getNodeRootIdentity(root) : '';
+
   }
 
   private getNodeRootIdentity(node: TreeNode): string {
@@ -2048,11 +2031,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 }
 
-function normalizeConfigIdentity(configPath: string | undefined): string {
+function normalizeConfigIdentity(configPath: string | undefined, platform: NodeJS.Platform = process.platform): string {
   const value = configPath?.trim();
   if (!value) {
     return '';
   }
 
-  return configurationPathKey(value);
+  return configurationPathKey(value, platform);
 }
