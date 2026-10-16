@@ -213,7 +213,15 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       },
     };
     this.contextByDocument.set(docKey, ctx);
-    this.activeDocumentUri = document.uri;
+    const activeTabInput = vscode.window.tabGroups?.activeTabGroup?.activeTab?.input;
+    const isActiveTab =
+      Boolean(activeTabInput) &&
+      typeof activeTabInput === 'object' &&
+      'uri' in activeTabInput! &&
+      (activeTabInput as { uri?: vscode.Uri }).uri?.toString() === docKey;
+    if (webviewPanel.active || isActiveTab) {
+      this.activeDocumentUri = document.uri;
+    }
 
 
     webviewPanel.onDidChangeViewState((event) => {
@@ -461,6 +469,16 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
   }
 
   public getActiveDocumentUri(): vscode.Uri | null {
+    const activeTabInput = vscode.window.tabGroups?.activeTabGroup?.activeTab?.input;
+    if (
+      activeTabInput &&
+      typeof activeTabInput === 'object' &&
+      'uri' in activeTabInput &&
+      'viewType' in activeTabInput &&
+      (activeTabInput as { viewType?: string }).viewType === '1c-form-editor'
+    ) {
+      return (activeTabInput as { uri: vscode.Uri }).uri;
+    }
     return this.activeDocumentUri;
   }
 

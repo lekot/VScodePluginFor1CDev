@@ -27,16 +27,18 @@ function makeModel(width = '100'): FormModel {
   };
 }
 
-function makePanel(): {
+function makePanel(active = true): {
   panel: vscode.WebviewPanel;
+  setActive(newActive: boolean): void;
   receive(message: unknown): Promise<void>;
   dispose(): void;
 } {
   let messageHandler: ((message: any) => Promise<void>) | undefined;
   let disposeHandler: (() => void) | undefined;
+  const viewStateListeners: Array<(e: { webviewPanel: vscode.WebviewPanel }) => void> = [];
   const panel = {
     title: '',
-    active: true,
+    active,
     webview: {
       options: {},
       html: '',
@@ -46,7 +48,10 @@ function makePanel(): {
         return { dispose: () => undefined };
       },
     },
-    onDidChangeViewState: () => ({ dispose: () => undefined }),
+    onDidChangeViewState: (handler: (e: { webviewPanel: vscode.WebviewPanel }) => void) => {
+      viewStateListeners.push(handler);
+      return { dispose: () => undefined };
+    },
     onDidDispose: (handler: () => void) => {
       disposeHandler = handler;
       return { dispose: () => undefined };
@@ -54,6 +59,12 @@ function makePanel(): {
   } as unknown as vscode.WebviewPanel;
   return {
     panel,
+    setActive: (newActive: boolean) => {
+      (panel as any).active = newActive;
+      for (const l of [...viewStateListeners]) {
+        l({ webviewPanel: panel });
+      }
+    },
     receive: async (message) => {
       assert.ok(messageHandler, 'message handler must be registered');
       await messageHandler!(message);
@@ -501,5 +512,145 @@ suite('FormEditorProvider editable document lifecycle', () => {
     } finally {
       await fs.promises.rm(tempDir, { recursive: true, force: true });
     }
+  });
+
+  suite('active vs background custom editor panels (#330 review)', () => {
+    test('does not overwrite activeDocumentUri when resolving a background custom editor panel', async () => {
+      const provider = new FormEditorProvider();
+      const uriA = vscode.Uri.file('C:/tmp/form-lifecycle/FormA/Ext/Form.xml');
+      const uriB = vscode.Uri.file('C:/tmp/form-lifecycle/FormB/Ext/Form.xml');
+      const docA = await provider.openCustomDocument(uriA);
+      const docB = await provider.openCustomDocument(uriB);
+
+      const panelA = makePanel(true);
+      await provider.resolveCustomEditor(docA, panelA.panel);
+      assert.strictEqual(provider.getActiveDocumentUri()?.toString(), uriA.toString());
+
+      const panelB = makePanel(false);
+      await provider.resolveCustomEditor(docB, panelB.panel);
+      assert.strictEqual(
+        provider.getActiveDocumentUri()?.toString(),
+        uriA.toString(),
+        'resolving background form B must not overwrite active form A'
+      );
+
+      panelB.setActive(true);
+      assert.strictEqual(
+        provider.getActiveDocumentUri()?.toString(),
+        uriB.toString(),
+        'activating panel B must update activeDocumentUri to B'
+      );
+
+      panelA.setActive(true);
+      assert.strictEqual(
+        provider.getActiveDocumentUri()?.toString(),
+        uriA.toString(),
+        'activating panel A must switch activeDocumentUri back to A'
+      );
+
+      docA.dispose();
+      docB.dispose();
+      provider.dispose();
+    });
+
+    test('supports initial focus race where panel.active is temporarily false but activeTab matches', async () => {
+      const provider = new FormEditorProvider();
+      const uriC = vscode.Uri.file('C:/tmp/form-lifecycle/FormC/Ext/Form.xml');
+      const docC = await provider.openCustomDocument(uriC);
+
+      const originalTabGroups = (vscode.window as any).tabGroups;
+      try {
+        (vscode.window as any).tabGroups = {
+          activeTabGroup: {
+            activeTab: {
+              input: new (vscode as any).TabInputCustom(uriC, '1c-form-editor'),
+              isActive: true,
+            },
+          },
+        };
+
+        const panelC = makePanel(false);
+        await provider.resolveCustomEditor(docC, panelC.panel);
+        assert.strictEqual(
+          provider.getActiveDocumentUri()?.toString(),
+          uriC.toString(),
+          'initial focus race: active tab in activeTabGroup is recognized even when panel.active is false'
+        );
+      } finally {
+        (vscode.window as any).tabGroups = originalTabGroups;
+        docC.dispose();
+        provider.dispose();
+      }
+    });
+
+    test('two tab groups: background resolve in second tab group preserves active form of first tab group', async () => {
+      const provider = new FormEditorProvider();
+      const uriA = vscode.Uri.file('C:/tmp/form-lifecycle/Group1/Ext/Form.xml');
+      const uriB = vscode.Uri.file('C:/tmp/form-lifecycle/Group2/Ext/Form.xml');
+      const docA = await provider.openCustomDocument(uriA);
+      const docB = await provider.openCustomDocument(uriB);
+
+      const originalTabGroups = (vscode.window as any).tabGroups;
+      try {
+        (vscode.window as any).tabGroups = {
+          activeTabGroup: {
+            activeTab: {
+              input: new (vscode as any).TabInputCustom(uriA, '1c-form-editor'),
+              isActive: true,
+            },
+          },
+          all: [
+            { activeTab: { input: new (vscode as any).TabInputCustom(uriA, '1c-form-editor') } },
+            { activeTab: { input: new (vscode as any).TabInputCustom(uriB, '1c-form-editor') } },
+          ],
+        };
+
+        const panelA = makePanel(true);
+        await provider.resolveCustomEditor(docA, panelA.panel);
+        assert.strictEqual(provider.getActiveDocumentUri()?.toString(), uriA.toString());
+
+        const panelB = makePanel(false);
+        await provider.resolveCustomEditor(docB, panelB.panel);
+        assert.strictEqual(
+          provider.getActiveDocumentUri()?.toString(),
+          uriA.toString(),
+          'multi-group: background panel in inactive tab group must not steal activeDocumentUri'
+        );
+      } finally {
+        (vscode.window as any).tabGroups = originalTabGroups;
+        docA.dispose();
+        docB.dispose();
+        provider.dispose();
+      }
+    });
+
+    test('tab restoration: multiple background panels restored without stealing active document', async () => {
+      const provider = new FormEditorProvider();
+      const uriA = vscode.Uri.file('C:/tmp/form-lifecycle/RestoredA/Ext/Form.xml');
+      const uriB = vscode.Uri.file('C:/tmp/form-lifecycle/RestoredB/Ext/Form.xml');
+      const docA = await provider.openCustomDocument(uriA);
+      const docB = await provider.openCustomDocument(uriB);
+
+      const originalTabGroups = (vscode.window as any).tabGroups;
+      try {
+        (vscode.window as any).tabGroups = undefined;
+
+        const panelA = makePanel(false);
+        const panelB = makePanel(false);
+        await provider.resolveCustomEditor(docA, panelA.panel);
+        await provider.resolveCustomEditor(docB, panelB.panel);
+
+        assert.strictEqual(
+          provider.getActiveDocumentUri(),
+          null,
+          'restored background panels must not set activeDocumentUri when neither panel is active'
+        );
+      } finally {
+        (vscode.window as any).tabGroups = originalTabGroups;
+        docA.dispose();
+        docB.dispose();
+        provider.dispose();
+      }
+    });
   });
 });

@@ -4,7 +4,7 @@
  */
 
 import * as path from 'path';
-import { canonicalizeFsPath } from '../utils/configurationPathIdentity';
+import { canonicalizeFsPath, isSamePath, isSameOrDescendantPath } from '../utils/configurationPathIdentity';
 import { getStandardModuleByFileName, type StandardModuleKind } from '../constants/metadataModuleDescriptors';
 import { METADATA_TYPE_DESCRIPTORS } from '../constants/metadataTypeDescriptors';
 
@@ -79,24 +79,49 @@ export function locateMetadataFile(
   // Find the longest matching config root prefix
   let bestRoot: string | undefined;
   let bestRel: string | undefined;
+  let bestCanonicalRoot: string | undefined;
+  let bestCanonicalRel: string | undefined;
+
   for (const root of configRoots) {
     const normalizedRoot = path.normalize(root);
-    // path.relative returns a path without leading .. when file is under root
+    const canonicalRoot = canonicalizeFsPath(normalizedRoot);
+    const canonicalFile = canonicalizeFsPath(normalizedFile);
     let rel = path.relative(normalizedRoot, normalizedFile);
+    const canonicalRel = path.relative(canonicalRoot, canonicalFile);
+
     if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      const canonicalRoot = canonicalizeFsPath(normalizedRoot);
-      const canonicalFile = canonicalizeFsPath(normalizedFile);
-      const crel = path.relative(canonicalRoot, canonicalFile);
-      if (!crel.startsWith('..') && !path.isAbsolute(crel)) {
-        rel = crel;
+      if (!canonicalRel.startsWith('..') && !path.isAbsolute(canonicalRel)) {
+        rel = canonicalRel;
       }
     }
     if (rel.startsWith('..') || path.isAbsolute(rel)) {
       continue;
     }
-    if (bestRoot === undefined || normalizedRoot.length > path.normalize(bestRoot).length) {
+
+    let isBetter = false;
+    if (bestRoot === undefined || bestCanonicalRoot === undefined || bestCanonicalRel === undefined) {
+      isBetter = true;
+    } else if (isSameOrDescendantPath(bestCanonicalRoot, canonicalRoot) && !isSamePath(bestCanonicalRoot, canonicalRoot)) {
+      // canonicalRoot is strictly deeper in the filesystem hierarchy
+      isBetter = true;
+    } else if (isSameOrDescendantPath(canonicalRoot, bestCanonicalRoot) && !isSamePath(canonicalRoot, bestCanonicalRoot)) {
+      // bestCanonicalRoot is strictly deeper in the filesystem hierarchy
+      isBetter = false;
+    } else {
+      const candidateSegments = canonicalRel.split(path.sep).filter(Boolean).length;
+      const bestSegments = bestCanonicalRel.split(path.sep).filter(Boolean).length;
+      if (candidateSegments < bestSegments) {
+        isBetter = true;
+      } else if (candidateSegments === bestSegments && canonicalRel.length < bestCanonicalRel.length) {
+        isBetter = true;
+      }
+    }
+
+    if (isBetter) {
       bestRoot = root;
       bestRel = rel;
+      bestCanonicalRoot = canonicalRoot;
+      bestCanonicalRel = canonicalRel;
     }
   }
 

@@ -524,4 +524,67 @@ suite('metadataFileLocator', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  test('nested roots: selects innermost root when parent root has long alias and inner root has short path (#330 review)', () => {
+    const tempDir = fs.mkdtempSync(path.join(path.resolve('.'), 'tmp-nested-'));
+    try {
+      const parent = path.join(tempDir, 'p');
+      const inner = path.join(parent, 'inner');
+      const catalogFile = path.join(inner, 'Catalogs', 'Goods.xml');
+      fs.mkdirSync(path.dirname(catalogFile), { recursive: true });
+      fs.writeFileSync(catalogFile, '<xml/>');
+
+      const longAlias = path.join(tempDir, 'a-very-long-parent-root-alias-pointing-to-p');
+      let hasAlias = false;
+      try {
+        fs.symlinkSync(parent, longAlias, process.platform === 'win32' ? 'junction' : 'dir');
+        hasAlias = true;
+      } catch {
+        // Fallback
+      }
+
+      if (hasAlias) {
+        // Test with [longAlias, inner] - longAlias is longer string but parent in hierarchy
+        const result1 = locateMetadataFile(catalogFile, [longAlias, inner]);
+        assert.ok(result1, 'expected non-null result when roots=[longAlias, inner]');
+        assert.strictEqual(result1?.configRoot, inner, 'inner root must be selected over parent alias');
+        assert.strictEqual(result1?.objectType, 'Catalogs');
+        assert.strictEqual(result1?.objectName, 'Goods');
+
+        // Test with reverse order [inner, longAlias]
+        const result2 = locateMetadataFile(catalogFile, [inner, longAlias]);
+        assert.ok(result2, 'expected non-null result when roots=[inner, longAlias]');
+        assert.strictEqual(result2?.configRoot, inner, 'inner root must be selected regardless of root order');
+        assert.strictEqual(result2?.objectType, 'Catalogs');
+        assert.strictEqual(result2?.objectName, 'Goods');
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('nested roots: selects innermost extension root inside main root regardless of root order', () => {
+    const tempDir = fs.mkdtempSync(path.join(path.resolve('.'), 'tmp-ext-nested-'));
+    try {
+      const mainRoot = path.join(tempDir, 'MainVeryLongConfigurationPathName');
+      const extRoot = path.join(mainRoot, 'sub', 'ext');
+      const extCatalog = path.join(extRoot, 'Catalogs', 'ExtGoods.xml');
+      fs.mkdirSync(path.dirname(extCatalog), { recursive: true });
+      fs.writeFileSync(extCatalog, '<xml/>');
+
+      const result1 = locateMetadataFile(extCatalog, [mainRoot, extRoot]);
+      assert.ok(result1);
+      assert.strictEqual(result1?.configRoot, extRoot);
+      assert.strictEqual(result1?.objectType, 'Catalogs');
+      assert.strictEqual(result1?.objectName, 'ExtGoods');
+
+      const result2 = locateMetadataFile(extCatalog, [extRoot, mainRoot]);
+      assert.ok(result2);
+      assert.strictEqual(result2?.configRoot, extRoot);
+      assert.strictEqual(result2?.objectType, 'Catalogs');
+      assert.strictEqual(result2?.objectName, 'ExtGoods');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });

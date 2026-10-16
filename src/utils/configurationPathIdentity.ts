@@ -7,9 +7,6 @@ import * as path from 'path';
  */
 export function canonicalizeFsPath(filePath: string): string {
   const resolved = path.resolve(filePath);
-
-
-
   try {
     return fs.realpathSync.native(resolved);
   } catch {
@@ -51,16 +48,6 @@ export function configurationPathKey(configPath: string, platform: NodeJS.Platfo
 /** Checks whether two filesystem paths point to the same location, platform-aware. */
 export function isSamePath(pathA: string, pathB: string, platform: NodeJS.Platform = process.platform): boolean {
   return filesystemPathKey(pathA, platform) === filesystemPathKey(pathB, platform);
-
-
-
-
-
-
-
-
-
-
 }
 
 /**
