@@ -361,18 +361,48 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * @param subsystemId The ID of the subsystem node to filter by, or null to clear filter
    * @param subsystemName The display name of the subsystem, or null to clear filter
    */
-  async setSubsystemFilter(subsystemId: string | null, subsystemName: string | null): Promise<void> {
-    this.filter.setSubsystemFilter(subsystemId, subsystemName);
+  async setSubsystemFilter(
+    subsystemId: string | null,
+    subsystemName: string | null,
+    scopeNodeOrRoot?: TreeNode | string,
+  ): Promise<void> {
 
+
+    let rootIdentity: string | null = null;
+    let subsystemNode: TreeNode | undefined;
     if (subsystemId) {
-      const subsystemNode = this.cache.findById(subsystemId);
-      if (subsystemNode) {
+      const candidates = this.cache.getCandidatesById(subsystemId);
+      rootIdentity = typeof scopeNodeOrRoot === 'object' && scopeNodeOrRoot !== null
+        ? this.cache.getNodeRootIdentity(scopeNodeOrRoot)
+        : (typeof scopeNodeOrRoot === 'string' ? scopeNodeOrRoot : null);
+      subsystemNode = typeof scopeNodeOrRoot === 'object' && scopeNodeOrRoot !== null
+        ? scopeNodeOrRoot
+        : (rootIdentity ? (candidates.find((c) => this.cache.getNodeRootIdentity(c) === rootIdentity) ?? candidates[0]) : candidates[0]);
+    }
+
+    this.filter.setSubsystemFilter(
+      subsystemId,
+      subsystemName,
+      rootIdentity ?? undefined,
+      subsystemNode,
+      (node) => this.cache.getNodeRootIdentity(node),
+    );
+
+    if (subsystemNode) {
         await this.loadSubsystemContent(subsystemNode);
         // Eagerly load all type-nodes referenced in subsystem Content so that
         // ensureFilterSets() can find them in nodeCache (lazy nodes are not yet loaded).
         await this.eagerLoadSubsystemTypes(subsystemNode);
       }
-    }
+
+
+
+
+
+
+
+
+
 
     this.updateFilterMessage();
     this.refresh();
@@ -618,12 +648,29 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return TreeFilterService.getFilterableTypeLabels();
   }
 
+  private ensureFilterSets(): void {
+    this.filter.ensureFilterSets(this.rootNodes, (node) => this.cache.getNodeRootIdentity(node));
+  }
+
+  private isNodeFilteredVisible(node: TreeNode): boolean {
+    return this.filter.isNodeVisible(node, (n) => this.cache.getNodeRootIdentity(n));
+  }
+
   /** Visible nodes in depth-first order (for next/previous match navigation). */
   getVisibleNodesInOrder(): TreeNode[] {
-    const ids = this.getVisibleOrderedNodeIds();
-    return ids
-      .map((id) => this.cache.findById(id))
-      .filter((n): n is TreeNode => n != null);
+    if (this.rootNodes.length === 0) {return [];}
+    this.ensureFilterSets();
+    const out: TreeNode[] = [];
+    const walk = (n: TreeNode): void => {
+      if (!this.isNodeFilteredVisible(n)) {return;}
+      out.push(n);
+      for (const c of n.children || []) {walk(c);}
+    };
+    for (const root of this.rootNodes) {walk(root);}
+    return out;
+
+
+
   }
 
   /**
@@ -1201,9 +1248,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       if (!element) {
         if (this.rootNodes.length === 0) {return Promise.resolve([]);}
         if (!this.filter.hasActiveFilter()) {return Promise.resolve(this.rootNodes);}
-        this.filter.ensureFilterSets(this.cache.nodes);
-        const ids = this.filter.filterAncestorOrVisibleIds!;
-        return Promise.resolve(this.rootNodes.filter((r) => ids.has(r.id)));
+        this.ensureFilterSets();
+
+        return Promise.resolve(this.rootNodes.filter((r) => this.isNodeFilteredVisible(r)));
       }
       const activeElement = this.cache.resolveActiveNode(element, this.rootNodes);
 
@@ -1225,9 +1272,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           });
           this.filter.filterAncestorOrVisibleIds = null;
           if (!this.filter.hasActiveFilter()) {return children;}
-          this.filter.ensureFilterSets(this.cache.nodes);
-          const ids = this.filter.filterAncestorOrVisibleIds!;
-          return children.filter((c) => ids.has(c.id));
+          this.ensureFilterSets();
+
+          return children.filter((c) => this.isNodeFilteredVisible(c));
         }).finally(() => {
           if (!this.disposed) {
             this.startTypeContentsCacheWarmup({
@@ -1287,9 +1334,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
             });
             this.filter.filterAncestorOrVisibleIds = null;
             if (!this.filter.hasActiveFilter()) {return children;}
-            this.filter.ensureFilterSets(this.cache.nodes);
-            const ids = this.filter.filterAncestorOrVisibleIds!;
-            return children.filter((c) => ids.has(c.id));
+            this.ensureFilterSets();
+
+            return children.filter((c) => this.isNodeFilteredVisible(c));
           }
         ).finally(() => {
           this.startTypeContentsCacheWarmup({
@@ -1312,9 +1359,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         return Promise.resolve(raw);
       }
 
-      this.filter.ensureFilterSets(this.cache.nodes);
-      const ids = this.filter.filterAncestorOrVisibleIds!;
-      const filtered = raw.filter((c) => ids.has(c.id));
+      this.ensureFilterSets();
+
+      const filtered = raw.filter((c) => this.isNodeFilteredVisible(c));
       return Promise.resolve(filtered);
     } catch (error) {
       Logger.error('Error getting children', error);
@@ -1324,17 +1371,17 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   /** Ordered list of visible node ids (depth-first) for next/previous match navigation. */
   getVisibleOrderedNodeIds(): string[] {
-    if (this.rootNodes.length === 0) {return [];}
-    this.filter.ensureFilterSets(this.cache.nodes);
-    const ids = this.filter.filterAncestorOrVisibleIds!;
-    const out: string[] = [];
-    const walk = (n: TreeNode): void => {
-      if (!ids.has(n.id)) {return;}
-      out.push(n.id);
-      for (const c of n.children || []) {walk(c);}
-    };
-    for (const root of this.rootNodes) {walk(root);}
-    return out;
+    return this.getVisibleNodesInOrder().map((n) => n.id);
+
+
+
+
+
+
+
+
+
+
   }
 
   /** Metadata types offered in the type filter QuickPick. */

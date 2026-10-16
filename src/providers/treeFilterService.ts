@@ -24,6 +24,8 @@ export const FILTERABLE_METADATA_TYPES: MetadataType[] = [
 
 const MAX_SEARCH_HISTORY = 10;
 
+export type NodeRootIdentityResolver = (node: TreeNode) => string;
+
 /**
  * Encapsulates all search/filter state and matching logic for the metadata tree.
  * Used by MetadataTreeDataProvider to determine which nodes are visible.
@@ -33,19 +35,46 @@ export class TreeFilterService {
   private searchBySynonymComment = false;
   private searchUseRegex = false;
   private typeFilter: Set<MetadataType> | null = null;
-  private subsystemFilter: { subsystemId: string | null; subsystemName: string | null } = {
+  private subsystemFilter: {
+    subsystemId: string | null;
+    subsystemName: string | null;
+    rootIdentity?: string | null;
+    subsystemNode?: TreeNode | null;
+  } = {
     subsystemId: null,
     subsystemName: null,
+    rootIdentity: null,
+    subsystemNode: null,
   };
   private searchHistory: string[] = [];
   /** Cached set of node ids that are visible or are ancestors of visible nodes. */
-  filterAncestorOrVisibleIds: Set<string> | null = null;
+  private _filterAncestorOrVisibleIds: Set<string> | null = null;
+  get filterAncestorOrVisibleIds(): Set<string> | null {
+    return this._filterAncestorOrVisibleIds;
+  }
+  set filterAncestorOrVisibleIds(value: Set<string> | null) {
+    this._filterAncestorOrVisibleIds = value;
+    if (value === null) {
+      this.visibleNodes = null;
+      this.visibleKeys = null;
+    }
+  }
+  /** Cached set of visible/ancestor TreeNode references for O(1) identity checking. */
+  private visibleNodes: Set<TreeNode> | null = null;
+  /** Cached set of composite keys `${rootIdentity}::${node.id}` for cross-generation stability. */
+  private visibleKeys: Set<string> | null = null;
+
+  clearFilterCaches(): void {
+    this.filterAncestorOrVisibleIds = null;
+    this.visibleNodes = null;
+    this.visibleKeys = null;
+  }
 
   // --- Search query ---
 
   setSearchQuery(query: string): void {
     this.searchQuery = (query || '').trim();
-    this.filterAncestorOrVisibleIds = null;
+    this.clearFilterCaches();
   }
 
   getSearchQuery(): string {
@@ -65,7 +94,7 @@ export class TreeFilterService {
   setSearchOptions(options: { bySynonymComment?: boolean; useRegex?: boolean }): void {
     if (options.bySynonymComment !== undefined) {this.searchBySynonymComment = options.bySynonymComment;}
     if (options.useRegex !== undefined) {this.searchUseRegex = options.useRegex;}
-    this.filterAncestorOrVisibleIds = null;
+    this.clearFilterCaches();
   }
 
   get rawSearchQuery(): string {
@@ -80,7 +109,7 @@ export class TreeFilterService {
 
   setTypeFilter(types: MetadataType[] | null): void {
     this.typeFilter = types && types.length > 0 ? new Set(types) : null;
-    this.filterAncestorOrVisibleIds = null;
+    this.clearFilterCaches();
   }
 
   getTypeFilter(): MetadataType[] | null {
@@ -89,14 +118,36 @@ export class TreeFilterService {
 
   // --- Subsystem filter ---
 
-  setSubsystemFilter(subsystemId: string | null, subsystemName: string | null): void {
+  setSubsystemFilter(
+    subsystemId: string | null,
+    subsystemName: string | null,
+    scopeNodeOrRoot?: TreeNode | string,
+    subsystemNode?: TreeNode | null,
+    getNodeRootIdentity?: NodeRootIdentityResolver,
+  ): void {
     this.subsystemFilter.subsystemId = subsystemId;
     this.subsystemFilter.subsystemName = subsystemName;
-    this.filterAncestorOrVisibleIds = null;
+    if (typeof scopeNodeOrRoot === 'string') {
+      this.subsystemFilter.rootIdentity = scopeNodeOrRoot;
+      this.subsystemFilter.subsystemNode = subsystemNode ?? null;
+    } else if (scopeNodeOrRoot) {
+      this.subsystemFilter.subsystemNode = scopeNodeOrRoot;
+      this.subsystemFilter.rootIdentity = getNodeRootIdentity
+        ? getNodeRootIdentity(scopeNodeOrRoot)
+        : null;
+    } else {
+      this.subsystemFilter.rootIdentity = null;
+      this.subsystemFilter.subsystemNode = null;
+    }
+    this.clearFilterCaches();
   }
 
-  getSubsystemFilter(): { subsystemId: string | null; subsystemName: string | null } {
-    return { ...this.subsystemFilter };
+  getSubsystemFilter(): { subsystemId: string | null; subsystemName: string | null; rootIdentity?: string | null } {
+    return {
+      subsystemId: this.subsystemFilter.subsystemId,
+      subsystemName: this.subsystemFilter.subsystemName,
+      rootIdentity: this.subsystemFilter.rootIdentity,
+    };
   }
 
   get activeSubsystemId(): string | null {
@@ -115,9 +166,13 @@ export class TreeFilterService {
   clearAll(): void {
     this.searchQuery = '';
     this.typeFilter = null;
-    this.subsystemFilter.subsystemId = null;
-    this.subsystemFilter.subsystemName = null;
-    this.filterAncestorOrVisibleIds = null;
+    this.subsystemFilter = {
+      subsystemId: null,
+      subsystemName: null,
+      rootIdentity: null,
+      subsystemNode: null,
+    };
+    this.clearFilterCaches();
   }
 
   addSearchToHistory(query: string): void {
@@ -209,9 +264,21 @@ export class TreeFilterService {
    * selected subsystem or its ancestor, or (3) node is in the Content of the selected subsystem
    * or in the Content of any of its descendant subsystems (recursively).
    */
-  nodePassesSubsystemFilter(node: TreeNode, nodeCache: ReadonlyMap<string, TreeNode>): boolean {
+
+  nodePassesSubsystemFilter(
+    node: TreeNode,
+    nodeCache?: ReadonlyMap<string, TreeNode>,
+    getNodeRootIdentity?: NodeRootIdentityResolver,
+  ): boolean {
     if (!this.subsystemFilter.subsystemId) {
       return true;
+    }
+
+    if (this.subsystemFilter.rootIdentity && getNodeRootIdentity) {
+      const nodeRoot = getNodeRootIdentity(node);
+      if (nodeRoot && nodeRoot !== this.subsystemFilter.rootIdentity) {
+        return false;
+      }
     }
 
     // Check if node is ancestor of the subsystem (Configuration → Subsystems → SelectedSubsystem)
@@ -226,7 +293,8 @@ export class TreeFilterService {
       current = current.parent;
     }
 
-    const subsystemNode = nodeCache.get(this.subsystemFilter.subsystemId);
+    const subsystemNode = this.subsystemFilter.subsystemNode
+      ?? (nodeCache?.get(this.subsystemFilter.subsystemId));
     if (!subsystemNode || subsystemNode.type !== MetadataType.Subsystem) {return false;}
 
     const subsystemsToCheck = this.collectSubsystemAndDescendants(subsystemNode);
@@ -296,28 +364,88 @@ export class TreeFilterService {
    * Compute (and cache) the set of node IDs that are either directly visible or are
    * ancestors of visible nodes. Must be called before filtering children.
    */
-  ensureFilterSets(nodeCache: ReadonlyMap<string, TreeNode>): void {
-    if (this.filterAncestorOrVisibleIds != null) {return;}
+  ensureFilterSets(
+    rootsOrCache: readonly TreeNode[] | ReadonlyMap<string, TreeNode>,
+    getNodeRootIdentity?: NodeRootIdentityResolver,
+  ): void {
+    if (this.filterAncestorOrVisibleIds != null && this.visibleNodes != null) {return;}
     const visibleIds = new Set<string>();
-    for (const node of nodeCache.values()) {
-      if (
-        this.nodeOrDescendantMatchesSearch(node, this.searchQuery) &&
-        this.passesTypeFilter(node) &&
-        this.nodePassesSubsystemFilter(node, nodeCache)
-      ) {
-        visibleIds.add(node.id);
+    const visibleNodes = new Set<TreeNode>();
+    const visibleKeys = new Set<string>();
+
+    const registerVisible = (node: TreeNode): void => {
+      visibleIds.add(node.id);
+      visibleNodes.add(node);
+      if (getNodeRootIdentity) {
+        const rootId = getNodeRootIdentity(node);
+        visibleKeys.add(`${rootId}::${node.id}`);
+      }
+    };
+
+    if (Array.isArray(rootsOrCache)) {
+      const walk = (node: TreeNode): boolean => {
+        let hasVisibleDescendant = false;
+        for (const child of node.children ?? []) {
+          if (walk(child)) {
+            hasVisibleDescendant = true;
+          }
+        }
+        const directMatch = (
+          this.nodeMatchesSearch(node, this.searchQuery) &&
+          this.passesTypeFilter(node) &&
+          this.nodePassesSubsystemFilter(node, undefined, getNodeRootIdentity)
+        );
+        if (directMatch || hasVisibleDescendant) {
+          registerVisible(node);
+          return true;
+        }
+        return false;
+      };
+
+      for (const root of rootsOrCache) {
+        walk(root);
+      }
+    } else {
+      const nodeCache = rootsOrCache as ReadonlyMap<string, TreeNode>;
+      for (const node of nodeCache.values()) {
+        if (
+          this.nodeOrDescendantMatchesSearch(node, this.searchQuery) &&
+          this.passesTypeFilter(node) &&
+          this.nodePassesSubsystemFilter(node, nodeCache, getNodeRootIdentity)
+        ) {
+          registerVisible(node);
+          let n: TreeNode | undefined = node.parent;
+          while (n) {
+            registerVisible(n);
+            n = n.parent;
+          }
+        }
       }
     }
-    const ancestorIds = new Set<string>(visibleIds);
-    for (const id of visibleIds) {
-      let n = nodeCache.get(id);
-      while (n?.parent) {
-        ancestorIds.add(n.parent.id);
-        n = n.parent;
-      }
+
+    this.filterAncestorOrVisibleIds = visibleIds;
+    this.visibleNodes = visibleNodes;
+    this.visibleKeys = visibleKeys;
+    Logger.debug('Filter sets computed', { visibleCount: visibleNodes.size, idCount: visibleIds.size });
+  }
+
+  isNodeVisible(node: TreeNode, getNodeRootIdentity?: NodeRootIdentityResolver): boolean {
+    if (!this.hasActiveFilter()) {
+      return true;
     }
-    this.filterAncestorOrVisibleIds = ancestorIds;
-    Logger.debug('Filter sets computed', { visibleCount: visibleIds.size, ancestorCount: ancestorIds.size });
+    if (this.visibleNodes) {
+      if (this.visibleNodes.has(node)) {
+        return true;
+      }
+      if (this.visibleKeys && getNodeRootIdentity) {
+        const rootId = getNodeRootIdentity(node);
+        if (this.visibleKeys.has(`${rootId}::${node.id}`)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    return this.filterAncestorOrVisibleIds ? this.filterAncestorOrVisibleIds.has(node.id) : true;
   }
 
   // --- Static helpers ---

@@ -83,7 +83,7 @@ export function registerFilterCommands(deps: RegisterFilterCommandsDeps): vscode
       if (!state.treeDataProvider) {
         return;
       }
-      await state.treeDataProvider.setSubsystemFilter(target.id, target.name);
+      await state.treeDataProvider.setSubsystemFilter(target.id, target.name, target);
       vscode.commands.executeCommand('setContext', 'subsystemFilterActive', true);
     }
   );
