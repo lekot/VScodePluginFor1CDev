@@ -139,6 +139,22 @@ suite('SKD atomic file save — #240', function () {
         );
     });
 
+    test('skd-edit.ps1 does not use non-atomic File.Copy overwrite fallback in Save-FileAtomically', async () => {
+        const content = await fs.readFile(skdEditPath, 'utf8');
+        assert.ok(
+            !content.includes('[System.IO.File]::Copy($tempPath, $destinationPath'),
+            'Save-FileAtomically in skd-edit.ps1 must not fall back to non-atomic File::Copy which can corrupt target file',
+        );
+    });
+
+    test('skd-compile.ps1 does not use non-atomic File.Copy overwrite fallback in Save-FileAtomically', async () => {
+        const content = await fs.readFile(skdCompilePath, 'utf8');
+        assert.ok(
+            !content.includes('[System.IO.File]::Copy($tempPath, $destinationPath'),
+            'Save-FileAtomically in skd-compile.ps1 must not fall back to non-atomic File::Copy which can corrupt target file',
+        );
+    });
+
     // ─── 2. Runtime execution tests ──────────────────────────────────────────
 
     test('runtime: skd-edit performs atomic save, preserves UTF-8 BOM, and cleans up temp files', async function () {
@@ -267,6 +283,100 @@ suite('SKD atomic file save — #240', function () {
             const dirFiles = await fs.readdir(tmpDir);
             const tempFiles = dirFiles.filter((f) => f.includes('.tmp.') || f.includes('.bak.'));
             assert.deepStrictEqual(tempFiles, [], `No temp files must remain: ${tempFiles.join(', ')}`);
+        } finally {
+            await fs.rm(tmpDir, { recursive: true, force: true });
+        }
+    });
+
+    test('runtime: writer failure during atomic save leaves target file untouched and cleans up temp files', async function () {
+        if (!pwsh) { this.skip(); return; }
+
+        const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'skd-atomic-writer-fail-'));
+        try {
+            const destPath = path.join(tmpDir, 'Template.xml');
+            const originalContent = '<OriginalXml>12345</OriginalXml>';
+            await fs.writeFile(destPath, originalContent, 'utf8');
+
+            const editContent = await fs.readFile(skdEditPath, 'utf8');
+            const fnMatch = editContent.match(/function Save-FileAtomically[\s\S]*?\n\}/);
+            assert.ok(fnMatch, 'Save-FileAtomically function must be present');
+
+            // Inject fault in Save-FileAtomically by simulating [System.IO.File]::Replace throwing PlatformNotSupportedException
+            const faultScriptPath = path.join(tmpDir, 'test-fault-injection.ps1');
+            const faultScript = [
+                '$ErrorActionPreference = "Stop"',
+                fnMatch[0].replace(
+                    '[System.IO.File]::Replace($tempPath, $destinationPath, $backupPath)',
+                    'throw [System.PlatformNotSupportedException]::new("Simulated Replace failure")'
+                ),
+                'try {',
+                `    Save-FileAtomically "${destPath.replace(/\\/g, '/')}" "<PartialContent>" ([System.Text.Encoding]::UTF8)`,
+                '} catch {',
+                '    [Console]::Error.WriteLine("Safely caught: " + $_.Exception.Message)',
+                '}',
+            ].join('\r\n');
+            await fs.writeFile(faultScriptPath, faultScript, 'utf8');
+
+            const faultRes = await runScript(pwsh, faultScriptPath, [], tmpDir);
+            assert.ok(
+                faultRes.stderr.includes('Safely caught') || faultRes.stdout.includes('Safely caught'),
+                `Expected error to be caught: ${faultRes.stdout} ${faultRes.stderr}`,
+            );
+
+            // Target must remain EXACTLY originalContent, NOT <PartialContent>
+            const actualContent = await fs.readFile(destPath, 'utf8');
+            assert.strictEqual(actualContent, originalContent, 'Target file MUST remain untouched when Replace fails');
+
+            const dirFiles = await fs.readdir(tmpDir);
+            const tempFiles = dirFiles.filter((f) => f.includes('.tmp.') || f.includes('.bak.'));
+            assert.deepStrictEqual(tempFiles, [], `Temporary/backup files must be cleaned up: ${tempFiles.join(', ')}`);
+        } finally {
+            await fs.rm(tmpDir, { recursive: true, force: true });
+        }
+    });
+
+    test('runtime: writer failure after destination moved to backup restores original file from backup', async function () {
+        if (!pwsh) { this.skip(); return; }
+
+        const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'skd-atomic-backup-restore-'));
+        try {
+            const destPath = path.join(tmpDir, 'Template.xml');
+            const originalContent = '<OriginalXml>PRESERVED_RESTORED</OriginalXml>';
+            await fs.writeFile(destPath, originalContent, 'utf8');
+
+            const editContent = await fs.readFile(skdEditPath, 'utf8');
+            const fnMatch = editContent.match(/function Save-FileAtomically[\s\S]*?\n\}/);
+            assert.ok(fnMatch, 'Save-FileAtomically function must be present');
+
+            // Simulate scenario where destination was moved to backup by Replace, but an error occurs before completion
+            const faultScriptPath = path.join(tmpDir, 'test-restore-backup.ps1');
+            const faultScript = [
+                '$ErrorActionPreference = "Stop"',
+                fnMatch[0].replace(
+                    '[System.IO.File]::Replace($tempPath, $destinationPath, $backupPath)',
+                    '[System.IO.File]::Move($destinationPath, $backupPath); throw [System.IO.IOException]::new("Simulated crash after backup created")'
+                ),
+                'try {',
+                `    Save-FileAtomically "${destPath.replace(/\\/g, '/')}" "<ShouldNotBeCommitted>" ([System.Text.Encoding]::UTF8)`,
+                '} catch {',
+                '    [Console]::Error.WriteLine("Caught crash: " + $_.Exception.Message)',
+                '}',
+            ].join('\r\n');
+            await fs.writeFile(faultScriptPath, faultScript, 'utf8');
+
+            const faultRes = await runScript(pwsh, faultScriptPath, [], tmpDir);
+            assert.ok(
+                faultRes.stderr.includes('Caught crash') || faultRes.stdout.includes('Caught crash'),
+                `Expected crash to be caught: ${faultRes.stdout} ${faultRes.stderr}`,
+            );
+
+            // Target must be restored from backup!
+            const restoredContent = await fs.readFile(destPath, 'utf8');
+            assert.strictEqual(restoredContent, originalContent, 'Target file MUST be restored from backup if destination disappeared');
+
+            const dirFiles = await fs.readdir(tmpDir);
+            const tempFiles = dirFiles.filter((f) => f.includes('.tmp.') || f.includes('.bak.'));
+            assert.deepStrictEqual(tempFiles, [], `Temporary/backup files must be cleaned up after restore: ${tempFiles.join(', ')}`);
         } finally {
             await fs.rm(tmpDir, { recursive: true, force: true });
         }

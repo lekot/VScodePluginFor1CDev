@@ -1,4 +1,4 @@
-﻿# skd-edit v1.42 — Atomic 1C DCS editor
+# skd-edit v1.42 — Atomic 1C DCS editor
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 # NB: парный .py собирает выражения автодат вне f-string ради совместимости с python 3.9 (PEP 701).
 [CmdletBinding(PositionalBinding=$false)]
@@ -225,25 +225,28 @@ function Save-FileAtomically([string]$destinationPath, [string]$fileContent, [Sy
 	$guid = [System.Guid]::NewGuid().ToString('N')
 	$tempPath = "$destinationPath.tmp.$guid"
 	$backupPath = "$destinationPath.bak.$guid"
+	$committed = $false
 
 	try {
 		[System.IO.File]::WriteAllText($tempPath, $fileContent, $encoding)
 		if (Test-Path -LiteralPath $destinationPath) {
-			try {
-				[System.IO.File]::Replace($tempPath, $destinationPath, $backupPath)
-			} catch [System.PlatformNotSupportedException] {
-				[System.IO.File]::Copy($destinationPath, $backupPath, $true)
-				[System.IO.File]::Copy($tempPath, $destinationPath, $true)
-			}
+			[System.IO.File]::Replace($tempPath, $destinationPath, $backupPath)
 		} else {
 			[System.IO.File]::Move($tempPath, $destinationPath)
 		}
+		$committed = $true
 	} finally {
 		if (Test-Path -LiteralPath $tempPath) {
 			try { [System.IO.File]::Delete($tempPath) } catch {}
 		}
 		if (Test-Path -LiteralPath $backupPath) {
-			try { [System.IO.File]::Delete($backupPath) } catch {}
+			if ($committed) {
+				try { [System.IO.File]::Delete($backupPath) } catch {}
+			} else {
+				if (-not (Test-Path -LiteralPath $destinationPath)) {
+					try { [System.IO.File]::Move($backupPath, $destinationPath) } catch {}
+				}
+			}
 		}
 	}
 }
