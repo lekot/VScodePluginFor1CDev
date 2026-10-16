@@ -72,6 +72,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
     (provider as any).documentModel.set(key, makeModel());
     const view = makePanel();
     await provider.resolveCustomEditor(document, view.panel);
+    assert.strictEqual(provider.getActiveDocumentUri()?.toString(), uri.toString());
 
     let changes = 0;
     const subscription = provider.onDidChangeCustomDocument(() => { changes += 1; });

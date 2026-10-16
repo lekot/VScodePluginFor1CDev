@@ -4,6 +4,7 @@
  */
 
 import * as path from 'path';
+import { canonicalizeFsPath } from '../utils/configurationPathIdentity';
 import { getStandardModuleByFileName, type StandardModuleKind } from '../constants/metadataModuleDescriptors';
 import { METADATA_TYPE_DESCRIPTORS } from '../constants/metadataTypeDescriptors';
 
@@ -77,24 +78,35 @@ export function locateMetadataFile(
 
   // Find the longest matching config root prefix
   let bestRoot: string | undefined;
+  let bestRel: string | undefined;
   for (const root of configRoots) {
     const normalizedRoot = path.normalize(root);
     // path.relative returns a path without leading .. when file is under root
-    const rel = path.relative(normalizedRoot, normalizedFile);
+    let rel = path.relative(normalizedRoot, normalizedFile);
     if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      continue; // not under this root
+      const canonicalRoot = canonicalizeFsPath(normalizedRoot);
+      const canonicalFile = canonicalizeFsPath(normalizedFile);
+      const crel = path.relative(canonicalRoot, canonicalFile);
+      if (!crel.startsWith('..') && !path.isAbsolute(crel)) {
+        rel = crel;
+      }
+    }
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      continue;
     }
     if (bestRoot === undefined || normalizedRoot.length > path.normalize(bestRoot).length) {
       bestRoot = root;
+      bestRel = rel;
     }
   }
 
-  if (bestRoot === undefined) {
+
+  if (bestRoot === undefined || bestRel === undefined) {
     return null;
   }
 
   const normalizedRoot = path.normalize(bestRoot);
-  const relative = path.relative(normalizedRoot, normalizedFile);
+  const relative = bestRel;
   let segments = relative.split(path.sep);
 
   let extensionName = getExtensionNameFromRoot(normalizedRoot);

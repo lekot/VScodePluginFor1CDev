@@ -25,7 +25,7 @@ import {
 } from '../bindings/bindingPathUtils';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { getStandardModuleFileName, type StandardModuleKind } from '../constants/metadataModuleDescriptors';
-import { configurationPathKey } from '../utils/configurationPathIdentity';
+import { configurationPathKey, isSamePath, isSameOrDescendantPath } from '../utils/configurationPathIdentity';
 import type { ConfigurationId } from '../services/configurationSession/types';
 import type { TreeLoadContext } from '../types/treeLoadContext';
 import { TreeFilterService, FILTERABLE_METADATA_TYPES } from './treeFilterService';
@@ -743,15 +743,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           return undefined;
         }
         const resolvedConfigPath = path.resolve(configPath);
-        const relativePath = path.relative(resolvedConfigPath, targetPath);
-        const comparedRelativePath = process.platform === 'win32'
-          ? relativePath.toLocaleLowerCase('en-US')
-          : relativePath;
-        const isContained = comparedRelativePath === '' || (
-          comparedRelativePath !== '..'
-          && !comparedRelativePath.startsWith(`..${path.sep}`)
-          && !path.isAbsolute(relativePath)
-        );
+        const isContained = isSameOrDescendantPath(resolvedConfigPath, targetPath);
         return isContained ? { root, configPath: resolvedConfigPath } : undefined;
       })
       .filter((candidate): candidate is { root: TreeNode; configPath: string } => candidate !== undefined)
@@ -1785,13 +1777,13 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     for (const root of this.rootNodes) {
       const ctx = this.cache.getLoadContext(root);
       if (ctx) {
-        if (configurationPathKey(ctx.configPath) === configurationPathKey(normalizedTarget)) {
+        if (isSamePath(ctx.configPath, normalizedTarget)) {
           return root;
         }
       } else if (root.filePath) {
         // Fallback: Configuration.xml lives directly in configPath
         const rootDir = path.resolve(path.dirname(root.filePath));
-        if (configurationPathKey(rootDir) === configurationPathKey(normalizedTarget)) {
+        if (isSamePath(rootDir, normalizedTarget)) {
           return root;
         }
       }
@@ -1821,7 +1813,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         continue;
       }
       const ctx = this.cache.getLoadContext(root);
-      if (ctx && configurationPathKey(ctx.configPath) === configurationPathKey(expectedPath)) {
+      if (ctx && isSamePath(ctx.configPath, expectedPath)) {
         return root;
       }
     }

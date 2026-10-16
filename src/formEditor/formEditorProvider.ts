@@ -213,9 +213,9 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       },
     };
     this.contextByDocument.set(docKey, ctx);
-    if (webviewPanel.active) {
-      this.activeDocumentUri = document.uri;
-    }
+    this.activeDocumentUri = document.uri;
+
+
     webviewPanel.onDidChangeViewState((event) => {
       if (event.webviewPanel.active) {
         this.activeDocumentUri = document.uri;

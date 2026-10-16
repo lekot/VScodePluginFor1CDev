@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as path from 'path';
 import { locateMetadataFile, MetadataLocation } from '../../src/services/metadataFileLocator';
 
@@ -443,5 +444,84 @@ suite('metadataFileLocator', () => {
     const result = locateMetadataFile(p(root, 'Catalogs/Товары.xml'), roots);
     assert.ok(result);
     assert.strictEqual(result.extensionName, undefined);
+  });
+
+  test('Windows: locates metadata file across 8.3 short-name aliases (#328)', function () {
+    if (process.platform !== 'win32' || !process.env.TEMP) {
+      this.skip();
+      return;
+    }
+    const shortTemp = process.env.TEMP;
+    let longTemp: string;
+    try {
+      longTemp = fs.realpathSync.native(shortTemp);
+    } catch {
+      this.skip();
+      return;
+    }
+    if (shortTemp.toLowerCase() === longTemp.toLowerCase()) {
+      this.skip();
+      return;
+    }
+
+    const shortRoot = path.join(shortTemp, 'test-config-328');
+    const longRoot = path.join(longTemp, 'test-config-328');
+
+    // 1. CommonModule: roots have long path, filePath has short path
+    const shortCommonModule = path.join(shortRoot, 'CommonModules', 'FlatOnlyModule.xml');
+    const result1 = locateMetadataFile(shortCommonModule, [longRoot]);
+    assert.ok(result1, 'expected non-null result for short filePath with long configRoot');
+    assert.strictEqual(result1?.objectType, 'CommonModules');
+    assert.strictEqual(result1?.objectName, 'FlatOnlyModule');
+
+    // 2. CommonModule: roots have short path, filePath has long path
+    const longCommonModule = path.join(longRoot, 'CommonModules', 'FlatOnlyModule.xml');
+    const result2 = locateMetadataFile(longCommonModule, [shortRoot]);
+    assert.ok(result2, 'expected non-null result for long filePath with short configRoot');
+    assert.strictEqual(result2?.objectType, 'CommonModules');
+    assert.strictEqual(result2?.objectName, 'FlatOnlyModule');
+
+    // 3. Document Form: roots have long path, filePath has short path
+    const shortForm = path.join(shortRoot, 'Documents', 'TestDoc', 'Forms', 'DocumentMainForm', 'Ext', 'Form.xml');
+    const result3 = locateMetadataFile(shortForm, [longRoot]);
+    assert.ok(result3, 'expected non-null result for short form filePath with long configRoot');
+    assert.strictEqual(result3?.objectType, 'Documents');
+    assert.strictEqual(result3?.objectName, 'TestDoc');
+    assert.deepStrictEqual(result3?.subPath, { kind: 'form', name: 'DocumentMainForm', subFile: 'container' });
+
+    // 4. Catalog: roots have long path, filePath has short path
+    const shortCatalog = path.join(shortRoot, 'Catalogs', 'CatalogGoodsA.xml');
+    const result4 = locateMetadataFile(shortCatalog, [longRoot]);
+    assert.ok(result4, 'expected non-null result for short catalog filePath with long configRoot');
+    assert.strictEqual(result4?.objectType, 'Catalogs');
+    assert.strictEqual(result4?.objectName, 'CatalogGoodsA');
+  });
+
+  test('locates metadata file using canonical fallback when root alias resolves on filesystem', () => {
+    const tempDir = fs.mkdtempSync(path.join(path.resolve('.'), 'tmp-locator-'));
+    try {
+      const realConfig = path.join(tempDir, 'real-config');
+      const modulePath = path.join(realConfig, 'CommonModules', 'Helper.xml');
+      fs.mkdirSync(path.dirname(modulePath), { recursive: true });
+      fs.writeFileSync(modulePath, '<xml/>');
+
+      const aliasConfig = path.join(tempDir, 'alias-config');
+      let hasAlias = false;
+      try {
+        fs.symlinkSync(realConfig, aliasConfig, process.platform === 'win32' ? 'junction' : 'dir');
+        hasAlias = true;
+      } catch {
+        // Platform or permission limitation
+      }
+
+      if (hasAlias) {
+        const result = locateMetadataFile(modulePath, [aliasConfig]);
+        assert.ok(result);
+        assert.strictEqual(result.objectType, 'CommonModules');
+        assert.strictEqual(result.objectName, 'Helper');
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
