@@ -155,6 +155,55 @@ suite('SKD atomic file save — #240', function () {
         );
     });
 
+    test('skd-edit.ps1 has UTF-8 BOM byte sequence [0xef, 0xbb, 0xbf]', async () => {
+        const raw = await fs.readFile(skdEditPath);
+        assert.ok(
+            raw.subarray(0, 3).equals(utf8Bom),
+            'skd-edit.ps1 must start with UTF-8 BOM [0xEF, 0xBB, 0xBF] for Windows PowerShell 5.1 compatibility',
+        );
+    });
+
+    test('skd-compile.ps1 has UTF-8 BOM byte sequence [0xef, 0xbb, 0xbf]', async () => {
+        const raw = await fs.readFile(skdCompilePath);
+        assert.ok(
+            raw.subarray(0, 3).equals(utf8Bom),
+            'skd-compile.ps1 must start with UTF-8 BOM [0xEF, 0xBB, 0xBF] for Windows PowerShell 5.1 compatibility',
+        );
+    });
+
+    test('Windows PowerShell 5.1 (powershell.exe) parses skd-edit.ps1 and skd-compile.ps1 with 0 errors', async function () {
+        if (process.platform !== 'win32') { this.skip(); return; }
+        const winPs = 'powershell.exe';
+
+        const parseScript = (file: string) => [
+            `$resolved = '${file.replace(/'/g, "''")}';`,
+            `$tokens = $null;`,
+            `$errors = $null;`,
+            `[void][System.Management.Automation.Language.Parser]::ParseFile($resolved, [ref]$tokens, [ref]$errors);`,
+            `if ($errors.Count -gt 0) {`,
+            `    foreach ($e in $errors) { [Console]::Error.WriteLine($e.ToString()) }`,
+            `    exit $errors.Count;`,
+            `}`,
+            `exit 0;`,
+        ].join('\r\n');
+
+        const editRes = await new Promise<{ exitCode: number; stderr: string }>((resolve) => {
+            const child = spawn(winPs, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', parseScript(skdEditPath)], { windowsHide: true });
+            const stderr: Buffer[] = [];
+            child.stderr.on('data', (d) => stderr.push(d));
+            child.on('close', (exitCode) => resolve({ exitCode: exitCode ?? -1, stderr: Buffer.concat(stderr).toString('utf8') }));
+        });
+        assert.strictEqual(editRes.exitCode, 0, `Windows PowerShell 5.1 failed to parse skd-edit.ps1 (${editRes.exitCode} errors):\n${editRes.stderr}`);
+
+        const compileRes = await new Promise<{ exitCode: number; stderr: string }>((resolve) => {
+            const child = spawn(winPs, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', parseScript(skdCompilePath)], { windowsHide: true });
+            const stderr: Buffer[] = [];
+            child.stderr.on('data', (d) => stderr.push(d));
+            child.on('close', (exitCode) => resolve({ exitCode: exitCode ?? -1, stderr: Buffer.concat(stderr).toString('utf8') }));
+        });
+        assert.strictEqual(compileRes.exitCode, 0, `Windows PowerShell 5.1 failed to parse skd-compile.ps1 (${compileRes.exitCode} errors):\n${compileRes.stderr}`);
+    });
+
     // ─── 2. Runtime execution tests ──────────────────────────────────────────
 
     test('runtime: skd-edit performs atomic save, preserves UTF-8 BOM, and cleans up temp files', async function () {

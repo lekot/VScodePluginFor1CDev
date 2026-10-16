@@ -1,4 +1,4 @@
-# skd-compile v1.124 — Compile 1C DCS from JSON
+﻿# skd-compile v1.124 — Compile 1C DCS from JSON
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
 [CmdletBinding(PositionalBinding=$false)]
 param(
