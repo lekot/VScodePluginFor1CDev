@@ -74,6 +74,73 @@ suite('SKD validation coverage and XSD contract — #247', () => {
         assert.strictEqual(result.data.xsdReason, undefined);
     });
 
+    test('parses fallback XSD output as partial coverage with xsdChecked=true and xsdReason', async () => {
+        const ops = new SkdOperations({
+            extensionPath: repoRoot,
+            runPowerShellScript: async () => ({
+                stdout: [
+                    '[OK]  XML parsed successfully',
+                    '[OK]  XSD 2.20 (no schemas for 2.15): order, types and values OK',
+                    '=== Validation OK: Template.xml (16 checks) ===',
+                ].join('\n') + '\n',
+                stderr: '',
+                exitCode: 0,
+            }),
+        });
+
+        const result = await ops.skdValidate({ templatePath: '/dummy/Template.xml' });
+        assertValidateResult(result);
+        assert.strictEqual(result.data.valid, true);
+        assert.strictEqual(result.data.coverage, 'partial', 'Fallback schema must NOT be full coverage');
+        assert.strictEqual(result.data.xsdChecked, true, 'XSD check was performed, so xsdChecked must be true');
+        assert.strictEqual(result.data.xsdReason, 'no schemas for 2.15');
+    });
+
+    test('parses fallback XSD warning output as invalid with partial coverage and xsdChecked=true', async () => {
+        const ops = new SkdOperations({
+            extensionPath: repoRoot,
+            runPowerShellScript: async () => ({
+                stdout: [
+                    '[OK]  XML parsed successfully',
+                    '[WARN]  XSD 2.20 (no schemas for 2.15), line 42: dataSet/field: unknown tag',
+                    '=== Result: 0 errors, 1 warnings (16 checks) ===',
+                ].join('\n') + '\n',
+                stderr: '',
+                exitCode: 0,
+            }),
+        });
+
+        const result = await ops.skdValidate({ templatePath: '/dummy/Template.xml' });
+        assertValidateResult(result);
+        assert.strictEqual(result.data.valid, false);
+        assert.strictEqual(result.data.warningCount, 1);
+        assert.strictEqual(result.data.coverage, 'partial');
+        assert.strictEqual(result.data.xsdChecked, true);
+        assert.strictEqual(result.data.xsdReason, 'no schemas for 2.15');
+    });
+
+    test('parses inline fallback format with varied version tags as partial coverage', async () => {
+        const ops = new SkdOperations({
+            extensionPath: repoRoot,
+            runPowerShellScript: async () => ({
+                stdout: [
+                    '[OK]  XML parsed successfully',
+                    '[OK]  XSD 2.20 (no schemas for 2.11): order, types and values OK',
+                    '=== Validation OK: Template.xml (16 checks) ===',
+                ].join('\n') + '\n',
+                stderr: '',
+                exitCode: 0,
+            }),
+        });
+
+        const result = await ops.skdValidate({ templatePath: '/dummy/Template.xml' });
+        assertValidateResult(result);
+        assert.strictEqual(result.data.valid, true);
+        assert.strictEqual(result.data.coverage, 'partial');
+        assert.strictEqual(result.data.xsdChecked, true);
+        assert.strictEqual(result.data.xsdReason, 'no schemas for 2.11');
+    });
+
     test('parses XSD error as invalid with errorCount=1 and coverage=full', async () => {
         const ops = new SkdOperations({
             extensionPath: repoRoot,

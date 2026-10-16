@@ -292,6 +292,7 @@ export class SkdOperations {
 
         const xsdNotCheckedMatch = rawOutput.match(/XSD not checked:\s*([^;\r\n]+?)(?:\)\s*===|$)/i)
             ?? rawOutput.match(/XSD:[^—\n\r]*—\s*not checked(?::\s*([^\n\r]+))?/i);
+        const xsdFallbackMatch = rawOutput.match(/\((no schemas for\s+[^)]+)\)/i);
 
         let xsdChecked = false;
         let xsdReason: string | undefined;
@@ -300,6 +301,10 @@ export class SkdOperations {
         if (xsdNotCheckedMatch) {
             xsdChecked = false;
             xsdReason = (xsdNotCheckedMatch[1] ?? xsdNotCheckedMatch[0]).trim();
+            coverage = 'partial';
+        } else if (xsdFallbackMatch) {
+            xsdChecked = true;
+            xsdReason = xsdFallbackMatch[1].trim();
             coverage = 'partial';
         } else {
             const hasXsdMention = /\bXSD\s+\d+(\.\d+)*\b/i.test(rawOutput);
