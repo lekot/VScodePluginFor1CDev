@@ -154,7 +154,7 @@ export class DesignerParser {
       await fs.promises.access(configXmlPath);
       const fileBytes = await fs.promises.readFile(configXmlPath);
       rootNode.properties.contentHash = crypto.createHash('sha256').update(fileBytes).digest('hex');
-      const configXml = await XmlParser.parseFileAsync(configXmlPath);
+      const configXml = XmlParser.parseString(fileBytes.toString('utf-8'));
       rootNode.properties.bslLanguage = await resolveDesignerBslLanguage(configPath, configXml);
       const extProps = extractExtensionProperties(configXml);
       if (extProps.extensionPurpose !== undefined) {

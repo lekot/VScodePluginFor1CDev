@@ -136,7 +136,7 @@ export class EdtParser {
       await fs.promises.access(configMdoPath);
       const fileBytes = await fs.promises.readFile(configMdoPath);
       rootNode.properties.contentHash = crypto.createHash('sha256').update(fileBytes).digest('hex');
-      const configXml = await XmlParser.parseFileAsync(configMdoPath);
+      const configXml = XmlParser.parseString(fileBytes.toString('utf-8'));
       rootNode.properties.bslLanguage = resolveEdtBslLanguage(configXml);
       const extProps = extractExtensionProperties(configXml);
       if (extProps.extensionPurpose !== undefined) {

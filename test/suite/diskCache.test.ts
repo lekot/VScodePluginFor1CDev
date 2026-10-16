@@ -8,7 +8,10 @@ import {
   saveTreeToCache,
   invalidateTreeCache,
 } from '../../src/utils/diskCache';
+import * as crypto from 'crypto';
 import { MetadataParser } from '../../src/parsers/metadataParser';
+import { DesignerParser } from '../../src/parsers/designerParser';
+import { EdtParser } from '../../src/parsers/edtParser';
 
 suite('diskCache (#194)', () => {
   let tmpDir: string;
@@ -199,5 +202,69 @@ suite('diskCache (#194)', () => {
 
     const loaded = await loadTreeFromCache(globalStoragePath, configPath);
     assert.ok(loaded, 'Cache must be saved when expectedContentHash matches');
+  });
+
+  test('DesignerParser.parseStructureOnly performs a single file read ensuring contentHash matches parsed XML properties', async () => {
+    const configXml = path.join(configPath, 'Configuration.xml');
+    const contentA = '<MetaDataObject><Configuration><Properties><NamePrefix>PrefixA_</NamePrefix></Properties></Configuration></MetaDataObject>';
+    const contentB = '<MetaDataObject><Configuration><Properties><NamePrefix>PrefixB_</NamePrefix></Properties></Configuration></MetaDataObject>';
+    await fs.promises.writeFile(configXml, contentA, 'utf8');
+
+    let readCount = 0;
+    const origReadFile = fs.promises.readFile;
+    (fs.promises as any).readFile = async (p: fs.PathLike, opts: any) => {
+      const res = await origReadFile(p, opts);
+      if (p.toString().endsWith('Configuration.xml')) {
+        readCount++;
+        if (readCount === 1) {
+          // Mutate file immediately after the first read
+          await fs.promises.writeFile(configXml, contentB, 'utf8');
+        }
+      }
+      return res;
+    };
+
+    try {
+      const tree = await DesignerParser.parseStructureOnly(configPath);
+      assert.strictEqual(readCount, 1, 'Configuration.xml must be read exactly once to prevent split-brain digest');
+      const expectedHash = crypto.createHash('sha256').update(Buffer.from(contentA, 'utf8')).digest('hex');
+      assert.strictEqual(tree.properties?.contentHash, expectedHash);
+      assert.strictEqual(tree.properties?.namePrefix, 'PrefixA_', 'Parsed properties must match the bytes hashed');
+    } finally {
+      fs.promises.readFile = origReadFile;
+    }
+  });
+
+  test('EdtParser.parseStructureOnly performs a single file read ensuring contentHash matches parsed XML properties', async () => {
+    const srcDir = path.join(configPath, 'src', 'Configuration');
+    await fs.promises.mkdir(srcDir, { recursive: true });
+    const configMdoPath = path.join(srcDir, 'Configuration.mdo');
+    const contentA = '<mdclass:Configuration><namePrefix>PrefixEdtA_</namePrefix></mdclass:Configuration>';
+    const contentB = '<mdclass:Configuration><namePrefix>PrefixEdtB_</namePrefix></mdclass:Configuration>';
+    await fs.promises.writeFile(configMdoPath, contentA, 'utf8');
+
+    let readCount = 0;
+    const origReadFile = fs.promises.readFile;
+    (fs.promises as any).readFile = async (p: fs.PathLike, opts: any) => {
+      const res = await origReadFile(p, opts);
+      if (p.toString().endsWith('Configuration.mdo')) {
+        readCount++;
+        if (readCount === 1) {
+          // Mutate file immediately after the first read
+          await fs.promises.writeFile(configMdoPath, contentB, 'utf8');
+        }
+      }
+      return res;
+    };
+
+    try {
+      const tree = await EdtParser.parseStructureOnly(configPath);
+      assert.strictEqual(readCount, 1, 'Configuration.mdo must be read exactly once to prevent split-brain digest');
+      const expectedHash = crypto.createHash('sha256').update(Buffer.from(contentA, 'utf8')).digest('hex');
+      assert.strictEqual(tree.properties?.contentHash, expectedHash);
+      assert.strictEqual(tree.properties?.namePrefix, 'PrefixEdtA_', 'Parsed properties must match the bytes hashed');
+    } finally {
+      fs.promises.readFile = origReadFile;
+    }
   });
 });

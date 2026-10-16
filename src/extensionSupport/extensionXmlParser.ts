@@ -17,8 +17,12 @@ import { ExtensionNodeProperties } from './extensionTypes';
 export function extractExtensionProperties(parsedXml: Record<string, unknown>): ExtensionNodeProperties {
   const result: ExtensionNodeProperties = {};
 
+  const root = (parsedXml.MetaDataObject && typeof parsedXml.MetaDataObject === 'object'
+    ? parsedXml.MetaDataObject
+    : parsedXml) as Record<string, unknown>;
+
   // Navigate: root key -> Configuration -> Properties
-  for (const [key, value] of Object.entries(parsedXml)) {
+  for (const [key, value] of Object.entries(root)) {
     if (key === '@_' || key.startsWith('#')) {
       continue;
     }
@@ -26,17 +30,14 @@ export function extractExtensionProperties(parsedXml: Record<string, unknown>): 
       continue;
     }
     const element = value as Record<string, unknown>;
-    const properties = element.Properties as Record<string, unknown> | undefined;
-    if (!properties) {
-      continue;
-    }
+    const properties = (element.Properties as Record<string, unknown> | undefined) ?? element;
 
-    const purpose = properties.ConfigurationExtensionPurpose;
+    const purpose = properties.ConfigurationExtensionPurpose ?? properties.configurationExtensionPurpose ?? properties.extensionPurpose;
     if (typeof purpose === 'string' && (purpose === 'Patch' || purpose === 'Customization' || purpose === 'AddOn')) {
       result.extensionPurpose = purpose;
     }
 
-    const prefix = properties.NamePrefix;
+    const prefix = properties.NamePrefix ?? properties.namePrefix;
     if (typeof prefix === 'string' && prefix.length > 0) {
       result.namePrefix = prefix;
     }
@@ -67,7 +68,11 @@ export function extractObjectBelonging(
 ): Pick<ExtensionNodeProperties, 'objectBelonging' | 'extendedConfigurationObject'> {
   const result: Pick<ExtensionNodeProperties, 'objectBelonging' | 'extendedConfigurationObject'> = {};
 
-  for (const [key, value] of Object.entries(parsedXml)) {
+  const root = (parsedXml.MetaDataObject && typeof parsedXml.MetaDataObject === 'object'
+    ? parsedXml.MetaDataObject
+    : parsedXml) as Record<string, unknown>;
+
+  for (const [key, value] of Object.entries(root)) {
     if (key === '@_' || key.startsWith('#')) {
       continue;
     }
@@ -75,17 +80,14 @@ export function extractObjectBelonging(
       continue;
     }
     const element = value as Record<string, unknown>;
-    const properties = element.Properties as Record<string, unknown> | undefined;
-    if (!properties) {
-      continue;
-    }
+    const properties = (element.Properties as Record<string, unknown> | undefined) ?? element;
 
-    const belonging = properties.ObjectBelonging;
+    const belonging = properties.ObjectBelonging ?? properties.objectBelonging;
     if (belonging === 'Adopted') {
       result.objectBelonging = 'Adopted';
     }
 
-    const extendedObj = properties.ExtendedConfigurationObject;
+    const extendedObj = properties.ExtendedConfigurationObject ?? properties.extendedConfigurationObject;
     if (typeof extendedObj === 'string' && extendedObj.length > 0) {
       result.extendedConfigurationObject = extendedObj;
     }
