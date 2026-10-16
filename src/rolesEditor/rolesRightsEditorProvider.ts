@@ -38,6 +38,7 @@ import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 import { createNonce } from '../utils/webviewSecurity';
 import { FilterState, createDefaultFilterState } from './models/filterState';
+import { EditorSessionCoordinator } from '../services/editorSession/editorSessionCoordinator';
 import { MetadataType } from '../models/treeNode';
 import {
   requireDocumentWriteFormatProfile,
@@ -120,7 +121,11 @@ export class RolesRightsEditorProvider {
   private sessionExpectedHash: string | undefined;
   private sessionExpectedState: 'missing' | 'file' | undefined;
   /** Incremented on each `show` so stale async metadata loads do not postMessage over a newer session. */
-  private sessionGeneration = 0;
+  private readonly sessions = new EditorSessionCoordinator<{ roleFilePath: string; roleModel?: RoleModel }>();
+
+  get sessionGeneration(): number {
+    return this.sessions.generation;
+  }
   private objectsLoadGeneration = 0;
   private tableRenderStatusDisposable: vscode.Disposable | undefined;
   private activeSessionId: string | undefined;
@@ -202,7 +207,7 @@ export class RolesRightsEditorProvider {
       if (loadGeneration !== this.objectsLoadGeneration) {
         return;
       }
-      this.sessionGeneration++;
+      const session = this.sessions.begin({ panel: this.panel, target: { roleFilePath, roleModel } });
       this.currentRoleModel = roleModel;
       const isCaseB = path.basename(roleFilePath).toLowerCase() === 'role.xml';
       const initialTargetPath = isCaseB ? roleFilePath : getRightsPath(roleFilePath);
@@ -223,6 +228,7 @@ export class RolesRightsEditorProvider {
         this.panel.reveal(vscode.ViewColumn.Beside);
       }
       this.panel.title = `Rights: ${this.currentRoleModel.name}`;
+      session.panel = this.panel;
 
       this.allObjects = [];
       await this.updateWebviewContent({ initialTableLoading: true });
@@ -274,7 +280,7 @@ export class RolesRightsEditorProvider {
           return;
         }
         this.currentLoadSession?.dispose();
-        const sessionId = randomUUID();
+        const sessionId = session.id;
         this.activeSessionId = sessionId;
         this.isTypeIndexComplete = false;
         this.typeIndexError = undefined;
@@ -1318,7 +1324,7 @@ export class RolesRightsEditorProvider {
    * Send a message to the webview
    */
   private sendMessageToWebview(message: ExtensionToWebviewMessage): void {
-    if (this.panel) {
+    if (this.panel && (!this.sessions.currentSession || this.sessions.currentSession.isCurrent())) {
       void this.panel.webview.postMessage(message);
     }
   }
@@ -1414,8 +1420,9 @@ export class RolesRightsEditorProvider {
     this.tableRenderStatusDisposable = undefined;
 
     if (this.panel) {
-      this.panel.dispose();
+      const panelToDispose = this.panel;
       this.panel = undefined;
+      panelToDispose.dispose();
     }
 
     while (this.disposables.length) {
@@ -1434,7 +1441,7 @@ export class RolesRightsEditorProvider {
     this.configurationRootPath = undefined;
     this.sessionExpectedHash = undefined;
     this.sessionExpectedState = undefined;
-    this.sessionGeneration++;
+    this.sessions.dispose();
     this.isTypeIndexComplete = true;
     this.typeIndexError = undefined;
 

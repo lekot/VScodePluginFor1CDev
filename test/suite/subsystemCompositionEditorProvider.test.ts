@@ -452,7 +452,7 @@ function createCompositionPanelHarness(runRealWebview = false): {
   htmlAssignmentCount(): number;
   dispatch(message: unknown): Promise<void>;
 } {
-  let disposeHandler: (() => void) | undefined;
+  const disposeHandlers: Array<() => void> = [];
   let messageHandler: ((message: unknown) => Promise<void>) | undefined;
   let isDisposed = false;
   let htmlValue = '';
@@ -492,8 +492,15 @@ function createCompositionPanelHarness(runRealWebview = false): {
     title: '',
     reveal: () => {},
     onDidDispose: (callback: () => void) => {
-      disposeHandler = callback;
-      return { dispose: () => {} };
+      disposeHandlers.push(callback);
+      return {
+        dispose: () => {
+          const idx = disposeHandlers.indexOf(callback);
+          if (idx !== -1) {
+            disposeHandlers.splice(idx, 1);
+          }
+        },
+      };
     },
     webview,
     dispose: () => {
@@ -501,7 +508,9 @@ function createCompositionPanelHarness(runRealWebview = false): {
         return;
       }
       isDisposed = true;
-      disposeHandler?.();
+      for (const handler of [...disposeHandlers]) {
+        handler();
+      }
     },
   } as unknown as vscode.WebviewPanel;
   return {

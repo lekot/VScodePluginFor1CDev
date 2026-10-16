@@ -11,6 +11,7 @@ import { MESSAGES } from '../constants/messages';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 import { createNonce } from '../utils/webviewSecurity';
+import { EditorSessionCoordinator } from '../services/editorSession/editorSessionCoordinator';
 
 type CiWebviewMessage =
   | { type: 'save'; visibility: CommandVisibilityEntry[]; filePath?: string; generation?: number };
@@ -18,11 +19,14 @@ type CiWebviewMessage =
 export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined;
   private disposables: vscode.Disposable[] = [];
-  private saveInProgress = false;
+  private readonly sessions = new EditorSessionCoordinator<{ filePath: string; nodeName: string }>();
   private currentFilePath: string | undefined;
   private currentModel: CommandInterfaceModel | undefined;
-  private sessionGeneration = 0;
   private sessionExpectedHash: string | undefined;
+
+  get sessionGeneration(): number {
+    return this.sessions.generation;
+  }
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -64,7 +68,11 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
       return;
     }
 
-    const generation = ++this.sessionGeneration;
+    const session = this.sessions.begin({
+      panel: this.panel,
+      target: { filePath: ciFilePath, nodeName: node.name },
+    });
+    const generation = session.generation;
     this.currentFilePath = ciFilePath;
     this.currentModel = model;
     this.sessionExpectedHash = hashContent(xmlText);
@@ -92,7 +100,6 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
           this.currentFilePath = undefined;
           this.currentModel = undefined;
           this.sessionExpectedHash = undefined;
-          this.saveInProgress = false;
         },
         null,
         this.disposables
@@ -107,6 +114,7 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
         this.disposables
       );
     }
+    session.panel = this.panel;
 
     const payload = {
       model,
@@ -141,23 +149,24 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
     requestFilePath?: string,
     requestGeneration?: number
   ): Promise<void> {
-    if (this.saveInProgress || !this.currentFilePath || !this.currentModel) { return; }
+    const session = this.sessions.currentSession;
+    if (!session || !session.isCurrent() || !this.currentFilePath || !this.currentModel) { return; }
     if (requestFilePath !== undefined && requestFilePath !== this.currentFilePath) {
       Logger.warn(
         `Discarding stale command interface save request: target path '${requestFilePath}' does not match active path '${this.currentFilePath}'`
       );
       return;
     }
-    if (requestGeneration !== undefined && requestGeneration !== this.sessionGeneration) {
+    if (requestGeneration !== undefined && requestGeneration !== session.generation) {
       Logger.warn(
-        `Discarding stale command interface save request: target generation ${requestGeneration} does not match active generation ${this.sessionGeneration}`
+        `Discarding stale command interface save request: target generation ${requestGeneration} does not match active generation ${session.generation}`
       );
       return;
     }
 
-    this.saveInProgress = true;
+    const snapshot = session.snapshot();
     const targetFilePath = this.currentFilePath;
-    const targetGeneration = this.sessionGeneration;
+    const targetGeneration = snapshot.generation;
     const snapshotExpectedHash = this.sessionExpectedHash;
     const snapshotModel: CommandInterfaceModel = {
       ...this.currentModel,
@@ -167,72 +176,67 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
       subsystemsOrder: [...this.currentModel.subsystemsOrder],
       groupsOrder: [...this.currentModel.groupsOrder],
     };
-    try {
-      const mutationEngine = getConfigurationMutationEngine();
-      const receipt = await mutationEngine.transformFile(
-        targetFilePath,
-        {
-          kind: 'subsystemCommandInterface.save',
-          resourcePath: targetFilePath,
-          expectedRevision: snapshotExpectedHash,
-          session: { id: targetFilePath, generation: targetGeneration },
-        },
-        async () => {
-          const updatedModel: CommandInterfaceModel = {
-            ...snapshotModel,
-            visibility: newVisibility,
-          };
-          const xml = serializeCommandInterface(updatedModel);
-          return { content: xml, result: updatedModel };
-        },
-      );
 
-      let failureMessage: string | undefined;
-      if (receipt.status === 'conflict') {
-        if (receipt.code === 'STALE_TARGET_REVISION') {
-          failureMessage = 'Конфликт сохранения: файл интерфейса подсистемы был изменен другим процессом.';
-        } else {
-          failureMessage = `Конфликт сохранения интерфейса подсистемы: ${receipt.message}`;
+    await session.runGuardedSave(snapshot, async () => {
+      try {
+        const mutationEngine = getConfigurationMutationEngine();
+        const receipt = await mutationEngine.transformFile(
+          targetFilePath,
+          {
+            kind: 'subsystemCommandInterface.save',
+            resourcePath: targetFilePath,
+            expectedRevision: snapshotExpectedHash,
+            session: { id: targetFilePath, generation: targetGeneration },
+          },
+          async () => {
+            const updatedModel: CommandInterfaceModel = {
+              ...snapshotModel,
+              visibility: newVisibility,
+            };
+            const xml = serializeCommandInterface(updatedModel);
+            return { content: xml, result: updatedModel };
+          },
+        );
+
+        let failureMessage: string | undefined;
+        if (receipt.status === 'conflict') {
+          if (receipt.code === 'STALE_TARGET_REVISION') {
+            failureMessage = 'Конфликт сохранения: файл интерфейса подсистемы был изменен другим процессом.';
+          } else {
+            failureMessage = `Конфликт сохранения интерфейса подсистемы: ${receipt.message}`;
+          }
+        } else if (receipt.status !== 'committed') {
+          failureMessage = `Ошибка записи CommandInterface.xml: ${receipt.message}`;
         }
-      } else if (receipt.status !== 'committed') {
-        failureMessage = `Ошибка записи CommandInterface.xml: ${receipt.message}`;
-      }
-      const savedModel = unwrapMutationReceipt(receipt, failureMessage);
+        const savedModel = unwrapMutationReceipt(receipt, failureMessage);
 
-      if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
-        this.sessionExpectedHash = receipt.newRevision;
-        this.currentModel = savedModel;
+        if (session.isCurrent(snapshot)) {
+          this.sessionExpectedHash = receipt.newRevision;
+          this.currentModel = savedModel;
+          session.postMessage({
+            type: 'saveSuccess',
+            filePath: targetFilePath,
+            generation: targetGeneration,
+          });
+        }
+      } catch (err) {
+        Logger.error('Failed to save CommandInterface.xml', err);
+        if (session.isCurrent(snapshot)) {
+          const failureProjection = projectMutationFailure(err);
+          session.postMessage({
+            type: 'saveError',
+            filePath: targetFilePath,
+            generation: targetGeneration,
+            ...(failureProjection ?? { message: MESSAGES.SUBSYSTEM_COMMAND_INTERFACE_WRITE_FAILED }),
+          });
+        }
+        throw err;
       }
-
-      if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
-        this.postMessage({
-          type: 'saveSuccess',
-          filePath: targetFilePath,
-          generation: targetGeneration,
-        });
-      }
-    } catch (err) {
-      Logger.error('Failed to save CommandInterface.xml', err);
-      if (this.currentFilePath === targetFilePath && this.sessionGeneration === targetGeneration) {
-        const failureProjection = projectMutationFailure(err);
-        this.postMessage({
-          type: 'saveError',
-          filePath: targetFilePath,
-          generation: targetGeneration,
-          ...(failureProjection ?? { message: MESSAGES.SUBSYSTEM_COMMAND_INTERFACE_WRITE_FAILED }),
-        });
-      }
-      throw err;
-    } finally {
-      this.saveInProgress = false;
-    }
-  }
-
-  private postMessage(msg: Record<string, unknown>): void {
-    void this.panel?.webview.postMessage(msg);
+    });
   }
 
   dispose(): void {
+    this.sessions.dispose();
     if (this.panel) {
       this.panel.dispose();
       this.panel = undefined;
