@@ -3,6 +3,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as vm from 'vm';
 import { RolesRightsEditorProvider } from '../../src/rolesEditor/rolesRightsEditorProvider';
 import { RoleXmlParser } from '../../src/rolesEditor/roleXmlParser';
 import {
@@ -1387,6 +1388,213 @@ suite('RolesEditor Lazy Loading & Staged Lifecycle (Issue #329)', () => {
       restorePanel();
       provider.dispose();
     }
+  });
+
+  test('webview table row projection maintains uniqueness and preserves assigned attributes across initial -> index merge -> expand -> collapse -> search lifecycle (Round 3 finding)', () => {
+    const htmlPath = path.resolve(__dirname, '../../../src/rolesEditor/rolesEditorWebview.html');
+    let html = fs.readFileSync(htmlPath, 'utf8');
+
+    const roleData = {
+      name: 'Operator',
+      filePath: 'src/Roles/Operator.xml',
+      rights: {
+        'Catalog.Items.Attribute.Beta': { Read: true, View: true },
+        'Catalog.Items': { Read: true },
+      },
+      uiRights: [
+        { key: 'Read', label: 'Read', xmlName: 'Read', applicableTo: ['Catalog', 'Attribute'] },
+        { key: 'View', label: 'View', xmlName: 'View', applicableTo: ['Catalog', 'Attribute'] },
+      ],
+    };
+
+    const initialObjects = [
+      { fullName: 'Configuration', type: 'Configuration', name: 'Config', rowKind: 'configurationRoot' },
+      { fullName: 'Catalog.Items', type: 'Catalog', name: 'Items', rowKind: 'object', attributesState: 'unloaded' },
+      { fullName: 'Catalog.Items.Attribute.Beta', type: 'Attribute', name: 'Beta', rowKind: 'attribute', parentLabel: 'Items (Catalog)' },
+    ];
+
+    html = html.replace(
+      /\s*\/\/ Request initial data\s*vscode\.postMessage\(\s*\{\s*command:\s*'ready'\s*\}\s*\)\s*;/,
+      ` roleData = ${JSON.stringify(roleData)};
+        allObjects = ${JSON.stringify(initialObjects)};
+        tableInitialLoading = false;
+        filterState = { showAll: false, searchQuery: '', typeFilter: '' };
+        currentSessionId = 'session-1';
+        currentDataRevision = 1;
+        beginRightsEditorSession();`
+    );
+
+    const scriptMatch = html.match(/<script nonce="[^"]*">([\s\S]*?)<\/script>/);
+    assert.ok(scriptMatch, 'script tag must exist in rolesEditorWebview.html');
+    const scriptContent = scriptMatch[1];
+
+    class MockElement {
+      public tagName: string;
+      public children: MockElement[] = [];
+      public cells: MockElement[] = [];
+      public options: MockElement[] = [];
+      public style: { [key: string]: unknown } = {};
+      public dataset: { [key: string]: string } = {};
+      public textContent: string = '';
+      public _innerHTML: string = '';
+      public title: string = '';
+      public value: string = '';
+      public checked: boolean = false;
+      public disabled: boolean = false;
+      public listeners: { [event: string]: ((e: unknown) => void)[] } = {};
+
+      constructor(tagName = 'div') {
+        this.tagName = tagName;
+      }
+      get innerHTML(): string { return this._innerHTML; }
+      set innerHTML(val: string) {
+        this._innerHTML = val;
+        if (!val) {
+          this.children = [];
+          this.cells = [];
+        }
+      }
+      addEventListener(event: string, fn: (e: unknown) => void): void {
+        this.listeners[event] = this.listeners[event] || [];
+        this.listeners[event].push(fn);
+      }
+      dispatchEvent(event: { type: string; target?: unknown }): void {
+        const list = this.listeners[event.type] || [];
+        for (const fn of list) fn(event);
+      }
+      appendChild(child: MockElement): MockElement {
+        this.children.push(child);
+        if (this.tagName === 'tr') {
+          this.cells.push(child);
+        }
+        return child;
+      }
+      deleteCell(index: number): void {
+        this.cells.splice(index, 1);
+      }
+      remove(index: number): void {
+        this.options.splice(index, 1);
+      }
+      closest(selector: string): MockElement | null {
+        if (selector === '.attr-expander') {
+          return this;
+        }
+        return null;
+      }
+      getAttribute(name: string): string | null {
+        if (name === 'data-object') return this.dataset.object || null;
+        return null;
+      }
+    }
+
+    const elements: { [id: string]: MockElement } = {
+      tableLoadingOverlay: new MockElement('div'),
+      metadataLoadError: new MockElement('div'),
+      saveButton: new MockElement('button'),
+      cancelButton: new MockElement('button'),
+      hostMessageBanner: new MockElement('div'),
+      roleTitle: new MockElement('span'),
+      rlsTemplates: new MockElement('textarea'),
+      showAllToggle: new MockElement('input'),
+      searchInput: new MockElement('input'),
+      typeFilter: new MockElement('select'),
+      tableBody: new MockElement('tbody'),
+      headerRow: new MockElement('tr'),
+      emptyState: new MockElement('div'),
+      searchStatus: new MockElement('span'),
+    };
+
+    const messageListeners: ((event: { data: unknown }) => void)[] = [];
+    const sandbox = {
+      acquireVsCodeApi: () => ({ postMessage: () => {} }),
+      document: {
+        getElementById: (id: string) => elements[id] || new MockElement('div'),
+        createElement: (tag: string) => new MockElement(tag),
+        addEventListener: () => {},
+      },
+      window: {
+        addEventListener: (type: string, fn: (event: { data: unknown }) => void) => {
+          if (type === 'message') messageListeners.push(fn);
+        },
+      },
+      requestAnimationFrame: (fn: () => void) => fn(),
+      setTimeout: (fn: () => void) => setTimeout(fn, 0),
+      clearTimeout: (id: NodeJS.Timeout) => clearTimeout(id),
+      console,
+    };
+
+    vm.createContext(sandbox);
+    vm.runInContext(scriptContent, sandbox);
+
+    function postMessage(msg: unknown): void {
+      for (const fn of messageListeners) fn({ data: msg });
+    }
+
+    // 1. Initial State: Catalog.Items and Catalog.Items.Attribute.Beta
+    const initialTitles = elements.tableBody.children.map((tr) => tr.children[0].title);
+    assert.deepStrictEqual(initialTitles, ['Catalog.Items', 'Catalog.Items.Attribute.Beta']);
+    const initialUnique = new Set(initialTitles);
+    assert.strictEqual(initialUnique.size, initialTitles.length, 'Initial rows must have unique fullNames');
+
+    // 2. Index merge
+    postMessage({
+      command: 'objectsLoaded',
+      data: {
+        sessionId: 'session-1',
+        phase: 'typeIndex',
+        objects: [
+          { fullName: 'Configuration', type: 'Configuration', name: 'Config', rowKind: 'configurationRoot' },
+          { fullName: 'Catalog.Items', type: 'Catalog', name: 'Items', rowKind: 'object', attributesState: 'unloaded', hasRights: true },
+          { fullName: 'Catalog.Other', type: 'Catalog', name: 'Other', rowKind: 'object', attributesState: 'unloaded', hasRights: false },
+        ],
+      },
+    });
+    const afterIndexTitles = elements.tableBody.children.map((tr) => tr.children[0].title);
+    assert.deepStrictEqual(afterIndexTitles, ['Catalog.Items', 'Catalog.Items.Attribute.Beta']);
+
+    // 3. Deliver loaded attributes
+    postMessage({
+      command: 'loadObjectAttributesResult',
+      data: {
+        sessionId: 'session-1',
+        objectFullName: 'Catalog.Items',
+        state: 'loaded',
+        attributes: [
+          { fullName: 'Catalog.Items.Attribute.Beta', type: 'Attribute', name: 'Beta', rowKind: 'attribute', parentLabel: 'Items (Catalog)' },
+          { fullName: 'Catalog.Items.Attribute.Alpha', type: 'Attribute', name: 'Alpha', rowKind: 'attribute', parentLabel: 'Items (Catalog)' },
+        ],
+      },
+    });
+
+    // Expand Catalog.Items
+    const expanderTarget = new MockElement('span');
+    expanderTarget.dataset.object = 'Catalog.Items';
+    expanderTarget.textContent = '▶';
+    elements.tableBody.dispatchEvent({ type: 'click', target: expanderTarget });
+
+    const rowsAfterExpand = elements.tableBody.children.map((tr) => tr.children[0].title);
+    const betaExpandCount = rowsAfterExpand.filter((f) => f === 'Catalog.Items.Attribute.Beta').length;
+    // RED ASSERTION: in current unpatched code, beta is duplicated (betaExpandCount === 2)
+    assert.strictEqual(betaExpandCount, 1, 'Beta attribute must not be duplicated when parent object is expanded');
+    const expandUnique = new Set(rowsAfterExpand);
+    assert.strictEqual(expandUnique.size, rowsAfterExpand.length, 'Every rendered row must have a unique fullName when expanded');
+
+    // 4. Collapse Catalog.Items
+    elements.tableBody.dispatchEvent({ type: 'click', target: expanderTarget });
+    const rowsAfterCollapse = elements.tableBody.children.map((tr) => tr.children[0].title);
+    const betaCollapseCount = rowsAfterCollapse.filter((f) => f === 'Catalog.Items.Attribute.Beta').length;
+    assert.strictEqual(betaCollapseCount, 1, 'Beta attribute must remain visible and unique after collapse');
+    const collapseUnique = new Set(rowsAfterCollapse);
+    assert.strictEqual(collapseUnique.size, rowsAfterCollapse.length, 'Every rendered row must have a unique fullName after collapse');
+
+    // 5. Search
+    elements.searchInput.value = 'beta';
+    elements.searchInput.dispatchEvent({ type: 'input', target: elements.searchInput });
+    const rowsAfterSearch = elements.tableBody.children.map((tr) => tr.children[0].title);
+    const betaSearchCount = rowsAfterSearch.filter((f) => f === 'Catalog.Items.Attribute.Beta').length;
+    assert.strictEqual(betaSearchCount, 1, 'Beta attribute must remain unique during search');
+    const searchUnique = new Set(rowsAfterSearch);
+    assert.strictEqual(searchUnique.size, rowsAfterSearch.length, 'Every rendered row must have a unique fullName during search');
   });
 });
 

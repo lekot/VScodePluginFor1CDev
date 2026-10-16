@@ -932,12 +932,20 @@
                 }
 
                 var filtered = [];
+                var seenFullNames = new Set();
+
+                function pushRow(r) {
+                    if (!seenFullNames.has(r.fullName)) {
+                        seenFullNames.add(r.fullName);
+                        filtered.push(r);
+                    }
+                }
                 for (var i = 0; i < allObjects.length; i++) {
                     var obj = allObjects[i];
 
                     if (obj.rowKind === 'attribute') {
                         if ((showAll || hasAssignedRights(obj)) && matchesType(obj) && matchesQuery(obj)) {
-                            filtered.push(obj);
+                            pushRow(obj);
                         }
                         continue;
                     }
@@ -963,13 +971,13 @@
 
                     var showParent = parentType && ((parentRights && parentQuery) || matchingAttrs.length > 0);
                     if (showParent) {
-                        filtered.push(obj);
+                        pushRow(obj);
                         if (isExpanded) {
                             for (var k = 0; k < loadedAttrs.length; k++) {
                                 var child = loadedAttrs[k];
                                 var childRights = showAll || hasAssignedRights(child);
                                 if (childRights && (parentQuery || matchesQuery(child))) {
-                                    filtered.push(child);
+                                    pushRow(child);
                                 }
                             }
                         }
