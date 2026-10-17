@@ -1441,7 +1441,7 @@ export class RolesRightsEditorProvider {
     this.configurationRootPath = undefined;
     this.sessionExpectedHash = undefined;
     this.sessionExpectedState = undefined;
-    this.sessions.dispose();
+    this.sessions.bumpGeneration();
     this.isTypeIndexComplete = true;
     this.typeIndexError = undefined;
 

@@ -22,6 +22,7 @@ export class WebviewEditorSession<TTarget = unknown> implements vscode.Disposabl
   readonly generation: number;
   readonly target: TTarget;
   private _panel: vscode.WebviewPanel | undefined;
+  private _panelDisposable: vscode.Disposable | undefined;
   private _isDisposed = false;
   private _isSuperseded = false;
   private _saveInProgress = false;
@@ -41,18 +42,7 @@ export class WebviewEditorSession<TTarget = unknown> implements vscode.Disposabl
     this.id = options.id;
     this.generation = options.generation;
     this.target = options.target;
-    this._panel = options.panel;
-
-    if (this._panel) {
-      this._disposables.push(
-        this._panel.onDidDispose(() => {
-          this.dispose();
-          if (this.coordinator.currentSession === this) {
-            this.coordinator.clearActiveSession(this);
-          }
-        })
-      );
-    }
+    this.panel = options.panel;
   }
 
   get panel(): vscode.WebviewPanel | undefined {
@@ -60,7 +50,28 @@ export class WebviewEditorSession<TTarget = unknown> implements vscode.Disposabl
   }
 
   set panel(p: vscode.WebviewPanel | undefined) {
+    if (this._panel === p) {
+      return;
+    }
+    if (this._panelDisposable) {
+      this._panelDisposable.dispose();
+      const idx = this._disposables.indexOf(this._panelDisposable);
+      if (idx >= 0) {
+        this._disposables.splice(idx, 1);
+      }
+      this._panelDisposable = undefined;
+    }
     this._panel = p;
+
+    if (this._panel) {
+      this._panelDisposable = this._panel.onDidDispose(() => {
+        this.dispose();
+        if (this.coordinator.currentSession === this) {
+          this.coordinator.clearActiveSession(this);
+        }
+      });
+      this._disposables.push(this._panelDisposable);
+    }
   }
 
   get isDisposed(): boolean {

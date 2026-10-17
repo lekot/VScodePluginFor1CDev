@@ -155,4 +155,51 @@ suite('EditorSessionCoordinator (#257)', () => {
     assert.strictEqual(session.isCurrent(), false);
     assert.strictEqual(coordinator.currentSession, undefined);
   });
+
+  test('7. late panel attachment via session.panel registers onDidDispose and invalidates session when panel is disposed', () => {
+    const coordinator = new EditorSessionCoordinator<TestTarget>();
+    const { panel, getPostedMessages } = createFakeWebviewPanel();
+
+    const target: TestTarget = { id: 'A', filePath: '/path/A' };
+    const session = coordinator.begin({ target });
+    assert.strictEqual(session.isCurrent(), true);
+    assert.strictEqual(session.panel, undefined);
+
+    // Late attach
+    session.panel = panel as any;
+    assert.strictEqual(session.panel, panel);
+
+    // Dispose panel
+    panel.dispose();
+
+    assert.strictEqual(session.isCurrent(), false, 'Session must not be current after late-attached panel disposal');
+    assert.strictEqual(session.isDisposed, true, 'Session must be marked disposed');
+    assert.strictEqual(session.postMessage({ type: 'update' }), false, 'postMessage on disposed session must fail');
+    assert.strictEqual(getPostedMessages().length, 0);
+    assert.strictEqual(coordinator.currentSession, undefined, 'Coordinator active session must be cleared');
+  });
+
+  test('8. reassigning panel unbinds previous panel onDidDispose', () => {
+    const coordinator = new EditorSessionCoordinator<TestTarget>();
+    const { panel: panel1 } = createFakeWebviewPanel();
+    const { panel: panel2 } = createFakeWebviewPanel();
+
+    const target: TestTarget = { id: 'A', filePath: '/path/A' };
+    const session = coordinator.begin({ target });
+
+    session.panel = panel1 as any;
+    // Reassign to panel2
+    session.panel = panel2 as any;
+
+    // Disposing panel1 should NOT dispose the session
+    panel1.dispose();
+    assert.strictEqual(session.isDisposed, false, 'Disposing previous panel must not dispose session');
+    assert.strictEqual(session.isCurrent(), true);
+
+    // Disposing panel2 SHOULD dispose the session
+    panel2.dispose();
+    assert.strictEqual(session.isDisposed, true, 'Disposing active panel must dispose session');
+    assert.strictEqual(coordinator.currentSession, undefined);
+  });
 });
+

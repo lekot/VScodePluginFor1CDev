@@ -1845,5 +1845,49 @@ suite('rightsEditor integration', () => {
         await rmRfTestDir(tmpRoot);
       }
     });
+
+    test('closing panel and reopening provider does not throw and starts fresh session (#257)', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-reopen-'));
+      try {
+        const rolesDir = path.join(tmpRoot, 'Roles', 'Role1');
+        await fs.promises.mkdir(rolesDir, { recursive: true });
+        const rolePath = path.join(rolesDir, 'Role1.mdo');
+        const rightsPath = path.join(rolesDir, 'Rights.xml');
+        await fs.promises.writeFile(rolePath,
+          '<Role xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Properties><Name>Role1</Name></Properties><Rights/></Role>', 'utf8');
+        await fs.promises.writeFile(rightsPath,
+          '<Rights xmlns="http://v8.1c.ru/8.2/roles"><setForNewObjects>false</setForNewObjects></Rights>', 'utf8');
+
+        const { panel: panel1 } = createFakeWebviewPanel();
+        let currentFakePanel = panel1;
+        let restorePanel = patchCreateWebviewPanel(currentFakePanel);
+        const provider = new RolesRightsEditorProvider(createFakeExtensionContext());
+        try {
+          // Open role first time
+          await provider.show(rolePath, tmpRoot);
+          assert.strictEqual(provider.isOpen(), true);
+
+          // Close panel (simulates user closing the webview tab)
+          panel1.dispose();
+          assert.strictEqual(provider.isOpen(), false);
+
+          // Create new fake panel for second open
+          const { panel: panel2 } = createFakeWebviewPanel();
+          currentFakePanel = panel2;
+          restorePanel();
+          restorePanel = patchCreateWebviewPanel(currentFakePanel);
+
+          // Reopen role — MUST NOT throw "Cannot begin session on disposed EditorSessionCoordinator"
+          await provider.show(rolePath, tmpRoot);
+          assert.strictEqual(provider.isOpen(), true);
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        await rmRfTestDir(tmpRoot);
+      }
+    });
   });
 });
+
