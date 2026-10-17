@@ -3,7 +3,7 @@ import { TypeDefinition, ReferenceableGroup, StringQualifiers, NumberQualifiers,
 import { TypeParser } from '../parsers/typeParser';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
-import { randomBytes } from 'crypto';
+import { renderSecureWebviewHtml } from '../utils/webviewSecurity';
 import { validateElementName } from '../utils/elementNameValidator';
 
 type WebviewMessage =
@@ -341,7 +341,6 @@ export class TypeEditorProvider {
     typeDefinition: TypeDefinition,
     referenceableObjects: ReferenceableGroup[] = []
   ): string {
-    const nonce = randomBytes(24).toString('base64url');
     const currentTypeDisplay = this.formatTypeDisplay(typeDefinition);
     const refGroupsJson = escapeJsonForScript(JSON.stringify(referenceableObjects));
     const initialComposite = typeDefinition.types.length > 1;
@@ -359,14 +358,14 @@ export class TypeEditorProvider {
     const initialSelectedJson = escapeJsonForScript(JSON.stringify(initialSelectedIds));
     const initialQualifierStateJson = escapeJsonForScript(JSON.stringify(initialQualifierState));
 
-    return `
+    const template = `
       <!DOCTYPE html>
       <html>
       <head>
         <meta charset="UTF-8">
-        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}';">
+        <meta http-equiv="Content-Security-Policy" content="\${csp}">
         <title>Редактирование типа данных</title>
-        <style nonce="${nonce}">
+        <style nonce="\${nonce}">
           * { box-sizing: border-box; }
           body {
             font-family: var(--vscode-font-family);
@@ -534,7 +533,7 @@ export class TypeEditorProvider {
             <button type="button" id="save-btn" ${typeDefinition.types.length === 0 ? 'disabled' : ''} title="Сохранить" aria-label="Сохранить">Сохранить</button>
           </div>
         </div>
-        <script nonce="${nonce}">
+        <script nonce="\${nonce}">
           const vscode = acquireVsCodeApi();
           const refGroups = ${refGroupsJson};
           const treeData = ${treeDataJson};
@@ -750,6 +749,7 @@ export class TypeEditorProvider {
       </body>
       </html>
     `;
+    return renderSecureWebviewHtml(template, { webview: this.panel?.webview });
   }
 
   private formatTypeDisplay(typeDefinition: TypeDefinition): string {

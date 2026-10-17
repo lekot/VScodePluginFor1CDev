@@ -1,10 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 import { Logger } from '../utils/logger';
+import { renderSecureWebviewHtml } from '../utils/webviewSecurity';
 import type { MutationFailureProjection } from '../services/configurationSession/mutationReceiptError';
 import type { CompareTreeNode } from './compareTreeTypes';
 import type { CompareMessage } from './domain/compareContracts';
@@ -57,22 +57,22 @@ interface ControllerState {
 }
 
 export function renderConfigCompareWebviewHtml(input: ConfigCompareWebviewRenderInput): string {
-  const nonce = input.nonce ?? createNonce();
   const payload = toWebviewPayload(
     input.payload,
     input.executableNodeIds ?? [],
     input.title ?? 'Сравнение конфигураций'
   );
-  let html = input.htmlPath
+  const template = input.htmlPath
     ? fs.readFileSync(input.htmlPath, 'utf8')
     : readConfigCompareWebviewTemplate();
-  html = html.replace(/\$\{webview\.cspSource\}/g, input.webview.cspSource);
-  html = html.replace(/\$\{nonce\}/g, nonce);
-  html = html.replace(
-    '// __CONFIG_COMPARE_DATA_PLACEHOLDER__',
-    `window.__configCompareData = ${escapeJsonForScript(JSON.stringify(payload))};`
-  );
-  return html;
+  return renderSecureWebviewHtml(template, {
+    webview: input.webview,
+    nonce: input.nonce,
+    substitutions: {
+      '// __CONFIG_COMPARE_DATA_PLACEHOLDER__':
+        `window.__configCompareData = ${escapeJsonForScript(JSON.stringify(payload))};`,
+    },
+  });
 }
 
 export function showConfigurationCompare(
@@ -147,10 +147,6 @@ export function bindConfigurationCompareWebview(
       disposeSubscription.dispose();
     },
   };
-}
-
-export function createNonce(): string {
-  return randomBytes(24).toString('base64url');
 }
 
 async function handleWebviewMessage(
@@ -627,7 +623,7 @@ const DEFAULT_CONFIG_COMPARE_WEBVIEW_HTML = `<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-\${nonce}'; script-src 'nonce-\${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="\${csp}">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Сравнение конфигураций</title>
 </head>

@@ -1,6 +1,6 @@
 import * as fs from 'fs';
-import { randomBytes } from 'crypto';
 import * as path from 'path';
+import { renderSecureWebviewHtml } from '../utils/webviewSecurity';
 import type * as vscode from 'vscode';
 import type { TreeNode } from '../models/treeNode';
 import { Logger } from '../utils/logger';
@@ -42,10 +42,6 @@ interface XdtoPackageCompareSession {
   leftModel: XdtoPackageModel;
   rightModel: XdtoPackageModel;
   strategy: XdtoCompareJoinStrategy;
-}
-
-function createNonce(): string {
-  return randomBytes(24).toString('base64url');
 }
 
 async function getVscode(): Promise<typeof vscode> {
@@ -108,14 +104,14 @@ function buildPayload(session: XdtoPackageCompareSession): XdtoPackageComparePay
 
 function render(context: vscode.ExtensionContext, session: XdtoPackageCompareSession): void {
   const htmlPath = resolveWebviewHtmlPath(context);
-  const nonce = createNonce();
-  let html = fs.readFileSync(htmlPath, 'utf8');
-  html = html.replace(
-    '// __XDTO_COMPARE_DATA_PLACEHOLDER__',
-    `window.__xdtoCompareData = ${escapeJsonForScript(JSON.stringify(buildPayload(session)))};`
-  );
-  html = html.replace(/\$\{nonce\}/g, nonce);
-  session.panel.webview.html = html;
+  const template = fs.readFileSync(htmlPath, 'utf8');
+  session.panel.webview.html = renderSecureWebviewHtml(template, {
+    webview: session.panel.webview,
+    substitutions: {
+      '// __XDTO_COMPARE_DATA_PLACEHOLDER__':
+        `window.__xdtoCompareData = ${escapeJsonForScript(JSON.stringify(buildPayload(session)))};`,
+    },
+  });
 }
 
 async function handleMerge(

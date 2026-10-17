@@ -4,7 +4,7 @@
  */
 
 import * as vscode from 'vscode';
-import { randomBytes } from 'crypto';
+import { renderSecureWebviewHtml } from '../utils/webviewSecurity';
 import { getPreviewFieldCharacterWidth } from './formPreviewLayout';
 
 export function escapeWebviewText(value: unknown): string {
@@ -3739,25 +3739,26 @@ export function getWebviewHtml(
   webview: vscode.Webview,
   hostColorThemeKind: vscode.ColorThemeKind = vscode.ColorThemeKind.Dark
 ): string {
-  void webview;
+
   const hostTheme = hostThemeFromColorKind(hostColorThemeKind);
-  const nonce = randomBytes(24).toString('base64url');
-  return `<!DOCTYPE html>
+
+  const template = `<!DOCTYPE html>
 <html lang="ru" data-vscode-theme="${hostTheme}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="\${csp}">
   <title>Редактор формы 1С</title>
-  <style nonce="${nonce}">
+  <style nonce="\${nonce}">
 ${buildWebviewCss()}
   </style>
 </head>
 <body>
 ${buildWebviewLayout()}
-  <script nonce="${nonce}">
+  <script nonce="\${nonce}">
 ${buildWebviewJs()}
   </script>
 </body>
 </html>`;
+  return renderSecureWebviewHtml(template, { webview });
 }

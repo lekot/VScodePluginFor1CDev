@@ -1,6 +1,6 @@
 import * as fs from 'fs';
-import { randomBytes } from 'crypto';
 import * as path from 'path';
+import { renderSecureWebviewHtml } from '../utils/webviewSecurity';
 import type * as vscode from 'vscode';
 import type { TreeNode } from '../models/treeNode';
 import { parseXdtoPackage } from '../parsers/xdtoPackageParser';
@@ -34,10 +34,6 @@ interface XdtoViewPayload {
     title: string;
     saved: string;
   };
-}
-
-function createNonce(): string {
-  return randomBytes(24).toString('base64url');
 }
 
 async function getVscode(): Promise<typeof vscode> {
@@ -181,16 +177,18 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
     };
 
     const htmlPath = this.resolveWebviewHtmlPath();
-    const nonce = createNonce();
-    let html = fs.readFileSync(htmlPath, 'utf8');
-    html = html.replace(
-      '// __XDTO_DATA_PLACEHOLDER__',
-      `window.__xdtoData = ${escapeJsonForScript(JSON.stringify(payload))};`
-    );
-    html = html.replace(/\$\{webview\.cspSource\}/g, this.panel?.webview.cspSource ?? '');
-    html = html.replace(/\$\{nonce\}/g, nonce);
+    const template = fs.readFileSync(htmlPath, 'utf8');
     if (this.panel) {
-      this.panel.webview.html = html;
+      this.panel.webview.html = renderSecureWebviewHtml(template, {
+        webview: this.panel.webview,
+        csp: {
+          imgSources: [this.panel.webview.cspSource, 'data:'],
+        },
+        substitutions: {
+          '// __XDTO_DATA_PLACEHOLDER__':
+            `window.__xdtoData = ${escapeJsonForScript(JSON.stringify(payload))};`,
+        },
+      });
     }
   }
 

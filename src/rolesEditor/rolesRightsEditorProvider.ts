@@ -36,7 +36,7 @@ import { FormatDetector } from '../parsers/formatDetector';
 import { updateRight } from './rightsUpdateUtils';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
-import { createNonce } from '../utils/webviewSecurity';
+import { renderSecureWebviewHtml } from '../utils/webviewSecurity';
 import { FilterState, createDefaultFilterState } from './models/filterState';
 import { EditorSessionCoordinator } from '../services/editorSession/editorSessionCoordinator';
 import { MetadataType } from '../models/treeNode';
@@ -438,8 +438,6 @@ export class RolesRightsEditorProvider {
 
     const htmlPath = this.resolveRolesEditorWebviewHtmlPath();
     let html = await fs.promises.readFile(htmlPath, 'utf8');
-    const nonce = createNonce();
-    html = html.replace(/\$\{nonce\}/g, nonce);
 
     // Prepare data to inject
     const roleDataJson = escapeJsonForScript(
@@ -472,7 +470,9 @@ export class RolesRightsEditorProvider {
             beginRightsEditorSession();`
     );
 
-    return html;
+    return renderSecureWebviewHtml(html, {
+      csp: { allowUnsafeInlineStyles: true },
+    });
   }
 
   /**
@@ -1373,12 +1373,12 @@ export class RolesRightsEditorProvider {
    * Generate error HTML
    */
   private getErrorHtml(message: string): string {
-    return `
+    const template = `
       <!DOCTYPE html>
       <html>
       <head>
         <meta charset="UTF-8">
-        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+        <meta http-equiv="Content-Security-Policy" content="\${csp}">
         <title>Error</title>
         <style>
           body {
@@ -1403,6 +1403,7 @@ export class RolesRightsEditorProvider {
       </body>
       </html>
     `;
+    return renderSecureWebviewHtml(template, { csp: { allowUnsafeInlineStyles: true } });
   }
 
   /**

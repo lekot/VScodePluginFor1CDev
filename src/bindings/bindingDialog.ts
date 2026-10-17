@@ -3,7 +3,7 @@
  */
 
 import * as vscode from 'vscode';
-import { randomBytes } from 'crypto';
+import { renderSecureWebviewHtml } from '../utils/webviewSecurity';
 import type { ConfigurationBinding } from './models/configurationBinding';
 import {
   detectIbcmdExtensionNameFromConfigRelativePath,
@@ -122,22 +122,16 @@ export function getBindingDialogHtml(
     ibcmdExtensionName?: string;
   },
 ): string {
-  const nonce = randomBytes(24).toString('base64url');
   const initialJson = escapeJsonForScript(JSON.stringify(initial));
-  const csp = [
-    "default-src 'none'",
-    `script-src 'nonce-${nonce}'`,
-    `style-src 'nonce-${nonce}'`,
-    `font-src ${webview.cspSource}`,
-  ].join('; ');
-  return `<!DOCTYPE html>
+
+  const template = `<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="${csp}">
+  <meta http-equiv="Content-Security-Policy" content="\${csp}">
   <title>Привязка баз</title>
-  <style nonce="${nonce}">
+  <style nonce="\${nonce}">
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -293,7 +287,7 @@ export function getBindingDialogHtml(
     <button type="button" id="btnCancel">Закрыть</button>
     <button type="button" class="primary" id="btnSave">Сохранить</button>
   </div>
-  <script nonce="${nonce}">
+  <script nonce="\${nonce}">
     const vscode = acquireVsCodeApi();
     let state = ${initialJson};
     let massPrev = state.massDeployment;
@@ -475,6 +469,13 @@ export function getBindingDialogHtml(
   </script>
 </body>
 </html>`;
+  return renderSecureWebviewHtml(template, {
+    webview,
+    csp: {
+      styleSources: [],
+      fontSources: [webview.cspSource],
+    },
+  });
 }
 
 /**
