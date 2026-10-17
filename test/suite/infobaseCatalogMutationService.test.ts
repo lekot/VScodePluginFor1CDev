@@ -11,12 +11,14 @@ import { InfobaseStorageService } from '../../src/infobases/infobaseStorageServi
 import { BindingManager } from '../../src/bindings/bindingManager';
 import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
 import type { ConfigurationBinding } from '../../src/bindings/models/configurationBinding';
-import { infobasePasswordSecretKey } from '../../src/infobases/constants';
+import { infobasePasswordSecretKey, INFOBASE_GLOBAL_STATE_KEY } from '../../src/infobases/constants';
 import { INFOBASE_BINDINGS_FILE_NAME } from '../../src/bindings/bindingConstants';
 
 class MockMemento implements Memento {
   readonly map = new Map<string, unknown>();
   public failOnUpdate = false;
+  public failOnKey?: string;
+  public failOnPredicate?: (key: string, value: unknown) => boolean;
 
   keys(): readonly string[] {
     return [...this.map.keys()];
@@ -32,7 +34,10 @@ class MockMemento implements Memento {
   }
 
   async update(key: string, value: unknown): Promise<void> {
-    if (this.failOnUpdate) {
+    if (
+      (this.failOnUpdate && (!this.failOnKey || this.failOnKey === key)) ||
+      (this.failOnPredicate && this.failOnPredicate(key, value))
+    ) {
       throw new Error('Simulated globalState.update failure');
     }
     if (value === undefined) {
@@ -271,6 +276,7 @@ suite('InfobaseCatalogMutationService (#254 Aggregate Consistency)', () => {
     });
 
     // Now make globalState fail on update
+    memento.failOnKey = INFOBASE_GLOBAL_STATE_KEY;
     memento.failOnUpdate = true;
 
     const outcome = await mutationService.saveInfobase({
@@ -289,11 +295,13 @@ suite('InfobaseCatalogMutationService (#254 Aggregate Consistency)', () => {
 
     // Catalog has unchanged old name
     memento.failOnUpdate = false;
+    memento.failOnKey = undefined;
     const current = await storage.getById(testServerEntry.id);
     assert.strictEqual(current?.name, testServerEntry.name);
   });
 
   test('saveInfobase deletes newly stored secret when globalState fails on newly inserted entry', async () => {
+    memento.failOnKey = INFOBASE_GLOBAL_STATE_KEY;
     memento.failOnUpdate = true;
 
     const outcome = await mutationService.saveInfobase({
@@ -424,7 +432,8 @@ suite('InfobaseCatalogMutationService (#254 Aggregate Consistency)', () => {
       { workspaceFolder: 'ws1', configRelativePath: 'src/cf', infobaseIds: [testServerEntry.id], massDeployment: false },
     ]));
 
-    // Fail globalState update
+    // Fail globalState update on catalog
+    memento.failOnKey = INFOBASE_GLOBAL_STATE_KEY;
     memento.failOnUpdate = true;
 
     const outcome = await mutationService.removeInfobase({ infobaseId: testServerEntry.id });
@@ -552,6 +561,7 @@ suite('InfobaseCatalogMutationService (#254 Aggregate Consistency)', () => {
     await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, journalRecord);
 
     // Make globalState update fail during recovery
+    memento.failOnKey = INFOBASE_GLOBAL_STATE_KEY;
     memento.failOnUpdate = true;
 
     const recoveryOutcome = await mutationService.recoverPendingMutations();
@@ -561,5 +571,235 @@ suite('InfobaseCatalogMutationService (#254 Aggregate Consistency)', () => {
     // Journal must NOT be wiped!
     memento.failOnUpdate = false;
     assert.deepStrictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), journalRecord);
+  });
+
+  test('recoverPendingMutations recovers save(clear) when crash occurred in phase=intent (between secret delete and journal update)', async () => {
+    // 1. Initial state: entry has password in storage and secretStorage
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'my-pass' },
+    });
+
+    // 2. Simulate crash immediately after secretStorage.delete, before recordJournal(secrets_mutated) was written
+    // The journal still has phase: 'intent' with passwordChangeKind: 'clear'
+    await secrets.delete(infobasePasswordSecretKey(testServerEntry.id));
+    await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, {
+      operationId: 'op-crash-between-delete-and-journal',
+      type: 'save',
+      phase: 'intent',
+      infobaseId: testServerEntry.id,
+      timestamp: Date.now(),
+      hadPasswordBefore: true,
+      passwordChangeKind: 'clear',
+      targetEntry: { ...testServerEntry, hasStoredPassword: false },
+    });
+
+    // 3. Recovery must inspect intent and update catalog to hasStoredPassword: false
+    const recoveryOutcome = await mutationService.recoverPendingMutations();
+    assert.strictEqual(recoveryOutcome.recoveredCount, 1);
+    assert.deepStrictEqual(recoveryOutcome.errors, []);
+
+    const entryAfter = await storage.getById(testServerEntry.id);
+    assert.strictEqual(entryAfter?.hasStoredPassword, false, 'Catalog entry must be updated to hasStoredPassword: false');
+    assert.strictEqual(await secrets.get(infobasePasswordSecretKey(testServerEntry.id)), undefined);
+    assert.strictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), undefined);
+  });
+
+  test('recoverPendingMutations cleans up all folders during remove when crash occurred after mutating only first folder', async () => {
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'my-pass' },
+    });
+
+    // Both ws1 and ws2 have bindings to testServerEntry
+    const bindingsWs1Uri = vscode.Uri.file(`C:\\workspace\\ws1\\.vscode\\${INFOBASE_BINDINGS_FILE_NAME}`);
+    const bindingsWs2Uri = vscode.Uri.file(`C:\\workspace\\ws2\\.vscode\\${INFOBASE_BINDINGS_FILE_NAME}`);
+
+    // Simulate crash after writing ws1 (ws1 has empty infobaseIds, but ws2 still has testServerEntry.id!)
+    mockFs.files.set(bindingsWs1Uri.toString(), encodeBindings([
+      { workspaceFolder: 'ws1', configRelativePath: 'src/cf', infobaseIds: [], massDeployment: false },
+    ]));
+    mockFs.files.set(bindingsWs2Uri.toString(), encodeBindings([
+      { workspaceFolder: 'ws2', configRelativePath: 'src/cf', infobaseIds: [testServerEntry.id], massDeployment: false },
+    ]));
+
+    await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, {
+      operationId: 'op-remove-multi-crash',
+      type: 'remove',
+      phase: 'bindings_mutated',
+      infobaseId: testServerEntry.id,
+      timestamp: Date.now(),
+      hadPasswordBefore: true,
+      targetFolderPaths: [workspaceFolders[0].uri.fsPath, workspaceFolders[1].uri.fsPath],
+      modifiedBindings: [
+        {
+          folderFsPath: workspaceFolders[0].uri.fsPath,
+          folderName: 'ws1',
+          originalBindings: [{ workspaceFolder: 'ws1', configRelativePath: 'src/cf', infobaseIds: [testServerEntry.id], massDeployment: false }],
+        },
+      ],
+    });
+
+    const recoveryOutcome = await mutationService.recoverPendingMutations();
+    assert.strictEqual(recoveryOutcome.recoveredCount, 1);
+    assert.deepStrictEqual(recoveryOutcome.errors, []);
+
+    // Both ws1 and ws2 must be cleaned up!
+    const allBindings = await bindingManager.listAll();
+    const b1 = allBindings.find((b) => b.workspaceFolder === 'ws1');
+    const b2 = allBindings.find((b) => b.workspaceFolder === 'ws2');
+    assert.deepStrictEqual(b1?.infobaseIds, [], 'ws1 must stay clean');
+    assert.deepStrictEqual(b2?.infobaseIds, [], 'ws2 must have target id removed by recovery');
+
+    // Catalog entry deleted, secret deleted, journal cleared
+    assert.strictEqual(await storage.getById(testServerEntry.id), undefined);
+    assert.strictEqual(await secrets.get(infobasePasswordSecretKey(testServerEntry.id)), undefined);
+    assert.strictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), undefined);
+  });
+
+  test('recoverPendingMutations does not delete catalog entry and preserves journal when a folder is inaccessible during remove recovery', async () => {
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'my-pass' },
+    });
+
+    const bindingsWs1Uri = vscode.Uri.file(`C:\\workspace\\ws1\\.vscode\\${INFOBASE_BINDINGS_FILE_NAME}`);
+    const bindingsWs2Uri = vscode.Uri.file(`C:\\workspace\\ws2\\.vscode\\${INFOBASE_BINDINGS_FILE_NAME}`);
+
+    mockFs.files.set(bindingsWs1Uri.toString(), encodeBindings([
+      { workspaceFolder: 'ws1', configRelativePath: 'src/cf', infobaseIds: [], massDeployment: false },
+    ]));
+    mockFs.files.set(bindingsWs2Uri.toString(), encodeBindings([
+      { workspaceFolder: 'ws2', configRelativePath: 'src/cf', infobaseIds: [testServerEntry.id], massDeployment: false },
+    ]));
+
+    const journalRecord = {
+      operationId: 'op-remove-inaccessible-folder',
+      type: 'remove',
+      phase: 'bindings_mutated' as const,
+      infobaseId: testServerEntry.id,
+      timestamp: Date.now(),
+      hadPasswordBefore: true,
+      targetFolderPaths: [workspaceFolders[0].uri.fsPath, workspaceFolders[1].uri.fsPath],
+    };
+    await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, journalRecord);
+
+    // Make ws2 fail on write
+    mockFs.failOnUri = 'ws2';
+
+    const recoveryOutcome = await mutationService.recoverPendingMutations();
+    assert.strictEqual(recoveryOutcome.recoveredCount, 0, 'Must not claim recovery success when a folder fails');
+    assert.strictEqual(recoveryOutcome.errors.length, 1);
+
+    // Catalog entry and secret must NOT be removed!
+    assert.ok(await storage.getById(testServerEntry.id), 'Entry must remain in catalog');
+    // Journal must NOT be wiped!
+    assert.deepStrictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), journalRecord, 'Journal must be preserved');
+
+    // When folder becomes accessible again, recovery succeeds on retry:
+    mockFs.failOnUri = null;
+    const retryOutcome = await mutationService.recoverPendingMutations();
+    assert.strictEqual(retryOutcome.recoveredCount, 1, 'Retry must succeed');
+    assert.strictEqual(await storage.getById(testServerEntry.id), undefined);
+    assert.strictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), undefined);
+  });
+
+  // ─── 6. Journal Write Failure Resilience ──────────────────────────────────────
+
+  test('saveInfobase aborts and preserves state when journal intent write fails', async () => {
+    memento.failOnPredicate = (key, val) =>
+      key === INFOBASE_MUTATION_JOURNAL_KEY && (val as any)?.phase === 'intent';
+
+    const outcome = await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'secret-pass' },
+    });
+
+    assert.strictEqual(outcome.success, false);
+    if (outcome.success) return;
+    assert.strictEqual(outcome.code, 'GLOBAL_STATE_FAILED');
+    assert.strictEqual(outcome.rolledBack, true);
+
+    // No secret or catalog entry should have been written
+    assert.strictEqual(await secrets.get(infobasePasswordSecretKey(testServerEntry.id)), undefined);
+    assert.strictEqual(await storage.getById(testServerEntry.id), undefined);
+  });
+
+  test('saveInfobase rolls back stored secret when journal secrets_mutated write fails', async () => {
+    // Save existing entry first
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'old-pass' },
+    });
+
+    // Make journal write fail on secrets_mutated phase
+    memento.failOnPredicate = (key, val) =>
+      key === INFOBASE_MUTATION_JOURNAL_KEY && (val as any)?.phase === 'secrets_mutated';
+
+    const outcome = await mutationService.saveInfobase({
+      entry: { ...testServerEntry, name: 'Renamed Entry' },
+      passwordChange: { kind: 'set', password: 'new-pass' },
+    });
+
+    assert.strictEqual(outcome.success, false);
+    if (outcome.success) return;
+    assert.strictEqual(outcome.code, 'GLOBAL_STATE_FAILED');
+    assert.strictEqual(outcome.rolledBack, true);
+
+    // Secret must have been rolled back to old-pass!
+    assert.strictEqual(await secrets.get(infobasePasswordSecretKey(testServerEntry.id)), 'old-pass');
+    // Catalog unchanged
+    const current = await storage.getById(testServerEntry.id);
+    assert.strictEqual(current?.name, testServerEntry.name);
+  });
+
+  test('removeInfobase aborts and preserves state when journal intent write fails', async () => {
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'my-pass' },
+    });
+
+    memento.failOnPredicate = (key, val) =>
+      key === INFOBASE_MUTATION_JOURNAL_KEY && (val as any)?.phase === 'intent';
+
+    const outcome = await mutationService.removeInfobase({ infobaseId: testServerEntry.id });
+    assert.strictEqual(outcome.success, false);
+    if (outcome.success) return;
+    assert.strictEqual(outcome.code, 'GLOBAL_STATE_FAILED');
+    assert.strictEqual(outcome.rolledBack, true);
+
+    // Entry and secret still exist
+    assert.ok(await storage.getById(testServerEntry.id));
+    assert.strictEqual(await secrets.get(infobasePasswordSecretKey(testServerEntry.id)), 'my-pass');
+  });
+
+  test('removeInfobase rolls back modified bindings when journal bindings_mutated write fails', async () => {
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'my-pass' },
+    });
+
+    const bindingsWs1Uri = vscode.Uri.file(`C:\\workspace\\ws1\\.vscode\\${INFOBASE_BINDINGS_FILE_NAME}`);
+    mockFs.files.set(bindingsWs1Uri.toString(), encodeBindings([
+      { workspaceFolder: 'ws1', configRelativePath: 'src/cf', infobaseIds: [testServerEntry.id], massDeployment: false },
+    ]));
+
+    // Fail journal write when recording bindings_mutated
+    memento.failOnPredicate = (key, val) =>
+      key === INFOBASE_MUTATION_JOURNAL_KEY && (val as any)?.phase === 'bindings_mutated';
+
+    const outcome = await mutationService.removeInfobase({ infobaseId: testServerEntry.id });
+    assert.strictEqual(outcome.success, false);
+    if (outcome.success) return;
+    assert.strictEqual(outcome.code, 'GLOBAL_STATE_FAILED');
+    assert.strictEqual(outcome.rolledBack, true);
+
+    // Bindings must be restored!
+    const b1 = (await bindingManager.listAll()).find((b) => b.workspaceFolder === 'ws1');
+    assert.deepStrictEqual(b1?.infobaseIds, [testServerEntry.id]);
+
+    // Entry and secret still intact
+    assert.ok(await storage.getById(testServerEntry.id));
+    assert.strictEqual(await secrets.get(infobasePasswordSecretKey(testServerEntry.id)), 'my-pass');
   });
 });

@@ -96,6 +96,7 @@ export interface PendingJournalRecord {
   readonly hadPasswordBefore: boolean;
   readonly passwordChangeKind?: 'set' | 'clear' | 'keep';
   readonly targetEntry?: InfobaseEntry;
+  readonly targetFolderPaths?: readonly string[];
   readonly modifiedBindings?: readonly ModifiedBindingFolderCompensation[];
 }
 
@@ -131,11 +132,7 @@ export class InfobaseCatalogMutationService {
 
   private async recordJournal(record: PendingJournalRecord): Promise<void> {
     if (this.deps.memento) {
-      try {
-        await this.deps.memento.update(INFOBASE_MUTATION_JOURNAL_KEY, record);
-      } catch (err) {
-        Logger.warn('InfobaseCatalogMutationService: failed to write pending journal record', err);
-      }
+      await this.deps.memento.update(INFOBASE_MUTATION_JOURNAL_KEY, record);
     }
   }
 
@@ -220,21 +217,40 @@ export class InfobaseCatalogMutationService {
 
       // 4. Record intent in journal
       const operationId = randomUUID();
-      await this.recordJournal({
-        operationId,
-        type: 'save',
-        phase: 'intent',
-        infobaseId: entry.id,
-        timestamp: Date.now(),
-        hadPasswordBefore: !!existingPassword,
-        passwordChangeKind: passwordChange?.kind,
-        targetEntry: entry,
-      });
+      try {
+        await this.recordJournal({
+          operationId,
+          type: 'save',
+          phase: 'intent',
+          infobaseId: entry.id,
+          timestamp: Date.now(),
+          hadPasswordBefore: !!existingPassword,
+          passwordChangeKind: passwordChange?.kind,
+          targetEntry: entry,
+        });
+      } catch (err) {
+        return {
+          success: false,
+          code: 'GLOBAL_STATE_FAILED',
+          message: err instanceof Error ? err.message : String(err),
+          rolledBack: true,
+        };
+      }
 
       // 5. Apply SecretStorage mutation
       if (passwordChange?.kind === 'set') {
         try {
           await this.deps.secretStorage.store(secretKey, passwordChange.password!);
+        } catch (err) {
+          await this.clearJournal();
+          return {
+            success: false,
+            code: 'SECRET_STORAGE_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+            rolledBack: true,
+          };
+        }
+        try {
           await this.recordJournal({
             operationId,
             type: 'save',
@@ -246,6 +262,31 @@ export class InfobaseCatalogMutationService {
             targetEntry: entry,
           });
         } catch (err) {
+          if (existingPassword !== undefined) {
+            try {
+              await this.deps.secretStorage.store(secretKey, existingPassword);
+            } catch (rbErr) {
+              Logger.error('InfobaseCatalogMutationService: rollback failed after journal failure', rbErr);
+            }
+          } else {
+            try {
+              await this.deps.secretStorage.delete(secretKey);
+            } catch (rbErr) {
+              Logger.error('InfobaseCatalogMutationService: rollback failed after journal failure', rbErr);
+            }
+          }
+          await this.clearJournal();
+          return {
+            success: false,
+            code: 'GLOBAL_STATE_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+            rolledBack: true,
+          };
+        }
+      } else if (passwordChange?.kind === 'clear' || !entry.hasStoredPassword) {
+        try {
+          await this.deps.secretStorage.delete(secretKey);
+        } catch (err) {
           await this.clearJournal();
           return {
             success: false,
@@ -254,9 +295,7 @@ export class InfobaseCatalogMutationService {
             rolledBack: true,
           };
         }
-      } else if (passwordChange?.kind === 'clear' || !entry.hasStoredPassword) {
         try {
-          await this.deps.secretStorage.delete(secretKey);
           await this.recordJournal({
             operationId,
             type: 'save',
@@ -268,10 +307,17 @@ export class InfobaseCatalogMutationService {
             targetEntry: entry,
           });
         } catch (err) {
+          if (existingPassword !== undefined) {
+            try {
+              await this.deps.secretStorage.store(secretKey, existingPassword);
+            } catch (rbErr) {
+              Logger.error('InfobaseCatalogMutationService: rollback failed after journal failure', rbErr);
+            }
+          }
           await this.clearJournal();
           return {
             success: false,
-            code: 'SECRET_STORAGE_FAILED',
+            code: 'GLOBAL_STATE_FAILED',
             message: err instanceof Error ? err.message : String(err),
             rolledBack: true,
           };
@@ -334,6 +380,7 @@ export class InfobaseCatalogMutationService {
       const folders = this.getWorkspaceFolders() ?? [];
 
       // 1. Preflight validation of bindings files (Fault prevention)
+      const targetFolderPaths: string[] = [];
       if (removeBindings) {
         for (const folder of folders) {
           const diag = await readBindingsForFolderDiagnostic(this.fsApi, folder);
@@ -346,20 +393,33 @@ export class InfobaseCatalogMutationService {
               affectedBindingsFiles: [diag.uri.fsPath],
             };
           }
+          if (diag.kind === 'valid' && diag.bindings.some((b) => b.infobaseIds.includes(id))) {
+            targetFolderPaths.push(folder.uri.fsPath);
+          }
         }
       }
 
       // 2. Record intent
       const operationId = randomUUID();
-      await this.recordJournal({
-        operationId,
-        type: 'remove',
-        phase: 'intent',
-        infobaseId: id,
-        timestamp: Date.now(),
-        hadPasswordBefore: hadPassword,
-        targetEntry: existing,
-      });
+      try {
+        await this.recordJournal({
+          operationId,
+          type: 'remove',
+          phase: 'intent',
+          infobaseId: id,
+          timestamp: Date.now(),
+          hadPasswordBefore: hadPassword,
+          targetEntry: existing,
+          targetFolderPaths,
+        });
+      } catch (err) {
+        return {
+          success: false,
+          code: 'GLOBAL_STATE_FAILED',
+          message: err instanceof Error ? err.message : String(err),
+          rolledBack: true,
+        };
+      }
 
       // 3. Mutate bindings with snapshot tracking for rollback
       const modifiedFolders: Array<{ folder: vscode.WorkspaceFolder; originalBindings: ConfigurationBinding[] }> = [];
@@ -389,20 +449,6 @@ export class InfobaseCatalogMutationService {
             try {
               await writeBindingsForFolder(this.fsApi, folder, nextBindings);
               modifiedFolders.push({ folder, originalBindings });
-              await this.recordJournal({
-                operationId,
-                type: 'remove',
-                phase: 'bindings_mutated',
-                infobaseId: id,
-                timestamp: Date.now(),
-                hadPasswordBefore: hadPassword,
-                targetEntry: existing,
-                modifiedBindings: modifiedFolders.map((mf) => ({
-                  folderFsPath: mf.folder.uri.fsPath,
-                  folderName: mf.folder.name,
-                  originalBindings: mf.originalBindings,
-                })),
-              });
             } catch (err) {
               // Rollback all previously modified bindings
               let rolledBack = true;
@@ -419,6 +465,47 @@ export class InfobaseCatalogMutationService {
               return {
                 success: false,
                 code: 'BINDINGS_WRITE_FAILED',
+                message: err instanceof Error ? err.message : String(err),
+                rolledBack,
+                recoveryRequired: !rolledBack,
+              };
+            }
+
+            try {
+              await this.recordJournal({
+                operationId,
+                type: 'remove',
+                phase: 'bindings_mutated',
+                infobaseId: id,
+                timestamp: Date.now(),
+                hadPasswordBefore: hadPassword,
+                targetEntry: existing,
+                targetFolderPaths,
+                modifiedBindings: modifiedFolders.map((mf) => ({
+                  folderFsPath: mf.folder.uri.fsPath,
+                  folderName: mf.folder.name,
+                  originalBindings: mf.originalBindings,
+                })),
+              });
+            } catch (err) {
+              // Rollback all modified bindings including current folder
+              let rolledBack = true;
+              for (const item of modifiedFolders) {
+                try {
+                  await writeBindingsForFolder(this.fsApi, item.folder, item.originalBindings);
+                } catch (rbErr) {
+                  Logger.error(
+                    'InfobaseCatalogMutationService: rollback failed for folder after journal failure',
+                    rbErr,
+                  );
+                  rolledBack = false;
+                }
+              }
+
+              await this.clearJournal();
+              return {
+                success: false,
+                code: 'GLOBAL_STATE_FAILED',
                 message: err instanceof Error ? err.message : String(err),
                 rolledBack,
                 recoveryRequired: !rolledBack,
@@ -495,85 +582,75 @@ export class InfobaseCatalogMutationService {
         const existing = await this.deps.storage.getById(record.infobaseId);
 
         if (record.type === 'save') {
-          if (record.phase === 'secrets_mutated') {
-            if (
-              record.passwordChangeKind === 'clear' ||
-              (record.targetEntry && !record.targetEntry.hasStoredPassword)
-            ) {
-              if (existing && existing.hasStoredPassword) {
-                const target = record.targetEntry ?? { ...existing, hasStoredPassword: false };
-                await this.deps.storage.upsert(target);
-                recovered++;
-              } else if (!existing) {
-                await this.deps.secretStorage.delete(secretKey);
-                recovered++;
-              } else {
-                recovered++;
-              }
-            } else if (record.passwordChangeKind === 'set') {
+          const isClearIntent =
+            record.passwordChangeKind === 'clear' ||
+            (record.targetEntry && !record.targetEntry.hasStoredPassword);
+
+          if (isClearIntent) {
+            await this.deps.secretStorage.delete(secretKey);
+            if (existing && existing.hasStoredPassword) {
+              const target = record.targetEntry ?? { ...existing, hasStoredPassword: false };
+              await this.deps.storage.upsert(target);
+            }
+            recovered++;
+          } else if (record.passwordChangeKind === 'set') {
+            if (record.phase === 'secrets_mutated') {
               if (existing && !existing.hasStoredPassword && record.targetEntry) {
                 await this.deps.storage.upsert(record.targetEntry);
-                recovered++;
               } else if (!existing) {
                 await this.deps.secretStorage.delete(secretKey);
-                recovered++;
-              } else {
-                recovered++;
               }
             } else {
-              recovered++;
-            }
-          } else {
-            // phase === 'intent' or legacy record without phase
-            if (!existing && !record.hadPasswordBefore) {
-              await this.deps.secretStorage.delete(secretKey);
-              recovered++;
-            } else if (existing && !existing.hasStoredPassword) {
-              await this.deps.secretStorage.delete(secretKey);
-              recovered++;
-            } else {
-              recovered++;
-            }
-          }
-        } else if (record.type === 'remove') {
-          if (record.phase === 'bindings_mutated') {
-            try {
-              if (existing) {
-                await this.deps.storage.remove(record.infobaseId);
+              // phase === 'intent'
+              if (!existing) {
+                await this.deps.secretStorage.delete(secretKey);
               }
-              await this.deps.secretStorage.delete(secretKey);
-              recovered++;
-            } catch (removeErr) {
-              if (record.modifiedBindings && record.modifiedBindings.length > 0) {
-                const folders = this.getWorkspaceFolders() ?? [];
-                for (const mb of record.modifiedBindings) {
-                  const f = folders.find(
-                    (folder) =>
-                      folder.uri.fsPath === mb.folderFsPath || folder.name === mb.folderName,
-                  );
-                  if (f) {
-                    try {
-                      await writeBindingsForFolder(this.fsApi, f, mb.originalBindings);
-                    } catch (wbErr) {
-                      Logger.error(
-                        'InfobaseCatalogMutationService: compensation writeBindingsForFolder failed',
-                        wbErr,
-                      );
-                    }
-                  }
-                }
-              }
-              throw removeErr;
             }
+            recovered++;
           } else {
-            // phase === 'intent' or legacy record
+            // 'keep' or unspecified
             if (!existing) {
               await this.deps.secretStorage.delete(secretKey);
-              recovered++;
-            } else {
-              recovered++;
+            }
+            recovered++;
+          }
+        } else if (record.type === 'remove') {
+          const folders = this.getWorkspaceFolders() ?? [];
+
+          // 1. Preflight: if any folder has invalid/corrupted bindings, fail closed
+          for (const folder of folders) {
+            const diag = await readBindingsForFolderDiagnostic(this.fsApi, folder);
+            if (diag.kind === 'invalid') {
+              throw new Error(`Cannot recover remove operation: bindings file corrupted at ${diag.uri.fsPath}`);
             }
           }
+
+          // 2. Cascade bindings removal across ALL workspace folders idempotently
+          for (const folder of folders) {
+            const diag = await readBindingsForFolderDiagnostic(this.fsApi, folder);
+            if (diag.kind === 'valid') {
+              let changed = false;
+              const nextBindings = diag.bindings.map((b) => {
+                const filtered = b.infobaseIds.filter((x) => x !== record.infobaseId);
+                if (filtered.length !== b.infobaseIds.length) {
+                  changed = true;
+                }
+                return { ...b, infobaseIds: filtered };
+              });
+              if (changed) {
+                await writeBindingsForFolder(this.fsApi, folder, nextBindings);
+              }
+            }
+          }
+
+          // 3. Remove from catalog
+          if (existing) {
+            await this.deps.storage.remove(record.infobaseId);
+          }
+
+          // 4. Delete secret
+          await this.deps.secretStorage.delete(secretKey);
+          recovered++;
         }
 
         await this.clearJournal();
