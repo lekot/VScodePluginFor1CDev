@@ -69,12 +69,18 @@ export class XmlParser {
    * @returns Parsed XML object
    */
   static async parseFileAsync(filePath: string): Promise<Record<string, unknown>> {
+    let xmlContent: string;
     try {
-      await fs.promises.access(filePath);
-    } catch (err) {
-      throw new Error(`File not found: ${filePath}`);
+      xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+    } catch (err: unknown) {
+      const code = (err as { code?: string } | undefined)?.code;
+      if (code === 'ENOENT') {
+        const notFound = new Error(`File not found: ${filePath}`) as Error & { code?: string };
+        notFound.code = 'ENOENT';
+        throw notFound;
+      }
+      throw err;
     }
-    const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
     return this.parseString(xmlContent);
   }
 

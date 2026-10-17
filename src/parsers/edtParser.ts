@@ -206,7 +206,16 @@ export class EdtParser {
       return typeNode.children || [];
     }
 
-    const entries = await fs.promises.readdir(typePath, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(typePath, { withFileTypes: true });
+    } catch (err: unknown) {
+      const code = (err as { code?: string } | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return [];
+      }
+      throw err;
+    }
     return entries
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
@@ -563,7 +572,12 @@ export class EdtParser {
         }
       }
     } catch (error) {
+      const code = (error as { code?: string } | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return typeNode;
+      }
       Logger.warn(`Error reading EDT metadata type directory ${typePath}`, error);
+      throw error;
     }
 
     return typeNode;
@@ -577,7 +591,11 @@ export class EdtParser {
     let items: string[];
     try {
       items = await fs.promises.readdir(typePath);
-    } catch {
+    } catch (err: unknown) {
+      const code = (err as { code?: string } | undefined)?.code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        throw err;
+      }
       return flatNodes;
     }
     for (const item of items) {
@@ -586,12 +604,35 @@ export class EdtParser {
         const stat = await fs.promises.stat(itemPath);
         if (!stat.isDirectory()) {continue;}
         const node = await this.parseMetadataElement(itemPath, item, 'Subsystems', shallow);
-        const parentRef = node.properties.ParentSubsystem ?? node.properties.parentSubsystemRef;
+        const parentRef = node.properties.ParentSubsystem ?? node.properties.parentSubsystem ?? node.properties.parentSubsystemRef;
         if (parentRef != null) {
           node.properties.parentSubsystemRef = this.normalizeParentSubsystemRef(parentRef);
         }
         flatNodes.push(node);
+
+        const subSubsystems = path.join(itemPath, 'Subsystems');
+        let subStat: fs.Stats | null = null;
+        try {
+          subStat = await fs.promises.stat(subSubsystems);
+        } catch (err: unknown) {
+          const code = (err as { code?: string } | undefined)?.code;
+          if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+            throw err;
+          }
+        }
+        if (subStat?.isDirectory()) {
+          const nested = await this.parseSubsystemsFlat(subSubsystems, shallow);
+          flatNodes.push(...nested);
+        }
       } catch (error) {
+        const code = (error as { code?: string } | undefined)?.code;
+        if (code === 'EACCES' || code === 'EPERM' || code === 'EBUSY' || code === 'EIO') {
+          throw error;
+        }
+        const msg = (error as Error | undefined)?.message;
+        if (typeof msg === 'string' && /EACCES|EPERM|permission denied/i.test(msg)) {
+          throw error;
+        }
         Logger.debug(`Error reading subsystem ${itemPath}`, error);
       }
     }
@@ -645,8 +686,8 @@ export class EdtParser {
 
     let mdoContent: Record<string, unknown> | null = null;
     try {
-      await fs.promises.access(mdoPath);
-      try {
+
+
         mdoContent = await XmlParser.parseFileAsync(mdoPath);
         const properties = this.extractPropertiesFromMdo(mdoContent);
         elementNode.properties = { ...elementNode.properties, ...properties };
@@ -658,11 +699,22 @@ export class EdtParser {
           elementNode.properties.extendedConfigurationObject = objBelonging.extendedConfigurationObject;
         }
       } catch (error) {
+      const code = (error as { code?: string } | undefined)?.code;
+      if (code === 'ENOENT') {
+        // MDO file doesn't exist, skip
+      } else if (code === 'EACCES' || code === 'EPERM' || code === 'EBUSY' || code === 'EIO') {
+        throw error;
+      } else {
+        const msg = (error as Error | undefined)?.message;
+        if (typeof msg === 'string' && /EACCES|EPERM|permission denied/i.test(msg)) {
+          throw error;
+        }
         Logger.warn(`Error parsing MDO file ${mdoPath}`, error);
       }
-    } catch {
-      // MDO file doesn't exist, skip
-    }
+      }
+
+
+
 
     if (shallow) {
       elementNode.properties._lazy = true;
@@ -967,7 +1019,7 @@ export class EdtParser {
 
       if (typeof value === 'object' && value !== null) {
         const element = value as Record<string, unknown>;
-        const properties = element.Properties as Record<string, unknown>;
+        const properties = (element.Properties as Record<string, unknown>) || element;
 
         if (properties) {
           for (const [propKey, propValue] of Object.entries(properties)) {

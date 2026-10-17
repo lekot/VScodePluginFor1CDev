@@ -208,7 +208,11 @@ suite('treeNormalization Test Suite', () => {
     const normalized = normalizeEmptyPlaceholderTree(root, { configPath, format: ConfigFormat.Designer });
 
     const provider = new MetadataTreeDataProvider();
-    provider.setRootNode(normalized);
+    provider.setRootNode(normalized, {
+      configurationId: 'test-placeholder-config' as any,
+      configPath,
+      format: ConfigFormat.Designer,
+    });
 
     const catalogs = normalized.children!.find((c) => c.id === 'Catalogs')!;
     const children = await provider.getChildren(catalogs);

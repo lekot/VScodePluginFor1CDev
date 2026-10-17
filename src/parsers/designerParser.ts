@@ -224,7 +224,16 @@ export class DesignerParser {
       return typeNode.children || [];
     }
 
-    const entries = await fs.promises.readdir(typePath, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(typePath, { withFileTypes: true });
+    } catch (err: unknown) {
+      const code = (err as { code?: string } | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return [];
+      }
+      throw err;
+    }
     const directoryNames = new Set<string>();
     const flatXmlNames = new Set<string>();
 
@@ -472,7 +481,12 @@ export class DesignerParser {
         typeNode.children?.push(elementNode);
       }
     } catch (error) {
+      const code = (error as { code?: string } | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return typeNode;
+      }
       Logger.warn(`Error reading metadata type directory ${typePath}`, error);
+      throw error;
     }
 
     return typeNode;
@@ -483,16 +497,42 @@ export class DesignerParser {
    */
   private static async collectSubsystemXmlPaths(subsystemsDir: string): Promise<string[]> {
     const result: string[] = [];
-    const items = await fs.promises.readdir(subsystemsDir).catch(() => [] as string[]);
+    let items: string[];
+    try {
+      items = await fs.promises.readdir(subsystemsDir);
+    } catch (err: unknown) {
+      const code = (err as { code?: string } | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return [];
+      }
+      throw err;
+    }
     for (const item of items) {
       const full = path.join(subsystemsDir, item);
-      const stat = await fs.promises.stat(full).catch(() => null);
+      let stat: fs.Stats | null = null;
+      try {
+        stat = await fs.promises.stat(full);
+      } catch (err: unknown) {
+        const code = (err as { code?: string } | undefined)?.code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') {
+          continue;
+        }
+        throw err;
+      }
       if (!stat) {continue;}
       if (stat.isFile() && item.toLowerCase().endsWith('.xml')) {
         result.push(full);
       } else if (stat.isDirectory()) {
         const subSubsystems = path.join(full, 'Subsystems');
-        const subStat = await fs.promises.stat(subSubsystems).catch(() => null);
+        let subStat: fs.Stats | null = null;
+        try {
+          subStat = await fs.promises.stat(subSubsystems);
+        } catch (err: unknown) {
+          const code = (err as { code?: string } | undefined)?.code;
+          if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+            throw err;
+          }
+        }
         if (subStat?.isDirectory()) {
           const nested = await this.collectSubsystemXmlPaths(subSubsystems);
           result.push(...nested);
@@ -516,6 +556,14 @@ export class DesignerParser {
       try {
         xmlContent = await XmlParser.parseFileAsync(xmlPath);
       } catch (error) {
+        const code = (error as { code?: string } | undefined)?.code;
+        if (code === 'EACCES' || code === 'EPERM' || code === 'EBUSY' || code === 'EIO') {
+          throw error;
+        }
+        const msg = (error as Error | undefined)?.message;
+        if (typeof msg === 'string' && /EACCES|EPERM|permission denied/i.test(msg)) {
+          throw error;
+        }
         Logger.debug(`Error parsing subsystem XML ${xmlPath}`, error);
         continue;
       }

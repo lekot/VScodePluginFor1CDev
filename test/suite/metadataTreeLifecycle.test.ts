@@ -27,6 +27,7 @@ import {
 } from '../helpers/vscodeModuleStub';
 import { registerMetadataWorkspaceFolderLifecycle } from '../../src/extension/metadataWorkspaceFolders';
 import { loadTreeFromCache, saveTreeToCache } from '../../src/utils/diskCache';
+import * as diskCache from '../../src/utils/diskCache';
 
 suite('MetadataTreeLifecycle', () => {
   const originalDiscoverAllConfigurationRoots = FormatDetector.discoverAllConfigurationRoots;
@@ -909,6 +910,14 @@ suite('MetadataTreeLifecycle', () => {
       return { promise, reject };
     })();
     const targetedInvalidationStarted = deferred<void>();
+    const diskInvalidationStarted = deferred<void>();
+    const releaseDiskInvalidation = deferred<void>();
+    const mutableDiskCache = diskCache as unknown as { invalidateTreeCache: typeof diskCache.invalidateTreeCache };
+    const originalInvalidateTreeCache = diskCache.invalidateTreeCache;
+    mutableDiskCache.invalidateTreeCache = async () => {
+      diskInvalidationStarted.resolve(undefined);
+      await releaseDiskInvalidation.promise;
+    };
     (MetadataParser.invalidateTypeContentsCache as unknown as typeof MetadataParser.invalidateTypeContentsCache) =
       async () => { targetedInvalidationStarted.resolve(undefined); };
     (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async () => {
@@ -952,13 +961,15 @@ suite('MetadataTreeLifecycle', () => {
       });
       let targetedSettled = false;
       void targeted.completed.then(() => { targetedSettled = true; });
-      await targetedInvalidationStarted.promise;
+      await Promise.all([targetedInvalidationStarted.promise, diskInvalidationStarted.promise]);
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.strictEqual(targetedSettled, false, 'the targeted handle remains pending while the full parse is unresolved');
       assert.strictEqual(parseCalls, 2, 'targeted parsing must wait until the active full parse finishes');
 
       rejectFullParse.reject(new Error('full-tree parse failed'));
-      const [fullLoadResult, targetedResult] = await Promise.all([fullLoad, targeted.completed]);
+      const fullLoadResult = await fullLoad;
+      releaseDiskInvalidation.resolve(undefined);
+      const targetedResult = await targeted.completed;
 
       assert.strictEqual(fullLoadResult.succeeded, false);
       assert.strictEqual(targetedResult.succeeded, false, 'a failed full-load wait must not become a false success');
@@ -971,8 +982,10 @@ suite('MetadataTreeLifecycle', () => {
       assert.strictEqual(await loadTreeFromCache(globalStoragePath, configPath), null);
     } finally {
       rejectFullParse.reject(new Error('test cleanup released the full parse'));
+      releaseDiskInvalidation.resolve(undefined);
       await coordinator.dispose();
       lifecycle.dispose();
+      mutableDiskCache.invalidateTreeCache = originalInvalidateTreeCache;
       await fs.promises.rm(tempRoot, { recursive: true, force: true });
     }
   });

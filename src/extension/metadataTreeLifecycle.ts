@@ -118,10 +118,22 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     // Increment synchronously, before the first await, so an in-flight parser
     // cannot repopulate the just-invalidated shared cache.
     cacheEpoch += 1;
-    if (state.extensionContext?.globalStoragePath) {
-      await invalidateTreeCache(state.extensionContext.globalStoragePath, configPath);
+    state.treeDataProvider?.invalidateTypeLoadsForConfiguration(configPath);
+
+    const invoke = async (operation: () => Promise<void>): Promise<void> => {
+      const promise = operation();
+      await promise;
+    };
+    // Start parser invalidation first so its epoch advances before any disk I/O can suspend.
+    const parserInvalidation = invoke(() => MetadataParser.invalidateTypeContentsCache(configPath));
+    const diskInvalidation = state.extensionContext?.globalStoragePath
+      ? invoke(() => invalidateTreeCache(state.extensionContext!.globalStoragePath, configPath))
+      : Promise.resolve();
+    const results = await Promise.allSettled([diskInvalidation, parserInvalidation]);
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failure) {
+      throw failure.reason;
     }
-    await MetadataParser.invalidateTypeContentsCache(configPath);
   }
 
   const reloadOrchestratorHandlers = createReloadOrchestratorHandlers({ state });
@@ -347,7 +359,18 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     canPublish: () => boolean,
   ): Promise<ReloadAttemptOutcome> {
     throwIfDisposed();
+    const fullLoadAtRequest = loadInProgress?.then(
+      () => ({ status: 'completed' as const }),
+      (error: unknown) => ({ status: 'failed' as const, error }),
+    );
     await invalidateTreeCacheOnly(configPath);
+    if (fullLoadAtRequest) {
+      const result = await fullLoadAtRequest;
+      if (result.status === 'failed') {
+        throw result.error;
+      }
+      throwIfDisposed();
+    }
     while (loadInProgress) {
       await loadInProgress;
       throwIfDisposed();

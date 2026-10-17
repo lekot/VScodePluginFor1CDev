@@ -178,6 +178,7 @@ export async function optimisticAppendCreatedNode(
   if (!activeTarget.children) {activeTarget.children = [];}
   const created = buildOptimisticCreatedNode(activeTarget, trimmed, ctx);
   ensureR6PlaceholdersForInstanceNode(created, ctx);
+  provider.invalidatePendingTypeLoad(activeTarget);
   activeTarget.children.push(created);
   provider.refresh(activeTarget);
 }

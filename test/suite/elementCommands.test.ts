@@ -178,6 +178,7 @@ suite('elementCommands', () => {
             resolveNodeForUi: (node: TreeNode) => node,
             refresh: () => undefined,
             applyOptimisticDelete: () => { throw new Error('projection update failed'); },
+            invalidatePendingTypeLoad: () => undefined,
           },
         } as unknown as ExtensionState,
         loadMetadataTree: async () => undefined,

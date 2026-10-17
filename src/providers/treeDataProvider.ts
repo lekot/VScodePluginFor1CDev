@@ -5,13 +5,11 @@ import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import type { ReferenceableGroup } from '../types/typeDefinitions';
 import { MetadataParser } from '../parsers/metadataParser';
-import { ConfigFormat } from '../parsers/formatDetector';
 import { MESSAGES } from '../constants/messages';
 import { CONFIGURATION_XML, CONFIG_DUMP_INFO_XML } from '../constants/fileNames';
 import {
   ensureR6PlaceholdersForInstanceNode,
   ensureTabularSectionColumnsPlaceholder,
-  R5_COMMON_DISK_BACKED_FOLDER_IDS,
 } from '../utils/treeNormalization';
 import { OptimisticDeleteToken } from '../types/reloadContracts';
 import { TOP_LEVEL_TYPES } from '../services/elementOperations';
@@ -33,12 +31,21 @@ import { TreeCacheService } from './treeCacheService';
 import { buildTreeItem } from './treeItemBuilder';
 import {
   getReferenceableObjects,
-  getReferenceableObjectsForTypeEditor,
   getTypeEditorReferenceableScopeKey,
   countPendingReferenceableTypeLoads,
   cloneReferenceableGroups,
+  isReferenceableTypeFolder,
+  resolveRootsToUse,
+  projectReferenceableObjectsForTypeEditor,
 } from './treeReferenceLoader';
-import { getObjectableObjectsForEditor, cloneObjectableGroups } from './objectTypeLoader';
+import {
+  isObjectableTypeFolder,
+  projectObjectableObjectsForEditor,
+  cloneObjectableGroups,
+} from './objectTypeLoader';
+import { TreeTypeLoadCoordinator } from './treeTypeLoadCoordinator';
+import { getTypeIndexFolders, isTypeIndexFolder, isTypeIndexLoaded } from './typeFolderSelector';
+import { TreeLoadError, unwrapTreeTypeLoadResult } from '../types/treeTypeLoadResult';
 import type { ObjectableGroup } from '../types/objectTypeDefinitions';
 import type { MetadataLocation } from '../services/metadataFileLocator';
 import type { CachedSupportStatus } from '../support/supportStateCache';
@@ -112,12 +119,17 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   private readonly filter = new TreeFilterService();
   private readonly cache = new TreeCacheService();
+  private readonly typeLoadCoordinator = new TreeTypeLoadCoordinator(
+    this.cache,
+    () => this.clearTypeEditorReferenceableCache(),
+  );
   /** Snapshot of referenceable names per scope for TypeEditor (invalidated with tree reload / structure). */
   private readonly typeEditorReferenceableCache = new Map<string, ReferenceableGroup[]>();
   /** Snapshot of objectable object groups per scope for ObjectTypeEditor (invalidated with tree reload / structure). */
   private readonly objectableObjectsCache = new Map<string, ObjectableGroup[]>();
   private typeContentsWarmupGeneration = 0;
   private typeContentsWarmupTimer: ReturnType<typeof setTimeout> | null = null;
+  private disposed = false;
 
   private messageUpdater: ((message: string | undefined) => void) | null = null;
   /** Ключ {@link bindingKey}(workspaceFolder, configRelativePath) → сводка для узла Configuration. */
@@ -477,9 +489,6 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     // Find config root and load context
     const configRoot = this.cache.getConfigurationRoot(subsystemNode);
     if (!configRoot) {return;}
-    const ctx = this.cache.getLoadContext(configRoot);
-    if (!ctx) {return;}
-
     // For each folder, find the type-node in the tree and load its children if not yet loaded.
     // Process in small chunks to avoid blocking the event loop on large configurations.
     const CHUNK_SIZE = 5;
@@ -494,7 +503,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
         Logger.info('Eager loading type for subsystem filter', { folder });
         try {
-          await this.populateTypeFolderIndex(typeNode, ctx);
+          await this.loadTypeFolderIndex(typeNode);
         } catch (error) {
           Logger.warn('Failed to eager load type for subsystem filter', { folder, error });
         }
@@ -642,6 +651,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (loadContext) {this.cache.setLoadContext(node, this.snapshotLoadContext(loadContext));}
     this.cache.clear();
     this.cache.buildCache(node);
+    this.typeLoadCoordinator.setRoots(this.rootNodes, this.cache.getLoadContexts());
     this.clearTypeEditorReferenceableCache();
     Logger.info('Tree cache size', { nodeCount: this.cache.size });
     this.filter.filterAncestorOrVisibleIds = null;
@@ -671,6 +681,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.cache.setLoadContexts(publishedContexts);
     this.cache.clear();
     for (const node of nodes) {this.cache.buildCache(node);}
+    this.typeLoadCoordinator.setRoots(this.rootNodes, this.cache.getLoadContexts());
     this.clearTypeEditorReferenceableCache();
     Logger.info('Tree cache size', { nodeCount: this.cache.size, roots: nodes.length });
     this.filter.filterAncestorOrVisibleIds = null;
@@ -790,19 +801,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * Used by composition editor to see all objects before lazy expand.
    */
   async eagerLoadAllTypeFolders(configRoot: TreeNode): Promise<void> {
-    const ctx = this.cache.getLoadContext(configRoot);
-    if (!ctx) { return; }
-
-    if (!configRoot.children) { return; }
-
-    for (const typeFolder of configRoot.children) {
+    for (const typeFolder of getTypeIndexFolders(configRoot)) {
       // Already loaded
-      if (typeFolder.children && typeFolder.children.length > 0) { continue; }
-      // Skip non-lazy nodes (e.g. already empty or not a type folder)
-      if (!this.isLazyTypeNode(typeFolder)) { continue; }
+      if (isTypeIndexLoaded(typeFolder)) { continue; }
 
       try {
-        await this.populateTypeFolderIndex(typeFolder, ctx);
+        await this.loadTypeFolderIndex(typeFolder);
       } catch (error) {
         Logger.warn('Failed to eager load type folder', { folder: typeFolder.id, error });
       }
@@ -810,6 +814,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   startTypeContentsCacheWarmup(options: number | TypeContentsWarmupOptions = 1000): void {
+    if (this.disposed) {
+      return;
+    }
     const normalizedOptions: TypeContentsWarmupOptions = typeof options === 'number'
       ? { delayMs: options }
       : options;
@@ -859,26 +866,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   private isTypeFolderAlreadyLoaded(element: TreeNode): boolean {
-    return Boolean(
-      (element.properties as Record<string, unknown> | undefined)?._indexLoaded ||
-      (element.children && element.children.length > 0)
-    );
+    return isTypeIndexLoaded(element);
   }
 
   private collectWarmupTypeFolders(root: TreeNode): TreeNode[] {
-    const folders: TreeNode[] = [];
-    for (const child of root.children ?? []) {
-      if (this.isLazyTypeNode(child)) {
-        folders.push(child);
-      }
-      if (child.id === 'Common') {
-        for (const commonChild of child.children ?? []) {
-          if (this.isLazyTypeNode(commonChild)) {
-            folders.push(commonChild);
-          }
-        }
-      }
-    }
+    const folders = getTypeIndexFolders(root).filter((folder) => !this.isTypeFolderAlreadyLoaded(folder));
     return folders.sort((a, b) => {
       const pa = TYPE_CONTENTS_WARMUP_PRIORITY.get(a.id) ?? 1000;
       const pb = TYPE_CONTENTS_WARMUP_PRIORITY.get(b.id) ?? 1000;
@@ -905,10 +897,6 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         this.scheduleWarmupContinuation(roots.slice(rIdx), generation, budgetMs, slicePauseMs);
         return;
       }
-      const ctx = this.cache.getLoadContext(root);
-      if (!ctx) {
-        continue;
-      }
       for (const typeFolder of this.collectWarmupTypeFolders(root)) {
         if (generation !== this.typeContentsWarmupGeneration) {
           return;
@@ -921,11 +909,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           continue;
         }
         const startedAt = Date.now();
-        await this.populateTypeFolderIndex(
-          typeFolder,
-          ctx,
-          () => generation === this.typeContentsWarmupGeneration,
-        );
+        await this.loadTypeFolderIndex(typeFolder);
         if (generation !== this.typeContentsWarmupGeneration) {
           return;
         }
@@ -956,36 +940,27 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }, slicePauseMs);
   }
 
-  private async populateTypeFolderIndex(
-    typeFolder: TreeNode,
-    ctx: { configPath: string; format: ConfigFormat },
-    canPublish: () => boolean = () => true,
-  ): Promise<TreeNode[]> {
-    if (typeFolder.children && typeFolder.children.length > 0) {
-      return typeFolder.children;
-    }
-
-    const children = await MetadataParser.parseTypeIndex(ctx.configPath, typeFolder.id, { format: ctx.format });
-    if (!canPublish()) {
-      return typeFolder.children ?? [];
-    }
-    for (const c of children) {
-      c.parent = typeFolder;
-      this.cache.buildCache(c);
-      ensureR6PlaceholdersForInstanceNode(c, { configPath: ctx.configPath, format: ctx.format });
-    }
-    typeFolder.children = children;
-    if (!typeFolder.properties) {
-      typeFolder.properties = {};
-    }
-    (typeFolder.properties as Record<string, unknown>)._indexLoaded = true;
-    this.clearTypeEditorReferenceableCache();
-    return children;
+  private async loadTypeFolderIndex(typeFolder: TreeNode): Promise<TreeNode[]> {
+    return unwrapTreeTypeLoadResult(await this.typeLoadCoordinator.loadTypeChildren(typeFolder));
   }
 
   dispose(): void {
+    this.disposed = true;
     this.cancelTypeContentsCacheWarmup();
+    this.typeLoadCoordinator.dispose();
     this._onDidChangeTreeData.dispose();
+  }
+
+  /** Suspends type-index publication until a fresh configuration root is published. */
+  invalidateTypeLoadsForConfiguration(configPath: string): void {
+    this.typeLoadCoordinator.invalidateConfiguration(configPath);
+    this.clearTypeEditorReferenceableCache();
+  }
+
+  /** Retires any pending type-index parse before an in-place child mutation. */
+  invalidatePendingTypeLoad(node: TreeNode): void {
+    this.typeLoadCoordinator.invalidateNode(node);
+    this.clearTypeEditorReferenceableCache();
   }
 
   /**
@@ -1087,6 +1062,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   invalidateLoadedChildren(element: TreeNode): void {
     const el = this.cache.resolveActiveNode(element, this.rootNodes);
+    this.typeLoadCoordinator.invalidateNode(el);
     if (!el.properties) {
       el.properties = {};
     }
@@ -1156,20 +1132,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       return false;
     }
     const configRoot = this.cache.getConfigurationRoot(element);
-    if (!configRoot || !this.cache.getLoadContext(configRoot)) {
+    if (!configRoot) {
       return false;
     }
-    const p = element.parent;
-    if (!p) {
-      return false;
-    }
-    if (p === configRoot) {
-      return true;
-    }
-    if (p.type === MetadataType.Unknown && p.id === 'Common') {
-      return R5_COMMON_DISK_BACKED_FOLDER_IDS.has(element.id);
-    }
-    return false;
+    return isTypeIndexFolder(configRoot, element);
   }
 
   private isLazyElementNode(element: TreeNode): boolean {
@@ -1268,10 +1234,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       // Lazy load: type node with no children yet
       if (this.isLazyTypeNode(activeElement)) {
         const configRoot = this.cache.getConfigurationRoot(activeElement);
-        const ctx = configRoot ? this.cache.getLoadContext(configRoot) : undefined;
-        if (!ctx) {return Promise.resolve([]);}
         this.cancelTypeContentsCacheWarmup();
-        return this.populateTypeFolderIndex(activeElement, ctx).then((children) => {
+        return this.loadTypeFolderIndex(activeElement).then((children) => {
           Logger.info('Tree cache size after lazy load', {
             type: activeElement.id,
             nodeCount: this.cache.size,
@@ -1282,10 +1246,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           const ids = this.filter.filterAncestorOrVisibleIds!;
           return children.filter((c) => ids.has(c.id));
         }).finally(() => {
-          this.startTypeContentsCacheWarmup({
-            delayMs: TYPE_CONTENTS_WARMUP_RESUME_AFTER_FOREGROUND_MS,
-            preferredRootId: configRoot?.id,
-          });
+          if (!this.disposed) {
+            this.startTypeContentsCacheWarmup({
+              delayMs: TYPE_CONTENTS_WARMUP_RESUME_AFTER_FOREGROUND_MS,
+              preferredRootId: configRoot?.id,
+            });
+          }
         });
       }
 
@@ -1487,6 +1453,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       return null;
     }
 
+    this.typeLoadCoordinator.invalidateNode(parent);
     const [removedNode] = parent.children.splice(removedIndex, 1);
 
     if (!removedNode) {
@@ -1504,6 +1471,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       operationId,
     };
     this.filter.filterAncestorOrVisibleIds = null;
+    this.clearTypeEditorReferenceableCache();
     this.refresh(parent);
     Logger.info('Applied optimistic delete', { operationId, configPath, parentId: parent.id, removedNodeId: removedNode.id });
     return token;
@@ -1527,9 +1495,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
     const restoredNode = this.rehydrateRollbackNode(token.removedNodeSnapshot, parent);
     const insertionIndex = Math.max(0, Math.min(token.removedIndex, parent.children.length));
+    this.typeLoadCoordinator.invalidateNode(parent);
     parent.children.splice(insertionIndex, 0, restoredNode);
     this.cache.buildCache(restoredNode);
     this.filter.filterAncestorOrVisibleIds = null;
+    this.clearTypeEditorReferenceableCache();
     this.refresh(parent);
     Logger.warn('Optimistic delete rolled back', { operationId: token.operationId, parentId: token.parentId, nodeId: token.removedNodeId });
     return true;
@@ -1592,22 +1562,29 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   public async getReferenceableObjectsForTypeEditor(node?: TreeNode): Promise<ReferenceableGroup[]> {
     const t0 = Date.now();
-    const scopeKey = getTypeEditorReferenceableScopeKey(node, this.rootNodes, this.cache);
+    const publishedRoots = this.rootNodes;
+    const rootsToUse = resolveRootsToUse(node, publishedRoots);
+    const allRootsScope = node === undefined;
+    const typeFolders = rootsToUse.flatMap((root) => getTypeIndexFolders(root)).filter(isReferenceableTypeFolder);
+    const scopeSnapshot = this.typeLoadCoordinator.captureScope(rootsToUse, allRootsScope, typeFolders);
+    const scopeKey = getTypeEditorReferenceableScopeKey(node, publishedRoots, this.cache);
 
     if (scopeKey) {
       const cached = this.typeEditorReferenceableCache.get(scopeKey);
-      if (cached) {
+      if (cached && this.typeLoadCoordinator.isScopeCurrent(scopeSnapshot)) {
         const durationMs = Date.now() - t0;
         Logger.debug('getReferenceableObjectsForTypeEditor cache hit', { durationMs, scopeKey });
         return cloneReferenceableGroups(cached);
       }
     }
 
-    const pendingLoads = countPendingReferenceableTypeLoads(node, this.rootNodes, this.cache);
+    const pendingLoads = countPendingReferenceableTypeLoads(node, publishedRoots);
 
     const run = async (): Promise<ReferenceableGroup[]> => {
-      const groups = await getReferenceableObjectsForTypeEditor(node, this.rootNodes, this.cache);
-      if (scopeKey) {
+      await this.loadEditorTypeIndexes(typeFolders);
+      this.assertTypeEditorScopeCurrent(scopeSnapshot);
+      const groups = projectReferenceableObjectsForTypeEditor(rootsToUse);
+      if (scopeKey && this.typeLoadCoordinator.isScopeCurrent(scopeSnapshot)) {
         this.typeEditorReferenceableCache.set(scopeKey, cloneReferenceableGroups(groups));
       }
       const durationMs = Date.now() - t0;
@@ -1646,19 +1623,26 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   public async getObjectableObjectsForEditor(node?: TreeNode): Promise<ObjectableGroup[]> {
     const t0 = Date.now();
-    const scopeKey = getTypeEditorReferenceableScopeKey(node, this.rootNodes, this.cache);
+    const publishedRoots = this.rootNodes;
+    const rootsToUse = resolveRootsToUse(node, publishedRoots);
+    const allRootsScope = node === undefined;
+    const typeFolders = rootsToUse.flatMap((root) => getTypeIndexFolders(root)).filter(isObjectableTypeFolder);
+    const scopeSnapshot = this.typeLoadCoordinator.captureScope(rootsToUse, allRootsScope, typeFolders);
+    const scopeKey = getTypeEditorReferenceableScopeKey(node, publishedRoots, this.cache);
 
     if (scopeKey) {
       const cached = this.objectableObjectsCache.get(scopeKey);
-      if (cached) {
+      if (cached && this.typeLoadCoordinator.isScopeCurrent(scopeSnapshot)) {
         const durationMs = Date.now() - t0;
         Logger.debug('getObjectableObjectsForEditor cache hit', { durationMs, scopeKey });
         return cloneObjectableGroups(cached);
       }
     }
 
-    const groups = await getObjectableObjectsForEditor(node, this.rootNodes, this.cache);
-    if (scopeKey) {
+    await this.loadEditorTypeIndexes(typeFolders);
+    this.assertTypeEditorScopeCurrent(scopeSnapshot);
+    const groups = projectObjectableObjectsForEditor(rootsToUse);
+    if (scopeKey && this.typeLoadCoordinator.isScopeCurrent(scopeSnapshot)) {
       this.objectableObjectsCache.set(scopeKey, cloneObjectableGroups(groups));
     }
     const durationMs = Date.now() - t0;
@@ -1668,6 +1652,24 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       Logger.debug('getObjectableObjectsForEditor completed', { durationMs, scopeKey });
     }
     return groups;
+  }
+
+  private async loadEditorTypeIndexes(
+    typeFolders: readonly TreeNode[],
+  ): Promise<void> {
+    const requests = typeFolders
+      .filter((typeFolder) => !isTypeIndexLoaded(typeFolder))
+      .map((typeFolder) => this.loadTypeFolderIndex(typeFolder));
+    await Promise.all(requests);
+  }
+
+  private assertTypeEditorScopeCurrent(snapshot: ReturnType<TreeTypeLoadCoordinator['captureScope']>): void {
+    if (!this.typeLoadCoordinator.isScopeCurrent(snapshot)) {
+      throw new TreeLoadError(
+        'TREE_LOAD_SUPERSEDED',
+        'Результат загрузки типов относится к устаревшему составу конфигураций.',
+      );
+    }
   }
 
   private cloneNodeForRollback(node: TreeNode): TreeNode {
