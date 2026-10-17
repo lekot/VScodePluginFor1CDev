@@ -506,6 +506,15 @@ const windowStub = {
     return await task({ report: () => undefined }, token);
   },
   setStatusBarMessage: (): { dispose: () => void } => ({ dispose: () => undefined }),
+  createTreeView: (_viewId: string, _options?: unknown) => ({
+    message: '',
+    onDidChangeSelection: (_listener: (e: { selection: any[] }) => void) => ({ dispose: () => undefined }),
+    onDidChangeVisibility: (_listener: (e: { visible: boolean }) => void) => ({ dispose: () => undefined }),
+    dispose: () => undefined,
+  }),
+  registerCustomEditorProvider: (_viewType: string, _provider: unknown, _options?: unknown) => ({
+    dispose: () => undefined,
+  }),
   createOutputChannel: (_name: string) => ({
     appendLine: (s: string) => {
       vscodeTestState.outputChannelLines.push(s);
@@ -615,6 +624,12 @@ const workspaceStub = {
       },
     };
   },
+  registerTextDocumentContentProvider: (_scheme: string, _provider: unknown) => ({
+    dispose: () => undefined,
+  }),
+  onDidChangeConfiguration: (_listener: (e: { affectsConfiguration: (section: string) => boolean }) => void) => ({
+    dispose: () => undefined,
+  }),
   onDidChangeWorkspaceFolders: (listener: (e: unknown) => void) => {
     vscodeTestState.onDidChangeWorkspaceFoldersListeners.push(listener);
     return {

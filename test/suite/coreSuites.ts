@@ -96,6 +96,7 @@ export const coreSuiteFiles: string[] = [
   'suite/tempCleanupOwnership.test.js',
   'suite/extensionManifestContracts.test.js',
   'suite/extensionActivationLifecycle.test.js',
+  'suite/extensionCompositionRoot.test.js',
   'suite/formDragBugCondition.test.js',
   'suite/formDragPreservation.test.js',
   'suite/formTreeRootDragBugCondition.test.js',

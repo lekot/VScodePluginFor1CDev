@@ -61,11 +61,14 @@ import { registerConfigurationRepositoryCommands } from './configurationReposito
 import { registerSyntaxHelpCommands } from '../providers/syntaxHelpProvider';
 import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 
+import type { ConfigurationInfrastructure } from '../extension/extensionCompositionRoot';
+
 export type RegisterAllCommandsArgs = {
   context: vscode.ExtensionContext;
   state: ExtensionState;
   lifecycle: MetadataTreeFeatureLifecycle;
   requestConfigurationReload: RequestConfigurationReload;
+  infrastructure?: ConfigurationInfrastructure;
 };
 
 
@@ -75,6 +78,7 @@ export async function registerAllCommands({
   state,
   lifecycle,
   requestConfigurationReload,
+  infrastructure,
 }: RegisterAllCommandsArgs): Promise<vscode.Disposable[]> {
   const utilityDeps = {
     state,
@@ -84,60 +88,82 @@ export async function registerAllCommands({
   registerExternalProcessorCommands(context);
   registerPictureCommands(context);
 
-  const configurationRegistry = new WorkspaceRegistry(
-    path.join(context.globalStorageUri.fsPath, 'configuration-identities.v1.json'),
-  );
-  state.workspaceRegistry = configurationRegistry;
-  const registryCoordinator = new WorkspaceRegistryCoordinator(configurationRegistry, {
-    getWorkspaceFolders: () => (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
-    getWorkspaceFolderForPath: (filePath) =>
-      vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
-  });
-  const contextResolver = new ConfigurationContextResolver(registryCoordinator, {
-    getWorkspaceFolderForPath: (filePath) =>
-      vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
-  });
-  state.configurationContextResolver = contextResolver;
-  const getConfigurationRegistry = async (): Promise<WorkspaceRegistry> => {
-    return registryCoordinator.getRegistry();
-  };
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeWorkspaceFolders(() => {
-      void registryCoordinator.refreshWorkspace();
-    }),
-  );
-  const runConfigurationMutation = async <T>(
+  let runConfigurationMutation: <T>(
     configPath: string,
     kind: string,
     operation: () => Promise<T>,
-  ): Promise<T> => {
-    const session = await registryCoordinator.resolveResource(configPath);
-    const outcome = await session.enqueue({ kind, execute: operation });
-    if (outcome.status === 'committed') {
-      return outcome.value;
-    }
-    throw outcome.status === 'failed' || outcome.status === 'conflict'
-      ? outcome.error ?? new Error('Операция конфигурации не выполнена.')
-      : new Error('Операция конфигурации отменена.');
-  };
-  const runConfigurationPlan = async <T>(configPath: string, plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>): Promise<T> => {
-    const session = await registryCoordinator.resolveResource(configPath);
-    const outcome = await session.enqueuePlan(plan);
-    if (outcome.status === 'committed') { return outcome.value; }
-    throw outcome.status === 'failed' || outcome.status === 'conflict'
-      ? outcome.error ?? new Error('Configuration plan failed.')
-      : new Error('Configuration plan was cancelled.');
-  };
-  context.subscriptions.push(
-    configureConfigurationMutationGateway(runConfigurationMutation, runConfigurationPlan),
-  );
-  const mutationEngine = new ConfigurationMutationEngine({
-    contextResolver,
-    runMutation: runConfigurationMutation,
-    runPlan: runConfigurationPlan,
-  });
-  state.configurationMutationEngine = mutationEngine;
-  setConfigurationMutationEngine(mutationEngine);
+  ) => Promise<T>;
+  let runConfigurationPlan: <T>(
+    configPath: string,
+    plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
+  ) => Promise<T>;
+  let getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
+
+  if (infrastructure) {
+    runConfigurationMutation = infrastructure.runConfigurationMutation;
+    runConfigurationPlan = infrastructure.runConfigurationPlan;
+    getConfigurationRegistry = infrastructure.getConfigurationRegistry;
+  } else {
+    const configurationRegistry = new WorkspaceRegistry(
+      path.join(context.globalStorageUri.fsPath, 'configuration-identities.v1.json'),
+    );
+    state.workspaceRegistry = configurationRegistry;
+    const registryCoordinator = new WorkspaceRegistryCoordinator(configurationRegistry, {
+      getWorkspaceFolders: () => (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
+      getWorkspaceFolderForPath: (filePath) =>
+        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
+    });
+    const contextResolver = new ConfigurationContextResolver(registryCoordinator, {
+      getWorkspaceFolderForPath: (filePath) =>
+        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
+    });
+    state.configurationContextResolver = contextResolver;
+    getConfigurationRegistry = async (): Promise<WorkspaceRegistry> => {
+      return registryCoordinator.getRegistry();
+    };
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        void registryCoordinator.refreshWorkspace();
+      }),
+    );
+    runConfigurationMutation = async <T>(
+      configPath: string,
+      kind: string,
+      operation: () => Promise<T>,
+    ): Promise<T> => {
+      const session = await registryCoordinator.resolveResource(configPath);
+      const outcome = await session.enqueue({ kind, execute: operation });
+      if (outcome.status === 'committed') {
+        return outcome.value;
+      }
+      throw outcome.status === 'failed' || outcome.status === 'conflict'
+        ? outcome.error ?? new Error('Операция конфигурации не выполнена.')
+        : new Error('Операция конфигурации отменена.');
+    };
+    runConfigurationPlan = async <T>(
+      configPath: string,
+      plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
+    ): Promise<T> => {
+      const session = await registryCoordinator.resolveResource(configPath);
+      const outcome = await session.enqueuePlan(plan);
+      if (outcome.status === 'committed') { return outcome.value; }
+      throw outcome.status === 'failed' || outcome.status === 'conflict'
+        ? outcome.error ?? new Error('Configuration plan failed.')
+        : new Error('Configuration plan was cancelled.');
+    };
+    context.subscriptions.push(
+      configureConfigurationMutationGateway(runConfigurationMutation, runConfigurationPlan),
+    );
+    const mutationEngine = new ConfigurationMutationEngine({
+      contextResolver,
+      runMutation: runConfigurationMutation,
+      runPlan: runConfigurationPlan,
+    });
+    state.configurationMutationEngine = mutationEngine;
+    setConfigurationMutationEngine(mutationEngine);
+    context.subscriptions.push({ dispose: () => { void registryCoordinator.dispose(); } });
+  }
+
   registerFilterCriterionCommands(context, state, runConfigurationPlan, requestConfigurationReload);
   registerCfeProjectCommands({
     context,
@@ -161,7 +187,6 @@ export async function registerAllCommands({
     getConfigurationRegistry,
     runConfigurationMutation,
   });
-  context.subscriptions.push({ dispose: () => { void registryCoordinator.dispose(); } });
 
   // Agent API — регистрируем отдельно (не возвращают Disposable[] — управляют подписками сами)
   const debugRegistry = new DebugSessionRegistry();
