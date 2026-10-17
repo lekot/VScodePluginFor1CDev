@@ -53,6 +53,8 @@ class MockSecretStorage implements SecretStorage {
   public failOnStore = false;
   public failOnDelete = false;
   public failOnRollback = false;
+  public failOnStorePredicate?: (key: string, value: string) => boolean;
+  public failOnDeletePredicate?: (key: string) => boolean;
 
   readonly onDidChange = new vscode.EventEmitter<{ key: string }>().event;
 
@@ -61,14 +63,18 @@ class MockSecretStorage implements SecretStorage {
   }
 
   async store(key: string, value: string): Promise<void> {
-    if (this.failOnStore || (this.failOnRollback && value === 'old-password')) {
+    if (
+      this.failOnStore ||
+      (this.failOnRollback && value === 'old-password') ||
+      (this.failOnStorePredicate && this.failOnStorePredicate(key, value))
+    ) {
       throw new Error('Simulated SecretStorage.store failure');
     }
     this.values.set(key, value);
   }
 
   async delete(key: string): Promise<void> {
-    if (this.failOnDelete) {
+    if (this.failOnDelete || (this.failOnDeletePredicate && this.failOnDeletePredicate(key))) {
       throw new Error('Simulated SecretStorage.delete failure');
     }
     this.values.delete(key);
@@ -85,6 +91,7 @@ class MockFileSystem {
   readonly inaccessibleRoots = new Set<string>();
   public failOnWrite = false;
   public failOnUri: string | null = null;
+  public failOnWritePredicate?: (uri: Uri) => boolean;
 
   private cleanPath(p: Uri | string): string {
     const raw = typeof p === 'string' ? p : p.fsPath;
@@ -194,7 +201,11 @@ class MockFileSystem {
   }
 
   async writeFile(uri: Uri, content: Uint8Array): Promise<void> {
-    if (this.failOnWrite || (this.failOnUri && uri.toString().includes(this.failOnUri))) {
+    if (
+      this.failOnWrite ||
+      (this.failOnUri && uri.toString().includes(this.failOnUri)) ||
+      (this.failOnWritePredicate && this.failOnWritePredicate(uri))
+    ) {
       throw new Error(`Simulated writeFile failure for ${uri.toString()}`);
     }
     const target = this.cleanPath(uri);
@@ -1341,5 +1352,197 @@ suite('InfobaseCatalogMutationService (#254 Aggregate Consistency)', () => {
     assert.strictEqual(await storage.getById(testServerEntry.id), undefined);
     assert.strictEqual(await secrets.get(infobasePasswordSecretKey(testServerEntry.id)), undefined);
     assert.strictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), undefined);
+  });
+
+  test('saveInfobase(clear) rollback failure preserves journal and returns recoveryRequired', async () => {
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'orig-clear-pass' },
+    });
+
+    memento.failOnPredicate = (key, val) =>
+      key === INFOBASE_MUTATION_JOURNAL_KEY && (val as any)?.phase === 'secrets_mutated';
+    secrets.failOnStorePredicate = (_key, val) => val === 'orig-clear-pass';
+
+    const outcome = await mutationService.saveInfobase({
+      entry: { ...testServerEntry, hasStoredPassword: false },
+      passwordChange: { kind: 'clear' },
+    });
+
+    assert.strictEqual(outcome.success, false);
+    assert.strictEqual(outcome.code, 'GLOBAL_STATE_FAILED');
+    assert.strictEqual(outcome.rolledBack, false);
+    assert.strictEqual(outcome.recoveryRequired, true);
+
+    const journal = memento.get<any>(INFOBASE_MUTATION_JOURNAL_KEY);
+    assert.ok(journal, 'Journal must be preserved when rollback fails');
+    assert.strictEqual(journal.type, 'save');
+    assert.strictEqual(journal.infobaseId, testServerEntry.id);
+
+    // After resolving store failure, recoverPendingMutations reconciles state
+    memento.failOnPredicate = undefined;
+    secrets.failOnStorePredicate = undefined;
+    const recOutcome = await mutationService.recoverPendingMutations();
+    assert.strictEqual(recOutcome.recoveredCount, 1);
+    assert.strictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), undefined);
+  });
+
+  test('saveInfobase(set) rollback failure on existing entry preserves journal and returns recoveryRequired', async () => {
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'prev-pass' },
+    });
+
+    memento.failOnPredicate = (key, val) =>
+      key === INFOBASE_MUTATION_JOURNAL_KEY && (val as any)?.phase === 'secrets_mutated';
+    secrets.failOnStorePredicate = (_key, val) => val === 'prev-pass';
+
+    const outcome = await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'new-pass' },
+    });
+
+    assert.strictEqual(outcome.success, false);
+    assert.strictEqual(outcome.code, 'GLOBAL_STATE_FAILED');
+    assert.strictEqual(outcome.rolledBack, false);
+    assert.strictEqual(outcome.recoveryRequired, true);
+
+    const journal = memento.get<any>(INFOBASE_MUTATION_JOURNAL_KEY);
+    assert.ok(journal, 'Journal must be preserved when rollback fails');
+    assert.strictEqual(journal.type, 'save');
+  });
+
+  test('saveInfobase(set) rollback failure on new entry preserves journal and returns recoveryRequired', async () => {
+    const newEntryId = 'a0000000-0000-4000-8000-000000000002';
+    const newEntry: InfobaseEntry = {
+      ...testServerEntry,
+      id: newEntryId,
+      hasStoredPassword: true,
+    };
+
+    memento.failOnPredicate = (key, val) =>
+      key === INFOBASE_MUTATION_JOURNAL_KEY && (val as any)?.phase === 'secrets_mutated';
+    secrets.failOnDeletePredicate = (key) => key.includes(newEntryId);
+
+    const outcome = await mutationService.saveInfobase({
+      entry: newEntry,
+      passwordChange: { kind: 'set', password: 'new-pass' },
+    });
+
+    assert.strictEqual(outcome.success, false);
+    assert.strictEqual(outcome.code, 'GLOBAL_STATE_FAILED');
+    assert.strictEqual(outcome.rolledBack, false);
+    assert.strictEqual(outcome.recoveryRequired, true);
+
+    const journal = memento.get<any>(INFOBASE_MUTATION_JOURNAL_KEY);
+    assert.ok(journal, 'Journal must be preserved when rollback delete fails');
+    assert.strictEqual(journal.type, 'save');
+    assert.strictEqual(journal.infobaseId, newEntryId);
+  });
+
+  test('removeInfobase bindings rollback failure preserves journal and returns recoveryRequired', async () => {
+    const folderA = makeFolder('folderA', 'C:\\workspace\\folderA');
+    const folderB = makeFolder('folderB', 'C:\\workspace\\folderB');
+    workspaceFolders = [folderA, folderB];
+
+    const bindingsUriA = vscode.Uri.file('C:\\workspace\\folderA\\.vscode\\infobase-bindings.json');
+    const bindingsUriB = vscode.Uri.file('C:\\workspace\\folderB\\.vscode\\infobase-bindings.json');
+
+    mockFs.directories.add('C:\\workspace\\folderA');
+    mockFs.directories.add('C:\\workspace\\folderB');
+    mockFs.files.set(
+      bindingsUriA.toString(),
+      encodeBindings([
+        { workspaceFolder: 'folderA', configRelativePath: 'src/cf', infobaseIds: [testServerEntry.id], massDeployment: false },
+      ]),
+    );
+    mockFs.files.set(
+      bindingsUriB.toString(),
+      encodeBindings([
+        { workspaceFolder: 'folderB', configRelativePath: 'src/cf', infobaseIds: [testServerEntry.id], massDeployment: false },
+      ]),
+    );
+
+    await storage.upsert(testServerEntry);
+
+    // folderB write fails, and during rollback folderA write fails too
+    let folderBWrote = false;
+    mockFs.failOnWritePredicate = (uri) => {
+      if (uri.fsPath.includes('folderB')) {
+        folderBWrote = true;
+        return true;
+      }
+      if (folderBWrote && uri.fsPath.includes('folderA')) {
+        return true;
+      }
+      return false;
+    };
+
+    const outcome = await mutationService.removeInfobase({
+      infobaseId: testServerEntry.id,
+      removeBindings: true,
+    });
+
+    assert.strictEqual(outcome.success, false);
+    assert.strictEqual(outcome.code, 'BINDINGS_WRITE_FAILED');
+    assert.strictEqual(outcome.rolledBack, false);
+    assert.strictEqual(outcome.recoveryRequired, true);
+
+    const journal = memento.get<any>(INFOBASE_MUTATION_JOURNAL_KEY);
+    assert.ok(journal, 'Journal must be preserved when bindings rollback fails');
+    assert.strictEqual(journal.type, 'remove');
+  });
+
+  test('removeInfobase secret rollback failure preserves journal and returns recoveryRequired', async () => {
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'remove-sec-pass' },
+    });
+
+    // Make storage.remove fail
+    memento.failOnPredicate = (key) => key === INFOBASE_GLOBAL_STATE_KEY;
+    // Make secret restoration fail
+    secrets.failOnStorePredicate = () => true;
+
+    const outcome = await mutationService.removeInfobase({
+      infobaseId: testServerEntry.id,
+      removeBindings: false,
+    });
+
+    assert.strictEqual(outcome.success, false);
+    assert.strictEqual(outcome.code, 'GLOBAL_STATE_FAILED');
+    assert.strictEqual(outcome.rolledBack, false);
+    assert.strictEqual(outcome.recoveryRequired, true);
+
+    const journal = memento.get<any>(INFOBASE_MUTATION_JOURNAL_KEY);
+    assert.ok(journal, 'Journal must be preserved when secret restoration fails');
+    assert.strictEqual(journal.type, 'remove');
+  });
+
+  test('subsequent saveInfobase and removeInfobase reject with CONCURRENCY_CONFLICT when pending recovery exists', async () => {
+    await storage.upsert(testServerEntry);
+    const pendingRecord = {
+      operationId: 'op-pending-recovery',
+      type: 'save' as const,
+      phase: 'secrets_mutated' as const,
+      infobaseId: testServerEntry.id,
+      timestamp: Date.now(),
+      hadPasswordBefore: true,
+    };
+    await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, pendingRecord);
+
+    const saveOutcome = await mutationService.saveInfobase({ entry: testServerEntry });
+    assert.strictEqual(saveOutcome.success, false);
+    assert.strictEqual(saveOutcome.code, 'CONCURRENCY_CONFLICT');
+    assert.strictEqual(saveOutcome.rolledBack, true);
+    assert.strictEqual(saveOutcome.recoveryRequired, true);
+    assert.deepStrictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), pendingRecord);
+
+    const removeOutcome = await mutationService.removeInfobase({ infobaseId: testServerEntry.id });
+    assert.strictEqual(removeOutcome.success, false);
+    assert.strictEqual(removeOutcome.code, 'CONCURRENCY_CONFLICT');
+    assert.strictEqual(removeOutcome.rolledBack, true);
+    assert.strictEqual(removeOutcome.recoveryRequired, true);
+    assert.deepStrictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), pendingRecord);
   });
 });

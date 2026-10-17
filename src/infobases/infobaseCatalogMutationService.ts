@@ -59,7 +59,8 @@ export type RemoveInfobaseErrorCode =
   | 'BINDINGS_CORRUPTED'
   | 'BINDINGS_WRITE_FAILED'
   | 'GLOBAL_STATE_FAILED'
-  | 'SECRET_STORAGE_FAILED';
+  | 'SECRET_STORAGE_FAILED'
+  | 'CONCURRENCY_CONFLICT';
 
 export type RemoveInfobaseOutcome =
   | {
@@ -178,6 +179,18 @@ export class InfobaseCatalogMutationService {
 
   async saveInfobase(params: SaveInfobaseParams): Promise<SaveInfobaseOutcome> {
     return this.runExclusive(async () => {
+      // 0. Pending recovery check: do not overwrite unfinished intent
+      const pendingJournal = this.readJournal();
+      if (pendingJournal) {
+        return {
+          success: false,
+          code: 'CONCURRENCY_CONFLICT',
+          message: `Cannot start saveInfobase: pending recovery exists for operation ${pendingJournal.operationId} (infobase ${pendingJournal.infobaseId})`,
+          rolledBack: true,
+          recoveryRequired: true,
+        };
+      }
+
       const { entry, passwordChange } = params;
 
       // 1. Validation
@@ -283,25 +296,31 @@ export class InfobaseCatalogMutationService {
             targetEntry: entry,
           });
         } catch (err) {
+          let rolledBack = false;
           if (existingPassword !== undefined) {
             try {
               await this.deps.secretStorage.store(secretKey, existingPassword);
+              rolledBack = true;
             } catch (rbErr) {
               Logger.error('InfobaseCatalogMutationService: rollback failed after journal failure', rbErr);
             }
           } else {
             try {
               await this.deps.secretStorage.delete(secretKey);
+              rolledBack = true;
             } catch (rbErr) {
               Logger.error('InfobaseCatalogMutationService: rollback failed after journal failure', rbErr);
             }
           }
-          await this.clearJournal();
+          if (rolledBack) {
+            await this.clearJournal();
+          }
           return {
             success: false,
             code: 'GLOBAL_STATE_FAILED',
             message: err instanceof Error ? err.message : String(err),
-            rolledBack: true,
+            rolledBack,
+            recoveryRequired: !rolledBack,
           };
         }
       } else if (passwordChange?.kind === 'clear' || !entry.hasStoredPassword) {
@@ -328,19 +347,26 @@ export class InfobaseCatalogMutationService {
             targetEntry: entry,
           });
         } catch (err) {
+          let rolledBack = false;
           if (existingPassword !== undefined) {
             try {
               await this.deps.secretStorage.store(secretKey, existingPassword);
+              rolledBack = true;
             } catch (rbErr) {
               Logger.error('InfobaseCatalogMutationService: rollback failed after journal failure', rbErr);
             }
+          } else {
+            rolledBack = true;
           }
-          await this.clearJournal();
+          if (rolledBack) {
+            await this.clearJournal();
+          }
           return {
             success: false,
             code: 'GLOBAL_STATE_FAILED',
             message: err instanceof Error ? err.message : String(err),
-            rolledBack: true,
+            rolledBack,
+            recoveryRequired: !rolledBack,
           };
         }
       }
@@ -383,6 +409,18 @@ export class InfobaseCatalogMutationService {
 
   async removeInfobase(params: RemoveInfobaseParams): Promise<RemoveInfobaseOutcome> {
     return this.runExclusive(async () => {
+      // 0. Pending recovery check: do not overwrite unfinished intent
+      const pendingJournal = this.readJournal();
+      if (pendingJournal) {
+        return {
+          success: false,
+          code: 'CONCURRENCY_CONFLICT',
+          message: `Cannot start removeInfobase: pending recovery exists for operation ${pendingJournal.operationId} (infobase ${pendingJournal.infobaseId})`,
+          rolledBack: true,
+          recoveryRequired: true,
+        };
+      }
+
       const id = params.infobaseId.trim();
       const existing = await this.deps.storage.getById(id);
       if (!existing) {
@@ -482,7 +520,9 @@ export class InfobaseCatalogMutationService {
                 }
               }
 
-              await this.clearJournal();
+              if (rolledBack) {
+                await this.clearJournal();
+              }
               return {
                 success: false,
                 code: 'BINDINGS_WRITE_FAILED',
@@ -523,7 +563,9 @@ export class InfobaseCatalogMutationService {
                 }
               }
 
-              await this.clearJournal();
+              if (rolledBack) {
+                await this.clearJournal();
+              }
               return {
                 success: false,
                 code: 'GLOBAL_STATE_FAILED',
@@ -540,17 +582,19 @@ export class InfobaseCatalogMutationService {
       try {
         await this.deps.storage.remove(id);
       } catch (err) {
+        let rolledBack = true;
+
         // Rollback secret if storage.remove deleted it before failing
         if (existingPassword !== undefined) {
           try {
             await this.deps.secretStorage.store(secretKey, existingPassword);
           } catch (secErr) {
             Logger.error('InfobaseCatalogMutationService: failed to restore secret after remove failure', secErr);
+            rolledBack = false;
           }
         }
 
         // Rollback bindings
-        let rolledBack = true;
         for (const item of modifiedFolders) {
           try {
             await writeBindingsForFolder(this.fsApi, item.folder, item.originalBindings);
@@ -558,6 +602,10 @@ export class InfobaseCatalogMutationService {
             Logger.error('InfobaseCatalogMutationService: rollback bindings failed', rbErr);
             rolledBack = false;
           }
+        }
+
+        if (rolledBack) {
+          await this.clearJournal();
         }
 
         return {
