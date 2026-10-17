@@ -6,10 +6,6 @@
       "maxLines": 1638,
       "reason": "Agent command dispatcher and operations coordinator (#201)"
     },
-    "src/agent/agentOperations.ts": {
-      "maxLines": 1763,
-      "reason": "Agent operations application facade (#201)"
-    },
     "src/agent/agentStaticForms.ts": {
       "maxLines": 1087,
       "reason": "Static form templates and definitions (#201)"

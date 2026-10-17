@@ -9,11 +9,11 @@ import { TypeParser } from '../parsers/typeParser';
 import { TypeSerializer } from '../serializers/typeSerializer';
 import { ObjectTypeParser } from '../parsers/objectTypeParser';
 import { ObjectTypeSerializer } from '../serializers/objectTypeSerializer';
-import { calculateRevision } from './agentRevision';
 import {
     type AgentOperationsContext,
     mutationFailure,
     readCfeOwnershipForRead,
+    runAgentMutation,
 } from './agentOperationsShared';
 import type {
     AgentResult,
@@ -93,52 +93,27 @@ export class AgentPropertyOperations {
 
             await this.context.validateExternalDataSourcePath(resolved);
 
-            return await this.context.withTargetMutationLock(filePath, async () => {
-                const check = await this.context.checkMutationPreconditions(filePath, params.path, params);
-                if (!check.proceed) {
-                    return check.errorResult!;
-                }
+            return await runAgentMutation(this.context, {
+                filePath,
+                target: params.path,
+                options: params,
+                plannedChanges: { files: [filePath], summary: `Изменение свойств ${params.path}` },
+                apply: async () => {
+                    const props = this.normalizeTypeProperty(params.properties);
 
-                if (params.dryRun) {
-                    return {
-                        success: true,
-                        dryRun: true,
-                        rev: check.currentRev,
-                        target: params.path,
-                        data: {
-                            dryRun: true,
-                            rev: check.currentRev,
-                            target: params.path,
-                            plannedChanges: {
-                                files: [filePath],
-                                summary: `Изменение свойств ${params.path}`,
-                            },
-                        },
-                    };
-                }
-
-                const props = this.normalizeTypeProperty(params.properties);
-
-                if (resolved.nestedType && resolved.nestedName) {
-                    await XMLWriter.writeNestedElementProperties(
-                        filePath,
-                        resolved.nestedType,
-                        resolved.nestedName,
-                        props,
-                        undefined,
-                        { nestedPath: resolved.fileNestedPath ?? resolved.nestedPath }
-                    );
-                } else {
-                    await XMLWriter.writeProperties(filePath, props);
-                }
-
-                const newRev = await calculateRevision(filePath);
-                return {
-                    success: true,
-                    rev: newRev,
-                    target: params.path,
-                    data: { rev: newRev, target: params.path },
-                };
+                    if (resolved.nestedType && resolved.nestedName) {
+                        await XMLWriter.writeNestedElementProperties(
+                            filePath,
+                            resolved.nestedType,
+                            resolved.nestedName,
+                            props,
+                            undefined,
+                            { nestedPath: resolved.fileNestedPath ?? resolved.nestedPath }
+                        );
+                    } else {
+                        await XMLWriter.writeProperties(filePath, props);
+                    }
+                },
             });
         } catch (err) {
             return mutationFailure(err);
@@ -257,97 +232,74 @@ export class AgentPropertyOperations {
 
             await this.context.validateExternalDataSourcePath(resolved);
 
-            return await this.context.withTargetMutationLock(filePath, async () => {
-                const check = await this.context.checkMutationPreconditions(filePath, params.path, params);
-                if (!check.proceed) {
-                    return check.errorResult!;
-                }
-
-                // Строим TypeDefinition из массива строк
-                const typeEntries = params.types.map(typeStr => {
-                    if (typeStr === 'xs:string') { return { kind: 'string' as const }; }
-                    if (typeStr === 'xs:decimal') { return { kind: 'number' as const }; }
-                    if (typeStr === 'xs:boolean') { return { kind: 'boolean' as const }; }
-                    if (typeStr === 'xs:date' || typeStr === 'xs:dateTime' || typeStr === 'xs:time') {
-                        const dateFractions = typeStr === 'xs:date'
-                            ? 'Date' as const
-                            : typeStr === 'xs:time'
-                                ? 'Time' as const
-                                : 'DateTime' as const;
-                        return { kind: 'date' as const, qualifiers: { dateFractions } };
-                    }
-                    if (typeStr.startsWith('cfg:')) {
-                        const withoutPrefix = typeStr.slice(4); // убираем 'cfg:'
-                        const dotIdx = withoutPrefix.indexOf('.');
-                        if (dotIdx === -1) {
-                            throw new Error(`Некорректный формат типа-ссылки: "${typeStr}". Ожидается cfg:ReferenceKind.ObjectName`);
+            return await runAgentMutation(this.context, {
+                filePath,
+                target: params.path,
+                options: params,
+                plannedChanges: { files: [filePath], summary: `Изменение типа ${params.path}` },
+                prepare: () => {
+                    // Строим TypeDefinition из массива строк после precondition, как в прежнем порядке.
+                    const typeEntries = params.types.map(typeStr => {
+                        if (typeStr === 'xs:string') { return { kind: 'string' as const }; }
+                        if (typeStr === 'xs:decimal') { return { kind: 'number' as const }; }
+                        if (typeStr === 'xs:boolean') { return { kind: 'boolean' as const }; }
+                        if (typeStr === 'xs:date' || typeStr === 'xs:dateTime' || typeStr === 'xs:time') {
+                            const dateFractions = typeStr === 'xs:date'
+                                ? 'Date' as const
+                                : typeStr === 'xs:time'
+                                    ? 'Time' as const
+                                    : 'DateTime' as const;
+                            return { kind: 'date' as const, qualifiers: { dateFractions } };
                         }
-                        const referenceKind = withoutPrefix.slice(0, dotIdx);
-                        const objectName = withoutPrefix.slice(dotIdx + 1);
-                        return {
-                            kind: 'reference' as const,
-                            referenceType: {
-                                referenceKind: referenceKind as import('../types/typeDefinitions').ReferenceTypeInfo['referenceKind'],
-                                objectName,
-                            },
-                        };
-                    }
-                    throw new Error(`Неизвестный тип: "${typeStr}". Поддерживаются xs:string, xs:decimal, xs:boolean, xs:date, xs:dateTime, xs:time, cfg:Kind.Name`);
-                });
-
-                let category: 'primitive' | 'reference' | 'composite';
-                if (typeEntries.length === 0) {
-                    category = 'primitive';
-                } else if (typeEntries.length === 1 && typeEntries[0].kind === 'reference') {
-                    category = 'reference';
-                } else {
-                    category = typeEntries.length === 1 ? 'primitive' : 'composite';
-                }
-
-                if (params.dryRun) {
-                    return {
-                        success: true,
-                        dryRun: true,
-                        rev: check.currentRev,
-                        target: params.path,
-                        data: {
-                            dryRun: true,
-                            rev: check.currentRev,
-                            target: params.path,
-                            plannedChanges: {
-                                files: [filePath],
-                                summary: `Изменение типа ${params.path}`,
-                            },
-                        },
-                    };
-                }
-
-                const definition = { category, types: typeEntries };
-                const typeProperty = TypeSerializer.serializePropertyValue(definition);
-
-                if (resolved.nestedType && resolved.nestedName) {
-                    await XMLWriter.writeNestedElementProperties(
-                        filePath,
-                        resolved.nestedType,
-                        resolved.nestedName,
-                        { Type: typeProperty },
-                        undefined,
-                        {
-                            nestedPath: resolved.fileNestedPath ?? resolved.nestedPath,
-                            ...(resolved.tabularSection ? { scopedTabularSectionName: resolved.tabularSection } : {}),
+                        if (typeStr.startsWith('cfg:')) {
+                            const withoutPrefix = typeStr.slice(4); // убираем 'cfg:'
+                            const dotIdx = withoutPrefix.indexOf('.');
+                            if (dotIdx === -1) {
+                                throw new Error(`Некорректный формат типа-ссылки: "${typeStr}". Ожидается cfg:ReferenceKind.ObjectName`);
+                            }
+                            const referenceKind = withoutPrefix.slice(0, dotIdx);
+                            const objectName = withoutPrefix.slice(dotIdx + 1);
+                            return {
+                                kind: 'reference' as const,
+                                referenceType: {
+                                    referenceKind: referenceKind as import('../types/typeDefinitions').ReferenceTypeInfo['referenceKind'],
+                                    objectName,
+                                },
+                            };
                         }
-                    );
-                } else {
-                    await XMLWriter.writeProperties(filePath, { Type: typeProperty });
-                }
+                        throw new Error(`Неизвестный тип: "${typeStr}". Поддерживаются xs:string, xs:decimal, xs:boolean, xs:date, xs:dateTime, xs:time, cfg:Kind.Name`);
+                    });
 
-                const newRev = await calculateRevision(filePath);
-                return {
-                    success: true,
-                    rev: newRev,
-                    target: params.path,
-                    data: { rev: newRev, target: params.path },
-                };
+                    let category: 'primitive' | 'reference' | 'composite';
+                    if (typeEntries.length === 0) {
+                        category = 'primitive';
+                    } else if (typeEntries.length === 1 && typeEntries[0].kind === 'reference') {
+                        category = 'reference';
+                    } else {
+                        category = typeEntries.length === 1 ? 'primitive' : 'composite';
+                    }
+                    return { category, typeEntries };
+                },
+                apply: async ({ category, typeEntries }) => {
+                    const definition = { category, types: typeEntries };
+                    const typeProperty = TypeSerializer.serializePropertyValue(definition);
+
+                    if (resolved.nestedType && resolved.nestedName) {
+                        await XMLWriter.writeNestedElementProperties(
+                            filePath,
+                            resolved.nestedType,
+                            resolved.nestedName,
+                            { Type: typeProperty },
+                            undefined,
+                            {
+                                nestedPath: resolved.fileNestedPath ?? resolved.nestedPath,
+                                ...(resolved.tabularSection ? { scopedTabularSectionName: resolved.tabularSection } : {}),
+                            }
+                        );
+                    } else {
+                        await XMLWriter.writeProperties(filePath, { Type: typeProperty });
+                    }
+                },
             });
         } catch (err) {
             return mutationFailure(err);
@@ -410,41 +362,16 @@ export class AgentPropertyOperations {
                 return { success: false, error: `Файл объекта не найден: ${resolved.filePath}` };
             }
 
-            return await this.context.withTargetMutationLock(resolved.filePath, async () => {
-                const check = await this.context.checkMutationPreconditions(resolved.filePath, params.path, params);
-                if (!check.proceed) {
-                    return check.errorResult!;
-                }
-
-                if (params.dryRun) {
-                    return {
-                        success: true,
-                        dryRun: true,
-                        rev: check.currentRev,
-                        target: params.path,
-                        data: {
-                            dryRun: true,
-                            rev: check.currentRev,
-                            target: params.path,
-                            plannedChanges: {
-                                files: [resolved.filePath],
-                                summary: `Изменение источника ${params.path}`,
-                            },
-                        },
-                    };
-                }
-
-                await XMLWriter.writeProperties(resolved.filePath, {
-                    Source: ObjectTypeSerializer.serialize(definition),
-                });
-
-                const newRev = await calculateRevision(resolved.filePath);
-                return {
-                    success: true,
-                    rev: newRev,
-                    target: params.path,
-                    data: { rev: newRev, target: params.path },
-                };
+            return await runAgentMutation(this.context, {
+                filePath: resolved.filePath,
+                target: params.path,
+                options: params,
+                plannedChanges: { files: [resolved.filePath], summary: `Изменение источника ${params.path}` },
+                apply: async () => {
+                    await XMLWriter.writeProperties(resolved.filePath, {
+                        Source: ObjectTypeSerializer.serialize(definition),
+                    });
+                },
             });
         } catch (err) {
             return mutationFailure(err);

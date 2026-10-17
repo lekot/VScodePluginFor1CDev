@@ -14,9 +14,10 @@ import {
 import { projectMutationFailure } from '../services/configurationSession/mutationReceiptError';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
 import { AgentPathError, resolveAgentPath } from './agentPathResolver';
-import { calculateRevision, isValidRevisionFormat } from './agentRevision';
+import { calculateRevision, isValidRevisionFormat, type MutationPlannedChanges } from './agentRevision';
 import type {
     AgentResult,
+    MutationOptions,
     MutationResultData,
     ObjectInfo,
 } from './types';
@@ -239,4 +240,55 @@ export interface AgentOperationsContext {
         resolved: ReturnType<typeof resolveAgentPath>,
     ): Promise<Record<string, unknown> | undefined>;
     resolveEventSubscriptionPath(agentPath: string): Promise<ReturnType<typeof resolveAgentPath>>;
+}
+
+export interface AgentMutationExecution<TPrepared = void> {
+    readonly filePath: string;
+    readonly target: string;
+    readonly options?: MutationOptions;
+    readonly plannedChanges: MutationPlannedChanges;
+    readonly prepare?: () => TPrepared | Promise<TPrepared>;
+    readonly apply: (prepared: TPrepared) => Promise<void>;
+}
+
+/** Runs a single-file mutation using the shared lock, preconditions, and Agent receipt contract. */
+export async function runAgentMutation<TPrepared = void>(
+    context: Pick<AgentOperationsContext, 'withTargetMutationLock' | 'checkMutationPreconditions'>,
+    execution: AgentMutationExecution<TPrepared>,
+): Promise<AgentResult<MutationResultData>> {
+    return context.withTargetMutationLock(execution.filePath, async () => {
+        const check = await context.checkMutationPreconditions(
+            execution.filePath,
+            execution.target,
+            execution.options,
+        );
+        if (!check.proceed) {
+            return check.errorResult!;
+        }
+
+        const prepared = execution.prepare ? await execution.prepare() : undefined as TPrepared;
+        if (execution.options?.dryRun) {
+            return {
+                success: true,
+                dryRun: true,
+                rev: check.currentRev,
+                target: execution.target,
+                data: {
+                    dryRun: true,
+                    rev: check.currentRev,
+                    target: execution.target,
+                    plannedChanges: execution.plannedChanges,
+                },
+            };
+        }
+
+        await execution.apply(prepared);
+        const newRev = await calculateRevision(execution.filePath);
+        return {
+            success: true,
+            rev: newRev,
+            target: execution.target,
+            data: { rev: newRev, target: execution.target },
+        };
+    });
 }

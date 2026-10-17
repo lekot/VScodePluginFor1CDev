@@ -59,6 +59,36 @@ import type {
 export class AgentMetadataCrudOperations {
     constructor(private readonly context: AgentOperationsContext) {}
 
+    private async resolveRootOnlyMutationTarget(
+        agentPath: string,
+        operation: 'renameObject' | 'duplicateObject',
+    ): Promise<
+        | { readonly resolved: Awaited<ReturnType<AgentOperationsContext['resolveContainedAgentPath']>> }
+        | { readonly errorResult: AgentResult<never> }
+    > {
+        const { dotPath } = parseSourceAddress(agentPath);
+        if (dotPath.split('.').length !== 2) {
+            return {
+                errorResult: {
+                    success: false,
+                    code: 'INVALID_AGENT_PATH',
+                    error: `${operation} принимает только корневой путь объекта: "${agentPath}".`,
+                },
+            };
+        }
+        const resolved = await this.context.resolveContainedAgentPath(agentPath);
+        if (resolved.nestedType !== undefined || resolved.tabularSection !== undefined) {
+            return {
+                errorResult: {
+                    success: false,
+                    code: 'INVALID_AGENT_PATH',
+                    error: `${operation} не поддерживает вложенные пути метаданных: "${agentPath}".`,
+                },
+            };
+        }
+        return { resolved };
+    }
+
     private get configRootPath(): string {
         return this.context.configRootPath;
     }
@@ -328,22 +358,11 @@ export class AgentMetadataCrudOperations {
 
     async renameObject(params: RenameObjectParams): Promise<AgentResult<CreateObjectResult>> {
         try {
-            const { dotPath } = parseSourceAddress(params.path);
-            if (dotPath.split('.').length !== 2) {
-                return {
-                    success: false,
-                    code: 'INVALID_AGENT_PATH',
-                    error: `renameObject принимает только корневой путь объекта: "${params.path}".`,
-                };
+            const rootTarget = await this.resolveRootOnlyMutationTarget(params.path, 'renameObject');
+            if ('errorResult' in rootTarget) {
+                return rootTarget.errorResult;
             }
-            const resolved = await this.context.resolveContainedAgentPath(params.path);
-            if (resolved.nestedType !== undefined || resolved.tabularSection !== undefined) {
-                return {
-                    success: false,
-                    code: 'INVALID_AGENT_PATH',
-                    error: `renameObject не поддерживает вложенные пути метаданных: "${params.path}".`,
-                };
-            }
+            const { resolved } = rootTarget;
             const { filePath } = resolved;
 
             try {
@@ -445,22 +464,11 @@ export class AgentMetadataCrudOperations {
 
     async duplicateObject(params: DuplicateObjectParams): Promise<AgentResult<CreateObjectResult>> {
         try {
-            const { dotPath } = parseSourceAddress(params.path);
-            if (dotPath.split('.').length !== 2) {
-                return {
-                    success: false,
-                    code: 'INVALID_AGENT_PATH',
-                    error: `duplicateObject принимает только корневой путь объекта: "${params.path}".`,
-                };
+            const rootTarget = await this.resolveRootOnlyMutationTarget(params.path, 'duplicateObject');
+            if ('errorResult' in rootTarget) {
+                return rootTarget.errorResult;
             }
-            const resolved = await this.context.resolveContainedAgentPath(params.path);
-            if (resolved.nestedType !== undefined || resolved.tabularSection !== undefined) {
-                return {
-                    success: false,
-                    code: 'INVALID_AGENT_PATH',
-                    error: `duplicateObject не поддерживает вложенные пути метаданных: "${params.path}".`,
-                };
-            }
+            const { resolved } = rootTarget;
             const { filePath } = resolved;
             const newName = params.newName?.trim() ?? '';
 
