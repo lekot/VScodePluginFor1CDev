@@ -80,9 +80,22 @@ export function createFakeWebviewPanel(options?: {
     });
   };
 
+  let isDisposed = false;
+  const disposeCallbacks: Array<() => void> = [];
+
   const panel = {
     reveal: () => undefined,
-    onDidDispose: () => ({ dispose: () => undefined }),
+    onDidDispose: (cb: () => void) => {
+      disposeCallbacks.push(cb);
+      return {
+        dispose: () => {
+          const idx = disposeCallbacks.indexOf(cb);
+          if (idx !== -1) {
+            disposeCallbacks.splice(idx, 1);
+          }
+        },
+      };
+    },
     webview: {
       html: '',
       onDidReceiveMessage: (cb: (message: unknown) => Promise<void>) => {
@@ -100,8 +113,17 @@ export function createFakeWebviewPanel(options?: {
       },
     },
     dispose: () => {
+      if (isDisposed) {
+        return;
+      }
+      isDisposed = true;
       if (options?.trackDisposed) {
         options.trackDisposed.value = true;
+      }
+      const cbs = [...disposeCallbacks];
+      disposeCallbacks.length = 0;
+      for (const cb of cbs) {
+        cb();
       }
     },
   } as unknown as vscode.WebviewPanel;

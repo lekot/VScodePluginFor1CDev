@@ -25,6 +25,7 @@ import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 import { createNonce } from '../utils/webviewSecurity';
 import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
+import { EditorSessionCoordinator } from '../services/editorSession/editorSessionCoordinator';
 
 interface CompositionSessionModel {
   readonly targetPath: string;
@@ -68,7 +69,11 @@ export class CompositionEditorProvider implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined;
   private contentFilePath: string | undefined;
   private configPath: string | null = null;
-  private sessionGeneration = 0;
+  private readonly sessions = new EditorSessionCoordinator<{ contentFilePath: string; configPath: string | null; node: TreeNode }>();
+
+  get sessionGeneration(): number {
+    return this.sessions.generation;
+  }
   private activeSessionGeneration: number | undefined;
   private activeSaveOwnership: symbol | undefined;
   private recoveryModel: CompositionSessionModel | undefined;
@@ -152,7 +157,15 @@ export class CompositionEditorProvider implements vscode.Disposable {
     if (publishedModel) {
       this.recoveryModel = publishedModel;
     }
-    const generation = ++this.sessionGeneration;
+    const session = this.sessions.begin({
+      panel: this.panel,
+      target: {
+        contentFilePath: this.strategy.getContentFilePath(node) ?? '',
+        configPath,
+        node,
+      },
+    });
+    const generation = session.generation;
     this.activeSessionGeneration = undefined;
 
     try {
@@ -235,6 +248,7 @@ export class CompositionEditorProvider implements vscode.Disposable {
         panel.reveal(vscode.ViewColumn.Beside);
       }
       panel.webview.html = html;
+      session.panel = panel;
 
       this.contentFilePath = contentFilePath;
       this.configPath = configPath;
@@ -658,7 +672,7 @@ export class CompositionEditorProvider implements vscode.Disposable {
 
   private handlePanelDisposed(panel: vscode.WebviewPanel): void {
     if (this.panel !== panel) { return; }
-    this.sessionGeneration++;
+    this.sessions.bumpGeneration();
     this.activeSessionGeneration = undefined;
     this.activeSaveOwnership = undefined;
     this.recoveryModel = undefined;
@@ -702,7 +716,7 @@ export class CompositionEditorProvider implements vscode.Disposable {
   }
 
   dispose(): void {
-    this.sessionGeneration++;
+    this.sessions.dispose();
     this.activeSessionGeneration = undefined;
     this.activeSaveOwnership = undefined;
     this.recoveryModel = undefined;
