@@ -81,11 +81,112 @@ class MockSecretStorage implements SecretStorage {
 
 class MockFileSystem {
   readonly files = new Map<string, Uint8Array>();
+  readonly directories = new Set<string>();
+  readonly inaccessibleRoots = new Set<string>();
   public failOnWrite = false;
   public failOnUri: string | null = null;
 
+  private cleanPath(p: Uri | string): string {
+    const raw = typeof p === 'string' ? p : p.fsPath;
+    let s = raw;
+    try {
+      s = decodeURIComponent(raw);
+    } catch {
+      // ignore
+    }
+    return s
+      .replace(/^file:\/*/, '/')
+      .replace(/\\/g, '/')
+      .replace(/\/+/g, '/')
+      .replace(/^\/([a-zA-Z]:)/, '$1');
+  }
+
+  private isWindowsPath(p: string): boolean {
+    return /^[a-zA-Z]:/.test(p);
+  }
+
+  private isRootInaccessible(uri: Uri): boolean {
+    const target = this.cleanPath(uri);
+    for (const root of this.inaccessibleRoots) {
+      const cleanRoot = this.cleanPath(root);
+      if (
+        target === cleanRoot ||
+        target.startsWith(cleanRoot.endsWith('/') ? cleanRoot : cleanRoot + '/')
+      ) {
+        return true;
+      }
+      if (
+        this.isWindowsPath(target) &&
+        (target.toLowerCase() === cleanRoot.toLowerCase() ||
+          target.toLowerCase().startsWith((cleanRoot.endsWith('/') ? cleanRoot : cleanRoot + '/').toLowerCase()))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private lookupFile(uri: Uri): Uint8Array | undefined {
+    const target = this.cleanPath(uri);
+    if (this.files.has(target)) return this.files.get(target);
+
+    // Exact match first (crucial for POSIX case distinction)
+    for (const [k, v] of this.files.entries()) {
+      if (this.cleanPath(k) === target) {
+        return v;
+      }
+    }
+
+    // Windows drive case-insensitivity
+    if (this.isWindowsPath(target)) {
+      const lowerTarget = target.toLowerCase();
+      for (const [k, v] of this.files.entries()) {
+        if (this.cleanPath(k).toLowerCase() === lowerTarget) {
+          return v;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  async stat(uri: Uri): Promise<vscode.FileStat> {
+    if (this.isRootInaccessible(uri)) {
+      throw vscode.FileSystemError.FileNotFound(uri);
+    }
+    const target = this.cleanPath(uri);
+    for (const dir of this.directories) {
+      const cleanDir = this.cleanPath(dir);
+      if (cleanDir === target) {
+        return { type: vscode.FileType.Directory, ctime: 0, mtime: 0, size: 0 };
+      }
+      if (this.isWindowsPath(target) && cleanDir.toLowerCase() === target.toLowerCase()) {
+        return { type: vscode.FileType.Directory, ctime: 0, mtime: 0, size: 0 };
+      }
+    }
+
+    const fileData = this.lookupFile(uri);
+    if (fileData) {
+      return { type: vscode.FileType.File, ctime: 0, mtime: 0, size: fileData.byteLength };
+    }
+
+    const targetWithSlash = target.endsWith('/') ? target : target + '/';
+    for (const k of this.files.keys()) {
+      const cleanK = this.cleanPath(k);
+      if (cleanK.startsWith(targetWithSlash)) {
+        return { type: vscode.FileType.Directory, ctime: 0, mtime: 0, size: 0 };
+      }
+      if (this.isWindowsPath(target) && cleanK.toLowerCase().startsWith(targetWithSlash.toLowerCase())) {
+        return { type: vscode.FileType.Directory, ctime: 0, mtime: 0, size: 0 };
+      }
+    }
+    throw vscode.FileSystemError.FileNotFound(uri);
+  }
+
   async readFile(uri: Uri): Promise<Uint8Array> {
-    const data = this.files.get(uri.toString());
+    if (this.isRootInaccessible(uri)) {
+      throw vscode.FileSystemError.FileNotFound(uri);
+    }
+    const data = this.lookupFile(uri);
     if (!data) {
       throw vscode.FileSystemError.FileNotFound(uri);
     }
@@ -96,7 +197,19 @@ class MockFileSystem {
     if (this.failOnWrite || (this.failOnUri && uri.toString().includes(this.failOnUri))) {
       throw new Error(`Simulated writeFile failure for ${uri.toString()}`);
     }
+    const target = this.cleanPath(uri);
     this.files.set(uri.toString(), content);
+    this.files.set(uri.fsPath, content);
+    this.files.set(target, content);
+
+    if (this.isWindowsPath(target)) {
+      const lowerTarget = target.toLowerCase();
+      for (const k of this.files.keys()) {
+        if (this.cleanPath(k).toLowerCase() === lowerTarget) {
+          this.files.set(k, content);
+        }
+      }
+    }
   }
 }
 
@@ -973,5 +1086,260 @@ suite('InfobaseCatalogMutationService (#254 Aggregate Consistency)', () => {
     assert.strictEqual(await secrets.get(infobasePasswordSecretKey(testServerEntry.id)), 'my-pass');
     // Journal preserved
     assert.deepStrictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), journalRecord);
+  });
+
+  // ─── 8. Round 4 Review Reproductions: POSIX Case Sensitivity & Inaccessible Root ───
+
+  test('recoverPendingMutations distinguishes case-distinct POSIX roots (/workspace/config vs /workspace/Config) in both orders', async () => {
+    // Order A: Current workspace has /workspace/config (lowercase),
+    // but journal.targetFolderPaths has /workspace/Config (uppercase) where bindings are located.
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'posix-pass' },
+    });
+
+    const upperUri = vscode.Uri.file(`/workspace/Config/.vscode/${INFOBASE_BINDINGS_FILE_NAME}`);
+    const lowerUri = vscode.Uri.file(`/workspace/config/.vscode/${INFOBASE_BINDINGS_FILE_NAME}`);
+
+    mockFs.files.set(upperUri.toString(), encodeBindings([
+      { workspaceFolder: 'Config', configRelativePath: 'src/cf', infobaseIds: [testServerEntry.id], massDeployment: false },
+    ]));
+    mockFs.files.set(lowerUri.toString(), encodeBindings([]));
+
+    const posixServiceOrderA = new InfobaseCatalogMutationService({
+      storage,
+      secretStorage: secrets,
+      bindingManager,
+      memento,
+      fileSystem: mockFs as unknown as FileSystem,
+      getWorkspaceFolders: () => [makeFolder('config', '/workspace/config')],
+      platform: 'linux',
+    });
+
+    await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, {
+      operationId: 'op-posix-case-a',
+      type: 'remove' as const,
+      phase: 'bindings_mutated' as const,
+      infobaseId: testServerEntry.id,
+      timestamp: Date.now(),
+      hadPasswordBefore: true,
+      targetFolderPaths: ['/workspace/Config'],
+    });
+
+    const outcomeA = await posixServiceOrderA.recoverPendingMutations();
+    assert.strictEqual(outcomeA.recoveredCount, 1);
+    assert.deepStrictEqual(outcomeA.errors, []);
+
+    // Crucial check: /workspace/Config MUST have been cleaned, not skipped due to lowercase comparison!
+    const upperBindingsA = decodeBindings(
+      (mockFs.files.get(upperUri.fsPath.replace(/\\/g, '/')) ?? mockFs.files.get(upperUri.toString()))!,
+    );
+    assert.deepStrictEqual(upperBindingsA[0].infobaseIds, [], 'Upper case POSIX folder bindings must be cleaned in Order A');
+
+    // Order B: Current workspace has /workspace/Config (uppercase),
+    // but journal.targetFolderPaths has /workspace/config (lowercase) where bindings are located.
+    await storage.upsert(testServerEntry);
+    await secrets.store(infobasePasswordSecretKey(testServerEntry.id), 'posix-pass');
+    mockFs.files.set(upperUri.toString(), encodeBindings([]));
+    mockFs.files.set(lowerUri.toString(), encodeBindings([
+      { workspaceFolder: 'config', configRelativePath: 'src/cf', infobaseIds: [testServerEntry.id], massDeployment: false },
+    ]));
+
+    const posixServiceOrderB = new InfobaseCatalogMutationService({
+      storage,
+      secretStorage: secrets,
+      bindingManager,
+      memento,
+      fileSystem: mockFs as unknown as FileSystem,
+      getWorkspaceFolders: () => [makeFolder('Config', '/workspace/Config')],
+      platform: 'linux',
+    });
+
+    await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, {
+      operationId: 'op-posix-case-b',
+      type: 'remove' as const,
+      phase: 'bindings_mutated' as const,
+      infobaseId: testServerEntry.id,
+      timestamp: Date.now(),
+      hadPasswordBefore: true,
+      targetFolderPaths: ['/workspace/config'],
+    });
+
+    const outcomeB = await posixServiceOrderB.recoverPendingMutations();
+    assert.strictEqual(outcomeB.recoveredCount, 1);
+    assert.deepStrictEqual(outcomeB.errors, []);
+
+    const lowerBindingsB = decodeBindings(
+      (mockFs.files.get(lowerUri.fsPath.replace(/\\/g, '/')) ?? mockFs.files.get(lowerUri.toString()))!,
+    );
+    assert.deepStrictEqual(lowerBindingsB[0].infobaseIds, [], 'Lower case POSIX folder bindings must be cleaned in Order B');
+  });
+
+  test('recoverPendingMutations deduplicates Windows aliases and case variants', async () => {
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'win-pass' },
+    });
+
+    const winUri = vscode.Uri.file(`C:\\workspace\\project\\.vscode\\${INFOBASE_BINDINGS_FILE_NAME}`);
+    mockFs.files.set(winUri.toString(), encodeBindings([
+      { workspaceFolder: 'project', configRelativePath: 'src/cf', infobaseIds: [testServerEntry.id], massDeployment: false },
+    ]));
+
+    // Current workspace has lowercase drive 'c:\workspace\project'
+    // TargetFolderPaths has uppercase drive 'C:\WORKSPACE\PROJECT'
+    const winService = new InfobaseCatalogMutationService({
+      storage,
+      secretStorage: secrets,
+      bindingManager,
+      memento,
+      fileSystem: mockFs as unknown as FileSystem,
+      getWorkspaceFolders: () => [makeFolder('project', 'c:\\workspace\\project')],
+      platform: 'win32',
+    });
+
+    await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, {
+      operationId: 'op-win-alias',
+      type: 'remove' as const,
+      phase: 'bindings_mutated' as const,
+      infobaseId: testServerEntry.id,
+      timestamp: Date.now(),
+      hadPasswordBefore: true,
+      targetFolderPaths: ['C:\\WORKSPACE\\PROJECT'],
+    });
+
+    const outcome = await winService.recoverPendingMutations();
+    assert.strictEqual(outcome.recoveredCount, 1);
+    assert.deepStrictEqual(outcome.errors, []);
+
+    const cleanedBindings = decodeBindings(
+      (mockFs.files.get(winUri.fsPath.replace(/\\/g, '/')) ?? mockFs.files.get(winUri.toString()))!,
+    );
+    assert.deepStrictEqual(cleanedBindings[0].infobaseIds, [], 'Windows case variant must be cleaned once without duplication');
+  });
+
+  test('recoverPendingMutations fails closed and preserves intent when durable target root is disconnected/inaccessible', async () => {
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'durable-pass' },
+    });
+
+    const disconnectedRoot = 'D:\\disconnected-flash\\workspace';
+    mockFs.inaccessibleRoots.add(disconnectedRoot);
+
+    const journalRecord = {
+      operationId: 'op-remove-disconnected-root',
+      type: 'remove' as const,
+      phase: 'bindings_mutated' as const,
+      infobaseId: testServerEntry.id,
+      timestamp: Date.now(),
+      hadPasswordBefore: true,
+      targetFolderPaths: [disconnectedRoot],
+    };
+    await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, journalRecord);
+
+    // Current workspace has another folder
+    workspaceFolders = [makeFolder('local', 'C:\\workspace\\local')];
+
+    const outcome = await mutationService.recoverPendingMutations();
+    // MUST NOT return success when durable root is unreachable/disconnected!
+    assert.strictEqual(outcome.recoveredCount, 0, 'Recovery must not report success for inaccessible durable root');
+    assert.ok(outcome.errors.length >= 1, 'Must report error indicating durable root is inaccessible');
+    assert.ok(outcome.errors[0].includes('inaccessible'), 'Error message must explain root inaccessibility');
+
+    // Infobase and secret must NOT be removed from catalog
+    assert.ok(await storage.getById(testServerEntry.id), 'Catalog entry must be preserved');
+    assert.strictEqual(await secrets.get(infobasePasswordSecretKey(testServerEntry.id)), 'durable-pass');
+
+    // Journal record MUST be preserved for later retry
+    assert.deepStrictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), journalRecord);
+  });
+
+  test('recoverPendingMutations succeeds when durable root is accessible but .vscode bindings file is absent', async () => {
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'absent-pass' },
+    });
+
+    const accessibleRoot = 'C:\\workspace\\no-bindings-file';
+    mockFs.directories.add(accessibleRoot);
+    // Bindings file does NOT exist in mockFs.files, so readFile throws FileNotFound
+
+    const journalRecord = {
+      operationId: 'op-remove-absent-file',
+      type: 'remove' as const,
+      phase: 'bindings_mutated' as const,
+      infobaseId: testServerEntry.id,
+      timestamp: Date.now(),
+      hadPasswordBefore: true,
+      targetFolderPaths: [accessibleRoot],
+    };
+    await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, journalRecord);
+
+    workspaceFolders = [makeFolder('no-bindings-file', accessibleRoot)];
+
+    const outcome = await mutationService.recoverPendingMutations();
+    // Root exists and is accessible, no bindings exist to clean -> recovery succeeds
+    assert.strictEqual(outcome.recoveredCount, 1);
+    assert.deepStrictEqual(outcome.errors, []);
+
+    // Catalog entry deleted, secret deleted, journal cleared
+    assert.strictEqual(await storage.getById(testServerEntry.id), undefined);
+    assert.strictEqual(await secrets.get(infobasePasswordSecretKey(testServerEntry.id)), undefined);
+    assert.strictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), undefined);
+  });
+
+  test('recoverPendingMutations succeeds on retry after previously inaccessible durable root is restored', async () => {
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'retry-pass' },
+    });
+
+    const durableRoot = 'E:\\usb-drive\\repo';
+    const bindingsUri = vscode.Uri.file(`${durableRoot}\\.vscode\\${INFOBASE_BINDINGS_FILE_NAME}`);
+
+    // Step 1: Drive is disconnected
+    mockFs.inaccessibleRoots.add(durableRoot);
+
+    const journalRecord = {
+      operationId: 'op-remove-retry',
+      type: 'remove' as const,
+      phase: 'bindings_mutated' as const,
+      infobaseId: testServerEntry.id,
+      timestamp: Date.now(),
+      hadPasswordBefore: true,
+      targetFolderPaths: [durableRoot],
+    };
+    await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, journalRecord);
+
+    workspaceFolders = [makeFolder('main', 'C:\\workspace\\main')];
+
+    // Attempt 1 fails
+    const failOutcome = await mutationService.recoverPendingMutations();
+    assert.strictEqual(failOutcome.recoveredCount, 0);
+    assert.ok(failOutcome.errors.length >= 1);
+    assert.ok(await storage.getById(testServerEntry.id));
+    assert.deepStrictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), journalRecord);
+
+    // Step 2: Drive is reconnected!
+    mockFs.inaccessibleRoots.delete(durableRoot);
+    mockFs.directories.add(durableRoot);
+    mockFs.files.set(bindingsUri.toString(), encodeBindings([
+      { workspaceFolder: 'repo', configRelativePath: 'src/cf', infobaseIds: [testServerEntry.id], massDeployment: false },
+    ]));
+
+    // Attempt 2 succeeds
+    const successOutcome = await mutationService.recoverPendingMutations();
+    assert.strictEqual(successOutcome.recoveredCount, 1);
+    assert.deepStrictEqual(successOutcome.errors, []);
+
+    // Bindings cleaned on the restored drive!
+    const cleanedBindings = decodeBindings(mockFs.files.get(bindingsUri.toString())!);
+    assert.deepStrictEqual(cleanedBindings[0].infobaseIds, []);
+
+    // Catalog deleted, secret deleted, journal cleared
+    assert.strictEqual(await storage.getById(testServerEntry.id), undefined);
+    assert.strictEqual(await secrets.get(infobasePasswordSecretKey(testServerEntry.id)), undefined);
+    assert.strictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), undefined);
   });
 });

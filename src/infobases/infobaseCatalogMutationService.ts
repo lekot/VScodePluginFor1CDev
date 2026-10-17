@@ -17,6 +17,7 @@ import {
   writeBindingsForFolder,
 } from '../bindings/bindingStorage';
 import { Logger } from '../utils/logger';
+import { isSamePath } from '../utils/configurationPathIdentity';
 
 export const INFOBASE_MUTATION_JOURNAL_KEY = '1cMetadataTree.infobaseMutationJournal';
 
@@ -108,6 +109,7 @@ export interface InfobaseCatalogMutationServiceDeps {
   readonly memento?: vscode.Memento;
   readonly fileSystem?: vscode.FileSystem;
   readonly getWorkspaceFolders?: () => readonly vscode.WorkspaceFolder[] | undefined;
+  readonly platform?: NodeJS.Platform;
 }
 
 // ─── Service Implementation ──────────────────────────────────────────────────
@@ -115,11 +117,29 @@ export interface InfobaseCatalogMutationServiceDeps {
 export class InfobaseCatalogMutationService {
   private readonly fsApi: vscode.FileSystem;
   private readonly getWorkspaceFolders: () => readonly vscode.WorkspaceFolder[] | undefined;
+  private readonly platform: NodeJS.Platform;
   private mutationQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly deps: InfobaseCatalogMutationServiceDeps) {
     this.fsApi = deps.fileSystem ?? vscode.workspace.fs;
     this.getWorkspaceFolders = deps.getWorkspaceFolders ?? (() => vscode.workspace.workspaceFolders);
+    this.platform = deps.platform ?? process.platform;
+  }
+
+  private async isTargetFolderAccessible(folder: vscode.WorkspaceFolder): Promise<boolean> {
+    try {
+      if (typeof this.fsApi.stat === 'function') {
+        const stat = await this.fsApi.stat(folder.uri);
+        return (stat.type & vscode.FileType.Directory) !== 0 || stat.type === vscode.FileType.File;
+      }
+      if (folder.uri.scheme === 'file') {
+        const fsModule = await import('fs');
+        return fsModule.existsSync(folder.uri.fsPath);
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private runExclusive<T>(fn: () => Promise<T>): Promise<T> {
@@ -621,16 +641,19 @@ export class InfobaseCatalogMutationService {
             recovered++;
           }
         } else if (record.type === 'remove') {
-          // Collect all target folders across workspace changes
-          const targetPaths = new Set<string>();
-          for (const p of record.targetFolderPaths ?? []) {
-            if (p) {
-              targetPaths.add(p);
+          // Collect all target folders across workspace changes using platform-aware identity
+          const targetPaths: string[] = [];
+          const addTargetPath = (p: string) => {
+            if (p && !targetPaths.some((existing) => isSamePath(existing, p, this.platform))) {
+              targetPaths.push(p);
             }
+          };
+          for (const p of record.targetFolderPaths ?? []) {
+            addTargetPath(p);
           }
           for (const mb of record.modifiedBindings ?? []) {
             if (mb.folderFsPath) {
-              targetPaths.add(mb.folderFsPath);
+              addTargetPath(mb.folderFsPath);
             }
           }
 
@@ -639,7 +662,7 @@ export class InfobaseCatalogMutationService {
 
           for (const p of targetPaths) {
             const alreadyIncluded = foldersToClean.some(
-              (f) => path.resolve(f.uri.fsPath).toLowerCase() === path.resolve(p).toLowerCase(),
+              (f) => isSamePath(f.uri.fsPath, p, this.platform),
             );
             if (!alreadyIncluded) {
               foldersToClean.push({
@@ -650,8 +673,20 @@ export class InfobaseCatalogMutationService {
             }
           }
 
-          // 1. Preflight: if any folder has invalid/corrupted bindings, fail closed
+          const isDurableTarget = (folderFsPath: string) =>
+            targetPaths.some((tp) => isSamePath(tp, folderFsPath, this.platform));
+
+          // 1. Preflight: fail closed if durable target folder is inaccessible or bindings file corrupted
           for (const folder of foldersToClean) {
+            if (isDurableTarget(folder.uri.fsPath)) {
+              const accessible = await this.isTargetFolderAccessible(folder);
+              if (!accessible) {
+                throw new Error(
+                  `Cannot recover remove operation: durable target folder is inaccessible at ${folder.uri.fsPath}`,
+                );
+              }
+            }
+
             const diag = await readBindingsForFolderDiagnostic(this.fsApi, folder);
             if (diag.kind === 'invalid') {
               throw new Error(`Cannot recover remove operation: bindings file corrupted at ${diag.uri.fsPath}`);
