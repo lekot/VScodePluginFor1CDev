@@ -145,9 +145,9 @@ export class InfobaseStorageService {
   }
 
   /**
-   * Inserts or updates one entry by `id`.
+   * Inserts or updates one entry by `id`. Optionally accepts password for atomic aggregate mutation (#254).
    */
-  async upsert(entry: InfobaseEntry): Promise<void> {
+  async upsert(entry: InfobaseEntry, password?: string): Promise<void> {
     validateInfobaseEntry(entry);
     return this.runExclusive(async () => {
       const root = this.refreshFromMemento();
@@ -158,7 +158,34 @@ export class InfobaseStorageService {
       } else {
         current.push(entry);
       }
-      await this.internalPersistEntries(current, root);
+
+      const secretKey = infobasePasswordSecretKey(entry.id);
+      let previousPassword: string | undefined;
+      if (password !== undefined) {
+        previousPassword = await this.readPasswordSecret(entry.id);
+        if (password) {
+          await this.secretStorage.store(secretKey, password);
+        } else {
+          await this.secretStorage.delete(secretKey);
+        }
+      }
+
+      try {
+        await this.internalPersistEntries(current, root);
+      } catch (err) {
+        if (password !== undefined) {
+          try {
+            if (previousPassword !== undefined) {
+              await this.secretStorage.store(secretKey, previousPassword);
+            } else {
+              await this.secretStorage.delete(secretKey);
+            }
+          } catch (rbErr) {
+            Logger.error('InfobaseStorageService: failed to rollback secret after globalState failure', rbErr);
+          }
+        }
+        throw err;
+      }
     });
   }
 

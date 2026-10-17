@@ -321,12 +321,12 @@ async function addServerInfobaseFromConnectionString(
   };
   validateInfobaseEntry(entry);
   assertNoConflictingInfobaseTarget(entry, existing);
-  await storage.upsert(entry);
-  if (parsed.pwdKeyPresent && parsed.password) {
-    await storage.writePasswordSecret(id, parsed.password);
-  } else if (hasStoredPassword && typeof extraPassword === 'string' && extraPassword.length > 0) {
-    await storage.writePasswordSecret(id, extraPassword);
-  }
+  const pwdToStore = (parsed.pwdKeyPresent && parsed.password)
+    ? parsed.password
+    : (hasStoredPassword && typeof extraPassword === 'string' && extraPassword.length > 0)
+      ? extraPassword
+      : undefined;
+  await storage.upsert(entry, pwdToStore);
   void vscode.window.showInformationMessage(`База «${name}» добавлена в список.`);
 }
 
@@ -383,10 +383,7 @@ async function addServerInfobaseByFields(storage: InfobaseStorageService, existi
   };
   validateInfobaseEntry(entry);
   assertNoConflictingInfobaseTarget(entry, existing);
-  await storage.upsert(entry);
-  if (hasPwd) {
-    await storage.writePasswordSecret(id, password!);
-  }
+  await storage.upsert(entry, hasPwd ? password! : undefined);
   void vscode.window.showInformationMessage(`База «${name}» добавлена в список.`);
 }
 
@@ -632,11 +629,8 @@ async function editServerInfobaseByFields(
   };
   validateInfobaseEntry(next);
   assertNoConflictingInfobaseTarget(next, existing, entry.id);
-  await storage.upsert(next);
-
-  if (passwordReply.length > 0 && passwordReply !== '-') {
-    await storage.writePasswordSecret(entry.id, passwordReply);
-  }
+  const pwd = (passwordReply.length > 0 && passwordReply !== '-') ? passwordReply : undefined;
+  await storage.upsert(next, pwd);
   void vscode.window.showInformationMessage(`База «${name}» обновлена.`);
 }
 
@@ -730,15 +724,15 @@ async function editServerInfobase(
   };
   validateInfobaseEntry(next);
   assertNoConflictingInfobaseTarget(next, existing, entry.id);
-  await storage.upsert(next);
-
+  let pwdToStore: string | undefined;
   if (parsed.pwdKeyPresent) {
     if (parsed.password) {
-      await storage.writePasswordSecret(entry.id, parsed.password);
+      pwdToStore = parsed.password;
     }
   } else if (passwordReply.length > 0 && passwordReply !== '-') {
-    await storage.writePasswordSecret(entry.id, passwordReply);
+    pwdToStore = passwordReply;
   }
+  await storage.upsert(next, pwdToStore);
   void vscode.window.showInformationMessage(`База «${name}» обновлена.`);
 }
 
@@ -838,9 +832,6 @@ export async function runSetCredentials(
     user: newUser.trim() || undefined,
     hasStoredPassword: nextHasStoredPassword,
   };
-  await storage.upsert(updated);
-  if (saveNewPassword) {
-    await storage.writePasswordSecret(entry.id, passwordInput);
-  }
+  await storage.upsert(updated, saveNewPassword ? passwordInput : undefined);
   void vscode.window.showInformationMessage('Учётные данные обновлены.');
 }
