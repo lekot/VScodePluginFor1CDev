@@ -79,12 +79,24 @@ export interface RecoveryOutcome {
   readonly errors: readonly string[];
 }
 
-interface PendingJournalRecord {
+export type MutationPhase = 'intent' | 'secrets_mutated' | 'bindings_mutated';
+
+export interface ModifiedBindingFolderCompensation {
+  readonly folderFsPath: string;
+  readonly folderName: string;
+  readonly originalBindings: ConfigurationBinding[];
+}
+
+export interface PendingJournalRecord {
   readonly operationId: string;
   readonly type: 'save' | 'remove';
   readonly infobaseId: string;
   readonly timestamp: number;
+  readonly phase?: MutationPhase;
   readonly hadPasswordBefore: boolean;
+  readonly passwordChangeKind?: 'set' | 'clear' | 'keep';
+  readonly targetEntry?: InfobaseEntry;
+  readonly modifiedBindings?: readonly ModifiedBindingFolderCompensation[];
 }
 
 export interface InfobaseCatalogMutationServiceDeps {
@@ -207,18 +219,32 @@ export class InfobaseCatalogMutationService {
         : undefined;
 
       // 4. Record intent in journal
+      const operationId = randomUUID();
       await this.recordJournal({
-        operationId: randomUUID(),
+        operationId,
         type: 'save',
+        phase: 'intent',
         infobaseId: entry.id,
         timestamp: Date.now(),
         hadPasswordBefore: !!existingPassword,
+        passwordChangeKind: passwordChange?.kind,
+        targetEntry: entry,
       });
 
       // 5. Apply SecretStorage mutation
       if (passwordChange?.kind === 'set') {
         try {
           await this.deps.secretStorage.store(secretKey, passwordChange.password!);
+          await this.recordJournal({
+            operationId,
+            type: 'save',
+            phase: 'secrets_mutated',
+            infobaseId: entry.id,
+            timestamp: Date.now(),
+            hadPasswordBefore: !!existingPassword,
+            passwordChangeKind: 'set',
+            targetEntry: entry,
+          });
         } catch (err) {
           await this.clearJournal();
           return {
@@ -231,6 +257,16 @@ export class InfobaseCatalogMutationService {
       } else if (passwordChange?.kind === 'clear' || !entry.hasStoredPassword) {
         try {
           await this.deps.secretStorage.delete(secretKey);
+          await this.recordJournal({
+            operationId,
+            type: 'save',
+            phase: 'secrets_mutated',
+            infobaseId: entry.id,
+            timestamp: Date.now(),
+            hadPasswordBefore: !!existingPassword,
+            passwordChangeKind: passwordChange?.kind ?? 'clear',
+            targetEntry: entry,
+          });
         } catch (err) {
           await this.clearJournal();
           return {
@@ -314,12 +350,15 @@ export class InfobaseCatalogMutationService {
       }
 
       // 2. Record intent
+      const operationId = randomUUID();
       await this.recordJournal({
-        operationId: randomUUID(),
+        operationId,
         type: 'remove',
+        phase: 'intent',
         infobaseId: id,
         timestamp: Date.now(),
         hadPasswordBefore: hadPassword,
+        targetEntry: existing,
       });
 
       // 3. Mutate bindings with snapshot tracking for rollback
@@ -350,6 +389,20 @@ export class InfobaseCatalogMutationService {
             try {
               await writeBindingsForFolder(this.fsApi, folder, nextBindings);
               modifiedFolders.push({ folder, originalBindings });
+              await this.recordJournal({
+                operationId,
+                type: 'remove',
+                phase: 'bindings_mutated',
+                infobaseId: id,
+                timestamp: Date.now(),
+                hadPasswordBefore: hadPassword,
+                targetEntry: existing,
+                modifiedBindings: modifiedFolders.map((mf) => ({
+                  folderFsPath: mf.folder.uri.fsPath,
+                  folderName: mf.folder.name,
+                  originalBindings: mf.originalBindings,
+                })),
+              });
             } catch (err) {
               // Rollback all previously modified bindings
               let rolledBack = true;
@@ -442,19 +495,84 @@ export class InfobaseCatalogMutationService {
         const existing = await this.deps.storage.getById(record.infobaseId);
 
         if (record.type === 'save') {
-          // If entry is not in catalog and had no password before, secret is orphan
-          if (!existing && !record.hadPasswordBefore) {
-            await this.deps.secretStorage.delete(secretKey);
-            recovered++;
-          } else if (existing && !existing.hasStoredPassword) {
-            await this.deps.secretStorage.delete(secretKey);
-            recovered++;
+          if (record.phase === 'secrets_mutated') {
+            if (
+              record.passwordChangeKind === 'clear' ||
+              (record.targetEntry && !record.targetEntry.hasStoredPassword)
+            ) {
+              if (existing && existing.hasStoredPassword) {
+                const target = record.targetEntry ?? { ...existing, hasStoredPassword: false };
+                await this.deps.storage.upsert(target);
+                recovered++;
+              } else if (!existing) {
+                await this.deps.secretStorage.delete(secretKey);
+                recovered++;
+              } else {
+                recovered++;
+              }
+            } else if (record.passwordChangeKind === 'set') {
+              if (existing && !existing.hasStoredPassword && record.targetEntry) {
+                await this.deps.storage.upsert(record.targetEntry);
+                recovered++;
+              } else if (!existing) {
+                await this.deps.secretStorage.delete(secretKey);
+                recovered++;
+              } else {
+                recovered++;
+              }
+            } else {
+              recovered++;
+            }
+          } else {
+            // phase === 'intent' or legacy record without phase
+            if (!existing && !record.hadPasswordBefore) {
+              await this.deps.secretStorage.delete(secretKey);
+              recovered++;
+            } else if (existing && !existing.hasStoredPassword) {
+              await this.deps.secretStorage.delete(secretKey);
+              recovered++;
+            } else {
+              recovered++;
+            }
           }
         } else if (record.type === 'remove') {
-          // If removed from catalog, ensure secret is gone
-          if (!existing) {
-            await this.deps.secretStorage.delete(secretKey);
-            recovered++;
+          if (record.phase === 'bindings_mutated') {
+            try {
+              if (existing) {
+                await this.deps.storage.remove(record.infobaseId);
+              }
+              await this.deps.secretStorage.delete(secretKey);
+              recovered++;
+            } catch (removeErr) {
+              if (record.modifiedBindings && record.modifiedBindings.length > 0) {
+                const folders = this.getWorkspaceFolders() ?? [];
+                for (const mb of record.modifiedBindings) {
+                  const f = folders.find(
+                    (folder) =>
+                      folder.uri.fsPath === mb.folderFsPath || folder.name === mb.folderName,
+                  );
+                  if (f) {
+                    try {
+                      await writeBindingsForFolder(this.fsApi, f, mb.originalBindings);
+                    } catch (wbErr) {
+                      Logger.error(
+                        'InfobaseCatalogMutationService: compensation writeBindingsForFolder failed',
+                        wbErr,
+                      );
+                    }
+                  }
+                }
+              }
+              throw removeErr;
+            }
+          } else {
+            // phase === 'intent' or legacy record
+            if (!existing) {
+              await this.deps.secretStorage.delete(secretKey);
+              recovered++;
+            } else {
+              recovered++;
+            }
           }
         }
 

@@ -193,12 +193,23 @@ export class InfobaseStorageService {
     const root = baseRoot ?? this.refreshFromMemento();
     const folders = [...(root.folders ?? [])];
     validateInfobaseCatalog(entries, folders);
-    await this.syncSecrets(root.entries, entries);
-    await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
-      rootSchemaVersion: 3,
-      entries,
-      folders,
-    } satisfies InfobaseStorageRoot);
+    const deletedSecrets = await this.syncSecrets(root.entries, entries);
+    try {
+      await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
+        rootSchemaVersion: 3,
+        entries,
+        folders,
+      } satisfies InfobaseStorageRoot);
+    } catch (err) {
+      for (const [key, secret] of deletedSecrets) {
+        try {
+          await this.secretStorage.store(key, secret);
+        } catch (rbErr) {
+          Logger.error('InfobaseStorageService: failed to rollback deleted secret after globalState failure', rbErr);
+        }
+      }
+      throw err;
+    }
     this.storedEntries = [...entries];
     this.storedFolders = [...folders];
     this.fireCatalogChanged();
@@ -221,7 +232,9 @@ export class InfobaseStorageService {
    */
   async remove(id: string): Promise<void> {
     return this.runExclusive(async () => {
-      await this.secretStorage.delete(infobasePasswordSecretKey(id));
+      const secretKey = infobasePasswordSecretKey(id);
+      const existingSecret = await this.secretStorage.get(secretKey);
+      await this.secretStorage.delete(secretKey);
       const root = this.refreshFromMemento();
       const current = root.entries;
       const filtered = current.filter((e) => e.id !== id);
@@ -229,29 +242,52 @@ export class InfobaseStorageService {
         return;
       }
       const folders = [...(root.folders ?? [])];
-      await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
-        rootSchemaVersion: 3,
-        entries: filtered,
-        folders,
-      } satisfies InfobaseStorageRoot);
+      try {
+        await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
+          rootSchemaVersion: 3,
+          entries: filtered,
+          folders,
+        } satisfies InfobaseStorageRoot);
+      } catch (err) {
+        if (existingSecret !== undefined) {
+          try {
+            await this.secretStorage.store(secretKey, existingSecret);
+          } catch (rbErr) {
+            Logger.error('InfobaseStorageService: failed to restore secret after remove failure', rbErr);
+          }
+        }
+        throw err;
+      }
       this.storedEntries = filtered;
       this.storedFolders = [...folders];
       this.fireCatalogChanged();
     });
   }
 
-  private async syncSecrets(previous: InfobaseEntry[], next: InfobaseEntry[]): Promise<void> {
+  private async syncSecrets(previous: InfobaseEntry[], next: InfobaseEntry[]): Promise<Map<string, string>> {
+    const deletedSecrets = new Map<string, string>();
     const prevIds = new Set(previous.map((e) => e.id));
     const nextIds = new Set(next.map((e) => e.id));
     for (const pid of prevIds) {
       if (!nextIds.has(pid)) {
-        await this.secretStorage.delete(infobasePasswordSecretKey(pid));
+        const key = infobasePasswordSecretKey(pid);
+        const existing = await this.secretStorage.get(key);
+        if (existing !== undefined) {
+          deletedSecrets.set(key, existing);
+        }
+        await this.secretStorage.delete(key);
       }
     }
     for (const e of next) {
       if (!e.hasStoredPassword) {
-        await this.secretStorage.delete(infobasePasswordSecretKey(e.id));
+        const key = infobasePasswordSecretKey(e.id);
+        const existing = await this.secretStorage.get(key);
+        if (existing !== undefined) {
+          deletedSecrets.set(key, existing);
+        }
+        await this.secretStorage.delete(key);
       }
     }
+    return deletedSecrets;
   }
 }

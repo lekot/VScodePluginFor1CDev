@@ -679,6 +679,30 @@ suite('infobaseCommands runRemoveInfobase', () => {
     await runRemoveInfobase(manager, e);
     assert.deepStrictEqual(await service.load(), []);
   });
+
+  test('surfaces error notification and suppresses info message when removeCatalogEntry fails', async () => {
+    const e = makeEntry({ name: 'CorruptTarget' });
+    await service.saveAll([e]);
+
+    // Stub removeCatalogEntry to return failure outcome
+    manager.removeCatalogEntry = async () => ({
+      success: false,
+      code: 'BINDINGS_CORRUPTED' as any,
+      message: 'Файл привязок повреждён',
+      rolledBack: true,
+    });
+
+    await runRemoveInfobase(manager, e);
+
+    assert.ok(
+      vscodeTestState.errorLog.some((m) => m.includes('Файл привязок повреждён')),
+      'Error notification must be shown with outcome message',
+    );
+    assert.ok(
+      !vscodeTestState.informationLog.some((m: string) => m.includes('удалена из списка')),
+      'Success info message must NOT be shown when remove failed',
+    );
+  });
 });
 
 suite('infobaseCommands runEditInfobase', () => {

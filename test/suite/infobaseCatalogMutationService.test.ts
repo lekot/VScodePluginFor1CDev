@@ -472,4 +472,94 @@ suite('InfobaseCatalogMutationService (#254 Aggregate Consistency)', () => {
     const recoveryOutcome = await mutationService.recoverPendingMutations();
     assert.strictEqual(recoveryOutcome.recoveredCount, 0);
   });
+
+  test('recoverPendingMutations recovers save(clear) by updating catalog entry to hasStoredPassword: false when secret was deleted', async () => {
+    // 1. Save entry with password
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'my-pass' },
+    });
+
+    // 2. Simulate crash after secret deletion: secret is gone, journal recorded secrets_mutated with clear intent
+    await secrets.delete(infobasePasswordSecretKey(testServerEntry.id));
+    await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, {
+      operationId: 'op-save-clear',
+      type: 'save',
+      phase: 'secrets_mutated',
+      infobaseId: testServerEntry.id,
+      timestamp: Date.now(),
+      hadPasswordBefore: true,
+      passwordChangeKind: 'clear',
+      targetEntry: { ...testServerEntry, hasStoredPassword: false },
+    });
+
+    const recoveryOutcome = await mutationService.recoverPendingMutations();
+    assert.strictEqual(recoveryOutcome.recoveredCount, 1);
+    assert.deepStrictEqual(recoveryOutcome.errors, []);
+
+    // Catalog entry must now reflect hasStoredPassword: false
+    const entryAfter = await storage.getById(testServerEntry.id);
+    assert.strictEqual(entryAfter?.hasStoredPassword, false);
+    // Secret remains deleted
+    assert.strictEqual(await secrets.get(infobasePasswordSecretKey(testServerEntry.id)), undefined);
+    // Journal cleared
+    assert.strictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), undefined);
+  });
+
+  test('recoverPendingMutations completes removal when crash occurred in bindings_mutated phase', async () => {
+    await mutationService.saveInfobase({
+      entry: testServerEntry,
+      passwordChange: { kind: 'set', password: 'my-pass' },
+    });
+
+    // Simulate crash after mutating bindings:
+    await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, {
+      operationId: 'op-remove-crash',
+      type: 'remove',
+      phase: 'bindings_mutated',
+      infobaseId: testServerEntry.id,
+      timestamp: Date.now(),
+      hadPasswordBefore: true,
+    });
+
+    const recoveryOutcome = await mutationService.recoverPendingMutations();
+    assert.strictEqual(recoveryOutcome.recoveredCount, 1);
+    assert.deepStrictEqual(recoveryOutcome.errors, []);
+
+    // Entry must be deleted from catalog
+    assert.strictEqual(await storage.getById(testServerEntry.id), undefined);
+    // Secret deleted
+    assert.strictEqual(await secrets.get(infobasePasswordSecretKey(testServerEntry.id)), undefined);
+    // Journal cleared
+    assert.strictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), undefined);
+  });
+
+  test('recoverPendingMutations does not wipe journal when recovery fails', async () => {
+    // 1. Initial entry in storage
+    await storage.upsert(testServerEntry);
+
+    // 2. Simulate crash journal record
+    const journalRecord = {
+      operationId: 'op-unrecoverable',
+      type: 'save',
+      phase: 'secrets_mutated',
+      infobaseId: testServerEntry.id,
+      timestamp: Date.now(),
+      hadPasswordBefore: true,
+      passwordChangeKind: 'clear',
+      targetEntry: { ...testServerEntry, hasStoredPassword: false },
+    };
+    await memento.update(INFOBASE_MUTATION_JOURNAL_KEY, journalRecord);
+
+    // Make globalState update fail during recovery
+    memento.failOnUpdate = true;
+
+    const recoveryOutcome = await mutationService.recoverPendingMutations();
+    assert.strictEqual(recoveryOutcome.recoveredCount, 0);
+    assert.strictEqual(recoveryOutcome.errors.length, 1);
+
+    // Journal must NOT be wiped!
+    memento.failOnUpdate = false;
+    assert.deepStrictEqual(memento.get(INFOBASE_MUTATION_JOURNAL_KEY), journalRecord);
+  });
 });

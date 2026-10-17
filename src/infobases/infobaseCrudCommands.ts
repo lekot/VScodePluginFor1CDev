@@ -452,7 +452,11 @@ export async function runRemoveInfobase(
   if (confirm !== 'Удалить') {
     return;
   }
-  await m.removeCatalogEntry(entry.id);
+  const outcome = await m.removeCatalogEntry(entry.id);
+  if (outcome && !outcome.success) {
+    void vscode.window.showErrorMessage(outcome.message || 'Не удалось удалить базу из списка.');
+    return;
+  }
   void vscode.window.showInformationMessage(`База «${entry.name}» удалена из списка.`);
 }
 
