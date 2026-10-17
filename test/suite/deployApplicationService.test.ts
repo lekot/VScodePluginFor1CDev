@@ -317,9 +317,8 @@ suite('DeployApplicationService (#255)', () => {
       bindingManager: mockBindingManager,
       infobaseStorage: mockStorage,
       getConfigPath: () => configDir,
+      deployService: mockDeployService,
     });
-    // Inject appService
-    Reflect.set(agentOps, 'appService', appService);
 
     const agentResult = await agentOps.deploy({});
     assert.strictEqual(agentResult.success, true);
@@ -555,5 +554,499 @@ suite('DeployApplicationService (#255)', () => {
     const agentRes = await agentOps.deploy({ configPath: goodsFileB });
     assert.strictEqual(agentRes.success, false);
     assert.ok(agentRes.error?.includes('не найдена привязка базы'));
+  });
+
+  // ─── 6. Comprehensive Coverage: Edge Cases, Execution & High-Level Facades ──
+
+  test('prepareDeploy fails closed when binding references non-existent infobase', async () => {
+    const invalidBinding: ConfigurationBinding = {
+      ...mockBinding,
+      infobaseIds: ['non-existent-id'],
+    };
+    const bm: any = {
+      get: async () => invalidBinding,
+      listAll: async () => [invalidBinding],
+    };
+    const svc = new DeployApplicationService({
+      bindingManager: bm,
+      infobaseStorage: mockStorage,
+      getConfigPath: () => configDir,
+    });
+    const res = await svc.prepareDeploy({ kind: 'path', path: configXmlPath });
+    assert.strictEqual(res.ok, false);
+    if (!res.ok) {
+      assert.strictEqual(res.code, 'ALL_TARGETS_SKIPPED');
+      assert.ok(res.error.includes('все пропущены'));
+    }
+
+    // Catalog load threw an error
+    const throwingStorage: any = {
+      load: async () => { throw new Error('disk read error'); },
+    };
+    const svcCatalogFail = new DeployApplicationService({
+      bindingManager: bm,
+      infobaseStorage: throwingStorage,
+      getConfigPath: () => configDir,
+    });
+    const resCat = await svcCatalogFail.prepareDeploy({ kind: 'path', path: configXmlPath });
+    assert.strictEqual(resCat.ok, false);
+    if (!resCat.ok) {
+      assert.strictEqual(resCat.code, 'CATALOG_LOAD_FAILED');
+    }
+
+    // Binding has empty infobaseIds -> NO_TARGET_INFOBASE
+    const emptyIdsBinding: ConfigurationBinding = {
+      ...mockBinding,
+      infobaseIds: [],
+    };
+    const bmEmpty: any = {
+      get: async () => emptyIdsBinding,
+    };
+    const svcEmpty = new DeployApplicationService({
+      bindingManager: bmEmpty,
+      infobaseStorage: mockStorage,
+      getConfigPath: () => configDir,
+    });
+    const resEmpty = await svcEmpty.prepareDeploy({ kind: 'path', path: configXmlPath });
+    assert.strictEqual(resEmpty.ok, false);
+    if (!resEmpty.ok) {
+      assert.strictEqual(resEmpty.code, 'NO_TARGET_INFOBASE');
+    }
+  });
+
+  test('prepareDeploy fails closed when workspace folder is missing or configRelativePath is empty', async () => {
+    const svc = new DeployApplicationService({
+      bindingManager: mockBindingManager,
+      infobaseStorage: mockStorage,
+    });
+
+    const resUnknownWs = await svc.prepareDeploy({
+      kind: 'coords',
+      workspaceFolderName: 'unknown-ws',
+      configRelativePath: 'src/Configuration/Configuration.xml',
+    });
+    assert.strictEqual(resUnknownWs.ok, false);
+    if (!resUnknownWs.ok) {
+      assert.strictEqual(resUnknownWs.code, 'WORKSPACE_NOT_FOUND');
+    }
+
+    const resEmptyRel = await svc.prepareDeploy({
+      kind: 'coords',
+      workspaceFolderName: 'test-ws',
+      configRelativePath: '',
+    });
+    assert.strictEqual(resEmptyRel.ok, false);
+    if (!resEmptyRel.ok) {
+      assert.strictEqual(resEmptyRel.code, 'NO_CONFIG_PATH');
+    }
+  });
+
+  test('prepareDeploy falls back to listAll when bindingManager.get is not a function', async () => {
+    const bmOnlyList: any = {
+      listAll: async () => [mockBinding],
+    };
+    const svc = new DeployApplicationService({
+      bindingManager: bmOnlyList,
+      infobaseStorage: mockStorage,
+      getConfigPath: () => configDir,
+    });
+    const res = await svc.prepareDeploy({ kind: 'path', path: configXmlPath });
+    assert.strictEqual(res.ok, true);
+    if (res.ok) {
+      assert.strictEqual(res.context.binding.configRelativePath, mockBinding.configRelativePath);
+    }
+  });
+
+  test('prepareDeploy resolves Extension TreeNode with isExtension=true', async () => {
+    const extDir = path.join(tempDir, 'Extensions', 'Ext1');
+    fs.mkdirSync(extDir, { recursive: true });
+    const extXml = path.join(extDir, 'Configuration.xml');
+    fs.writeFileSync(extXml, '<Configuration/>', 'utf8');
+
+    const extBinding: ConfigurationBinding = {
+      workspaceFolder: 'test-ws',
+      configRelativePath: 'Extensions/Ext1/Configuration.xml',
+      ibcmdExtensionName: 'Ext1',
+      infobaseIds: ['ib-1'],
+      massDeployment: false,
+    };
+
+    const bm: any = {
+      get: async (ws: string, rel: string) => {
+        if (rel === extBinding.configRelativePath) return extBinding;
+        return undefined;
+      },
+      listAll: async () => [extBinding],
+    };
+
+    const svc = new DeployApplicationService({
+      bindingManager: bm,
+      infobaseStorage: mockStorage,
+    });
+
+    const extNode: TreeNode = {
+      id: 'ext-node-1',
+      name: 'Ext1',
+      type: MetadataType.Extension,
+      filePath: extDir,
+      properties: { isExtension: true },
+    };
+
+    const mockTree: any = {
+      getConfigPathForNode: () => extDir,
+    };
+
+    const res = await svc.prepareDeploy({
+      kind: 'node',
+      node: extNode,
+      treeDataProvider: mockTree,
+    });
+    assert.strictEqual(res.ok, true);
+    if (res.ok) {
+      assert.strictEqual(res.context.binding.configRelativePath, extBinding.configRelativePath);
+      assert.strictEqual(res.context.binding.ibcmdExtensionName, 'Ext1');
+    }
+
+    // When node has no filePath or properties.isExtension is missing -> TARGET_NOT_RESOLVED
+    const invalidExtNode: TreeNode = {
+      id: 'ext-invalid',
+      name: 'BadExt',
+      type: MetadataType.Extension,
+      properties: {},
+    };
+    const resBad = await svc.prepareDeploy({
+      kind: 'node',
+      node: invalidExtNode,
+      treeDataProvider: mockTree,
+    });
+    assert.strictEqual(resBad.ok, false);
+    if (!resBad.ok) {
+      assert.strictEqual(resBad.code, 'TARGET_NOT_RESOLVED');
+    }
+
+    // Extension with isExtension=true but filePath does not contain Configuration.xml
+    const nonExistentXmlDir = path.join(tempDir, 'Extensions', 'MissingXml');
+    fs.mkdirSync(nonExistentXmlDir, { recursive: true });
+    const noXmlExtNode: TreeNode = {
+      id: 'ext-no-xml',
+      name: 'MissingXml',
+      type: MetadataType.Extension,
+      filePath: nonExistentXmlDir,
+      properties: { isExtension: true },
+    };
+    const resNoXml = await svc.prepareDeploy({
+      kind: 'node',
+      node: noXmlExtNode,
+      treeDataProvider: mockTree,
+    });
+    assert.strictEqual(resNoXml.ok, false);
+    if (!resNoXml.ok) {
+      assert.strictEqual(resNoXml.code, 'TARGET_NOT_RESOLVED');
+    }
+  });
+
+  test('deployBinding maps cancelledMidChain, inDoubtCount, and errorCount to matching outcomes', async () => {
+    let mockSummary: DeployRunSummary = {
+      successCount: 0,
+      errorCount: 0,
+      inDoubtCount: 0,
+      skippedCount: 1,
+      hasPartial: false,
+      cancelledMidChain: true,
+      results: [{ infobaseId: 'ib-1', name: 'TargetBase', status: 'skipped', message: 'User abort' }],
+    };
+
+    const mockDeployService: any = {
+      deployBinding: async () => mockSummary,
+      deployChangedFiles: async () => mockSummary,
+      deploySelectedObjects: async () => mockSummary,
+      pullSelectedObjects: async () => mockSummary,
+    };
+
+    const svc = new DeployApplicationService({
+      bindingManager: mockBindingManager,
+      infobaseStorage: mockStorage,
+      deployService: mockDeployService,
+    });
+
+    // 1. Cancelled outcome
+    const prep = await svc.prepareDeploy({ kind: 'path', path: configXmlPath });
+    assert.strictEqual(prep.ok, true);
+    if (!prep.ok) return;
+
+    const outCancel = await svc.executeDeployBinding(prep.context);
+    assert.strictEqual(outCancel.status, 'cancelled');
+    assert.strictEqual(outCancel.success, false);
+
+    // 2. In-doubt outcome
+    mockSummary = {
+      successCount: 0,
+      errorCount: 0,
+      inDoubtCount: 1,
+      skippedCount: 0,
+      hasPartial: false,
+      cancelledMidChain: false,
+      results: [{ infobaseId: 'ib-1', name: 'TargetBase', status: 'inDoubt', message: 'Timeout' }],
+    };
+    const outDoubt = await svc.executeDeployBinding(prep.context);
+    assert.strictEqual(outDoubt.status, 'inDoubt');
+    assert.strictEqual(outDoubt.success, false);
+
+    // 3. Error outcome
+    mockSummary = {
+      successCount: 0,
+      errorCount: 1,
+      inDoubtCount: 0,
+      skippedCount: 0,
+      hasPartial: false,
+      cancelledMidChain: false,
+      results: [{ infobaseId: 'ib-1', name: 'TargetBase', status: 'error', message: 'Fail' }],
+    };
+    const outError = await svc.executeDeployBinding(prep.context);
+    assert.strictEqual(outError.status, 'error');
+    assert.strictEqual(outError.success, false);
+  });
+
+  test('deployFiles and executeDeployChangedFiles execute through deployService with support and output reporting', async () => {
+    let capturedParams: any;
+    const stages: string[] = [];
+    const outputLines: string[] = [];
+
+    const mockDeployService: any = {
+      deployChangedFiles: async (params: any) => {
+        capturedParams = params;
+        params.onOutput?.('Process line 1');
+        return {
+          successCount: 1,
+          errorCount: 0,
+          inDoubtCount: 0,
+          skippedCount: 0,
+          hasPartial: false,
+          cancelledMidChain: false,
+          results: [{ infobaseId: 'ib-1', name: 'TargetBase', status: 'success', message: 'Done' }],
+        };
+      },
+    };
+
+    const mockSupport = { isSupportEnabled: () => true };
+    const svc = new DeployApplicationService({
+      bindingManager: mockBindingManager,
+      infobaseStorage: mockStorage,
+      deployService: mockDeployService,
+      resolveSupportContext: async () => mockSupport as any,
+    });
+
+    const prep = await svc.prepareDeploy({ kind: 'path', path: configXmlPath });
+    assert.strictEqual(prep.ok, true);
+    if (!prep.ok) return;
+
+    const outcome = await svc.executeDeployChangedFiles(prep.context, ['Catalogs/Items.xml'], {
+      reportStage: (msg) => stages.push(msg),
+      onOutput: (line) => outputLines.push(line),
+    });
+
+    assert.strictEqual(outcome.success, true);
+    assert.strictEqual(outcome.status, 'success');
+    assert.deepStrictEqual(capturedParams.relativeFiles, ['Catalogs/Items.xml']);
+    assert.strictEqual(capturedParams.support, mockSupport);
+    assert.strictEqual(outputLines.includes('Process line 1'), true);
+
+    // Also via high-level deployFiles
+    const highOutcome = await svc.deployFiles(
+      { kind: 'path', path: configXmlPath },
+      ['Catalogs/Items.xml'],
+    );
+    assert.strictEqual(highOutcome.success, true);
+  });
+
+  test('executeDeploySelectedObjects executes correctly', async () => {
+    let selectedPassed: any;
+    const mockDeployService: any = {
+      deploySelectedObjects: async (params: any) => {
+        selectedPassed = params.selectedNodes;
+        return {
+          successCount: 1,
+          errorCount: 0,
+          inDoubtCount: 0,
+          skippedCount: 0,
+          hasPartial: false,
+          cancelledMidChain: false,
+          results: [{ infobaseId: 'ib-1', name: 'TargetBase', status: 'success', message: 'Done' }],
+        };
+      },
+    };
+
+    const svc = new DeployApplicationService({
+      bindingManager: mockBindingManager,
+      infobaseStorage: mockStorage,
+      deployService: mockDeployService,
+    });
+
+    const nodes: TreeNode[] = [
+      { id: 'Catalog.Items', name: 'Items', type: MetadataType.Catalog, properties: {} },
+    ];
+
+    const prep = await svc.prepareDeploy({ kind: 'path', path: configXmlPath });
+    assert.strictEqual(prep.ok, true);
+    if (!prep.ok) return;
+
+    const outcome = await svc.executeDeploySelectedObjects(prep.context, nodes);
+    assert.strictEqual(outcome.success, true);
+    assert.strictEqual(selectedPassed, nodes);
+  });
+
+  test('pullObjects and executePullSelectedObjects validate arguments and delegate to deployService', async () => {
+    let pulledParams: any;
+    const mockDeployService: any = {
+      pullSelectedObjects: async (params: any) => {
+        pulledParams = params;
+        return {
+          successCount: 1,
+          errorCount: 0,
+          inDoubtCount: 0,
+          skippedCount: 0,
+          hasPartial: false,
+          cancelledMidChain: false,
+          results: [{ infobaseId: 'ib-1', name: 'TargetBase', status: 'success', message: 'Pulled' }],
+        };
+      },
+    };
+
+    const svc = new DeployApplicationService({
+      bindingManager: mockBindingManager,
+      infobaseStorage: mockStorage,
+      deployService: mockDeployService,
+    });
+
+    // 1. Empty objectIds -> VALIDATION_FAILED
+    const outEmpty = await svc.pullObjects({ kind: 'path', path: configXmlPath }, []);
+    assert.strictEqual(outEmpty.success, false);
+    assert.strictEqual(outEmpty.code, 'VALIDATION_FAILED');
+    assert.strictEqual(outEmpty.status, 'error');
+
+    // 2. Unknown infobaseName -> VALIDATION_FAILED
+    const outBadName = await svc.pullObjects(
+      { kind: 'path', path: configXmlPath },
+      ['Catalog.Items'],
+      { infobaseName: 'NonExistent' },
+    );
+    assert.strictEqual(outBadName.success, false);
+    assert.strictEqual(outBadName.code, 'VALIDATION_FAILED');
+
+    // 3. Successful pull with matching infobaseName
+    const outGood = await svc.pullObjects(
+      { kind: 'path', path: configXmlPath },
+      ['Catalog.Items'],
+      { infobaseName: 'TargetBase' },
+    );
+    assert.strictEqual(outGood.success, true);
+    assert.strictEqual(pulledParams.entry.name, 'TargetBase');
+    assert.strictEqual(pulledParams.selectedNodes[0].name, 'Items');
+    assert.strictEqual(pulledParams.selectedNodes[0].type, 'Catalog');
+
+    // 4. executePullSelectedObjects with empty deployTargets
+    const prep = await svc.prepareDeploy({ kind: 'path', path: configXmlPath });
+    assert.strictEqual(prep.ok, true);
+    if (!prep.ok) return;
+
+    const emptyContext = { ...prep.context, deployTargets: [] };
+    const outNoTargets = await svc.executePullSelectedObjects(emptyContext, []);
+    assert.strictEqual(outNoTargets.success, false);
+    assert.strictEqual(outNoTargets.code, 'VALIDATION_FAILED');
+  });
+
+  test('exportStatus and executeExportStatus handle missing dump info and target infobase', async () => {
+    const svc = new DeployApplicationService({
+      bindingManager: mockBindingManager,
+      infobaseStorage: mockStorage,
+    });
+
+    // 1. Target resolution failure
+    const outBadTarget = await svc.exportStatus({
+      kind: 'path',
+      path: path.join(tempDir, 'NonExistent', 'Config.xml'),
+    });
+    assert.strictEqual(outBadTarget.success, false);
+    assert.strictEqual(outBadTarget.status, 'error');
+
+    // 2. Missing ConfigDumpInfo.xml
+    const prep = await svc.prepareDeploy({ kind: 'path', path: configXmlPath });
+    assert.strictEqual(prep.ok, true);
+    if (!prep.ok) return;
+
+    const outNoDump = await svc.executeExportStatus(prep.context);
+    assert.strictEqual(outNoDump.success, false);
+    assert.strictEqual(outNoDump.code, 'CONFIG_DUMP_INFO_MISSING');
+
+    // 3. Missing deploy targets (with ConfigDumpInfo.xml present)
+    const dumpInfoPath = path.join(prep.context.configRoot, 'ConfigDumpInfo.xml');
+    fs.writeFileSync(dumpInfoPath, '<ConfigDumpInfo/>', 'utf8');
+    try {
+      const outNoTargets = await svc.executeExportStatus({
+        ...prep.context,
+        deployTargets: [],
+      });
+      assert.strictEqual(outNoTargets.success, false);
+      assert.strictEqual(outNoTargets.code, 'NO_TARGET_INFOBASE');
+    } finally {
+      if (fs.existsSync(dumpInfoPath)) {
+        fs.unlinkSync(dumpInfoPath);
+      }
+    }
+  });
+
+  test('deployChanged delegates to executeDeployChangedFiles with detected changes', async () => {
+    let deployedRelativeFiles: string[] | undefined;
+    const mockDeployService: any = {
+      deployChangedFiles: async (params: any) => {
+        deployedRelativeFiles = params.relativeFiles;
+        return {
+          successCount: 1,
+          errorCount: 0,
+          inDoubtCount: 0,
+          skippedCount: 0,
+          hasPartial: false,
+          cancelledMidChain: false,
+          results: [{ infobaseId: 'ib-1', name: 'TargetBase', status: 'success', message: 'Ok' }],
+        };
+      },
+    };
+
+    const mockGitRepo: GitRepository = {
+      rootUri: vscode.Uri.file(tempDir),
+      state: {
+        workingTreeChanges: [{ uri: vscode.Uri.file(path.join(configDir, 'Catalogs', 'Goods.xml')) }],
+        indexChanges: [],
+        mergeChanges: [],
+      },
+    };
+
+    const svc = new DeployApplicationService({
+      bindingManager: mockBindingManager,
+      infobaseStorage: mockStorage,
+      deployService: mockDeployService,
+      gitDeps: {
+        getGitRepository: () => mockGitRepo,
+      },
+    });
+
+    const outcome = await svc.deployChanged(
+      { kind: 'path', path: configXmlPath },
+    );
+    assert.strictEqual(outcome.success, true);
+    assert.deepStrictEqual(deployedRelativeFiles, ['Catalogs/Goods.xml']);
+
+    // When git repo returns error -> validation failed outcome
+    const svcNoGit = new DeployApplicationService({
+      bindingManager: mockBindingManager,
+      infobaseStorage: mockStorage,
+      deployService: mockDeployService,
+      gitDeps: {
+        getGitRepository: () => undefined,
+      },
+    });
+    const outcomeNoGit = await svcNoGit.deployChanged({ kind: 'path', path: configXmlPath });
+    assert.strictEqual(outcomeNoGit.success, false);
+    assert.strictEqual(outcomeNoGit.code, 'VALIDATION_FAILED');
   });
 });
