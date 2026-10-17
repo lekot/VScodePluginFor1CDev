@@ -49,7 +49,7 @@ export async function activateAgentBridge(
   }
 
   context.subscriptions.push({
-    dispose: () => { void bridge.stop(); },
+    dispose: () => bridge.stop(),
   });
 
   return bridge;

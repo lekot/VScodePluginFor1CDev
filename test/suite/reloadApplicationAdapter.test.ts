@@ -20,6 +20,7 @@ interface TypeScriptSource {
 const lifecycleOwners = new Set([
   'src/extension/metadataTreeLifecycle.ts',
   'src/extension/extensionWorkspaceSetup.ts',
+  'src/extension/extensionCompositionRoot.ts',
 ]);
 const lifecycleSchedulingPattern = /\b(?:invalidateCacheAndReload|reloadConfiguration)\b/u;
 const lifecycleExecutorPattern = /\bexecuteConfigurationReload\b/u;
@@ -51,7 +52,8 @@ function findLifecycleBypasses(sources: readonly TypeScriptSource[]): string[] {
     .filter(({ relativePath, content }) => lifecycleSchedulingPattern.test(content)
       || (lifecycleExecutorPattern.test(content)
         && (!lifecycleOwners.has(relativePath)
-          || (relativePath === 'src/extension/extensionWorkspaceSetup.ts'
+          || ((relativePath === 'src/extension/extensionWorkspaceSetup.ts'
+            || relativePath === 'src/extension/extensionCompositionRoot.ts')
             && lifecycleExecutorForwardingPattern.test(content)))))
     .map(({ relativePath }) => relativePath)
     .sort();
@@ -203,6 +205,16 @@ suite('requestConfigurationReload application adapter', () => {
       findLifecycleBypasses([...sources, injectedForwarding]),
       ['src/extension/extensionWorkspaceSetup.ts'],
       'the composition root must not forward its single-attempt executor to feature registrations',
+    );
+
+    const injectedForwardingRoot = {
+      relativePath: 'src/extension/extensionCompositionRoot.ts',
+      content: 'const trackedLifecycle = { executeConfigurationReload: lifecycle.executeConfigurationReload };',
+    };
+    assert.deepStrictEqual(
+      findLifecycleBypasses([...sources, injectedForwardingRoot]),
+      ['src/extension/extensionCompositionRoot.ts'],
+      'extensionCompositionRoot must not forward its single-attempt executor to feature registrations',
     );
   });
 });

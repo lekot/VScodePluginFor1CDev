@@ -165,4 +165,29 @@ suite('ExtensionState teardown and drain (#202, #205)', () => {
     await state.dispose();
     assert.strictEqual(bridgeStopCalls, 1, 'Repeated dispose must be a safe no-op');
   });
+
+  test('#202: concurrent dispose calls join the active workspace-registry drain', async () => {
+    const state = new ExtensionState();
+    let releaseDrain!: () => void;
+    let drained = false;
+    const gate = new Promise<void>((resolve) => { releaseDrain = resolve; });
+    state.workspaceRegistry = {
+      dispose: async () => {
+        await gate;
+        drained = true;
+      },
+    } as unknown as WorkspaceRegistry;
+
+    const firstDispose = state.dispose();
+    const secondDispose = state.dispose();
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(drained, false, 'state.dispose callers must remain pending while the registry drain is blocked');
+    } finally {
+      releaseDrain();
+      await firstDispose;
+    }
+    await secondDispose;
+    assert.strictEqual(drained, true, 'a concurrent state.dispose caller must wait for the active drain');
+  });
 });

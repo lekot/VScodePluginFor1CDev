@@ -240,8 +240,11 @@ suite('xmlFileIo: writeUtf8FileWithBackup & Backup Preservation', () => {
     };
 
     const op1 = writeUtf8FileWithBackup(target, '<Root>0</Root>', '<Root>1</Root>', { hooks: hooksOp1 });
-    // Let op1 run until it enters target write and waits on gate
-    await new Promise((r) => setTimeout(r, 30));
+    // Wait for op1 to enter target write and wait on gate
+    const deadline = Date.now() + 1000;
+    while (!events.includes('op1:target:start') && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     assert.ok(events.includes('op1:target:start'), 'op1 must have started target write');
 
     const op2 = writeUtf8FileWithBackup(target, '<Root>1</Root>', '<Root>2</Root>', { hooks: hooksOp2 });
