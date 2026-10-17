@@ -4,7 +4,7 @@ import { ObjectTypeParser } from '../parsers/objectTypeParser';
 import { OBJECT_KIND_ORDER } from '../constants/metadataTypeObjectKinds';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
-import { randomBytes } from 'crypto';
+import { renderSecureWebviewHtml } from '../utils/webviewSecurity';
 
 
 const OBJECT_KIND_LABELS: Record<ObjectKind, string> = {
@@ -207,7 +207,6 @@ export class ObjectTypeEditorProvider {
   }
 
   private getWebviewContent(currentDef: ObjectTypeDefinition, objectableGroups: ObjectableGroup[]): string {
-    const nonce = randomBytes(24).toString('base64url');
     const treeData = this.buildTreeData(currentDef, objectableGroups);
     const initialSelectedIds = this.getInitialSelectedIds(currentDef);
     const treeDataJson = escapeJsonForScript(JSON.stringify(treeData));
@@ -217,14 +216,14 @@ export class ObjectTypeEditorProvider {
       treeData.flatMap((group) => group.children.map((child) => child.id)),
     );
 
-    return `
+    const template = `
       <!DOCTYPE html>
       <html>
       <head>
         <meta charset="UTF-8">
-        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}';">
+        <meta http-equiv="Content-Security-Policy" content="\${csp}">
         <title>Редактирование Source</title>
-        <style nonce="${nonce}">
+        <style nonce="\${nonce}">
           * { box-sizing: border-box; }
           body {
             font-family: var(--vscode-font-family);
@@ -318,7 +317,7 @@ export class ObjectTypeEditorProvider {
             <button type="button" id="save-btn" ${hasSelection ? '' : 'disabled'} title="Сохранить" aria-label="Сохранить">Сохранить</button>
           </div>
         </div>
-        <script nonce="${nonce}">
+        <script nonce="\${nonce}">
           const vscode = acquireVsCodeApi();
           const treeData = ${treeDataJson};
           let selectedIds = new Set(${initialSelectedJson});
@@ -378,6 +377,7 @@ export class ObjectTypeEditorProvider {
       </body>
       </html>
     `;
+    return renderSecureWebviewHtml(template, { webview: this.panel?.webview });
   }
 
   private async handleMessage(message: WebviewMessage): Promise<void> {

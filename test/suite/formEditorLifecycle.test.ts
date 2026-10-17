@@ -209,7 +209,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
       document.dispose();
       provider.dispose();
     } finally {
-      await fs.promises.rm(tempDir, { recursive: true, force: true });
+      await fs.promises.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 

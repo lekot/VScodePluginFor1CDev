@@ -2,7 +2,7 @@ import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import type { ResolvedPicture } from '../services/picture/commonPictureResolver';
 import { Logger } from '../utils/logger';
-import { createNonce } from '../utils/webviewSecurity';
+import { createNonce, buildWebviewCsp } from '../utils/webviewSecurity';
 import { TypeParser } from '../parsers/typeParser';
 import { TypeFormatter } from '../utils/typeFormatter';
 import { getPropertyLabel } from '../constants/propertyLabels';
@@ -1051,6 +1051,11 @@ export function getWebviewContent(
   Logger.debug(`getWebviewContent: node.name="${node.name}", node.type="${node.type}", readOnly=${readOnly}`);
 
   const nonce = createNonce();
+  const csp = buildWebviewCsp({
+    nonce,
+    allowUnsafeInlineStyles: true,
+    imgSources: ['data:'],
+  });
 
   return `
     <!DOCTYPE html>
@@ -1058,7 +1063,7 @@ export function getWebviewContent(
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src data:; base-uri 'none'; form-action 'none';">
+      <meta http-equiv="Content-Security-Policy" content="${csp}">
       <title>Properties</title>
       <style>
         body {
@@ -1409,15 +1414,14 @@ export function getWebviewContent(
  * Generate empty state HTML when no element is selected
  */
 export function getEmptyStateContent(): string {
+  const csp = buildWebviewCsp({ allowUnsafeInlineStyles: true });
   return `
     <!DOCTYPE html>
     <html>
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <meta http-equiv="Content-Security-Policy"
-            content="default-src 'none';
-                     style-src 'unsafe-inline';">
+      <meta http-equiv="Content-Security-Policy" content="${csp}">
       <title>Properties</title>
       <style>
         body {
@@ -1454,15 +1458,14 @@ export function getEmptyStateContent(): string {
  * Show error message in properties panel — returns HTML string.
  */
 export function getErrorPanelContent(node: TreeNode, title: string, details: string): string {
+  const csp = buildWebviewCsp({ allowUnsafeInlineStyles: true });
   return `
     <!DOCTYPE html>
     <html>
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <meta http-equiv="Content-Security-Policy"
-            content="default-src 'none';
-                     style-src 'unsafe-inline';">
+      <meta http-equiv="Content-Security-Policy" content="${csp}">
       <title>Properties - Error</title>
       <style>
         body {
@@ -1679,6 +1682,10 @@ export function getFormSelectionWebviewContent(
     : '';
 
   const nonce = createNonce();
+  const csp = buildWebviewCsp({
+    nonce,
+    allowUnsafeInlineStyles: true,
+  });
 
   return `
     <!DOCTYPE html>
@@ -1686,7 +1693,7 @@ export function getFormSelectionWebviewContent(
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; base-uri 'none'; form-action 'none';">
+      <meta http-equiv="Content-Security-Policy" content="${csp}">
       <title>Properties</title>
       <style>
         body {

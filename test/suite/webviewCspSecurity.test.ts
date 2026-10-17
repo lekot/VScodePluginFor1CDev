@@ -11,6 +11,8 @@ import {
   buildWebviewCsp,
   createNonce,
   applyNonceToHtml,
+  renderSecureWebview,
+  renderSecureWebviewHtml,
 } from '../../src/utils/webviewSecurity';
 import { QueryBuilderProvider } from '../../src/queryBuilder/queryBuilderProvider';
 import type { FormSelectionPayload } from '../../src/formEditor/formMessageHandler';
@@ -144,8 +146,15 @@ suite('Webview CSP security policy', () => {
 
       assert.match(
         content,
-        /script-src[^;"']*'nonce-\$\{nonce\}'/i,
-        `${relPath} CSP must declare script-src 'nonce-\${nonce}' placeholder`
+        /<meta\s+http-equiv="Content-Security-Policy"\s+content="\$\{csp\}"\s*\/?>/i,
+        `${relPath} CSP must declare \${csp} placeholder`
+      );
+
+      const rendered = renderSecureWebview(content);
+      assert.match(
+        rendered.csp,
+        /script-src\s+'nonce-[A-Za-z0-9_-]+'/i,
+        `${relPath} rendered CSP must contain script-src nonce directive`
       );
 
       const scriptTags = Array.from(content.matchAll(/<script\b([^>]*)>/gi));
@@ -238,6 +247,170 @@ suite('Webview CSP security policy', () => {
     const html = getWebviewContent(node, { sessionToken: 'abc' });
     assert.ok(!html.includes('</script><script>alert'));
     assert.ok(html.includes('&lt;/script&gt;&lt;script&gt;alert'));
+  });
+
+  test('renderSecureWebview replaces ${csp}, ${nonce}, ${webview.cspSource} and custom substitutions with strict defaults', () => {
+    const template = `<!DOCTYPE html>
+<html>
+<head>
+  <meta http-equiv="Content-Security-Policy" content="\${csp}">
+  <style nonce="\${nonce}">body { color: red; }</style>
+</head>
+<body>
+  <div>\${greeting}</div>
+  <script nonce="\${nonce}">// __DATA__</script>
+</body>
+</html>`;
+
+    const result = renderSecureWebview(template, {
+      webview: { cspSource: 'vscode-webview:' },
+      substitutions: {
+        '${greeting}': 'Hello World',
+        '// __DATA__': 'const x = 1;',
+      },
+    });
+
+    assert.ok(result.nonce.length >= 24);
+    assert.ok(result.csp.includes("default-src 'none'"));
+    assert.ok(result.csp.includes(`script-src 'nonce-${result.nonce}'`));
+    assert.ok(result.csp.includes(`style-src vscode-webview: 'nonce-${result.nonce}'`));
+    assert.ok(result.csp.includes("base-uri 'none'"));
+    assert.ok(result.csp.includes("form-action 'none'"));
+    assert.ok(result.html.includes(`content="${result.csp}"`));
+    assert.ok(result.html.includes(`style nonce="${result.nonce}"`));
+    assert.ok(result.html.includes(`script nonce="${result.nonce}"`));
+    assert.ok(result.html.includes('<div>Hello World</div>'));
+    assert.ok(result.html.includes('const x = 1;'));
+  });
+
+  test('renderSecureWebview injects CSP meta tag when missing or overrides legacy hardcoded meta tag', () => {
+    const rawTemplate = `<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body><script nonce="\${nonce}">console.log(1);</script></body>
+</html>`;
+
+    const rendered = renderSecureWebview(rawTemplate, {
+      csp: { allowUnsafeInlineStyles: true, imgSources: ['data:'] },
+    });
+
+    assert.ok(rendered.html.includes('<meta http-equiv="Content-Security-Policy"'));
+    assert.ok(rendered.csp.includes("style-src 'unsafe-inline'"));
+    assert.ok(rendered.csp.includes('img-src data:'));
+
+    // Check overriding legacy hardcoded CSP meta tag
+    const legacyTemplate = `<!DOCTYPE html>
+<html>
+<head><meta http-equiv="Content-Security-Policy" content="default-src 'self'"></head>
+<body><p>Hello</p></body>
+</html>`;
+    const renderedLegacy = renderSecureWebview(legacyTemplate);
+    assert.doesNotMatch(renderedLegacy.html, /default-src\s+'self'/);
+    assert.ok(renderedLegacy.html.includes("default-src 'none'"));
+  });
+
+  test('architecture guard: no local createNonce declarations exist in src/ outside webviewSecurity.ts', () => {
+    const offenders: string[] = [];
+
+    function scanDir(dir: string): void {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          scanDir(fullPath);
+        } else if (entry.name.endsWith('.ts')) {
+          const relPath = path.relative(repoRoot, fullPath).replace(/\\/g, '/');
+          if (relPath === 'src/utils/webviewSecurity.ts') {
+            continue;
+          }
+          const content = fs.readFileSync(fullPath, 'utf8');
+          if (/(?:function\s+createNonce\b|const\s+createNonce\s*=)/.test(content)) {
+            offenders.push(relPath);
+          }
+        }
+      }
+    }
+
+    scanDir(srcDir);
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      `Found local createNonce declarations outside webviewSecurity.ts:\n${offenders.join('\n')}`
+    );
+  });
+
+  test('architecture guard: webview modules do not import randomBytes for nonce creation', () => {
+    // Only non-webview services may import randomBytes (e.g. agent tokens, temp file paths)
+    const allowedRandomBytesFiles = new Set([
+      'src/agent/agentBridge.ts',
+      'src/commands/configurationCompareCommands.ts',
+      'src/commands/elementCommands.ts',
+      'src/infobases/ibcmdConfigPathResolver.ts',
+      'src/infobases/infobaseConfigCommands.ts',
+      'src/services/externalProcessor/externalProcessorService.ts',
+      'src/services/ibcmd/ibcmdOfflineDataDir.ts',
+      'src/utils/webviewSecurity.ts',
+    ]);
+
+    const offenders: string[] = [];
+
+    function scanDir(dir: string): void {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          scanDir(fullPath);
+        } else if (entry.name.endsWith('.ts')) {
+          const relPath = path.relative(repoRoot, fullPath).replace(/\\/g, '/');
+          if (allowedRandomBytesFiles.has(relPath)) {
+            continue;
+          }
+          const content = fs.readFileSync(fullPath, 'utf8');
+          if (/\brandomBytes\b/.test(content)) {
+            offenders.push(relPath);
+          }
+        }
+      }
+    }
+
+    scanDir(srcDir);
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      `Found unauthorized randomBytes usage in webview-related files:\n${offenders.join('\n')}`
+    );
+  });
+
+  test('architecture guard: all static webview HTML templates use ${csp} placeholder instead of hardcoded policies', () => {
+    const templates = [
+      'src/compareMerge/configCompareWebview.html',
+      'src/compositionEditor/compositionWebview.html',
+      'src/queryBuilder/ui/queryBuilderWebview.html',
+      'src/rolesEditor/rolesEditorWebview.html',
+      'src/subsystemCommandInterfaceEditor/subsystemCommandInterfaceWebview.html',
+      'src/xdtoPackageCompare/xdtoPackageCompareWebview.html',
+      'src/xdtoPackageEditor/xdtoPackageWebview.html',
+    ];
+
+    const offenders: string[] = [];
+    for (const relPath of templates) {
+      const fullPath = path.join(repoRoot, relPath);
+      const content = fs.readFileSync(fullPath, 'utf8');
+
+      // Must have <meta http-equiv="Content-Security-Policy" content="${csp}">
+      if (!/<meta\s+http-equiv="Content-Security-Policy"\s+content="\$\{csp\}"\s*\/?>/i.test(content)) {
+        offenders.push(`${relPath}: missing <meta http-equiv="Content-Security-Policy" content="\${csp}">`);
+      }
+
+      // Must not have hardcoded default-src or script-src literals in the template file
+      if (/default-src|script-src/i.test(content)) {
+        offenders.push(`${relPath}: contains hardcoded default-src/script-src literal`);
+      }
+    }
+
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      `Static HTML templates must use \${csp} placeholder without hardcoded policies:\n${offenders.join('\n')}`
+    );
   });
 });
 

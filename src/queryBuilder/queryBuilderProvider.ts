@@ -14,7 +14,7 @@ import {
 } from './queryBuilderMessageHandler';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
-import { createNonce } from '../utils/webviewSecurity';
+import { renderSecureWebviewHtml } from '../utils/webviewSecurity';
 
 export class QueryBuilderProvider {
   private panel: vscode.WebviewPanel | undefined;
@@ -505,10 +505,13 @@ export class QueryBuilderProvider {
   private getHtmlContent(): string {
     const htmlPath = this.resolveWebviewHtmlPath();
     if (fs.existsSync(htmlPath)) {
-      const nonce = createNonce();
-      let html = fs.readFileSync(htmlPath, 'utf8');
-      html = html.replace(/\$\{nonce\}/g, nonce);
-      return html;
+      const template = fs.readFileSync(htmlPath, 'utf8');
+      return renderSecureWebviewHtml(template, {
+        csp: {
+          allowUnsafeInlineStyles: true,
+          imgSources: ['data:'],
+        },
+      });
     }
     return '<!DOCTYPE html><html><body><h3>Не удалось загрузить queryBuilderWebview.html</h3></body></html>';
   }

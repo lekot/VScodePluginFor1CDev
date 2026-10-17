@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { buildWebviewCsp } from '../utils/webviewSecurity';
 import { MxlDiagnostic, MxlRenderCell, MxlRenderModel, MxlRenderTable } from './mxlRenderModel';
 
 const MAX_DIAGNOSTICS_IN_HTML = 50;
@@ -22,13 +23,18 @@ export function buildMxlPreviewHtml(input: MxlWebviewHtmlInput): string {
   const escapedFormat = escapeHtml(input.sourceFormat);
   const diagnosticsHtml = renderDiagnostics(input.model.diagnostics);
   const tablesHtml = renderTables(input.model.tables);
+  const csp = buildWebviewCsp({
+    cspSource: input.webview.cspSource,
+    allowUnsafeInlineStyles: true,
+    imgSources: [input.webview.cspSource, 'data:'],
+  });
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${input.webview.cspSource} data:; style-src ${input.webview.cspSource} 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="${csp}">
   <title>MXL Preview</title>
   <style>
     body {
@@ -132,12 +138,17 @@ export function buildMxlPreviewHtml(input: MxlWebviewHtmlInput): string {
 export function buildMxlErrorHtml(webview: vscode.Webview, filePath: string, err: unknown): string {
   const escapedPath = escapeHtml(filePath);
   const escapedError = escapeHtml(err instanceof Error ? err.message : String(err));
+  const csp = buildWebviewCsp({
+    cspSource: webview.cspSource,
+    allowUnsafeInlineStyles: true,
+    imgSources: [webview.cspSource, 'data:'],
+  });
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="${csp}">
   <title>MXL Preview</title>
   <style>
     body {
@@ -184,12 +195,17 @@ export function buildMxlParserErrorHtml(input: MxlParserErrorHtmlInput): string 
   const escapedPath = escapeHtml(input.filePath);
   const escapedFormat = escapeHtml(input.sourceFormat);
   const diagnosticsHtml = renderDiagnostics(input.diagnostics);
+  const csp = buildWebviewCsp({
+    cspSource: input.webview.cspSource,
+    allowUnsafeInlineStyles: true,
+    imgSources: [input.webview.cspSource, 'data:'],
+  });
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${input.webview.cspSource} data:; style-src ${input.webview.cspSource} 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="${csp}">
   <title>MXL Preview</title>
   <style>
     body {

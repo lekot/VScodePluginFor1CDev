@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { renderSecureWebviewHtml } from '../utils/webviewSecurity';
 import * as vscode from 'vscode';
 import MarkdownIt from 'markdown-it';
 import type { SyntaxHelpArticle, SyntaxHelpItem, SyntaxHelpSource } from '../agent/agentSyntaxHelp';
@@ -112,7 +112,6 @@ export function renderSyntaxHelpHtml(
   matchedName?: string,
   canGoBack = false,
 ): string {
-  const nonce = randomBytes(18).toString('base64');
   const sourceUrl = safeSourceUrl(article.sourceUrl);
   const sourceLink = sourceUrl
     ? `<footer><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">Открыть источник на ИТС</a></footer>`
@@ -121,7 +120,7 @@ export function renderSyntaxHelpHtml(
     ? `<aside class="match-context"><div>Найденный элемент: <strong>${escapeHtml(matchedName)}</strong></div><div>Статья справки: <strong>${escapeHtml(article.name)}</strong></div></aside>`
     : '';
   const backButton = canGoBack ? '<button id="syntax-help-back" type="button">← Назад</button>' : '';
-  const navigationScript = `<script nonce="${nonce}">
+  const navigationScript = `<script nonce="\${nonce}">
     const syntaxHelpApi = acquireVsCodeApi();
     document.addEventListener('click', (event) => {
       const element = event.target instanceof Element ? event.target.closest('a[data-syntax-help-id]') : null;
@@ -136,12 +135,12 @@ export function renderSyntaxHelpHtml(
       syntaxHelpApi.postMessage({ type: 'back' });
     });
   </script>`;
-  return `<!DOCTYPE html>
+  const template = `<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src ${escapeHtml(cspSource)} 'unsafe-inline'; font-src ${escapeHtml(cspSource)}; img-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="\${csp}">
   <title>${escapeHtml(article.name)}</title>
   <style>
     :root { color-scheme: light dark; }
@@ -172,6 +171,14 @@ export function renderSyntaxHelpHtml(
   ${navigationScript}
 </body>
 </html>`;
+  return renderSecureWebviewHtml(template, {
+    csp: {
+      cspSource,
+      allowUnsafeInlineStyles: true,
+      fontSources: [cspSource],
+      imgSources: ["'none'"],
+    },
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

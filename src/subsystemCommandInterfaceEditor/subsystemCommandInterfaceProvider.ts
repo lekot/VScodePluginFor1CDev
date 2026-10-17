@@ -10,7 +10,7 @@ import type { CommandInterfaceModel, CommandVisibilityEntry } from '../types/com
 import { MESSAGES } from '../constants/messages';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
-import { createNonce } from '../utils/webviewSecurity';
+import { renderSecureWebviewHtml } from '../utils/webviewSecurity';
 import { EditorSessionCoordinator } from '../services/editorSession/editorSessionCoordinator';
 
 type CiWebviewMessage =
@@ -128,14 +128,15 @@ export class SubsystemCommandInterfaceProvider implements vscode.Disposable {
     };
 
     const htmlPath = this.resolveWebviewHtmlPath();
-    let html = fs.readFileSync(htmlPath, 'utf8');
-    const nonce = createNonce();
-    html = html.replace(/\$\{nonce\}/g, nonce);
-    html = html.replace(
-      '// __CI_DATA_PLACEHOLDER__',
-      `window.__ciData = ${escapeJsonForScript(JSON.stringify(payload))};`
-    );
-    this.panel.webview.html = html;
+    const template = fs.readFileSync(htmlPath, 'utf8');
+    this.panel.webview.html = renderSecureWebviewHtml(template, {
+      webview: this.panel.webview,
+      csp: { allowUnsafeInlineStyles: true },
+      substitutions: {
+        '// __CI_DATA_PLACEHOLDER__':
+          `window.__ciData = ${escapeJsonForScript(JSON.stringify(payload))};`,
+      },
+    });
   }
 
   private async handleMessage(msg: CiWebviewMessage): Promise<void> {
