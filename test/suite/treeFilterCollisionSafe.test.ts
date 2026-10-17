@@ -312,4 +312,75 @@ suite('Tree Filter Collision Safety (#244)', () => {
     const childrenLower = await provider.getChildren(folderLower);
     assert.strictEqual(childrenLower.length, 0, 'modLower must NOT be visible under rootLower when searching UpperOnly');
   });
+
+  test('7. Subsystem filter rebinds to new node on root reload so Content updates are reflected', async () => {
+    provider = new MetadataTreeDataProvider('linux');
+
+    const modOld = createNode('CommonModules.OldMod', 'OldMod', MetadataType.CommonModule, {
+      filePath: '/workspace/projectA/CommonModules/OldMod.xml',
+    });
+    const modNew = createNode('CommonModules.NewMod', 'NewMod', MetadataType.CommonModule, {
+      filePath: '/workspace/projectA/CommonModules/NewMod.xml',
+    });
+    const folderA = createNode('CommonModules', 'Общие модули', MetadataType.CommonModule, {
+      children: [modOld, modNew],
+    });
+    const subA = createNode('Subsystems.Main', 'Main', MetadataType.Subsystem, {
+      filePath: '/workspace/projectA/Subsystems/Main.xml',
+      content: {
+        'xr:Item': [{ '#text': 'CommonModule.OldMod' }],
+      },
+    });
+    const subFolderA = createNode('Subsystems', 'Подсистемы', MetadataType.Subsystem, {
+      children: [subA],
+    });
+    const rootA = createConfigRoot('rootA', 'ProjectA', '/workspace/projectA/Configuration.xml', [folderA, subFolderA]);
+
+    provider.setRootNodes([rootA]);
+    await provider.setSubsystemFilter(subA.id, subA.name, subA);
+
+    // Initial check: OldMod visible, NewMod hidden
+    const initialChildren = await provider.getChildren(folderA);
+    assert.strictEqual(initialChildren.length, 1);
+    assert.strictEqual(initialChildren[0], modOld);
+
+    // Now reload root with updated Subsystem Content pointing to NewMod instead of OldMod
+    const modOld2 = createNode('CommonModules.OldMod', 'OldMod', MetadataType.CommonModule, {
+      filePath: '/workspace/projectA/CommonModules/OldMod.xml',
+    });
+    const modNew2 = createNode('CommonModules.NewMod', 'NewMod', MetadataType.CommonModule, {
+      filePath: '/workspace/projectA/CommonModules/NewMod.xml',
+    });
+    const folderA2 = createNode('CommonModules', 'Общие модули', MetadataType.CommonModule, {
+      children: [modOld2, modNew2],
+    });
+    const subA2 = createNode('Subsystems.Main', 'Main', MetadataType.Subsystem, {
+      filePath: '/workspace/projectA/Subsystems/Main.xml',
+      content: {
+        'xr:Item': [{ '#text': 'CommonModule.NewMod' }],
+      },
+    });
+    const subFolderA2 = createNode('Subsystems', 'Подсистемы', MetadataType.Subsystem, {
+      children: [subA2],
+    });
+    const rootA2 = createConfigRoot('rootA', 'ProjectA', '/workspace/projectA/Configuration.xml', [folderA2, subFolderA2]);
+
+    provider.setRootNodes([rootA2]);
+
+    // Check after reload: NewMod must be visible, OldMod must NOT be visible
+    const reloadedChildren = await provider.getChildren(folderA2);
+    assert.strictEqual(reloadedChildren.length, 1, 'Only NewMod should be visible after subsystem content update');
+    assert.strictEqual(reloadedChildren[0], modNew2, 'modNew2 must be visible');
+
+    // Test subsystem removal on reload: if Subsystem is deleted in root, old content does not pass
+    const folderA3 = createNode('CommonModules', 'Общие модули', MetadataType.CommonModule, {
+      children: [modOld2, modNew2],
+    });
+    const rootA3 = createConfigRoot('rootA', 'ProjectA', '/workspace/projectA/Configuration.xml', [folderA3]);
+    provider.setRootNodes([rootA3]);
+
+    const childrenAfterDelete = await provider.getChildren(folderA3);
+    assert.strictEqual(childrenAfterDelete.length, 0, 'No module should pass when filtered subsystem was deleted');
+  });
 });
+

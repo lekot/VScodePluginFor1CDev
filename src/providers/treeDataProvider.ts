@@ -721,7 +721,30 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.typeLoadCoordinator.setRoots(this.rootNodes, this.cache.getLoadContexts());
     this.clearTypeEditorReferenceableCache();
     Logger.info('Tree cache size', { nodeCount: this.cache.size, roots: nodes.length });
-    this.filter.filterAncestorOrVisibleIds = null;
+    this.filter.clearFilterCaches();
+    if (this.filter.activeSubsystemId) {
+      const subFilter = this.filter.getSubsystemFilter();
+      if (subFilter.subsystemId) {
+        const candidates = this.cache.getCandidatesById(subFilter.subsystemId);
+        const matching = subFilter.rootIdentity
+          ? candidates.find((c) => this.cache.getNodeRootIdentity(c) === subFilter.rootIdentity)
+          : candidates[0];
+        this.filter.setSubsystemFilter(
+          subFilter.subsystemId,
+          subFilter.subsystemName,
+          subFilter.rootIdentity ?? undefined,
+          matching ?? null,
+          (n) => this.cache.getNodeRootIdentity(n),
+        );
+        if (matching) {
+          void this.loadSubsystemContent(matching)
+            .then(() => this.eagerLoadSubsystemTypes(matching))
+            .catch((err) => {
+              Logger.warn('Failed to reload subsystem content after setRootNodes', err);
+            });
+        }
+      }
+    }
     this.notifySupportRootsChanged();
     this.refresh();
     if (this.messageUpdater) {

@@ -293,8 +293,15 @@ export class TreeFilterService {
       current = current.parent;
     }
 
-    const subsystemNode = this.subsystemFilter.subsystemNode
-      ?? (nodeCache?.get(this.subsystemFilter.subsystemId));
+    let subsystemNode = this.subsystemFilter.subsystemNode;
+    if (!subsystemNode && nodeCache) {
+      const candidate = nodeCache.get(this.subsystemFilter.subsystemId);
+      if (candidate) {
+        if (!this.subsystemFilter.rootIdentity || !getNodeRootIdentity || getNodeRootIdentity(candidate) === this.subsystemFilter.rootIdentity) {
+          subsystemNode = candidate;
+        }
+      }
+    }
     if (!subsystemNode || subsystemNode.type !== MetadataType.Subsystem) {return false;}
 
     const subsystemsToCheck = this.collectSubsystemAndDescendants(subsystemNode);
@@ -360,6 +367,62 @@ export class TreeFilterService {
     return false;
   }
 
+  private resolveActiveSubsystemNode(
+    rootsOrCache: readonly TreeNode[] | ReadonlyMap<string, TreeNode>,
+    getNodeRootIdentity?: NodeRootIdentityResolver,
+  ): TreeNode | undefined {
+    if (!this.subsystemFilter.subsystemId) {
+      return undefined;
+    }
+    const targetId = this.subsystemFilter.subsystemId;
+    const targetRoot = this.subsystemFilter.rootIdentity;
+
+    if (Array.isArray(rootsOrCache)) {
+      for (const root of rootsOrCache) {
+        if (targetRoot && getNodeRootIdentity) {
+          const rootId = getNodeRootIdentity(root);
+          if (rootId && rootId !== targetRoot) {
+            continue;
+          }
+        }
+        const found = this.findSubsystemInTree(root, targetId);
+        if (found) {
+          if (!targetRoot || !getNodeRootIdentity || getNodeRootIdentity(found) === targetRoot) {
+            return found;
+          }
+        }
+      }
+      return undefined;
+    } else {
+      const cache = rootsOrCache as ReadonlyMap<string, TreeNode>;
+      const candidate = cache.get(targetId);
+      if (candidate && candidate.type === MetadataType.Subsystem) {
+        if (targetRoot && getNodeRootIdentity) {
+          const rootId = getNodeRootIdentity(candidate);
+          if (rootId === targetRoot) {
+            return candidate;
+          }
+        } else if (!targetRoot) {
+          return candidate;
+        }
+      }
+      return undefined;
+    }
+  }
+
+  private findSubsystemInTree(node: TreeNode, targetId: string): TreeNode | undefined {
+    if (node.id === targetId && node.type === MetadataType.Subsystem) {
+      return node;
+    }
+    for (const child of node.children ?? []) {
+      const found = this.findSubsystemInTree(child, targetId);
+      if (found) {
+        return found;
+      }
+    }
+    return undefined;
+  }
+
   /**
    * Compute (and cache) the set of node IDs that are either directly visible or are
    * ancestors of visible nodes. Must be called before filtering children.
@@ -369,6 +432,12 @@ export class TreeFilterService {
     getNodeRootIdentity?: NodeRootIdentityResolver,
   ): void {
     if (this.filterAncestorOrVisibleIds != null && this.visibleNodes != null) {return;}
+    if (this.subsystemFilter.subsystemId) {
+      this.subsystemFilter.subsystemNode = this.resolveActiveSubsystemNode(
+        rootsOrCache,
+        getNodeRootIdentity,
+      ) ?? null;
+    }
     const visibleIds = new Set<string>();
     const visibleNodes = new Set<TreeNode>();
     const visibleKeys = new Set<string>();
