@@ -382,5 +382,99 @@ suite('Tree Filter Collision Safety (#244)', () => {
     const childrenAfterDelete = await provider.getChildren(folderA3);
     assert.strictEqual(childrenAfterDelete.length, 0, 'No module should pass when filtered subsystem was deleted');
   });
+
+  test('8. background subsystem content load on root reload invalidates filter cache and fires refresh', async () => {
+    provider = new MetadataTreeDataProvider('linux');
+
+    const modOld = createNode('CommonModules.OldMod', 'OldMod', MetadataType.CommonModule, {
+      filePath: '/workspace/projectA/CommonModules/OldMod.xml',
+    });
+    const modNew = createNode('CommonModules.NewMod', 'NewMod', MetadataType.CommonModule, {
+      filePath: '/workspace/projectA/CommonModules/NewMod.xml',
+    });
+    const folderA = createNode('CommonModules', 'Общие модули', MetadataType.CommonModule, {
+      children: [modOld, modNew],
+    });
+    const subA = createNode('Subsystems.Main', 'Main', MetadataType.Subsystem, {
+      filePath: '/workspace/projectA/Subsystems/Main.xml',
+      content: {
+        'xr:Item': [{ '#text': 'CommonModule.OldMod' }],
+      },
+    });
+    const subFolderA = createNode('Subsystems', 'Подсистемы', MetadataType.Subsystem, {
+      children: [subA],
+    });
+    const rootA = createConfigRoot('rootA', 'ProjectA', '/workspace/projectA/Configuration.xml', [folderA, subFolderA]);
+
+    provider.setRootNodes([rootA]);
+    await provider.setSubsystemFilter(subA.id, subA.name, subA);
+
+    // Initial check: OldMod visible
+    const initialChildren = await provider.getChildren(folderA);
+    assert.strictEqual(initialChildren.length, 1);
+    assert.strictEqual(initialChildren[0], modOld);
+
+    // Prepare delayed reload
+    let deferredResolve!: () => void;
+    const deferredPromise = new Promise<void>((resolve) => {
+      deferredResolve = resolve;
+    });
+
+    const origLoad = (provider as unknown as { loadSubsystemContent(node: TreeNode): Promise<void> }).loadSubsystemContent.bind(provider);
+    const delayContentLoad = true;
+
+    (provider as unknown as { loadSubsystemContent(node: TreeNode): Promise<void> }).loadSubsystemContent = async (node: TreeNode) => {
+      if (delayContentLoad && node.id === 'Subsystems.Main') {
+        await deferredPromise;
+        node.properties.Content = {
+          'xr:Item': [{ '#text': 'CommonModule.NewMod' }],
+        };
+        return;
+      }
+      return origLoad(node);
+    };
+
+    // New root with lazy Subsystem (no initial Content)
+    const modOld2 = createNode('CommonModules.OldMod', 'OldMod', MetadataType.CommonModule, {
+      filePath: '/workspace/projectA/CommonModules/OldMod.xml',
+    });
+    const modNew2 = createNode('CommonModules.NewMod', 'NewMod', MetadataType.CommonModule, {
+      filePath: '/workspace/projectA/CommonModules/NewMod.xml',
+    });
+    const folderA2 = createNode('CommonModules', 'Общие модули', MetadataType.CommonModule, {
+      children: [modOld2, modNew2],
+    });
+    const subA2 = createNode('Subsystems.Main', 'Main', MetadataType.Subsystem, {
+      filePath: '/workspace/projectA/Subsystems/Main.xml',
+      // No initial content - lazy load will populate it
+    });
+    const subFolderA2 = createNode('Subsystems', 'Подсистемы', MetadataType.Subsystem, {
+      children: [subA2],
+    });
+    const rootA2 = createConfigRoot('rootA', 'ProjectA', '/workspace/projectA/Configuration.xml', [folderA2, subFolderA2]);
+
+    let refreshFired = 0;
+    provider.onDidChangeTreeData(() => {
+      refreshFired++;
+    });
+
+    // Trigger reload
+    provider.setRootNodes([rootA2]);
+
+    // Request getChildren before background load finishes -> gets empty [] and populates filter cache
+    const earlyChildren = await provider.getChildren(folderA2);
+    assert.strictEqual(earlyChildren.length, 0, 'Before content loads, no modules should match');
+
+    // Now release background load
+    deferredResolve();
+    // Allow async promises to settle
+    await new Promise((r) => setTimeout(r, 20));
+
+    // After background load completes, filter cache must have been invalidated and refresh fired
+    assert.ok(refreshFired > 0, 'refresh must be fired after background subsystem content load');
+    const childrenAfter = await provider.getChildren(folderA2);
+    assert.strictEqual(childrenAfter.length, 1, 'NewMod must be visible after background content load completes');
+    assert.strictEqual(childrenAfter[0], modNew2);
+  });
 });
 

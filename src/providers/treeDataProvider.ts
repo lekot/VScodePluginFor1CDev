@@ -739,6 +739,15 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         if (matching) {
           void this.loadSubsystemContent(matching)
             .then(() => this.eagerLoadSubsystemTypes(matching))
+            .then(() => {
+              if (this.disposed) {
+                return;
+              }
+              if (this.filter.activeSubsystemId === matching.id) {
+                this.filter.clearFilterCaches();
+                this.refresh();
+              }
+            })
             .catch((err) => {
               Logger.warn('Failed to reload subsystem content after setRootNodes', err);
             });
