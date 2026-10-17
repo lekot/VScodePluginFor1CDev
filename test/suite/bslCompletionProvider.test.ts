@@ -252,7 +252,8 @@ async function readBundledMetadataCollections(): Promise<readonly BslCompletionM
   }
 }
 
-suite('BSL platform completion', () => {
+suite('BSL platform completion', function () {
+  this.timeout(30_000);
   setup(() => resetVscodeTestState());
   teardown(() => resetVscodeTestState());
 

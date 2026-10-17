@@ -1,30 +1,25 @@
 // src/agent/agentDeployOperations.ts
 // Agent API — операции раскатки конфигурации в информационные базы.
+// Presentation/transport adapter over DeployApplicationService (#255).
 
-import * as fs from 'fs';
-import * as path from 'path';
 import * as vscode from 'vscode';
 import { BindingManager } from '../bindings/bindingManager';
 import { InfobaseStorageService } from '../infobases/infobaseStorageService';
 import {
     DeployService,
-    resolveConfigurationXmlDirectory,
-    resolveDeployTargetsForBinding,
     type DeploySupportContext,
-    type DeployItemStatus,
-    type DeployRunSummary,
 } from '../bindings/deployService';
 import type { ProcessTreeTerminationOutcome } from '../services/ibcmd/processTreeTermination';
 import type { ConfigurationBinding } from '../bindings/models/configurationBinding';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import { MetadataType, type TreeNode } from '../models/treeNode';
-import { detectChangedConfigFiles, findDeepestContainingRepository, type IncrementalChangeDetectorDeps } from '../services/ibcmd/incrementalChangeDetector';
-import { validateDeployRelativeFiles } from '../services/ibcmd/deployPathValidator';
-import { runInfobaseConfigExportStatus } from '../infobases/infobaseConfigCommands';
-import { createProcessOutputLineReporter } from '../services/process/processOutputLineReporter';
 import type { AgentResult, ConfigurationScopedParams } from './types';
-import { findBinding } from './agentBindingResolver';
-import { findWorkspaceFolderForPath } from './agentWorkspaceContext';
+import {
+    DeployApplicationService,
+    type DeployOutcome,
+    type DeployResultData,
+    type ResolvedDeployContext,
+} from '../bindings/deployApplicationService';
 
 export interface AgentDeployOperationsDeps {
     bindingManager: BindingManager;
@@ -35,6 +30,7 @@ export interface AgentDeployOperationsDeps {
      * identity and expose only the public support facade.
      */
     resolveSupportContext?: (configRoot: string) => Promise<DeploySupportContext | undefined>;
+    deployService?: DeployService;
 }
 
 export interface DeployParams extends ConfigurationScopedParams {
@@ -44,24 +40,7 @@ export interface DeployParams extends ConfigurationScopedParams {
     background?: boolean;
 }
 
-export interface DeployResultData {
-    summary: {
-        success: number;
-        error: number;
-        inDoubt: number;
-        skipped: number;
-        hasPartial: boolean;
-    };
-    results: Array<{
-        infobase: string;
-        status: DeployItemStatus;
-        message: string;
-        errorCode?: string;
-        skippedFiles?: readonly string[];
-        effectPossible?: boolean;
-        termination?: ProcessTreeTerminationOutcome;
-    }>;
-}
+export { type DeployResultData } from '../bindings/deployApplicationService';
 
 export interface DeploySelectedObjectsParams extends ConfigurationScopedParams {
     configPath?: string;
@@ -95,7 +74,7 @@ interface AgentDeployExecutionOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Resolved deploy context — shared by all methods
+// Resolved deploy context — shared by legacy monkey-patching and adapter
 // ---------------------------------------------------------------------------
 
 interface DeployContext {
@@ -107,72 +86,41 @@ interface DeployContext {
 }
 
 export class AgentDeployOperations {
-    constructor(private readonly deps: AgentDeployOperationsDeps) {}
+    private readonly appService: DeployApplicationService;
+
+    constructor(deps: AgentDeployOperationsDeps) {
+        this.appService = new DeployApplicationService({
+            bindingManager: deps.bindingManager,
+            infobaseStorage: deps.infobaseStorage,
+            getConfigPath: deps.getConfigPath,
+            resolveSupportContext: deps.resolveSupportContext
+                ? (configRoot) => deps.resolveSupportContext!(configRoot)
+                : undefined,
+            deployService: deps.deployService,
+        });
+    }
 
     // -------------------------------------------------------------------------
-    // Private helper: resolve configPath → workspace → binding → catalog
+    // Helper: resolve configPath → workspace → binding → catalog
     // -------------------------------------------------------------------------
 
     private async resolveDeployContext(configPath?: string): Promise<AgentResult<DeployContext>> {
-        // 1. Resolve configPath
-        const resolvedConfigPath = configPath
-            ? path.resolve(configPath)
-            : this.deps.getConfigPath();
-        if (!resolvedConfigPath) {
-            return {
-                success: false,
-                error: 'Путь к конфигурации не задан. Укажите configPath или откройте конфигурацию в дереве.',
-            };
+        const plan = await this.appService.prepareDeploy({
+            kind: 'path',
+            path: configPath,
+            allowFuzzyMatch: true,
+        });
+        if (!plan.ok) {
+            return { success: false, error: plan.error, code: plan.code };
         }
-
-        // 2. Find workspace folder
-        const workspaceFolder = findWorkspaceFolderForPath(resolvedConfigPath);
-        if (!workspaceFolder) {
-            return { success: false, error: 'Не найдена папка workspace для конфигурации.' };
-        }
-
-
-        // 3. Find matching binding
-        const allBindings = await this.deps.bindingManager.listAll();
-        const localBindings = allBindings.filter((b) => b.workspaceFolder === workspaceFolder!.name);
-
-        const matchedBinding = findBinding(resolvedConfigPath, localBindings);
-
-        // 4. Validate binding
-        if (!matchedBinding) {
-            return {
-                success: false,
-                error: 'Для конфигурации не найдена привязка базы. Привяжите базу через «Привязать базы…».',
-            };
-        }
-        if (matchedBinding.infobaseIds.length === 0) {
-            return { success: false, error: 'Для конфигурации нет привязанных баз.' };
-        }
-
-        // 5. Load catalog and resolve configRoot
-        const catalog = await this.deps.infobaseStorage.load();
-        const catalogById = new Map(catalog.map((e) => [e.id, e] as const));
-        const { entries, skipped } = resolveDeployTargetsForBinding(matchedBinding, catalogById);
-        if (entries.length === 0 && skipped.length > 0) {
-            return { success: false, error: 'Нет подходящих баз для раскатки (все пропущены).' };
-        }
-        if (entries.length === 0) {
-            return { success: false, error: 'Нет баз для раскатки.' };
-        }
-
-        const xmlResolved = resolveConfigurationXmlDirectory(workspaceFolder.uri.fsPath, matchedBinding.configRelativePath);
-        if (!xmlResolved.ok) {
-            return { success: false, error: xmlResolved.message };
-        }
-
         return {
             success: true,
             data: {
-                configRoot: xmlResolved.sourceDir,
-                binding: matchedBinding,
-                entries,
-                catalog,
-                workspaceFolderRoot: workspaceFolder.uri.fsPath,
+                configRoot: plan.context.configRoot,
+                binding: plan.context.binding,
+                entries: plan.context.deployTargets,
+                catalog: plan.context.catalog,
+                workspaceFolderRoot: plan.context.workspaceFolderRoot,
             },
         };
     }
@@ -185,37 +133,21 @@ export class AgentDeployOperations {
         try {
             const ctx = await this.resolveDeployContext(params.configPath);
             if (!ctx.success) {
-                return { success: false, error: ctx.error };
+                return { success: false, error: ctx.error, code: ctx.code };
             }
-            const { binding, catalog, workspaceFolderRoot, configRoot } = ctx.data!;
-            const support = await this.deps.resolveSupportContext?.(configRoot);
-
-            const cancellation = createCancellationScope(execution.token);
-            const processOutput = createProcessOutputLineReporter(execution.reportStage);
-            const progress = createAgentProgress(execution.reportStage);
-            try {
-                const deployService = new DeployService();
-                const summary = await deployService.deployBinding({
-                    binding,
-                    workspaceFolderRoot,
-                    storage: this.deps.infobaseStorage,
-                    catalog,
-                    progress,
-                    token: cancellation.token,
-                    support,
-                    onOutput: processOutput.accept,
-                });
-
-                return {
-                    success: isDeploySummarySuccess(summary),
-                    code: deploySummaryCode(summary),
-                    data: projectDeployRunSummary(summary),
-                    error: deploySummaryError(summary),
-                };
-            } finally {
-                processOutput.flush();
-                cancellation.dispose();
-            }
+            const { binding, catalog, workspaceFolderRoot, configRoot, entries } = ctx.data!;
+            const context: ResolvedDeployContext = {
+                configRoot,
+                workspaceFolder: { uri: vscode.Uri.file(workspaceFolderRoot), name: binding.workspaceFolder, index: 0 },
+                workspaceFolderRoot,
+                binding,
+                catalog,
+                deployTargets: entries,
+                skippedTargets: [],
+                previewLabels: [],
+            };
+            const outcome = await this.appService.executeDeployBinding(context, execution);
+            return deployOutcomeToAgentResult(outcome);
         } catch (err) {
             return { success: false, error: err instanceof Error ? err.message : String(err) };
         }
@@ -229,47 +161,27 @@ export class AgentDeployOperations {
         try {
             const ctx = await this.resolveDeployContext(params.configPath);
             if (!ctx.success) {
-                return { success: false, error: ctx.error };
+                return { success: false, error: ctx.error, code: ctx.code };
             }
-            const { binding, catalog, workspaceFolderRoot, configRoot } = ctx.data!;
-            const support = await this.deps.resolveSupportContext?.(configRoot);
+            const { binding, catalog, workspaceFolderRoot, configRoot, entries } = ctx.data!;
 
             if (!params.files || params.files.length === 0) {
                 return { success: false, error: 'Список файлов не задан.' };
             }
 
-            const validation = await validateDeployRelativeFiles(configRoot, params.files);
-            if (!validation.ok) {
-                return { success: false, error: validation.error };
-            }
+            const context: ResolvedDeployContext = {
+                configRoot,
+                workspaceFolder: { uri: vscode.Uri.file(workspaceFolderRoot), name: binding.workspaceFolder, index: 0 },
+                workspaceFolderRoot,
+                binding,
+                catalog,
+                deployTargets: entries,
+                skippedTargets: [],
+                previewLabels: [],
+            };
 
-            const cancellation = createCancellationScope(execution.token);
-            const processOutput = createProcessOutputLineReporter(execution.reportStage);
-            const progress = createAgentProgress(execution.reportStage);
-            try {
-                const deployService = new DeployService();
-                const summary = await deployService.deployChangedFiles({
-                    binding,
-                    workspaceFolderRoot,
-                    storage: this.deps.infobaseStorage,
-                    catalog,
-                    relativeFiles: params.files,
-                    progress,
-                    token: cancellation.token,
-                    support,
-                    onOutput: processOutput.accept,
-                });
-
-                return {
-                    success: isDeploySummarySuccess(summary),
-                    code: deploySummaryCode(summary),
-                    data: projectDeployRunSummary(summary),
-                    error: deploySummaryError(summary),
-                };
-            } finally {
-                processOutput.flush();
-                cancellation.dispose();
-            }
+            const outcome = await this.appService.executeDeployChangedFiles(context, params.files, execution);
+            return deployOutcomeToAgentResult(outcome);
         } catch (err) {
             return { success: false, error: err instanceof Error ? err.message : String(err) };
         }
@@ -283,25 +195,22 @@ export class AgentDeployOperations {
         try {
             const ctx = await this.resolveDeployContext(params.configPath);
             if (!ctx.success) {
-                return { success: false, error: ctx.error };
+                return { success: false, error: ctx.error, code: ctx.code };
             }
-            const { configRoot, binding, catalog, workspaceFolderRoot } = ctx.data!;
-            const support = await this.deps.resolveSupportContext?.(configRoot);
-
-            // Build git repository dependency using the VS Code git extension API
-            const gitExt = vscode.extensions.getExtension('vscode.git');
-            const gitApi = gitExt?.exports?.getAPI(1);
-            const gitDeps: IncrementalChangeDetectorDeps = {
-                getGitRepository: () => {
-                    if (!gitApi) { return undefined; }
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- vscode.git extension API is untyped
-                    const repos: any[] = gitApi.repositories ?? [];
-                    return findDeepestContainingRepository(repos, configRoot);
-                },
+            const { configRoot, binding, catalog, workspaceFolderRoot, entries } = ctx.data!;
+            const context: ResolvedDeployContext = {
+                configRoot,
+                workspaceFolder: { uri: vscode.Uri.file(workspaceFolderRoot), name: binding.workspaceFolder, index: 0 },
+                workspaceFolderRoot,
+                binding,
+                catalog,
+                deployTargets: entries,
+                skippedTargets: [],
+                previewLabels: [],
             };
 
-            const detected = await detectChangedConfigFiles(configRoot, gitDeps);
-            if ('error' in detected) {
+            const detected = await this.appService.detectChangedFiles(context);
+            if (!detected.ok) {
                 return { success: false, error: detected.error };
             }
             if (detected.relativePaths.length === 0) {
@@ -315,33 +224,8 @@ export class AgentDeployOperations {
                 };
             }
 
-            const cancellation = createCancellationScope(execution.token);
-            const processOutput = createProcessOutputLineReporter(execution.reportStage);
-            const progress = createAgentProgress(execution.reportStage);
-            try {
-                const deployService = new DeployService();
-                const summary = await deployService.deployChangedFiles({
-                    binding,
-                    workspaceFolderRoot,
-                    storage: this.deps.infobaseStorage,
-                    catalog,
-                    relativeFiles: detected.relativePaths,
-                    progress,
-                    token: cancellation.token,
-                    support,
-                    onOutput: processOutput.accept,
-                });
-
-                return {
-                    success: isDeploySummarySuccess(summary),
-                    code: deploySummaryCode(summary),
-                    data: projectDeployRunSummary(summary),
-                    error: deploySummaryError(summary),
-                };
-            } finally {
-                processOutput.flush();
-                cancellation.dispose();
-            }
+            const outcome = await this.appService.executeDeployChangedFiles(context, detected.relativePaths, execution);
+            return deployOutcomeToAgentResult(outcome);
         } catch (err) {
             return { success: false, error: err instanceof Error ? err.message : String(err) };
         }
@@ -355,9 +239,9 @@ export class AgentDeployOperations {
         try {
             const ctx = await this.resolveDeployContext(params.configPath);
             if (!ctx.success) {
-                return { success: false, error: ctx.error };
+                return { success: false, error: ctx.error, code: ctx.code };
             }
-            const { binding, entries, workspaceFolderRoot } = ctx.data!;
+            const { binding, entries, workspaceFolderRoot, configRoot, catalog } = ctx.data!;
 
             if (!params.objectIds || params.objectIds.length === 0) {
                 return { success: false, error: 'Список objectIds не задан.' };
@@ -390,32 +274,22 @@ export class AgentDeployOperations {
                 return { id, name, type: type as MetadataType, properties: {} };
             });
 
-            const cancellation = createCancellationScope(execution.token);
-            const processOutput = createProcessOutputLineReporter(execution.reportStage);
-            const progress = createAgentProgress(execution.reportStage);
-            try {
-                const deployService = new DeployService();
-                const summary = await deployService.pullSelectedObjects({
-                    binding,
-                    workspaceFolderRoot,
-                    storage: this.deps.infobaseStorage,
-                    entry: selectedEntry,
-                    selectedNodes: nodes,
-                    progress,
-                    token: cancellation.token,
-                    onOutput: processOutput.accept,
-                });
+            const context: ResolvedDeployContext = {
+                configRoot,
+                workspaceFolder: { uri: vscode.Uri.file(workspaceFolderRoot), name: binding.workspaceFolder, index: 0 },
+                workspaceFolderRoot,
+                binding,
+                catalog,
+                deployTargets: entries,
+                skippedTargets: [],
+                previewLabels: [],
+            };
 
-                return {
-                    success: isDeploySummarySuccess(summary),
-                    code: deploySummaryCode(summary),
-                    data: projectDeployRunSummary(summary, false),
-                    error: deploySummaryError(summary),
-                };
-            } finally {
-                processOutput.flush();
-                cancellation.dispose();
-            }
+            const outcome = await this.appService.executePullSelectedObjects(context, nodes, {
+                ...execution,
+                entry: selectedEntry,
+            });
+            return deployOutcomeToAgentResult(outcome);
         } catch (err) {
             return { success: false, error: err instanceof Error ? err.message : String(err) };
         }
@@ -439,129 +313,43 @@ export class AgentDeployOperations {
             if (!ctx.success) {
                 return { success: false, error: ctx.error };
             }
-            const { configRoot, entries } = ctx.data!;
+            const { configRoot, binding, entries, workspaceFolderRoot, catalog } = ctx.data!;
 
-            const configDumpInfoPath = path.join(configRoot, 'ConfigDumpInfo.xml');
-            if (!fs.existsSync(configDumpInfoPath)) {
-                return {
-                    success: false,
-                    error: `Файл ConfigDumpInfo.xml не найден в каталоге конфигурации: ${configRoot}`,
-                };
-            }
+            const context: ResolvedDeployContext = {
+                configRoot,
+                workspaceFolder: { uri: vscode.Uri.file(workspaceFolderRoot), name: binding.workspaceFolder, index: 0 },
+                workspaceFolderRoot,
+                binding,
+                catalog,
+                deployTargets: entries,
+                skippedTargets: [],
+                previewLabels: [],
+            };
 
-            const entry = entries[0]!;
+            const result = await this.appService.executeExportStatus(context, execution);
 
-            const cancellation = createCancellationScope(execution.token);
-            const processOutput = createProcessOutputLineReporter(execution.reportStage);
-            try {
-                const result = await runInfobaseConfigExportStatus({
-                        entry,
-                        configDumpInfoPath,
-                        storage: this.deps.infobaseStorage,
-                        token: cancellation.token,
-                        ibcmdExtensionName: ctx.data!.binding.ibcmdExtensionName,
-                        onOutput: processOutput.accept,
-                    });
-
-                return {
-                    success: result.status === 'success',
-                    code: result.status === 'cancelled' ? 'REQUEST_CANCELLED' : undefined,
-                    data: {
-                        message: result.userMessage,
-                        status: result.status,
-                        effectPossible: result.effectPossible,
-                        termination: result.termination,
-                    },
-                    error: result.status !== 'success' ? result.userMessage : undefined,
-                };
-            } finally {
-                processOutput.flush();
-                cancellation.dispose();
-            }
+            return {
+                success: result.success,
+                code: result.code,
+                data: {
+                    message: result.message,
+                    status: result.status,
+                    effectPossible: result.effectPossible,
+                    termination: result.termination,
+                },
+                error: result.error,
+            };
         } catch (err) {
             return { success: false, error: err instanceof Error ? err.message : String(err) };
         }
     }
 }
 
-function createCancellationScope(token?: vscode.CancellationToken): {
-    readonly token: vscode.CancellationToken;
-    dispose(): void;
-} {
-    if (token) {
-        return { token, dispose: () => undefined };
-    }
-    const source = new vscode.CancellationTokenSource();
-    return { token: source.token, dispose: () => source.dispose() };
-}
-
-function createAgentProgress(reportStage?: (message: string) => void): {
-    report(value: { message?: string }): void;
-} {
+function deployOutcomeToAgentResult(outcome: DeployOutcome): AgentResult<DeployResultData> {
     return {
-        report: ({ message }) => {
-            if (message) {
-                reportStage?.(message);
-            }
-        },
+        success: outcome.success,
+        code: outcome.code,
+        data: outcome.data,
+        error: outcome.error,
     };
-}
-
-function projectDeployRunSummary(
-    summary: DeployRunSummary,
-    includeSkippedFiles = true,
-): DeployResultData {
-    return {
-        summary: {
-            success: summary.successCount,
-            error: summary.errorCount,
-            inDoubt: summary.inDoubtCount,
-            skipped: summary.skippedCount,
-            hasPartial: summary.hasPartial,
-        },
-        results: summary.results.map((result) => ({
-            infobase: result.name || result.infobaseId,
-            status: result.status,
-            message: result.message,
-            errorCode: result.errorCode,
-            ...(includeSkippedFiles ? { skippedFiles: result.skippedFiles } : {}),
-            effectPossible: result.effectPossible,
-            termination: result.termination,
-        })),
-    };
-}
-
-function isDeploySummarySuccess(summary: DeployRunSummary): boolean {
-    return summary.errorCount === 0
-        && summary.inDoubtCount === 0
-        && !summary.cancelledMidChain
-        && !summary.hasPartial;
-}
-
-function deploySummaryCode(summary: DeployRunSummary): string | undefined {
-    if (summary.inDoubtCount > 0) {
-        return 'DEPLOY_OPERATION_IN_DOUBT';
-    }
-    if (summary.cancelledMidChain && summary.errorCount === 0) {
-        return 'REQUEST_CANCELLED';
-    }
-    return summary.results.find((result) => result.errorCode)?.errorCode;
-}
-
-function deploySummaryError(summary: DeployRunSummary): string | undefined {
-    if (summary.inDoubtCount > 0) {
-        return summary.errorCount > 0
-            ? `Раскатка завершена с неопределённым результатом: ${summary.inDoubtCount}; подтверждённых ошибок: ${summary.errorCount}`
-            : `Раскатка завершена с неопределённым результатом: ${summary.inDoubtCount}`;
-    }
-    if (summary.errorCount > 0) {
-        return `Раскатка завершена с ошибками: ${summary.errorCount}`;
-    }
-    if (summary.cancelledMidChain) {
-        return 'Раскатка отменена до завершения всех целей.';
-    }
-    if (summary.hasPartial) {
-        return 'Раскатка выполнена частично: часть запрошенных файлов пропущена.';
-    }
-    return undefined;
 }
