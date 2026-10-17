@@ -262,6 +262,43 @@ suite('LOC budget architecture guard (#201)', () => {
     assert.match(res.stderr, /allowedHotspots must be an object/i);
   });
 
+  for (const invalidInput of ['missing source', 'source file', 'malformed baseline', 'invalid budget'] as const) {
+    test(`--write-baseline rejects ${invalidInput} without changing the baseline`, async () => {
+      const args = ['--write-baseline'];
+      if (invalidInput === 'missing source') {
+        args.push('--source-root', path.join(tmpDir, 'missing-source'));
+      } else if (invalidInput === 'source file') {
+        args.push('--source-root', path.join(sourceRoot, 'small.ts'));
+      } else if (invalidInput === 'malformed baseline') {
+        await fs.promises.writeFile(baselinePath, '{ invalid JSON', 'utf8');
+      } else {
+        await fs.promises.writeFile(baselinePath, JSON.stringify({
+          version: 1,
+          threshold: 50,
+          allowedHotspots: { 'src/large.ts': { reason: 'Missing approved budget' } },
+        }), 'utf8');
+      }
+
+      const before = await fs.promises.readFile(baselinePath, 'utf8');
+      const result = runGuard(...args);
+      assert.strictEqual(result.status, 1, result.stderr || result.stdout);
+      assert.match(result.stderr, /FAIL \[INVALID_(SOURCE_ROOT|BASELINE)\]/);
+      assert.strictEqual(await fs.promises.readFile(baselinePath, 'utf8'), before);
+      assert.doesNotMatch(result.stdout, /Updated baseline/);
+    });
+  }
+
+  test('--write-baseline creates a missing baseline and the result passes verification', async () => {
+    await fs.promises.unlink(baselinePath);
+    await fs.promises.writeFile(path.join(sourceRoot, 'large.ts'), Array(60).fill('// line').join('\n'), 'utf8');
+    const result = runGuard('--write-baseline', '--threshold', '50');
+    assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+    const baseline = JSON.parse(await fs.promises.readFile(baselinePath, 'utf8'));
+    assert.strictEqual(baseline.allowedHotspots['src/large.ts'].maxLines, 60);
+    const check = runGuard();
+    assert.strictEqual(check.status, 0, check.stderr || check.stdout);
+  });
+
   test('production src directory satisfies production loc-budget-baseline.json', () => {
     const res = spawnSync(process.execPath, [guardScript], { encoding: 'utf8' });
     assert.strictEqual(res.status, 0, res.stderr || res.stdout);

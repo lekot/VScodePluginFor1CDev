@@ -268,7 +268,7 @@ function main() {
   }
 
   const result = runCheck(options);
-  if (options.writeBaseline) {
+  if (options.writeBaseline && result.success) {
     process.exit(0);
   }
 
