@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "threshold": 1000,
+  "allowedHotspots": {
+    "src/agent/agentCommands.ts": {
+      "maxLines": 1638,
+      "reason": "Agent command dispatcher and operations coordinator (#201)"
+    },
+    "src/agent/agentOperations.ts": {
+      "maxLines": 1763,
+      "reason": "Agent operations application facade (#201)"
+    },
+    "src/agent/agentStaticForms.ts": {
+      "maxLines": 1087,
+      "reason": "Static form templates and definitions (#201)"
+    },
+    "src/bindings/deployService.ts": {
+      "maxLines": 1919,
+      "reason": "Deploy service orchestration (#201)"
+    },
+    "src/compareMerge/configurationCompareService.ts": {
+      "maxLines": 1578,
+      "reason": "Configuration compare service orchestration (#201)"
+    },
+    "src/compareMerge/merge/mergeExecutor.ts": {
+      "maxLines": 1759,
+      "reason": "Compare and merge execution engine (#201)"
+    },
+    "src/debug/bslDebugSession.ts": {
+      "maxLines": 1425,
+      "reason": "BSL debug adapter session implementation (#201)"
+    },
+    "src/debug/rdbg/rdbgXmlCodec.ts": {
+      "maxLines": 1131,
+      "reason": "RDBG protocol XML codec (#201)"
+    },
+    "src/extensionSupport/cfeProject/formService.ts": {
+      "maxLines": 1358,
+      "reason": "CFE form modification and extension support (#201)"
+    },
+    "src/formEditor/formMessageHandler.ts": {
+      "maxLines": 1248,
+      "reason": "Form editor webview message routing and dispatch (#201)"
+    },
+    "src/formEditor/formWebviewHtml.ts": {
+      "maxLines": 3765,
+      "reason": "Form editor HTML template and embedded browser bundle (#201)"
+    },
+    "src/formEditor/formXmlTextEditor.ts": {
+      "maxLines": 1275,
+      "reason": "Form XML custom editor provider and synchronization (#201)"
+    },
+    "src/infobases/infobaseConfigCommands.ts": {
+      "maxLines": 1487,
+      "reason": "Infobase configuration commands and lifecycle (#201)"
+    },
+    "src/mxlPreview/mxlParser.ts": {
+      "maxLines": 1499,
+      "reason": "MXL spreadsheet binary parser and model extractor (#201)"
+    },
+    "src/parsers/designerParser.ts": {
+      "maxLines": 2030,
+      "reason": "Designer XML format parser (#201)"
+    },
+    "src/parsers/edtParser.ts": {
+      "maxLines": 1184,
+      "reason": "EDT XML format parser (#201)"
+    },
+    "src/providers/propertiesMessageHandler.ts": {
+      "maxLines": 1121,
+      "reason": "Properties webview message handling and updates (#201)"
+    },
+    "src/providers/propertiesWebviewContent.ts": {
+      "maxLines": 1848,
+      "reason": "Properties webview HTML and UI rendering (#201)"
+    },
+    "src/providers/treeDataProvider.ts": {
+      "maxLines": 2121,
+      "reason": "Monolithic tree provider, slated for decomposition in #201 Step 3"
+    },
+    "src/queryBuilder/sdbl/sdblFormatter.ts": {
+      "maxLines": 1002,
+      "reason": "1C SDBL query formatter (#201)"
+    },
+    "src/queryBuilder/sdbl/sdblParser.ts": {
+      "maxLines": 1537,
+      "reason": "1C SDBL query AST parser (#201)"
+    },
+    "src/rolesEditor/rolesRightsEditorProvider.ts": {
+      "maxLines": 1453,
+      "reason": "Roles rights editor webview provider (#201)"
+    },
+    "src/services/configurationSession/mutationPlan.ts": {
+      "maxLines": 1897,
+      "reason": "Mutation plan execution and snapshot engine (#201)"
+    },
+    "src/services/elementOperations.ts": {
+      "maxLines": 1147,
+      "reason": "Metadata element CRUD operations (#201)"
+    },
+    "src/services/externalProcessor/externalProcessorService.ts": {
+      "maxLines": 1164,
+      "reason": "External processor and report unpack/pack service (#201)"
+    },
+    "src/services/forms/nativeTestClient.ts": {
+      "maxLines": 1568,
+      "reason": "Native test client automation for forms (#201)"
+    },
+    "src/services/metadataCrudService.ts": {
+      "maxLines": 1285,
+      "reason": "Metadata CRUD service (#201)"
+    },
+    "src/support/supportSyncCoordinator.ts": {
+      "maxLines": 1075,
+      "reason": "Vendor configuration support synchronization (#201)"
+    }
+  }
+}

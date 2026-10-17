@@ -44,6 +44,9 @@ jobs:
       - name: Mutation writer architecture guard (warning baseline)
         run: npm run check:mutation-writer-baseline
 
+      - name: LOC budget architecture guard (#201)
+        run: npm run check:loc-budget
+
       - name: Run strict linter
         run: npm run lint:ci
 
