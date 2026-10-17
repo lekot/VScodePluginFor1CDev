@@ -451,4 +451,109 @@ suite('DeployApplicationService (#255)', () => {
     assert.ok(outcomeFacade.message?.includes('Нет изменённых файлов'));
     assert.strictEqual(deployCalled, false);
   });
+
+  test('prepareDeploy with allowFuzzyMatch isolates same-named extensions belonging to different configurations', async () => {
+    // Config A and Config B both have an extension named "Shared"
+    const dirA = path.join(tempDir, 'A');
+    const extDirA = path.join(dirA, 'ConfigurationExtensions', 'Shared');
+    fs.mkdirSync(extDirA, { recursive: true });
+    fs.writeFileSync(path.join(dirA, 'Configuration.xml'), '<Configuration/>', 'utf8');
+    fs.writeFileSync(path.join(extDirA, 'Configuration.xml'), '<Configuration/>', 'utf8');
+
+    const dirB = path.join(tempDir, 'B');
+    const extDirB = path.join(dirB, 'ConfigurationExtensions', 'Shared');
+    const goodsFileB = path.join(extDirB, 'Catalogs', 'Goods.xml');
+    fs.mkdirSync(path.dirname(goodsFileB), { recursive: true });
+    fs.writeFileSync(path.join(dirB, 'Configuration.xml'), '<Configuration/>', 'utf8');
+    fs.writeFileSync(path.join(extDirB, 'Configuration.xml'), '<Configuration/>', 'utf8');
+    fs.writeFileSync(goodsFileB, '<Catalog/>', 'utf8');
+
+    const bindingA: ConfigurationBinding = {
+      workspaceFolder: 'test-ws',
+      configRelativePath: 'A/ConfigurationExtensions/Shared/Configuration.xml',
+      ibcmdExtensionName: 'Shared',
+      infobaseIds: ['ib-base-a'],
+      massDeployment: false,
+    };
+
+    const localBindingManager: any = {
+      listAll: async () => [bindingA],
+      get: async (ws: string, rel: string) =>
+        rel === bindingA.configRelativePath ? bindingA : undefined,
+    };
+
+    const service = new DeployApplicationService({
+      bindingManager: localBindingManager,
+      infobaseStorage: mockStorage,
+    });
+
+    // Deploying B's extension directory MUST NOT match A's extension binding
+    const prepDir = await service.prepareDeploy({
+      kind: 'path',
+      path: extDirB,
+      allowFuzzyMatch: true,
+    });
+    assert.strictEqual(prepDir.ok, false, 'Unbound extension B must not match binding of extension A');
+    if (!prepDir.ok) {
+      assert.strictEqual(prepDir.code, 'NO_BINDING');
+    }
+
+    // Deploying a file in B's extension MUST NOT match A's extension binding
+    const prepFile = await service.prepareDeploy({
+      kind: 'path',
+      path: goodsFileB,
+      allowFuzzyMatch: true,
+    });
+    assert.strictEqual(prepFile.ok, false, 'File inside unbound extension B must not match binding of extension A');
+    if (!prepFile.ok) {
+      assert.strictEqual(prepFile.code, 'NO_BINDING');
+    }
+
+    // 2. Both extensions are bound to different infobases:
+    const bindingB: ConfigurationBinding = {
+      workspaceFolder: 'test-ws',
+      configRelativePath: 'B/ConfigurationExtensions/Shared/Configuration.xml',
+      ibcmdExtensionName: 'Shared',
+      infobaseIds: ['ib-1'], // ib-1 exists in mockStorage
+      massDeployment: false,
+    };
+
+    // Test reverse order: bindingB before bindingA
+    const dualBindingManagerReverse: any = {
+      listAll: async () => [bindingB, bindingA],
+      get: async (ws: string, rel: string) => {
+        if (rel === bindingB.configRelativePath) return bindingB;
+        if (rel === bindingA.configRelativePath) return bindingA;
+        return undefined;
+      },
+    };
+
+    const serviceDual = new DeployApplicationService({
+      bindingManager: dualBindingManagerReverse,
+      infobaseStorage: mockStorage,
+    });
+
+    const prepDualB = await serviceDual.prepareDeploy({
+      kind: 'path',
+      path: goodsFileB,
+      allowFuzzyMatch: true,
+    });
+    assert.strictEqual(prepDualB.ok, true);
+    if (prepDualB.ok) {
+      assert.strictEqual(prepDualB.context.binding.configRelativePath, bindingB.configRelativePath);
+      assert.strictEqual(prepDualB.context.deployTargets[0].id, 'ib-1');
+    }
+
+    // 3. Agent operations entrance
+    const { AgentDeployOperations } = await import('../../src/agent/agentDeployOperations');
+    const agentOps = new AgentDeployOperations({
+      bindingManager: localBindingManager,
+      infobaseStorage: mockStorage,
+      getConfigPath: () => null,
+    });
+    Reflect.set(agentOps, 'appService', service);
+    const agentRes = await agentOps.deploy({ configPath: goodsFileB });
+    assert.strictEqual(agentRes.success, false);
+    assert.ok(agentRes.error?.includes('не найдена привязка базы'));
+  });
 });

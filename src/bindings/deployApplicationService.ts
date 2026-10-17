@@ -228,11 +228,17 @@ export class DeployApplicationService {
             if (target.allowFuzzyMatch && nearestConfigRelPath) {
               const allBindings = await this.deps.bindingManager.listAll();
               const localBindings = allBindings.filter((b) => b.workspaceFolder === ws.name);
-              const exactScopeBinding = localBindings.find(
-                (b) =>
-                  b.configRelativePath === nearestConfigRelPath ||
-                  (nearestExtName && b.ibcmdExtensionName === nearestExtName),
-              );
+              const exactScopeBinding = localBindings.find((b) => {
+                const normBindingRel = normalizeConfigRelativePath(b.configRelativePath);
+                const normNearestRel = normalizeConfigRelativePath(nearestConfigRelPath);
+                if (normBindingRel !== normNearestRel) {
+                  return false;
+                }
+                if (nearestExtName && b.ibcmdExtensionName) {
+                  return b.ibcmdExtensionName.toLowerCase() === nearestExtName.toLowerCase();
+                }
+                return true;
+              });
               if (exactScopeBinding) {
                 matchedBinding = exactScopeBinding;
                 configRelativePath = exactScopeBinding.configRelativePath;
@@ -420,9 +426,7 @@ export class DeployApplicationService {
     options: DeployExecutionOptions = {},
   ): Promise<DeployOutcome> {
     const cancellation = createCancellationScope(options.token);
-    const processOutput = createProcessOutputLineReporter(
-      options.reportStage ?? (options.onOutput ? undefined : undefined),
-    );
+    const processOutput = createProcessOutputLineReporter(options.reportStage);
     const onOutputHandler = options.onOutput ?? processOutput.accept;
     const progress = options.progress ?? createAdapterProgress(options.reportStage);
 
