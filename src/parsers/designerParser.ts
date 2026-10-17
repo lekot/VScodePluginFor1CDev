@@ -224,7 +224,16 @@ export class DesignerParser {
       return typeNode.children || [];
     }
 
-    const entries = await fs.promises.readdir(typePath, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(typePath, { withFileTypes: true });
+    } catch (err: unknown) {
+      const code = (err as { code?: string } | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return [];
+      }
+      throw err;
+    }
     const directoryNames = new Set<string>();
     const flatXmlNames = new Set<string>();
 
@@ -472,7 +481,12 @@ export class DesignerParser {
         typeNode.children?.push(elementNode);
       }
     } catch (error) {
+      const code = (error as { code?: string } | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return typeNode;
+      }
       Logger.warn(`Error reading metadata type directory ${typePath}`, error);
+      throw error;
     }
 
     return typeNode;

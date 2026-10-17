@@ -343,6 +343,69 @@ suite('Tree type-index load ownership runtime', () => {
     assert.strictEqual(calls, 2, 'failed editor aggregate must not be cached as an authoritative empty result');
   });
 
+  test('transient I/O error during parseTypeIndex is not cached as authoritative empty and retries on restored access (Designer and EDT)', async () => {
+    const originalReaddir = fs.promises.readdir;
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'type-index-eacces-'));
+    try {
+      for (const format of [ConfigFormat.Designer, ConfigFormat.EDT]) {
+        const fixture = createRootFixture(`eacces-${format}`);
+        const configPath = fixture.configPath;
+        const catalogsDir = format === ConfigFormat.Designer
+          ? path.join(configPath, 'Catalogs')
+          : path.join(configPath, 'src', 'Catalogs');
+        await fs.promises.mkdir(catalogsDir, { recursive: true });
+        if (format === ConfigFormat.Designer) {
+          await fs.promises.writeFile(path.join(catalogsDir, 'Recovered.xml'), '<MetaDataObject/>', 'utf8');
+        } else {
+          await fs.promises.mkdir(path.join(catalogsDir, 'Recovered'), { recursive: true });
+        }
+
+        const documents: TreeNode = {
+          id: 'Documents',
+          name: 'Документы',
+          type: MetadataType.Document,
+          properties: {},
+          children: [],
+        };
+        documents.parent = fixture.root;
+        fixture.root.children!.push(documents);
+
+        const provider = createProvider();
+        provider.setRootNodes([fixture.root], new Map([[fixture.root, fakeTreeLoadContext(configPath, format, fixture.configurationId)]]));
+
+        let failEacces = true;
+        (fs.promises as unknown as { readdir: unknown }).readdir = async (targetPath: fs.PathLike, options?: unknown) => {
+          if (failEacces && String(targetPath).includes('Catalogs')) {
+            const err = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+            err.code = 'EACCES';
+            throw err;
+          }
+          return (originalReaddir as (p: fs.PathLike, o?: unknown) => Promise<unknown>)(targetPath, options);
+        };
+
+        await assert.rejects(
+          Promise.resolve(provider.getChildren(fixture.catalogs)),
+          (error: unknown) => resultErrorCode(error) === 'TREE_LOAD_FAILED',
+          `Format ${format} must fail typed on EACCES`,
+        );
+        assert.notStrictEqual((fixture.catalogs.properties as Record<string, unknown>)?._indexLoaded, true, `Format ${format} must not mark _indexLoaded on failure`);
+
+        failEacces = false;
+        const recovered = await provider.getChildren(fixture.catalogs);
+        assert.strictEqual(recovered.length, 1, `Format ${format} must read recovered items`);
+        assert.strictEqual(recovered[0].name, 'Recovered');
+        assert.strictEqual((fixture.catalogs.properties as Record<string, unknown>)?._indexLoaded, true, `Format ${format} must mark _indexLoaded on success`);
+
+        const emptyDocs = await provider.getChildren(documents);
+        assert.deepStrictEqual(emptyDocs, []);
+        assert.strictEqual((documents.properties as Record<string, unknown>)?._indexLoaded, true);
+      }
+    } finally {
+      fs.promises.readdir = originalReaddir;
+      await fs.promises.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
   test('a loaded-empty editor index is shared and not reparsed', async () => {
     const provider = createProvider();
     const fixture = createRootFixture('editor-empty');

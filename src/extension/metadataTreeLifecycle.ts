@@ -120,12 +120,9 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     cacheEpoch += 1;
     state.treeDataProvider?.invalidateTypeLoadsForConfiguration(configPath);
 
-    const invoke = (operation: () => Promise<void>): Promise<void> => {
-      try {
-        return Promise.resolve(operation());
-      } catch (error) {
-        return Promise.reject(error);
-      }
+    const invoke = async (operation: () => Promise<void>): Promise<void> => {
+      const promise = operation();
+      await promise;
     };
     // Start parser invalidation first so its epoch advances before any disk I/O can suspend.
     const parserInvalidation = invoke(() => MetadataParser.invalidateTypeContentsCache(configPath));

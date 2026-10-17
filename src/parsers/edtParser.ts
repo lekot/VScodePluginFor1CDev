@@ -206,7 +206,16 @@ export class EdtParser {
       return typeNode.children || [];
     }
 
-    const entries = await fs.promises.readdir(typePath, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(typePath, { withFileTypes: true });
+    } catch (err: unknown) {
+      const code = (err as { code?: string } | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return [];
+      }
+      throw err;
+    }
     return entries
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
@@ -563,7 +572,12 @@ export class EdtParser {
         }
       }
     } catch (error) {
+      const code = (error as { code?: string } | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return typeNode;
+      }
       Logger.warn(`Error reading EDT metadata type directory ${typePath}`, error);
+      throw error;
     }
 
     return typeNode;
