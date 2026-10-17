@@ -15,6 +15,7 @@ import { TreeNode } from '../models/treeNode';
 import { BindingManager } from '../bindings/bindingManager';
 import { InfobaseManager } from '../infobases/infobaseManager';
 import { InfobaseStorageService } from '../infobases/infobaseStorageService';
+import { InfobaseCatalogMutationService } from '../infobases/infobaseCatalogMutationService';
 import { resetIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { FormsContext } from '../services/forms/FormsContext';
 import type { AgentBridge } from '../agent/agentBridge';
@@ -159,7 +160,14 @@ export class ExtensionState {
     this._extensionContext = context;
     this._infobaseStorage = new InfobaseStorageService(context.globalState, context.secrets);
     this._bindingManager = new BindingManager();
-    this._infobaseManager = new InfobaseManager(this._infobaseStorage, this._bindingManager);
+    const mutationService = new InfobaseCatalogMutationService({
+      storage: this._infobaseStorage,
+      secretStorage: context.secrets,
+      bindingManager: this._bindingManager,
+      memento: context.globalState,
+    });
+    this._infobaseManager = new InfobaseManager(this._infobaseStorage, this._bindingManager, mutationService);
+    void mutationService.recoverPendingMutations();
   }
 
   async dispose(): Promise<void> {

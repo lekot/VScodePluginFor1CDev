@@ -57,7 +57,12 @@ class MapMemento implements Memento {
     return defaultValue as T;
   }
 
+  public failOnUpdate = false;
+
   update(key: string, value: unknown): Thenable<void> {
+    if (this.failOnUpdate) {
+      return Promise.reject(new Error('Simulated globalState update failure'));
+    }
     if (value === undefined) {
       this.map.delete(key);
     } else {
@@ -929,5 +934,70 @@ suite('InfobaseStorageService concurrent mutations (#187)', () => {
     const loaded = await service.load();
     assert.strictEqual(loaded.length, 1);
     assert.strictEqual(loaded[0].id, entry2.id);
+  });
+
+  test('upsert with hasStoredPassword=false (no password param) restores deleted secret when globalState update fails', async () => {
+    const memento = new MapMemento();
+    const secrets = new MapSecretStorage();
+    const service = new InfobaseStorageService(memento, secrets);
+
+    const entry = makeEntry({ name: 'Base 1', filePath: 'C:/db1', hasStoredPassword: true });
+    await service.upsert(entry);
+    await service.writePasswordSecret(entry.id, 'stored-pass');
+
+    // Now update entry to hasStoredPassword: false WITHOUT passing password param
+    const updatedEntry: InfobaseEntry = { ...entry, hasStoredPassword: false };
+
+    memento.failOnUpdate = true;
+    await assert.rejects(async () => {
+      await service.upsert(updatedEntry);
+    }, /Simulated globalState update failure/);
+
+    // Secret must be restored!
+    const restoredPass = await service.readPasswordSecret(entry.id);
+    assert.strictEqual(restoredPass, 'stored-pass', 'Secret must be restored after failed upsert');
+  });
+
+  test('saveAll restores deleted secrets when globalState update fails', async () => {
+    const memento = new MapMemento();
+    const secrets = new MapSecretStorage();
+    const service = new InfobaseStorageService(memento, secrets);
+
+    const entry1 = makeEntry({ name: 'Base 1', filePath: 'C:/db1', hasStoredPassword: true });
+    const entry2 = makeEntry({ name: 'Base 2', filePath: 'C:/db2', hasStoredPassword: true });
+    await service.upsert(entry1);
+    await service.writePasswordSecret(entry1.id, 'pass-1');
+    await service.upsert(entry2);
+    await service.writePasswordSecret(entry2.id, 'pass-2');
+
+    // saveAll drops entry2 and flips entry1 hasStoredPassword to false
+    const nextEntries: InfobaseEntry[] = [{ ...entry1, hasStoredPassword: false }];
+
+    memento.failOnUpdate = true;
+    await assert.rejects(async () => {
+      await service.saveAll(nextEntries);
+    }, /Simulated globalState update failure/);
+
+    // Both secrets must be preserved
+    assert.strictEqual(await service.readPasswordSecret(entry1.id), 'pass-1', 'entry1 secret must be restored');
+    assert.strictEqual(await service.readPasswordSecret(entry2.id), 'pass-2', 'entry2 secret must be restored');
+  });
+
+  test('remove restores deleted secret when globalState update fails', async () => {
+    const memento = new MapMemento();
+    const secrets = new MapSecretStorage();
+    const service = new InfobaseStorageService(memento, secrets);
+
+    const entry = makeEntry({ name: 'Base 1', filePath: 'C:/db1', hasStoredPassword: true });
+    await service.upsert(entry);
+    await service.writePasswordSecret(entry.id, 'del-pass');
+
+    memento.failOnUpdate = true;
+    await assert.rejects(async () => {
+      await service.remove(entry.id);
+    }, /Simulated globalState update failure/);
+
+    // Secret must be restored
+    assert.strictEqual(await service.readPasswordSecret(entry.id), 'del-pass', 'Secret must be restored after failed remove');
   });
 });

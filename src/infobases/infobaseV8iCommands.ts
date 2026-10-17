@@ -135,10 +135,8 @@ export async function runImportV8i(
       const entry: InfobaseEntry = { ...draft, id, createdAt: nowIso() };
       validateInfobaseEntry(entry);
       assertNoConflictingInfobaseTarget(entry, working);
-      await s.upsert(entry);
-      if (v8i.parsed.kind === 'server' && v8i.parsed.password) {
-        await s.writePasswordSecret(id, v8i.parsed.password);
-      }
+      const pwd = (v8i.parsed.kind === 'server' && v8i.parsed.password) ? v8i.parsed.password : undefined;
+      await s.upsert(entry, pwd);
       working.push(entry);
       imported += 1;
     } catch (e) {
