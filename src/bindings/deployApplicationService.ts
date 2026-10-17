@@ -180,13 +180,20 @@ export class DeployApplicationService {
         let currentDir = fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).isDirectory()
           ? resolvedPath
           : path.dirname(resolvedPath);
+        let foundConfigurationBoundary = false;
+        let nearestConfigRelPath: string | undefined;
+        let nearestExtName: string | undefined;
+
         while (currentDir.length >= ws.uri.fsPath.length) {
           const candidate = path.join(currentDir, CONFIGURATION_XML);
           if (fs.existsSync(candidate)) {
+            foundConfigurationBoundary = true;
             const rel = normalizeConfigRelativePath(
               path.relative(ws.uri.fsPath, candidate).replace(/\\/g, '/'),
             );
             const extName = detectIbcmdExtensionNameFromConfigRelativePath(rel);
+            nearestConfigRelPath = rel;
+            nearestExtName = extName;
             configRelativePath = rel;
             ibcmdExtensionName = extName;
             let direct: ConfigurationBinding | undefined;
@@ -213,15 +220,45 @@ export class DeployApplicationService {
           currentDir = parent;
         }
 
-        // If not found directly, optionally check local bindings with fuzzy match
-        if (!matchedBinding && target.allowFuzzyMatch) {
-          const allBindings = await this.deps.bindingManager.listAll();
-          const localBindings = allBindings.filter((b) => b.workspaceFolder === ws.name);
-          const found = findBinding(resolvedPath, localBindings);
-          if (found) {
-            matchedBinding = found;
-            configRelativePath = found.configRelativePath;
-            ibcmdExtensionName = found.ibcmdExtensionName;
+        // If a configuration boundary was identified:
+        if (foundConfigurationBoundary) {
+          if (!matchedBinding) {
+            // Fuzzy match is ONLY allowed within this exact configuration boundary
+            // (e.g. matching alias or extension name of THIS config), NEVER falling back to parent CF!
+            if (target.allowFuzzyMatch && nearestConfigRelPath) {
+              const allBindings = await this.deps.bindingManager.listAll();
+              const localBindings = allBindings.filter((b) => b.workspaceFolder === ws.name);
+              const exactScopeBinding = localBindings.find(
+                (b) =>
+                  b.configRelativePath === nearestConfigRelPath ||
+                  (nearestExtName && b.ibcmdExtensionName === nearestExtName),
+              );
+              if (exactScopeBinding) {
+                matchedBinding = exactScopeBinding;
+                configRelativePath = exactScopeBinding.configRelativePath;
+                ibcmdExtensionName = exactScopeBinding.ibcmdExtensionName;
+              }
+            }
+
+            if (!matchedBinding) {
+              return {
+                ok: false,
+                error: `Для конфигурации не найдена привязка базы («${nearestConfigRelPath ?? ''}» в папке «${ws.name}»). Привяжите базу через «Привязать базы…».`,
+                code: 'NO_BINDING',
+              };
+            }
+          }
+        } else {
+          // If no Configuration.xml was found on disk at all (e.g. abstract query or fixture name)
+          if (target.allowFuzzyMatch) {
+            const allBindings = await this.deps.bindingManager.listAll();
+            const localBindings = allBindings.filter((b) => b.workspaceFolder === ws.name);
+            const found = findBinding(resolvedPath, localBindings);
+            if (found) {
+              matchedBinding = found;
+              configRelativePath = found.configRelativePath;
+              ibcmdExtensionName = found.ibcmdExtensionName;
+            }
           }
         }
       }
@@ -420,16 +457,7 @@ export class DeployApplicationService {
     options: DeployExecutionOptions = {},
   ): Promise<DeployOutcome> {
     if (!relativeFiles || relativeFiles.length === 0) {
-      const emptySummary: DeployRunSummary = {
-        results: [],
-        successCount: 0,
-        errorCount: 0,
-        inDoubtCount: 0,
-        skippedCount: 0,
-        hasPartial: false,
-        cancelledMidChain: false,
-      };
-      return createDeployOutcome(emptySummary, 'Нет изменённых файлов.');
+      return createNoOpDeployOutcome('Нет изменённых файлов (по данным git).');
     }
 
     const validation = await validateDeployRelativeFiles(context.configRoot, relativeFiles);
@@ -840,6 +868,27 @@ function createTargetFailedOutcome(error: string, code?: string): DeployOutcome 
 
 function createValidationFailedOutcome(error: string): DeployOutcome {
   return createTargetFailedOutcome(error, 'VALIDATION_FAILED');
+}
+
+export function createNoOpDeployOutcome(message: string): DeployOutcome {
+  const summary: DeployRunSummary = {
+    results: [],
+    successCount: 0,
+    errorCount: 0,
+    inDoubtCount: 0,
+    skippedCount: 0,
+    hasPartial: false,
+    cancelledMidChain: false,
+  };
+  return {
+    success: true,
+    status: 'success',
+    code: undefined,
+    error: undefined,
+    message,
+    summary,
+    data: projectDeployRunSummary(summary),
+  };
 }
 
 /**

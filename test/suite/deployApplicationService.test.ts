@@ -327,4 +327,128 @@ suite('DeployApplicationService (#255)', () => {
     assert.strictEqual(agentResult.data?.results[0].infobase, 'TargetBase');
     assert.strictEqual(agentResult.data?.results[0].status, 'success');
   });
+
+  // ─── 5. Review Findings: Nested Config Isolation & Empty Git Diff No-Op ─────
+
+  test('prepareDeploy with allowFuzzyMatch does not fall back to parent binding when separate configuration boundary is detected', async () => {
+    // Structure:
+    // tempDir/Configuration.xml -> has binding to RootBase
+    // tempDir/Independent/Configuration.xml -> UNBOUND nested configuration
+    // tempDir/Independent/Catalogs/Goods.xml -> file inside unbound nested configuration
+    // tempDir/CustomExt/Configuration.xml -> UNBOUND extension configuration
+    const rootConfigXml = path.join(tempDir, 'Configuration.xml');
+    fs.writeFileSync(rootConfigXml, '<Configuration/>', 'utf8');
+
+    const independentDir = path.join(tempDir, 'Independent');
+    const independentConfigXml = path.join(independentDir, 'Configuration.xml');
+    fs.mkdirSync(independentDir, { recursive: true });
+    fs.writeFileSync(independentConfigXml, '<Configuration/>', 'utf8');
+
+    const nestedItemFile = path.join(independentDir, 'Catalogs', 'Goods.xml');
+    fs.mkdirSync(path.dirname(nestedItemFile), { recursive: true });
+    fs.writeFileSync(nestedItemFile, '<Catalog/>', 'utf8');
+
+    const customExtDir = path.join(tempDir, 'CustomExt');
+    fs.mkdirSync(customExtDir, { recursive: true });
+    fs.writeFileSync(path.join(customExtDir, 'Configuration.xml'), '<Configuration/>', 'utf8');
+
+    const rootBinding: ConfigurationBinding = {
+      workspaceFolder: 'test-ws',
+      configRelativePath: 'Configuration.xml',
+      infobaseIds: ['ib-1'],
+      massDeployment: false,
+    };
+
+    const localBindingManager: any = {
+      listAll: async () => [rootBinding],
+      get: async (ws: string, rel: string) => (rel === 'Configuration.xml' ? rootBinding : undefined),
+    };
+
+    const service = new DeployApplicationService({
+      bindingManager: localBindingManager,
+      infobaseStorage: mockStorage,
+    });
+
+    // 1. Direct directory of independent configuration with allowFuzzyMatch: true
+    const prepDir = await service.prepareDeploy({
+      kind: 'path',
+      path: independentDir,
+      allowFuzzyMatch: true,
+    });
+    assert.strictEqual(prepDir.ok, false, 'Nested configuration must not fall back to parent root binding');
+    if (!prepDir.ok) {
+      assert.strictEqual(prepDir.code, 'NO_BINDING');
+    }
+
+    // 2. File inside independent configuration with allowFuzzyMatch: true
+    const prepFile = await service.prepareDeploy({
+      kind: 'path',
+      path: nestedItemFile,
+      allowFuzzyMatch: true,
+    });
+    assert.strictEqual(prepFile.ok, false, 'File in nested configuration must not fall back to parent root binding');
+    if (!prepFile.ok) {
+      assert.strictEqual(prepFile.code, 'NO_BINDING');
+    }
+
+    // 3. Custom extension folder with allowFuzzyMatch: true
+    const prepExt = await service.prepareDeploy({
+      kind: 'path',
+      path: customExtDir,
+      allowFuzzyMatch: true,
+    });
+    assert.strictEqual(prepExt.ok, false, 'Unbound extension must not fall back to parent root binding');
+    if (!prepExt.ok) {
+      assert.strictEqual(prepExt.code, 'NO_BINDING');
+    }
+  });
+
+  test('executeDeployChangedFiles and deployChanged return successful no-op outcome when no files changed', async () => {
+    let deployCalled = false;
+    const mockDeployService: any = {
+      deployChangedFiles: async () => {
+        deployCalled = true;
+        throw new Error('deployService must not be called when there are no changed files');
+      },
+    };
+
+    const emptyGitDeps: IncrementalChangeDetectorDeps = {
+      getGitRepository: () =>
+        ({
+          rootUri: vscode.Uri.file(tempDir),
+          state: {
+            workingTreeChanges: [],
+            indexChanges: [],
+            mergeChanges: [],
+          },
+        }) as unknown as GitRepository,
+    };
+
+    const service = new DeployApplicationService({
+      bindingManager: mockBindingManager,
+      infobaseStorage: mockStorage,
+      deployService: mockDeployService,
+      gitDeps: emptyGitDeps,
+    });
+
+    // 1. Direct call to executeDeployChangedFiles with empty array
+    const prepared = await service.prepareDeploy({ kind: 'path', path: configXmlPath });
+    assert.strictEqual(prepared.ok, true);
+    if (!prepared.ok) return;
+
+    const outcomeExecute = await service.executeDeployChangedFiles(prepared.context, []);
+    assert.strictEqual(outcomeExecute.success, true, 'Empty changed files must be successful no-op');
+    assert.strictEqual(outcomeExecute.status, 'success');
+    assert.strictEqual(outcomeExecute.error, undefined, 'Must not set overrideError');
+    assert.ok(outcomeExecute.message?.includes('Нет изменённых файлов'));
+    assert.strictEqual(deployCalled, false);
+
+    // 2. High-level facade deployChanged with empty git changes
+    const outcomeFacade = await service.deployChanged({ kind: 'path', path: configXmlPath });
+    assert.strictEqual(outcomeFacade.success, true, 'Facade deployChanged with empty diff must be successful no-op');
+    assert.strictEqual(outcomeFacade.status, 'success');
+    assert.strictEqual(outcomeFacade.error, undefined);
+    assert.ok(outcomeFacade.message?.includes('Нет изменённых файлов'));
+    assert.strictEqual(deployCalled, false);
+  });
 });
