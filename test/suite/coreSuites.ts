@@ -114,6 +114,7 @@ export const coreSuiteFiles: string[] = [
   'suite/propertiesChangedKeys.test.js',
   'suite/firstWriterMigrations.test.js',
   'suite/mutationWriterGuard.test.js',
+  'suite/locBudgetGuard.test.js',
   'suite/nestedMetadataProperties.test.js',
   'suite/formModelUtils.test.js',
   'suite/formPaths.test.js',
