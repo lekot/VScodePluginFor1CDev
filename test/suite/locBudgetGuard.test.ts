@@ -135,6 +135,133 @@ suite('LOC budget architecture guard (#201)', () => {
     assert.strictEqual(checkRes.status, 0, checkRes.stderr || checkRes.stdout);
   });
 
+  test('fails when CLI threshold is non-numeric or non-positive', () => {
+    const resNaN = runGuard('--threshold', 'oops');
+    assert.strictEqual(resNaN.status, 1, 'Guard must fail on non-numeric threshold');
+    assert.match(resNaN.stderr, /Invalid CLI --threshold/i);
+
+    const resNeg = runGuard('--threshold', '-5');
+    assert.strictEqual(resNeg.status, 1, 'Guard must fail on negative threshold');
+    assert.match(resNeg.stderr, /Invalid CLI --threshold/i);
+
+    const resZero = runGuard('--threshold', '0');
+    assert.strictEqual(resZero.status, 1, 'Guard must fail on zero threshold');
+    assert.match(resZero.stderr, /Invalid CLI --threshold/i);
+  });
+
+  test('fails when source root does not exist', () => {
+    const res = runGuard('--source-root', path.join(tmpDir, 'non-existent-dir'));
+    assert.strictEqual(res.status, 1, 'Guard must fail when source directory does not exist');
+    assert.match(res.stderr, /Source directory does not exist/i);
+  });
+
+  test('fails when baseline JSON is malformed syntax', async () => {
+    await fs.promises.writeFile(baselinePath, '{ malformed json syntax: ', 'utf8');
+    const res = runGuard();
+    assert.strictEqual(res.status, 1, 'Guard must fail on malformed JSON baseline');
+    assert.match(res.stderr, /Failed to parse baseline JSON/i);
+  });
+
+  test('fails when baseline version is missing or unsupported', async () => {
+    await fs.promises.writeFile(
+      baselinePath,
+      JSON.stringify({ version: 99, threshold: 50, allowedHotspots: {} }),
+      'utf8',
+    );
+    const res = runGuard();
+    assert.strictEqual(res.status, 1, 'Guard must fail on unsupported baseline version');
+    assert.match(res.stderr, /Unsupported baseline version/i);
+  });
+
+  test('fails when baseline threshold is non-numeric or non-positive', async () => {
+    await fs.promises.writeFile(
+      baselinePath,
+      JSON.stringify({ version: 1, threshold: 'oops', allowedHotspots: {} }),
+      'utf8',
+    );
+    const res = runGuard();
+    assert.strictEqual(res.status, 1, 'Guard must fail on non-numeric baseline threshold');
+    assert.match(res.stderr, /Invalid baseline threshold/i);
+
+    await fs.promises.writeFile(
+      baselinePath,
+      JSON.stringify({ version: 1, threshold: -10, allowedHotspots: {} }),
+      'utf8',
+    );
+    const resNeg = runGuard();
+    assert.strictEqual(resNeg.status, 1, 'Guard must fail on negative baseline threshold');
+    assert.match(resNeg.stderr, /Invalid baseline threshold/i);
+  });
+
+  test('fails when hotspot entry has missing or invalid maxLines (fail-closed)', async () => {
+    const largeContent = Array.from({ length: 60 }, (_, i) => `// line ${i + 1}`).join('\n');
+    await fs.promises.writeFile(path.join(sourceRoot, 'large.ts'), largeContent, 'utf8');
+
+    // Hotspot without maxLines must NOT bypass the check!
+    await fs.promises.writeFile(
+      baselinePath,
+      JSON.stringify({
+        version: 1,
+        threshold: 50,
+        allowedHotspots: {
+          'src/large.ts': { reason: 'No maxLines limit specified' },
+        },
+      }),
+      'utf8',
+    );
+    const resMissing = runGuard();
+    assert.strictEqual(resMissing.status, 1, 'Guard must fail when maxLines is missing');
+    assert.match(resMissing.stderr, /Invalid or missing maxLines/i);
+
+    // Hotspot with invalid maxLines: 'oops' or -10
+    await fs.promises.writeFile(
+      baselinePath,
+      JSON.stringify({
+        version: 1,
+        threshold: 50,
+        allowedHotspots: {
+          'src/large.ts': { maxLines: -10, reason: 'Negative limit' },
+        },
+      }),
+      'utf8',
+    );
+    const resNeg = runGuard();
+    assert.strictEqual(resNeg.status, 1, 'Guard must fail when maxLines is negative');
+    assert.match(resNeg.stderr, /Invalid or missing maxLines/i);
+  });
+
+  test('fails when hotspot entry has missing or empty reason', async () => {
+    await fs.promises.writeFile(
+      baselinePath,
+      JSON.stringify({
+        version: 1,
+        threshold: 50,
+        allowedHotspots: {
+          'src/large.ts': { maxLines: 65, reason: '   ' },
+        },
+      }),
+      'utf8',
+    );
+    const res = runGuard();
+    assert.strictEqual(res.status, 1, 'Guard must fail when reason is empty');
+    assert.match(res.stderr, /Missing or empty reason/i);
+  });
+
+  test('fails when allowedHotspots is not an object', async () => {
+    await fs.promises.writeFile(
+      baselinePath,
+      JSON.stringify({
+        version: 1,
+        threshold: 50,
+        allowedHotspots: ['src/large.ts'],
+      }),
+      'utf8',
+    );
+    const res = runGuard();
+    assert.strictEqual(res.status, 1, 'Guard must fail when allowedHotspots is an array');
+    assert.match(res.stderr, /allowedHotspots must be an object/i);
+  });
+
   test('production src directory satisfies production loc-budget-baseline.json', () => {
     const res = spawnSync(process.execPath, [guardScript], { encoding: 'utf8' });
     assert.strictEqual(res.status, 0, res.stderr || res.stdout);
