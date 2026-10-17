@@ -19,6 +19,7 @@ export class WorkspaceRegistryCoordinator {
   private isInitialized = false;
   private refreshTail: Promise<void> = Promise.resolve();
   private disposed = false;
+  private disposePromise: Promise<void> | null = null;
 
   constructor(
     private readonly registry: WorkspaceRegistry,
@@ -159,12 +160,18 @@ export class WorkspaceRegistryCoordinator {
     return this.registry.unregisterTargetedRoot(configPath);
   }
 
-  async dispose(): Promise<void> {
-    if (this.disposed) {
-      return;
+  dispose(): Promise<void> {
+    if (this.disposePromise) {
+      return this.disposePromise;
     }
     this.disposed = true;
-    await this.registry.dispose();
+    this.disposePromise = Promise.resolve().then(async () => {
+      // A workspace scan may already be reconciling sessions when shutdown starts.
+      // Let it finish before closing the registry those scans update.
+      await this.refreshTail;
+      await this.registry.dispose();
+    });
+    return this.disposePromise;
   }
 
   private ensureActive(): void {

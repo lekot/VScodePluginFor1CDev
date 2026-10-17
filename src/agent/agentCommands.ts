@@ -394,7 +394,7 @@ export function registerAgentCommands(
     };
 
     const taskManager = new AgentTaskManager();
-    context.subscriptions.push({ dispose: () => { void taskManager.dispose(); } });
+    context.subscriptions.push({ dispose: () => taskManager.dispose() });
     const runAgentLongTask = <T>(
         name: string,
         background: boolean | undefined,

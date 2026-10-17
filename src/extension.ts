@@ -7,9 +7,16 @@ import { createMetadataTreeLifecycle } from './extension/metadataTreeLifecycle';
 import { registerExtensionWorkspace } from './extension/extensionWorkspaceSetup';
 import { registerDebugAdapter } from './debug';
 import { MetadataParser } from './parsers/metadataParser';
+import {
+  ActivationSubscriptionScope,
+  createActivationSubscriptionScope,
+  getActivationSubscriptionScope,
+} from './extension/activationSubscriptionScope';
+import { ExtensionCompositionRoot } from './extension/extensionCompositionRoot';
 
 export const extensionState = new ExtensionState();
-let activeMetadataLifecycle: ReturnType<typeof createMetadataTreeLifecycle> | undefined;
+let activeCompositionRoot: ExtensionCompositionRoot | undefined;
+let activeSubscriptionScope: ActivationSubscriptionScope | undefined;
 
 /**
  * Rolls back registrations and state created before activation failed.
@@ -24,7 +31,7 @@ export async function rollbackPartialActivation(
   const subscriptions = context.subscriptions.splice(0).reverse();
   for (const subscription of subscriptions) {
     try {
-      subscription.dispose();
+      await (subscription.dispose as () => void | Promise<void>).call(subscription);
     } catch (error) {
       errors.push(error);
     }
@@ -34,6 +41,8 @@ export async function rollbackPartialActivation(
   } catch (error) {
     errors.push(error);
   }
+  const scope = getActivationSubscriptionScope(context as vscode.ExtensionContext);
+  scope?.close();
   return errors;
 }
 
@@ -41,25 +50,41 @@ export async function rollbackPartialActivation(
  * Activate the extension
  */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  const scope = createActivationSubscriptionScope(context);
+  let compositionRoot: ExtensionCompositionRoot | undefined;
   try {
-    extensionState.init(context);
-    MetadataParser.setTypeContentsCacheStoragePath(context.globalStoragePath);
-    initDesignerTemplateRepository(context.extensionPath);
+    activeSubscriptionScope = scope;
+    extensionState.init(scope.context, { initializeInfobaseServices: false });
+    MetadataParser.setTypeContentsCacheStoragePath(scope.context.globalStoragePath);
+    initDesignerTemplateRepository(scope.context.extensionPath);
     Logger.initialize();
     Logger.info(MESSAGES.EXTENSION_ACTIVATED);
 
     const lifecycle = createMetadataTreeLifecycle(extensionState);
-    activeMetadataLifecycle = lifecycle;
-    await registerExtensionWorkspace(context, extensionState, lifecycle);
-    registerDebugAdapter(context);
+    await registerExtensionWorkspace(scope.context, extensionState, lifecycle, (root) => {
+      compositionRoot = root;
+      activeCompositionRoot = root;
+      context.subscriptions.push(root);
+    });
+    registerDebugAdapter(scope.context);
 
     Logger.info('Extension activation completed');
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     Logger.error('Critical error during extension activation', error);
 
-    const rollbackErrors = await rollbackPartialActivation(context);
-    activeMetadataLifecycle = undefined;
+    let rollbackErrors: readonly unknown[] = [];
+    if (compositionRoot) {
+      await compositionRoot.dispose();
+      const rootIndex = context.subscriptions.indexOf(compositionRoot);
+      if (rootIndex >= 0) {
+        context.subscriptions.splice(rootIndex, 1);
+      }
+    } else {
+      rollbackErrors = await rollbackPartialActivation(scope.context);
+    }
+    activeCompositionRoot = undefined;
+    activeSubscriptionScope = undefined;
     for (const rollbackError of rollbackErrors) {
       Logger.error('Failed to roll back partial extension activation', rollbackError);
     }
@@ -80,10 +105,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
  */
 export async function deactivate(): Promise<void> {
   try {
-    activeMetadataLifecycle?.dispose();
-    activeMetadataLifecycle = undefined;
-    await extensionState.dispose();
+    if (activeCompositionRoot) {
+      await activeCompositionRoot.dispose();
+    } else {
+      await extensionState.dispose();
+      activeSubscriptionScope?.close();
+    }
   } finally {
+    activeCompositionRoot = undefined;
+    activeSubscriptionScope = undefined;
     Logger.info(MESSAGES.EXTENSION_DEACTIVATED);
   }
 }

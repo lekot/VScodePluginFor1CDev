@@ -379,6 +379,8 @@ export const vscodeTestState = {
   mockWorkspaceFolders: [] as Array<{ name: string; index: number; uri: { fsPath: string; scheme: string } }>,
   onDidSaveDocumentListeners: [] as Array<(e: { uri: { fsPath: string } }) => void>,
   onDidChangeWorkspaceFoldersListeners: [] as Array<(e: unknown) => void>,
+  treeViewVisibility: new Map<string, boolean>(),
+  treeVisibilityListeners: new Map<string, Array<(e: { visible: boolean }) => void>>(),
   /** Собранные строки `OutputChannel.appendLine` (ibcmd / раскатка). */
   outputChannelLines: [] as string[],
   /** Собранные фрагменты `OutputChannel.append`. */
@@ -406,6 +408,13 @@ export function fireWorkspaceDidSaveDocument(fsPath: string): void {
 export function fireWorkspaceFoldersChanged(): void {
   for (const l of [...vscodeTestState.onDidChangeWorkspaceFoldersListeners]) {
     l({});
+  }
+}
+
+export function fireTreeViewVisibility(viewId: string, visible: boolean): void {
+  vscodeTestState.treeViewVisibility.set(viewId, visible);
+  for (const listener of [...(vscodeTestState.treeVisibilityListeners.get(viewId) ?? [])]) {
+    listener({ visible });
   }
 }
 
@@ -506,10 +515,23 @@ const windowStub = {
     return await task({ report: () => undefined }, token);
   },
   setStatusBarMessage: (): { dispose: () => void } => ({ dispose: () => undefined }),
-  createTreeView: (_viewId: string, _options?: unknown) => ({
+  createTreeView: (viewId: string, _options?: unknown) => ({
     message: '',
+    get visible(): boolean { return vscodeTestState.treeViewVisibility.get(viewId) ?? false; },
     onDidChangeSelection: (_listener: (e: { selection: any[] }) => void) => ({ dispose: () => undefined }),
-    onDidChangeVisibility: (_listener: (e: { visible: boolean }) => void) => ({ dispose: () => undefined }),
+    onDidChangeVisibility: (listener: (e: { visible: boolean }) => void) => {
+      const listeners = vscodeTestState.treeVisibilityListeners.get(viewId) ?? [];
+      listeners.push(listener);
+      vscodeTestState.treeVisibilityListeners.set(viewId, listeners);
+      return {
+        dispose: () => {
+          const index = listeners.indexOf(listener);
+          if (index >= 0) {
+            listeners.splice(index, 1);
+          }
+        },
+      };
+    },
     dispose: () => undefined,
   }),
   registerCustomEditorProvider: (_viewType: string, _provider: unknown, _options?: unknown) => ({
@@ -691,6 +713,8 @@ export function resetVscodeTestState(): void {
   vscodeTestState.mockWorkspaceFolders = [];
   vscodeTestState.onDidSaveDocumentListeners = [];
   vscodeTestState.onDidChangeWorkspaceFoldersListeners = [];
+  vscodeTestState.treeViewVisibility.clear();
+  vscodeTestState.treeVisibilityListeners.clear();
   vscodeTestState.outputChannelLines = [];
   vscodeTestState.outputChannelChunks = [];
   restoreVscodeWorkspaceFoldersGetter();
@@ -710,6 +734,9 @@ export function getExecuteCommandHistory(): Array<{ name: string; args: unknown 
 
 /** Mutable state for vscode.debug stub — reset in teardown. */
 export const debugTestState = {
+  registeredConfigurationProviders: [] as Array<{ type: string; provider: unknown }>,
+  registeredDescriptorFactories: [] as Array<{ type: string; factory: unknown }>,
+  registerDebugConfigurationProviderImpl: undefined as ((type: string, provider: unknown) => void) | undefined,
   startDebuggingResult: true,
   startDebuggingCalled: false,
   startDebuggingArgs: undefined as unknown[] | undefined,
@@ -729,6 +756,9 @@ export const debugTestState = {
 };
 
 export function resetDebugTestState(): void {
+  debugTestState.registeredConfigurationProviders = [];
+  debugTestState.registeredDescriptorFactories = [];
+  debugTestState.registerDebugConfigurationProviderImpl = undefined;
   debugTestState.startDebuggingResult = true;
   debugTestState.startDebuggingCalled = false;
   debugTestState.startDebuggingArgs = undefined;
@@ -835,6 +865,15 @@ export function makeMockSession(id: string, type = 'bsl'): {
 }
 
 const debugStub = {
+  registerDebugConfigurationProvider: (type: string, provider: unknown): { dispose: () => void } => {
+    debugTestState.registerDebugConfigurationProviderImpl?.(type, provider);
+    debugTestState.registeredConfigurationProviders.push({ type, provider });
+    return { dispose: () => undefined };
+  },
+  registerDebugAdapterDescriptorFactory: (type: string, factory: unknown): { dispose: () => void } => {
+    debugTestState.registeredDescriptorFactories.push({ type, factory });
+    return { dispose: () => undefined };
+  },
   startDebugging: async (_folder: unknown, _config: unknown): Promise<boolean> => {
     debugTestState.startDebuggingCalled = true;
     debugTestState.startDebuggingArgs = [_folder, _config];

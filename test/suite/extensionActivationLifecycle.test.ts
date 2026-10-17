@@ -2,11 +2,56 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { activate, deactivate, extensionState, rollbackPartialActivation } from '../../src/extension';
 import { ExtensionState } from '../../src/state/extensionState';
-import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
+import { ExtensionCompositionRoot } from '../../src/extension/extensionCompositionRoot';
+import { ConfigFormat } from '../../src/parsers/formatDetector';
+import { InfobaseCatalogMutationService } from '../../src/infobases/infobaseCatalogMutationService';
+import { createActivationSubscriptionScope } from '../../src/extension/activationSubscriptionScope';
+import { debugTestState, resetDebugTestState, resetVscodeTestState, vscodeTestState, fireWorkspaceFoldersChanged } from '../helpers/vscodeModuleStub';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+
+function createActivationContext(
+  globalStoragePath: string,
+  subscriptions: vscode.Disposable[] = [],
+): vscode.ExtensionContext {
+  return {
+    subscriptions,
+    globalStoragePath,
+    globalStorageUri: vscode.Uri.file(globalStoragePath),
+    extensionPath: process.cwd(),
+    extensionUri: vscode.Uri.file(process.cwd()),
+    extension: { packageJSON: { version: 'test' } },
+    globalState: {
+      get: () => undefined,
+      update: async () => undefined,
+      keys: () => [],
+    },
+    secrets: {
+      get: async () => undefined,
+      store: async () => undefined,
+      delete: async () => undefined,
+      onDidChange: new vscode.EventEmitter<{ key: string }>().event,
+    },
+  } as unknown as vscode.ExtensionContext;
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => { resolve = r; });
+  return { promise, resolve };
+}
 
 suite('extension activation lifecycle', () => {
-  setup(() => resetVscodeTestState());
-  teardown(() => resetVscodeTestState());
+  setup(() => {
+    resetVscodeTestState();
+    resetDebugTestState();
+    extensionState.init(createActivationContext(process.cwd()), { initializeInfobaseServices: false });
+  });
+  teardown(() => {
+    resetVscodeTestState();
+    resetDebugTestState();
+  });
 
   test('rollback disposes subscriptions in reverse order, continues after errors, and is idempotent', async () => {
     const order: string[] = [];
@@ -35,6 +80,41 @@ suite('extension activation lifecycle', () => {
     assert.deepStrictEqual(context.subscriptions, []);
   });
 
+  test('activation scope preserves ExtensionContext accessors and methods without adopting foreign subscriptions', async () => {
+    const foreign: vscode.Disposable = { dispose: () => undefined };
+    const sourceValue: { subscriptions: vscode.Disposable[]; ownerName: string; getSubscriptionCount: () => number } = {
+      subscriptions: [foreign],
+      ownerName: 'source-context',
+      getSubscriptionCount() { return this.subscriptions.length; },
+    };
+    Object.defineProperty(sourceValue, 'extensionPath', {
+      configurable: true,
+      get() { return `${this.ownerName}/extension`; },
+    });
+    const source = sourceValue as unknown as vscode.ExtensionContext;
+    const scope = createActivationSubscriptionScope(source);
+    const captured: vscode.Disposable[] = [];
+    scope.bind({ registerDisposable: (_name, disposable) => {
+      if (typeof disposable !== 'function') {
+        captured.push(disposable);
+      }
+    } });
+
+    assert.strictEqual(scope.context.extensionPath, 'source-context/extension');
+    assert.strictEqual((scope.context as any).getSubscriptionCount(), 1);
+    assert.notStrictEqual(scope.context.subscriptions, source.subscriptions);
+
+    const activationSubscription: vscode.Disposable = { dispose: () => undefined };
+    scope.context.subscriptions.push(activationSubscription);
+    scope.close();
+    const lateSubscription: vscode.Disposable = { dispose: () => undefined };
+    scope.context.subscriptions.push(lateSubscription);
+
+    assert.deepStrictEqual(source.subscriptions, [foreign]);
+    assert.ok(captured.includes(activationSubscription));
+    assert.ok(captured.includes(lateSubscription));
+  });
+
   test('activation rolls back and rethrows the original initialization failure', async () => {
     const failure = new Error('initialization failed');
     const originalInit = ExtensionState.prototype.init;
@@ -52,8 +132,143 @@ suite('extension activation lifecycle', () => {
     }
   });
 
+  test('production activate/deactivate keeps foreign subscriptions and awaits the real workspace writer drain', async () => {
+    const globalStoragePath = await fs.mkdtemp(path.join(os.tmpdir(), 'pr347-activation-storage-'));
+    const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pr347-activation-config-'));
+    await fs.writeFile(
+      path.join(configRoot, 'Configuration.xml'),
+      '<MetaDataObject version="2.20"><Configuration uuid="11111111-1111-1111-1111-111111111111"/></MetaDataObject>',
+    );
+    vscodeTestState.mockWorkspaceFolders = [{ name: 'configuration', index: 0, uri: vscode.Uri.file(configRoot) }];
+    let foreignDisposed = false;
+    const foreignSubscription: vscode.Disposable = { dispose: () => { foreignDisposed = true; } };
+    const context = createActivationContext(globalStoragePath, [foreignSubscription]);
+    const originalRecover = InfobaseCatalogMutationService.prototype.recoverPendingMutations;
+    let recoveryCount = 0;
+    const releaseWriter = deferred();
+    InfobaseCatalogMutationService.prototype.recoverPendingMutations = function () {
+      recoveryCount += 1;
+      return originalRecover.call(this);
+    };
+
+    try {
+      await activate(context);
+
+      assert.strictEqual(recoveryCount, 1, 'production activation must construct and recover one infobase graph');
+      assert.strictEqual(context.subscriptions.length, 2, 'only the composition root is added beside foreign subscriptions');
+      assert.strictEqual(context.subscriptions[0], foreignSubscription, 'pre-existing subscription identity must be preserved');
+      const root = context.subscriptions[1] as ExtensionCompositionRoot;
+      assert.ok(root instanceof ExtensionCompositionRoot);
+      assert.strictEqual(debugTestState.registeredConfigurationProviders.length, 1);
+      assert.strictEqual(debugTestState.registeredDescriptorFactories.length, 1);
+
+      const session = await root.infrastructure!.workspaceRegistry.registerTargetedRoot({
+        configPath: configRoot,
+        format: ConfigFormat.Designer,
+      });
+      const started = deferred();
+      const writer = session.runExclusive({
+        kind: 'test.pending-writer',
+        execute: async () => {
+          started.resolve();
+          await releaseWriter.promise;
+          return 'committed';
+        },
+      });
+      await started.promise;
+
+      let deactivationFinished = false;
+      const deactivation = deactivate().then(() => { deactivationFinished = true; });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(deactivationFinished, false, 'deactivate must wait for an active ConfigurationSession writer');
+      releaseWriter.resolve();
+      await Promise.all([deactivation, writer]);
+
+      assert.strictEqual(foreignDisposed, false, 'deactivate must leave host-owned subscriptions untouched');
+      assert.strictEqual(extensionState.workspaceRegistry, null);
+      assert.strictEqual(extensionState.infobaseStorage, null);
+    } finally {
+      releaseWriter.resolve();
+      InfobaseCatalogMutationService.prototype.recoverPendingMutations = originalRecover;
+      await deactivate();
+      vscodeTestState.mockWorkspaceFolders = [];
+      await fs.rm(globalStoragePath, { recursive: true, force: true });
+      await fs.rm(configRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('production deactivate drains workspace folder scans before disposing the registry', async () => {
+    const globalStoragePath = await fs.mkdtemp(path.join(os.tmpdir(), 'pr347-refresh-storage-'));
+    const context = createActivationContext(globalStoragePath);
+    try {
+      await activate(context);
+      const root = context.subscriptions[0] as ExtensionCompositionRoot;
+      const coordinator = root.infrastructure!.registryCoordinator as unknown as {
+        deps: { findAllConfigurationRoots?: (folders: string[]) => Promise<Array<{ configPath: string; workspaceFolderPath: string }>> };
+      };
+      const scanStarted = deferred();
+      const releaseScan = deferred();
+      coordinator.deps.findAllConfigurationRoots = async () => {
+        scanStarted.resolve();
+        await releaseScan.promise;
+        return [];
+      };
+
+      fireWorkspaceFoldersChanged();
+      await scanStarted.promise;
+      let deactivationFinished = false;
+      const deactivation = deactivate().then(() => { deactivationFinished = true; });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(deactivationFinished, false, 'shutdown must wait for an in-flight workspace scan');
+      releaseScan.resolve();
+      await deactivation;
+      assert.strictEqual(extensionState.workspaceRegistry, null);
+    } finally {
+      await deactivate();
+      await fs.rm(globalStoragePath, { recursive: true, force: true });
+    }
+  });
+
+  test('partial activation failure awaits the root registered before compose returns', async () => {
+    const globalStoragePath = await fs.mkdtemp(path.join(os.tmpdir(), 'pr347-rollback-storage-'));
+    let foreignDisposed = false;
+    const foreignSubscription: vscode.Disposable = { dispose: () => { foreignDisposed = true; } };
+    const context = createActivationContext(globalStoragePath, [foreignSubscription]);
+    const cleanupStarted = deferred();
+    const releaseCleanup = deferred();
+    const registrationFailure = new Error('debug registration failed');
+    debugTestState.registerDebugConfigurationProviderImpl = () => {
+      const root = context.subscriptions.find((item) => item instanceof ExtensionCompositionRoot) as ExtensionCompositionRoot | undefined;
+      assert.ok(root, 'activation must publish its root before composing services');
+      root.registerDisposable('debug partial rollback gate', async () => {
+        cleanupStarted.resolve();
+        await releaseCleanup.promise;
+      });
+      throw registrationFailure;
+    };
+
+    try {
+      let activationFinished = false;
+      const activation = activate(context).catch((error: unknown) => {
+        assert.strictEqual(error, registrationFailure);
+      }).finally(() => { activationFinished = true; });
+      await cleanupStarted.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(activationFinished, false, 'activation rollback must await registered async root cleanup');
+      releaseCleanup.resolve();
+      await activation;
+      assert.strictEqual(context.subscriptions.length, 1, 'failed activation removes only its own root registration');
+      assert.strictEqual(context.subscriptions[0], foreignSubscription);
+      assert.strictEqual(foreignDisposed, false);
+      assert.strictEqual(extensionState.infobaseStorage, null);
+    } finally {
+      releaseCleanup.resolve();
+      await deactivate();
+      await fs.rm(globalStoragePath, { recursive: true, force: true });
+    }
+  });
+
   test('deactivate awaits agentTaskManager disposal and drains background tasks', async () => {
-    (extensionState as any)._isDisposed = false;
     let taskDrained = false;
     extensionState.agentTaskManager = {
       dispose: async () => {
@@ -84,7 +299,7 @@ suite('extension activation lifecycle', () => {
     });
 
     const state = new ExtensionState();
-    (state as any)._isDisposed = false;
+    state.init(createActivationContext(process.cwd()), { initializeInfobaseServices: false });
     state.agentTaskManager = taskManager;
 
     const context: Pick<vscode.ExtensionContext, 'subscriptions'> = {

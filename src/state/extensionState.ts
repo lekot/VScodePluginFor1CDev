@@ -15,7 +15,10 @@ import { TreeNode } from '../models/treeNode';
 import { BindingManager } from '../bindings/bindingManager';
 import { InfobaseManager } from '../infobases/infobaseManager';
 import { InfobaseStorageService } from '../infobases/infobaseStorageService';
-import { InfobaseCatalogMutationService } from '../infobases/infobaseCatalogMutationService';
+import {
+  InfobaseCatalogMutationService,
+  type RecoveryOutcome,
+} from '../infobases/infobaseCatalogMutationService';
 import { resetIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { FormsContext } from '../services/forms/FormsContext';
 import type { AgentBridge } from '../agent/agentBridge';
@@ -33,6 +36,11 @@ import {
   setConfigurationMutationEngine,
 } from '../services/configurationSession/ConfigurationMutationEngine';
 import { Logger } from '../utils/logger';
+
+export interface ExtensionStateInitOptions {
+  /** Set false when ExtensionCompositionRoot will create or adopt the production graph. */
+  readonly initializeInfobaseServices?: boolean;
+}
 
 /**
  * Holds extension-wide mutable references (providers, tree view, reload coordinator).
@@ -73,7 +81,10 @@ export class ExtensionState {
   private _workspaceRegistry: WorkspaceRegistry | null = null;
   private _configurationContextResolver: ConfigurationContextResolver | null = null;
   private _configurationMutationEngine: ConfigurationMutationEngine | null = null;
+  private _infobaseMutationRecovery: Promise<RecoveryOutcome> | null = null;
+  private _infobaseRecoveryOutcome: RecoveryOutcome | null = null;
   private _isDisposed = false;
+  private _disposePromise: Promise<void> | null = null;
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
@@ -100,6 +111,8 @@ export class ExtensionState {
   get infobaseStorage(): InfobaseStorageService | null { return this._infobaseStorage; }
   get bindingManager(): BindingManager | null { return this._bindingManager; }
   get infobaseManager(): InfobaseManager | null { return this._infobaseManager; }
+  get infobaseMutationRecovery(): Promise<RecoveryOutcome> | null { return this._infobaseMutationRecovery; }
+  get infobaseRecoveryOutcome(): RecoveryOutcome | null { return this._infobaseRecoveryOutcome; }
   get infobaseTreeProvider(): InfobaseTreeDataProvider | null { return this._infobaseTreeProvider; }
   get infobaseTreeView(): vscode.TreeView<InfobaseTreeNode> | null { return this._infobaseTreeView; }
   /** Обновление бейджей/tooltip привязок на узле Configuration (§2C); выставляется в extensionWorkspaceSetup. */
@@ -139,6 +152,8 @@ export class ExtensionState {
   set infobaseStorage(v: InfobaseStorageService | null) { this._infobaseStorage = v; }
   set bindingManager(v: BindingManager | null) { this._bindingManager = v; }
   set infobaseManager(v: InfobaseManager | null) { this._infobaseManager = v; }
+  set infobaseMutationRecovery(v: Promise<RecoveryOutcome> | null) { this._infobaseMutationRecovery = v; }
+  set infobaseRecoveryOutcome(v: RecoveryOutcome | null) { this._infobaseRecoveryOutcome = v; }
   set agentBridge(v: AgentBridge | null) { this._agentBridge = v; }
   set agentTaskManager(v: AgentTaskManager | null) { this._agentTaskManager = v; }
   set supportComposition(v: SupportServiceComposition | null) { this._supportComposition = v; }
@@ -155,9 +170,16 @@ export class ExtensionState {
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-  init(context: vscode.ExtensionContext): void {
+  init(context: vscode.ExtensionContext, options: ExtensionStateInitOptions = {}): void {
     this._isDisposed = false;
+    this._disposePromise = null;
     this._extensionContext = context;
+    this._infobaseMutationRecovery = null;
+    this._infobaseRecoveryOutcome = null;
+    if (options.initializeInfobaseServices === false) {
+      return;
+    }
+
     this._infobaseStorage = new InfobaseStorageService(context.globalState, context.secrets);
     this._bindingManager = new BindingManager();
     const mutationService = new InfobaseCatalogMutationService({
@@ -167,14 +189,52 @@ export class ExtensionState {
       memento: context.globalState,
     });
     this._infobaseManager = new InfobaseManager(this._infobaseStorage, this._bindingManager, mutationService);
-    void mutationService.recoverPendingMutations();
+    this._infobaseMutationRecovery = mutationService.recoverPendingMutations();
+    void this._infobaseMutationRecovery.catch((error) => {
+      Logger.error('Infobase catalog mutation recovery failed during ExtensionState initialization', error);
+    });
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
+    if (this._disposePromise) {
+      return this._disposePromise;
+    }
     if (this._isDisposed) {
-      return;
+      return Promise.resolve();
     }
     this._isDisposed = true;
+    this._disposePromise = Promise.resolve().then(() => this.disposeOwnedState());
+    return this._disposePromise;
+  }
+
+  /** Clears handles already disposed by the composition root before its state fallback cleanup. */
+  releaseCompositionRootReferences(): void {
+    this._treeDataProvider?.setSupportRootRegistrationCallback(undefined);
+    this._treeDataProvider?.setSupportStateCache(undefined);
+    this._workspaceRegistry = null;
+    this._configurationContextResolver = null;
+    this._configurationMutationEngine = null;
+    setConfigurationMutationEngine(undefined);
+    this._treeDataProvider = null;
+    this._treeView = null;
+    this._propertiesProvider = null;
+    this._typeEditorProvider = null;
+    this._rolesRightsEditorProvider = null;
+    this._subsystemCompositionEditorProvider = null;
+    this._exchangePlanCompositionEditorProvider = null;
+    this._commonAttributeCompositionEditorProvider = null;
+    this._functionalOptionCompositionEditorProvider = null;
+    this._filterCriterionCompositionEditorProvider = null;
+    this._subsystemCommandInterfaceProvider = null;
+    this._xdtoPackageEditorProvider = null;
+    this._reloadCoordinator = null;
+    this._infobaseTreeView = null;
+    this._refreshBindingTreeDecorations = null;
+    this._agentBridge = null;
+    this._agentTaskManager = null;
+  }
+
+  private async disposeOwnedState(): Promise<void> {
 
     const errors: unknown[] = [];
     const attempt = async (name: string, fn: () => Promise<void> | void): Promise<void> => {
@@ -307,6 +367,11 @@ export class ExtensionState {
     this._refreshBindingTreeDecorations = null;
 
     // 9. Infobase storage and bindings
+    await attempt('infobaseMutationRecovery', async () => {
+      await this._infobaseMutationRecovery;
+    });
+    this._infobaseMutationRecovery = null;
+    this._infobaseRecoveryOutcome = null;
     await attempt('infobaseStorage', () => {
       this._infobaseStorage?.dispose();
     });

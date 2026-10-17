@@ -123,7 +123,9 @@ export async function registerAllCommands({
     };
     context.subscriptions.push(
       vscode.workspace.onDidChangeWorkspaceFolders(() => {
-        void registryCoordinator.refreshWorkspace();
+        void registryCoordinator.refreshWorkspace().catch((error) => {
+          Logger.error('Workspace registry refresh after folder change failed', error);
+        });
       }),
     );
     runConfigurationMutation = async <T>(
@@ -161,7 +163,7 @@ export async function registerAllCommands({
     });
     state.configurationMutationEngine = mutationEngine;
     setConfigurationMutationEngine(mutationEngine);
-    context.subscriptions.push({ dispose: () => { void registryCoordinator.dispose(); } });
+    context.subscriptions.push({ dispose: () => registryCoordinator.dispose() });
   }
 
   registerFilterCriterionCommands(context, state, runConfigurationPlan, requestConfigurationReload);
