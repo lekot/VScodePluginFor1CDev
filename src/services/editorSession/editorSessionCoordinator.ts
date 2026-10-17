@@ -155,7 +155,10 @@ export class WebviewEditorSession<TTarget = unknown> implements vscode.Disposabl
       return false;
     }
     try {
-      void this._panel.webview.postMessage(message);
+      const delivered = this._panel.webview.postMessage(message);
+      Promise.resolve(delivered).catch((err) => {
+        Logger.warn('WebviewEditorSession: failed to deliver postMessage to webview', err);
+      });
       return true;
     } catch (err) {
       Logger.warn('WebviewEditorSession: failed to postMessage to webview', err);
