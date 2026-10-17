@@ -4,6 +4,7 @@
 // SecretStorage, and BindingManager (.vscode/infobase-bindings.json).
 
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { randomUUID } from 'crypto';
 import type { InfobaseEntry } from './models/infobaseEntry';
 import type { ConfigurationBinding } from '../bindings/models/configurationBinding';
@@ -594,15 +595,20 @@ export class InfobaseCatalogMutationService {
             }
             recovered++;
           } else if (record.passwordChangeKind === 'set') {
-            if (record.phase === 'secrets_mutated') {
-              if (existing && !existing.hasStoredPassword && record.targetEntry) {
-                await this.deps.storage.upsert(record.targetEntry);
+            const secretVal = await this.deps.secretStorage.get(secretKey);
+            const hasSecret = secretVal !== undefined;
+
+            if (hasSecret) {
+              const target =
+                record.targetEntry ??
+                (existing ? { ...existing, hasStoredPassword: true } : undefined);
+              if (target) {
+                await this.deps.storage.upsert(target);
               } else if (!existing) {
                 await this.deps.secretStorage.delete(secretKey);
               }
             } else {
-              // phase === 'intent'
-              if (!existing) {
+              if (!existing && !record.hadPasswordBefore) {
                 await this.deps.secretStorage.delete(secretKey);
               }
             }
@@ -615,18 +621,45 @@ export class InfobaseCatalogMutationService {
             recovered++;
           }
         } else if (record.type === 'remove') {
-          const folders = this.getWorkspaceFolders() ?? [];
+          // Collect all target folders across workspace changes
+          const targetPaths = new Set<string>();
+          for (const p of record.targetFolderPaths ?? []) {
+            if (p) {
+              targetPaths.add(p);
+            }
+          }
+          for (const mb of record.modifiedBindings ?? []) {
+            if (mb.folderFsPath) {
+              targetPaths.add(mb.folderFsPath);
+            }
+          }
+
+          const currentFolders = this.getWorkspaceFolders() ?? [];
+          const foldersToClean: vscode.WorkspaceFolder[] = [...currentFolders];
+
+          for (const p of targetPaths) {
+            const alreadyIncluded = foldersToClean.some(
+              (f) => path.resolve(f.uri.fsPath).toLowerCase() === path.resolve(p).toLowerCase(),
+            );
+            if (!alreadyIncluded) {
+              foldersToClean.push({
+                uri: vscode.Uri.file(p),
+                name: path.basename(p),
+                index: foldersToClean.length,
+              });
+            }
+          }
 
           // 1. Preflight: if any folder has invalid/corrupted bindings, fail closed
-          for (const folder of folders) {
+          for (const folder of foldersToClean) {
             const diag = await readBindingsForFolderDiagnostic(this.fsApi, folder);
             if (diag.kind === 'invalid') {
               throw new Error(`Cannot recover remove operation: bindings file corrupted at ${diag.uri.fsPath}`);
             }
           }
 
-          // 2. Cascade bindings removal across ALL workspace folders idempotently
-          for (const folder of folders) {
+          // 2. Cascade bindings removal across ALL target folders idempotently
+          for (const folder of foldersToClean) {
             const diag = await readBindingsForFolderDiagnostic(this.fsApi, folder);
             if (diag.kind === 'valid') {
               let changed = false;
