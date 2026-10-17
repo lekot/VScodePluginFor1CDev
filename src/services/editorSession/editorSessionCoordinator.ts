@@ -154,15 +154,15 @@ export class WebviewEditorSession<TTarget = unknown> implements vscode.Disposabl
       Logger.debug(`WebviewEditorSession: suppressed postMessage for stale or disposed session (gen ${this.generation}, id ${this.id})`);
       return false;
     }
+    void this.dispatchPostMessage(this._panel, message);
+    return true;
+  }
+
+  private async dispatchPostMessage(panel: vscode.WebviewPanel, message: unknown): Promise<void> {
     try {
-      const delivered = this._panel.webview.postMessage(message);
-      Promise.resolve(delivered).catch((err) => {
-        Logger.warn('WebviewEditorSession: failed to deliver postMessage to webview', err);
-      });
-      return true;
+      await panel.webview.postMessage(message);
     } catch (err) {
       Logger.warn('WebviewEditorSession: failed to postMessage to webview', err);
-      return false;
     }
   }
 

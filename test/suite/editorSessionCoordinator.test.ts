@@ -201,5 +201,36 @@ suite('EditorSessionCoordinator (#257)', () => {
     assert.strictEqual(session.isDisposed, true, 'Disposing active panel must dispose session');
     assert.strictEqual(coordinator.currentSession, undefined);
   });
+
+  test('9. postMessage handles synchronous webview throw without crashing caller', () => {
+    const coordinator = new EditorSessionCoordinator<TestTarget>();
+    const { panel } = createFakeWebviewPanel();
+    (panel.webview as any).postMessage = () => {
+      throw new Error('Webview crashed synchronously');
+    };
+
+    const target: TestTarget = { id: 'A', filePath: '/path/A' };
+    const session = coordinator.begin({ panel: panel as any, target });
+
+    assert.doesNotThrow(() => {
+      session.postMessage({ type: 'sync-fail' });
+    });
+  });
+
+  test('10. postMessage handles asynchronous webview rejection without unhandled rejection', async () => {
+    const coordinator = new EditorSessionCoordinator<TestTarget>();
+    const { panel } = createFakeWebviewPanel();
+    (panel.webview as any).postMessage = () => Promise.reject(new Error('Webview rejected asynchronously'));
+
+    const target: TestTarget = { id: 'A', filePath: '/path/A' };
+    const session = coordinator.begin({ panel: panel as any, target });
+
+    assert.doesNotThrow(() => {
+      session.postMessage({ type: 'async-fail' });
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
 });
+
 
