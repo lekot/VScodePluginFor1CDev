@@ -360,6 +360,36 @@ suite('Tree type-index load ownership runtime', () => {
           await fs.promises.mkdir(path.join(catalogsDir, 'Recovered'), { recursive: true });
         }
 
+        const subsystems: TreeNode = {
+          id: 'Subsystems',
+          name: 'Подсистемы',
+          type: MetadataType.Subsystem,
+          properties: {},
+          children: [],
+        };
+        subsystems.parent = fixture.root;
+        fixture.root.children!.push(subsystems);
+
+        const subsystemsDir = format === ConfigFormat.Designer
+          ? path.join(configPath, 'Subsystems')
+          : path.join(configPath, 'src', 'Subsystems');
+        await fs.promises.mkdir(subsystemsDir, { recursive: true });
+        if (format === ConfigFormat.Designer) {
+          await fs.promises.writeFile(
+            path.join(subsystemsDir, 'SubRecovered.xml'),
+            '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17"><Subsystem><Properties><Name>SubRecovered</Name></Properties></Subsystem></MetaDataObject>',
+            'utf8',
+          );
+        } else {
+          const subDir = path.join(subsystemsDir, 'SubRecovered');
+          await fs.promises.mkdir(subDir, { recursive: true });
+          await fs.promises.writeFile(
+            path.join(subDir, 'Subsystem.mdo'),
+            '<mdclass:Subsystem xmlns:mdclass="http://g5.1c.ru/v8/dt/metadata/mdclass"><name>SubRecovered</name></mdclass:Subsystem>',
+            'utf8',
+          );
+        }
+
         const documents: TreeNode = {
           id: 'Documents',
           name: 'Документы',
@@ -375,7 +405,7 @@ suite('Tree type-index load ownership runtime', () => {
 
         let failEacces = true;
         (fs.promises as unknown as { readdir: unknown }).readdir = async (targetPath: fs.PathLike, options?: unknown) => {
-          if (failEacces && String(targetPath).includes('Catalogs')) {
+          if (failEacces && (String(targetPath).includes('Catalogs') || String(targetPath).includes('Subsystems'))) {
             const err = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
             err.code = 'EACCES';
             throw err;
@@ -386,15 +416,27 @@ suite('Tree type-index load ownership runtime', () => {
         await assert.rejects(
           Promise.resolve(provider.getChildren(fixture.catalogs)),
           (error: unknown) => resultErrorCode(error) === 'TREE_LOAD_FAILED',
-          `Format ${format} must fail typed on EACCES`,
+          `Format ${format} must fail typed on EACCES for Catalogs`,
         );
         assert.notStrictEqual((fixture.catalogs.properties as Record<string, unknown>)?._indexLoaded, true, `Format ${format} must not mark _indexLoaded on failure`);
+
+        await assert.rejects(
+          Promise.resolve(provider.getChildren(subsystems)),
+          (error: unknown) => resultErrorCode(error) === 'TREE_LOAD_FAILED',
+          `Format ${format} must fail typed on EACCES for Subsystems`,
+        );
+        assert.notStrictEqual((subsystems.properties as Record<string, unknown>)?._indexLoaded, true, `Format ${format} must not mark _indexLoaded on failure for Subsystems`);
 
         failEacces = false;
         const recovered = await provider.getChildren(fixture.catalogs);
         assert.strictEqual(recovered.length, 1, `Format ${format} must read recovered items`);
         assert.strictEqual(recovered[0].name, 'Recovered');
         assert.strictEqual((fixture.catalogs.properties as Record<string, unknown>)?._indexLoaded, true, `Format ${format} must mark _indexLoaded on success`);
+
+        const recoveredSubs = await provider.getChildren(subsystems);
+        assert.strictEqual(recoveredSubs.length, 1, `Format ${format} must read recovered subsystems`);
+        assert.strictEqual(recoveredSubs[0].name, 'SubRecovered');
+        assert.strictEqual((subsystems.properties as Record<string, unknown>)?._indexLoaded, true, `Format ${format} must mark _indexLoaded on success for Subsystems`);
 
         const emptyDocs = await provider.getChildren(documents);
         assert.deepStrictEqual(emptyDocs, []);

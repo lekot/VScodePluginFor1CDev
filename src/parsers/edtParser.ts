@@ -591,7 +591,11 @@ export class EdtParser {
     let items: string[];
     try {
       items = await fs.promises.readdir(typePath);
-    } catch {
+    } catch (err: unknown) {
+      const code = (err as { code?: string } | undefined)?.code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        throw err;
+      }
       return flatNodes;
     }
     for (const item of items) {
@@ -606,6 +610,10 @@ export class EdtParser {
         }
         flatNodes.push(node);
       } catch (error) {
+        const code = (error as { code?: string } | undefined)?.code;
+        if (code === 'EACCES' || code === 'EPERM' || code === 'EBUSY' || code === 'EIO') {
+          throw error;
+        }
         Logger.debug(`Error reading subsystem ${itemPath}`, error);
       }
     }
