@@ -623,13 +623,23 @@ suite('Tree resolved load context', () => {
   });
 
   test('uses host-aware path identity for synthetic roots without resolved contexts', function () {
-    if (process.platform === 'win32') {
-      this.skip();
-      return;
-    }
-    const cache = new TreeCacheService();
-    const upperRoot = makeRoot('upper', 'Upper', '/workspace/Config');
-    const lowerRoot = makeRoot('lower', 'Lower', '/workspace/config');
+    const cache = new TreeCacheService('linux');
+    const upperRoot: TreeNode = {
+      id: 'upper',
+      name: 'Upper',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: '/workspace/Config/Configuration.xml',
+      children: [],
+    };
+    const lowerRoot: TreeNode = {
+      id: 'lower',
+      name: 'Lower',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: '/workspace/config/Configuration.xml',
+      children: [],
+    };
     assert.notStrictEqual(
       cache.getNodeRootIdentity(upperRoot),
       cache.getNodeRootIdentity(lowerRoot),

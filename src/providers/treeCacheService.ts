@@ -2,6 +2,7 @@ import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import type { TreeLoadContext } from '../types/treeLoadContext';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
+import { CONFIGURATION_XML, CONFIG_DUMP_INFO_XML } from '../constants/fileNames';
 
 /**
  * Encapsulates node caching and lookup logic for the metadata tree.
@@ -15,6 +16,8 @@ export class TreeCacheService {
   private nameIndex = new Map<string, TreeNode[]>();
   /** Per-published-root load context; root object identity prevents stale ID aliasing. */
   private loadContextByRoot = new Map<TreeNode, TreeLoadContext>();
+
+  constructor(private readonly platform: NodeJS.Platform = process.platform) {}
 
   // --- Cache management ---
 
@@ -224,27 +227,59 @@ export class TreeCacheService {
     return lineage.reverse();
   }
 
+  private get pathOps(): typeof path.posix | typeof path.win32 {
+    return this.platform === 'win32' ? path.win32 : path.posix;
+  }
+
+  getConfigRootPath(root: TreeNode): string | null {
+    if (root.type !== MetadataType.Configuration) {
+      return null;
+    }
+    const context = this.loadContextByRoot.get(root);
+    const configured = context?.configPath?.trim();
+    if (configured) {
+      return this.pathOps.resolve(configured);
+    }
+    const filePath = root.filePath?.trim();
+    if (!filePath) {
+      return null;
+    }
+    const fileName = this.pathOps.basename(filePath).toLowerCase();
+    return fileName === CONFIGURATION_XML.toLowerCase()
+      || fileName === CONFIG_DUMP_INFO_XML.toLowerCase()
+      || fileName === 'configuration.mdo'
+      ? this.pathOps.resolve(this.pathOps.dirname(filePath))
+      : this.pathOps.resolve(filePath);
+  }
+
   private normalizeIdentityPath(value: string | undefined): string {
     if (!value) {
       return '';
     }
-    const pathKey = configurationPathKey(value);
+    if (value.startsWith('configuration:') || value.startsWith('node:')) {
+      return value;
+    }
+    const rawPath = value.startsWith('path:') ? value.slice(5) : value;
+    const pathKey = configurationPathKey(rawPath, this.platform);
     for (const context of this.loadContextByRoot.values()) {
-      if (configurationPathKey(context.configPath) === pathKey) {
+      if (configurationPathKey(context.configPath, this.platform) === pathKey) {
         return `configuration:${context.configurationId}`;
       }
     }
     return `path:${pathKey}`;
   }
 
-  private getConfigRootIdentity(root: TreeNode | null): string {
+  getConfigRootIdentity(root: TreeNode | null): string {
     if (!root) {return '';}
     const context = this.loadContextByRoot.get(root);
     if (context) {return `configuration:${context.configurationId}`;}
     if (root.configurationId) {
       return `configuration:${root.configurationId}`;
     }
-    if (root.filePath) {return `path:${configurationPathKey(path.dirname(root.filePath))}`;}
+    const configPath = this.getConfigRootPath(root);
+    if (configPath) {
+      return `path:${configurationPathKey(configPath, this.platform)}`;
+    }
     return `node:${root.id}`;
   }
 
