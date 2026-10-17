@@ -448,6 +448,128 @@ suite('Tree type-index load ownership runtime', () => {
     }
   });
 
+  test('subsystem XML/MDO access error (EACCES) during parseTypeIndex is not swallowed into partial index and retries on restored access (Designer and EDT)', async () => {
+    const originalReadFile = fs.promises.readFile;
+    const originalAccess = fs.promises.access;
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'subsystem-xml-eacces-'));
+    try {
+      for (const format of [ConfigFormat.Designer, ConfigFormat.EDT]) {
+        const fixture = createRootFixture(`sub-xml-eacces-${format}`);
+        const configPath = fixture.configPath;
+
+        const subsystems: TreeNode = {
+          id: 'Subsystems',
+          name: 'Подсистемы',
+          type: MetadataType.Subsystem,
+          properties: {},
+          children: [],
+        };
+        subsystems.parent = fixture.root;
+        fixture.root.children!.push(subsystems);
+
+        const subsystemsDir = format === ConfigFormat.Designer
+          ? path.join(configPath, 'Subsystems')
+          : path.join(configPath, 'src', 'Subsystems');
+        await fs.promises.mkdir(subsystemsDir, { recursive: true });
+
+        if (format === ConfigFormat.Designer) {
+          await fs.promises.writeFile(
+            path.join(subsystemsDir, 'SubOk.xml'),
+            '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17"><Subsystem><Properties><Name>SubOk</Name></Properties><ChildObjects><Subsystem>SubNested</Subsystem></ChildObjects></Subsystem></MetaDataObject>',
+            'utf8',
+          );
+          await fs.promises.writeFile(
+            path.join(subsystemsDir, 'SubBroken.xml'),
+            '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17"><Subsystem><Properties><Name>SubBroken</Name></Properties></Subsystem></MetaDataObject>',
+            'utf8',
+          );
+          const subOkNestedDir = path.join(subsystemsDir, 'SubOk', 'Subsystems');
+          await fs.promises.mkdir(subOkNestedDir, { recursive: true });
+          await fs.promises.writeFile(
+            path.join(subOkNestedDir, 'SubNested.xml'),
+            '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17"><Subsystem><Properties><Name>SubNested</Name></Properties></Subsystem></MetaDataObject>',
+            'utf8',
+          );
+        } else {
+          const subOkDir = path.join(subsystemsDir, 'SubOk');
+          await fs.promises.mkdir(subOkDir, { recursive: true });
+          await fs.promises.writeFile(
+            path.join(subOkDir, 'Subsystem.mdo'),
+            '<mdclass:Subsystem xmlns:mdclass="http://g5.1c.ru/v8/dt/metadata/mdclass"><name>SubOk</name><subsystems>SubNested</subsystems></mdclass:Subsystem>',
+            'utf8',
+          );
+
+          const subBrokenDir = path.join(subsystemsDir, 'SubBroken');
+          await fs.promises.mkdir(subBrokenDir, { recursive: true });
+          await fs.promises.writeFile(
+            path.join(subBrokenDir, 'Subsystem.mdo'),
+            '<mdclass:Subsystem xmlns:mdclass="http://g5.1c.ru/v8/dt/metadata/mdclass"><name>SubBroken</name></mdclass:Subsystem>',
+            'utf8',
+          );
+
+          const subOkNestedDir = path.join(subOkDir, 'Subsystems', 'SubNested');
+          await fs.promises.mkdir(subOkNestedDir, { recursive: true });
+          await fs.promises.writeFile(
+            path.join(subOkNestedDir, 'Subsystem.mdo'),
+            '<mdclass:Subsystem xmlns:mdclass="http://g5.1c.ru/v8/dt/metadata/mdclass"><name>SubNested</name><parentSubsystem>Subsystem.SubOk</parentSubsystem></mdclass:Subsystem>',
+            'utf8',
+          );
+        }
+
+        const provider = createProvider();
+        provider.setRootNodes([fixture.root], new Map([[fixture.root, fakeTreeLoadContext(configPath, format, fixture.configurationId)]]));
+
+        let failEacces = true;
+        (fs.promises as unknown as { readFile: unknown }).readFile = async (targetPath: fs.PathLike, options?: unknown) => {
+          if (failEacces && String(targetPath).includes('SubBroken')) {
+            const err = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+            err.code = 'EACCES';
+            throw err;
+          }
+          return (originalReadFile as (p: fs.PathLike, o?: unknown) => Promise<unknown>)(targetPath, options);
+        };
+        (fs.promises as unknown as { access: unknown }).access = async (targetPath: fs.PathLike, mode?: number) => {
+          if (failEacces && String(targetPath).includes('SubBroken')) {
+            const err = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+            err.code = 'EACCES';
+            throw err;
+          }
+          return (originalAccess as (p: fs.PathLike, m?: number) => Promise<void>)(targetPath, mode);
+        };
+
+        await assert.rejects(
+          Promise.resolve(provider.getChildren(subsystems)),
+          (error: unknown) => resultErrorCode(error) === 'TREE_LOAD_FAILED',
+          `Format ${format} must fail typed on EACCES for subsystem XML/MDO file`,
+        );
+        assert.notStrictEqual(
+          (subsystems.properties as Record<string, unknown>)?._indexLoaded,
+          true,
+          `Format ${format} must not mark _indexLoaded on subsystem file failure`,
+        );
+
+        failEacces = false;
+        const recoveredSubs = await provider.getChildren(subsystems);
+        assert.strictEqual(recoveredSubs.length, 2, `Format ${format} must read top-level recovered subsystems`);
+        const names = recoveredSubs.map((s) => s.name).sort();
+        assert.deepStrictEqual(names, ['SubBroken', 'SubOk']);
+        const okSub = recoveredSubs.find((s) => s.name === 'SubOk');
+        assert.ok(okSub, 'SubOk must be found');
+        assert.strictEqual(okSub.children?.length, 1, `SubOk must contain nested SubNested subsystem in ${format}`);
+        assert.strictEqual(okSub.children?.[0]?.name, 'SubNested');
+        assert.strictEqual(
+          (subsystems.properties as Record<string, unknown>)?._indexLoaded,
+          true,
+          `Format ${format} must mark _indexLoaded on success after retry`,
+        );
+      }
+    } finally {
+      fs.promises.readFile = originalReadFile;
+      fs.promises.access = originalAccess;
+      await fs.promises.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
   test('a loaded-empty editor index is shared and not reparsed', async () => {
     const provider = createProvider();
     const fixture = createRootFixture('editor-empty');

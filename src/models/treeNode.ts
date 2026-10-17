@@ -46,6 +46,7 @@ export interface TreeNodeProperties {
    * Present only transiently during parsing.
    */
   ParentSubsystem?: unknown;
+  parentSubsystem?: unknown;
   /**
    * Subsystem content list (array of child object references).
    * Present on Subsystem nodes when content is loaded.

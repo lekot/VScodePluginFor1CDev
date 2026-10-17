@@ -560,6 +560,10 @@ export class DesignerParser {
         if (code === 'EACCES' || code === 'EPERM' || code === 'EBUSY' || code === 'EIO') {
           throw error;
         }
+        const msg = (error as Error | undefined)?.message;
+        if (typeof msg === 'string' && /EACCES|EPERM|permission denied/i.test(msg)) {
+          throw error;
+        }
         Logger.debug(`Error parsing subsystem XML ${xmlPath}`, error);
         continue;
       }
