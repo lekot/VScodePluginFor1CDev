@@ -241,9 +241,9 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
     dryRun: true,
   },
   cdt_skd_compile: { value: '{}', outputPath: 'C:/project/template.xml' },
-  cdt_skd_info: { templatePath: 'C:/project/template.xml', mode: 'overview', name: 'main', batch: 1, limit: 10, offset: 0, outFile: 'C:/temp/info.json' },
+  cdt_skd_info: { templatePath: 'C:/project/template.xml', mode: 'overview', name: 'main', batch: 1, limit: 10, offset: 0, outFile: 'C:/temp/info.txt' },
   cdt_skd_edit: { templatePath: 'C:/project/template.xml', operation: 'add-field', value: '{}', dataSet: 'Main', variant: 'Default', noSelection: false },
-  cdt_skd_validate: { templatePath: 'C:/project/template.xml', detailed: true, maxErrors: 10, outFile: 'C:/temp/validation.json' },
+  cdt_skd_validate: { templatePath: 'C:/project/template.xml', detailed: true, maxErrors: 10, outFile: 'C:/temp/validation.log' },
   cdt_xdto_list_packages: { configurationId: 'cfg' },
   cdt_xdto_get_package: { configurationId: 'cfg', packageName: 'example', includeSource: true },
   cdt_xdto_export_xsd: { configurationId: 'cfg', metadataPath: 'XDTOPackage.example', outputPath: 'C:/project/example.xsd', includeSource: true },
@@ -717,11 +717,16 @@ suite('MCP Agent catalog coverage', () => {
 
   test('SKD compile requires exactly one source and constrains enums', () => {
     assert.strictEqual(accepts('cdt_skd_compile', { value: '{}', outputPath: 'out.xml' }), true);
-    assert.strictEqual(accepts('cdt_skd_compile', { definitionFile: 'in.json', outputPath: 'out.xml' }), true);
+    assert.strictEqual(accepts('cdt_skd_compile', { definitionFile: 'in.json', outputPath: 'out.xml', configurationId: 'config-1' }), true);
+    assert.strictEqual(accepts('cdt_skd_compile', { definitionFile: 'in.json', outputPath: 'out.xml', configPath: 'C:/project' }), true);
     assert.strictEqual(accepts('cdt_skd_compile', { definitionFile: 'in.json', value: '{}', outputPath: 'out.xml' }), false);
     assert.strictEqual(accepts('cdt_skd_compile', { outputPath: 'out.xml' }), false);
     assert.strictEqual(accepts('cdt_skd_info', { templatePath: 'in.xml', mode: 'invalid' }), false);
     assert.strictEqual(accepts('cdt_skd_edit', { templatePath: 'in.xml', operation: 'invalid', value: '{}' }), false);
+    assert.strictEqual(accepts('cdt_skd_info', { templatePath: 'relative/template.xml', configurationId: 'config-1' }), true);
+    assert.strictEqual(accepts('cdt_skd_validate', { templatePath: 'relative/template.xml', configPath: 'C:/project' }), true);
+    assert.strictEqual(accepts('cdt_skd_info', { templatePath: 'in.xml', outFile: 'reports/info.json' }), false);
+    assert.strictEqual(accepts('cdt_skd_validate', { templatePath: 'in.xml', outFile: 'reports/validation.txt' }), true);
   });
 
   test('XDTO selectors and source refinements preserve their distinct semantics', () => {

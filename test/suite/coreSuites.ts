@@ -365,6 +365,7 @@ export const coreSuiteFiles: string[] = [
   'suite/editorSessionCoordinator.test.js',
   'suite/editorSessionMatrix.test.js',
   'suite/mutationEngineIntegrity.test.js',
+  'suite/agentSkdIntegrity.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),
