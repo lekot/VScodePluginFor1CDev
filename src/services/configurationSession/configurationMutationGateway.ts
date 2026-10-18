@@ -119,15 +119,15 @@ function findCommonDirectory(paths: string[]): string {
   }
   const resolved = paths.map((p) => path.resolve(p));
   let common = resolved[0];
-  try {
-    if (!fs.statSync(common).isDirectory()) {
-      common = path.dirname(common);
+  while (!fs.existsSync(common) || !fs.statSync(common).isDirectory()) {
+    const parent = path.dirname(common);
+    if (parent === common) {
+      break;
     }
-  } catch {
-    common = path.dirname(common);
+    common = parent;
   }
-  for (const p of resolved.slice(1)) {
-    while (!isPathInside(p, common) && !isSamePath(p, common)) {
+  for (const p of resolved) {
+    while (!isPathInside(common, p) && !isSamePath(common, p)) {
       const parent = path.dirname(common);
       if (parent === common) {
         break;
