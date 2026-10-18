@@ -137,6 +137,113 @@ suite('commandInterfaceOperations', () => {
     }
   });
 
+  test('resolves dotted metadata grammar for nested subsystems and routes setters to the requested sibling', async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-ops-nested-dotted-'));
+    const subsystemPaths = [
+      'Subsystems/Parent',
+      'Subsystems/Parent/Subsystems/ChildA',
+      'Subsystems/Parent/Subsystems/ChildB',
+      'Subsystems/Parent/Subsystems/ChildA/Subsystems/Grandchild',
+      'Subsystems/Родитель/Subsystems/Дочерний/Subsystems/Лист',
+    ];
+    const dottedPaths = [
+      'Subsystem.Parent',
+      'Subsystem.Parent.Subsystem.ChildA',
+      'Subsystem.Parent.Subsystem.ChildB',
+      'Subsystem.Parent.Subsystem.ChildA.Subsystem.Grandchild',
+      'Subsystem.Родитель.Subsystem.Дочерний.Subsystem.Лист',
+    ];
+
+    try {
+      for (const subsystemPath of subsystemPaths) {
+        const extDir = path.join(rootPath, subsystemPath, 'Ext');
+        fs.mkdirSync(extDir, { recursive: true });
+        fs.writeFileSync(path.join(extDir, 'CommandInterface.xml'), MINIMAL_XML, 'utf8');
+      }
+
+      const ops = new CommandInterfaceOperations(rootPath);
+      for (const dottedPath of dottedPaths) {
+        const result = await ops.getCommandInterface(dottedPath);
+        assert.strictEqual(result.success, true, `${dottedPath}: ${result.error}`);
+      }
+
+      const visibilityResult = await ops.setCommandVisibility(
+        'Subsystem.Parent.Subsystem.ChildA',
+        'Catalog.Products.StandardCommand.OpenList',
+        'hidden',
+      );
+      assert.strictEqual(visibilityResult.success, true, visibilityResult.error);
+
+      const commandOrder = [{
+        commandName: 'Catalog.Products.StandardCommand.OpenList',
+        commandGroup: 'NavigationPanelOrdinary',
+      }];
+      const commandOrderResult = await ops.setCommandOrder('Subsystem.Parent.Subsystem.ChildB', commandOrder);
+      assert.strictEqual(commandOrderResult.success, true, commandOrderResult.error);
+
+      const subsystemOrder = ['Subsystem.Parent.Subsystem.ChildA.Subsystem.Grandchild'];
+      const subsystemOrderResult = await ops.setSubsystemsOrder(
+        'Subsystem.Parent.Subsystem.ChildA.Subsystem.Grandchild',
+        subsystemOrder,
+      );
+      assert.strictEqual(subsystemOrderResult.success, true, subsystemOrderResult.error);
+
+      const childA = await ops.getCommandInterface('Subsystem.Parent.Subsystem.ChildA');
+      const childB = await ops.getCommandInterface('Subsystem.Parent.Subsystem.ChildB');
+      const grandchild = await ops.getCommandInterface('Subsystem.Parent.Subsystem.ChildA.Subsystem.Grandchild');
+      assert.strictEqual(
+        childA.data?.visibility.find((entry) => entry.commandName === 'Catalog.Products.StandardCommand.OpenList')?.common,
+        'hidden',
+      );
+      assert.deepStrictEqual(childA.data?.commandsOrder, []);
+      assert.deepStrictEqual(childB.data?.commandsOrder, commandOrder);
+      assert.deepStrictEqual(grandchild.data?.subsystemsOrder, subsystemOrder);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test('preserves dots in relative and absolute filesystem paths', async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-ops-dotted-fs-path-'));
+    const subsystemDir = path.join(rootPath, 'Subsystems', 'Module.v2');
+    const extDir = path.join(subsystemDir, 'Ext');
+    const ciPath = path.join(extDir, 'CommandInterface.xml');
+    const nestedSubsystemDir = path.join(rootPath, 'Subsystems', 'Parent', 'Subsystems', 'Child.v2');
+    const nestedExtDir = path.join(nestedSubsystemDir, 'Ext');
+    fs.mkdirSync(extDir, { recursive: true });
+    fs.mkdirSync(nestedExtDir, { recursive: true });
+    fs.writeFileSync(ciPath, MINIMAL_XML, 'utf8');
+    fs.writeFileSync(path.join(nestedExtDir, 'CommandInterface.xml'), MINIMAL_XML, 'utf8');
+
+    try {
+      const ops = new CommandInterfaceOperations(rootPath);
+      const relativeResult = await ops.getCommandInterface('Subsystems/Module.v2');
+      assert.strictEqual(relativeResult.success, true, relativeResult.error);
+
+      const bareRelativeResult = await ops.getCommandInterface('Module.v2');
+      assert.strictEqual(bareRelativeResult.success, true, bareRelativeResult.error);
+
+      const absoluteResult = await ops.getCommandInterface(subsystemDir);
+      assert.strictEqual(absoluteResult.success, true, absoluteResult.error);
+
+      const updateResult = await ops.setCommandVisibility(subsystemDir, 'Catalog.Versioned', 'hidden');
+      assert.strictEqual(updateResult.success, true, updateResult.error);
+      const updated = await ops.getCommandInterface('Subsystems/Module.v2');
+      assert.strictEqual(updated.data?.visibility.find((entry) => entry.commandName === 'Catalog.Versioned')?.common, 'hidden');
+
+      const nestedRelativeResult = await ops.getCommandInterface('Subsystems/Parent/Subsystems/Child.v2');
+      assert.strictEqual(nestedRelativeResult.success, true, nestedRelativeResult.error);
+
+      const nestedAbsoluteResult = await ops.getCommandInterface(nestedSubsystemDir);
+      assert.strictEqual(nestedAbsoluteResult.success, true, nestedAbsoluteResult.error);
+
+      const nestedUpdateResult = await ops.setSubsystemsOrder(nestedSubsystemDir, ['Subsystem.Parent']);
+      assert.strictEqual(nestedUpdateResult.success, true, nestedUpdateResult.error);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   test('accepts absolute path to .xml file', async () => {
     const ws = makeWorkspace(MINIMAL_XML);
     try {

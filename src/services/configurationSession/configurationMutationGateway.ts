@@ -2,7 +2,7 @@ import type { MutationPlan } from './mutationPlan';
 import * as fs from 'fs';
 import * as path from 'path';
 import { MutationPlanExecutor } from './mutationPlan';
-import { isPathInside, isSamePath } from './pathBoundary';
+import { assertPathWithinRoot, isSamePath, PathBoundaryError } from './pathBoundary';
 
 export type MutationRunner = <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
 export type PlanRunner = <T>(resourcePath: string, plan: MutationPlan<T>) => Promise<T>;
@@ -38,7 +38,7 @@ export function isConfigurationMutationGatewayConfigured(): boolean {
 }
 
 export class ConfigurationMutationGatewayError extends Error {
-  constructor(readonly code: 'RUNNER_NOT_CONFIGURED', message: string) {
+  constructor(readonly code: 'RUNNER_NOT_CONFIGURED' | 'CONFIGURATION_ROOT_NOT_FOUND', message: string) {
     super(message);
     this.name = 'ConfigurationMutationGatewayError';
   }
@@ -83,20 +83,13 @@ async function executeStandalone<T>(resourcePath: string, plan: MutationPlan<T>)
   }
   let searching = true;
   while (searching) {
-    let isConfigurationRoot = false;
-    try {
-      await fs.promises.access(path.join(cursor, 'Configuration.xml'));
-      isConfigurationRoot = true;
-    } catch {
-      try {
-        await fs.promises.access(path.join(cursor, 'src', 'Configuration', 'Configuration.mdo'));
-        isConfigurationRoot = true;
-      } catch {
-        // Continue with the parent directory.
-      }
-    }
-    if (isConfigurationRoot) {
-      return new MutationPlanExecutor(cursor).execute(plan);
+    const hasDesignerMarker = await isRegularFile(path.join(cursor, 'Configuration.xml'));
+    const hasEdtMarker = await isRegularFile(path.join(cursor, 'src', 'Configuration', 'Configuration.mdo'));
+    if (hasDesignerMarker || hasEdtMarker) {
+      const markerRoot = cursor;
+      const canonicalRoot = await fs.promises.realpath(cursor);
+      const canonicalPlan = await canonicalizeStandalonePlan(markerRoot, canonicalRoot, plan);
+      return new MutationPlanExecutor(canonicalRoot).execute(canonicalPlan);
     }
     const parent = path.dirname(cursor);
     if (parent === cursor) {
@@ -106,38 +99,47 @@ async function executeStandalone<T>(resourcePath: string, plan: MutationPlan<T>)
     }
   }
 
-  const allPaths: string[] = [resourcePath];
-  for (const step of plan.steps) {
-    allPaths.push(step.targetPath);
-    if (step.type === 'movePath') {
-      allPaths.push(step.sourcePath);
-    }
-  }
-  const fallbackRoot = findCommonDirectory(allPaths);
-  return new MutationPlanExecutor(fallbackRoot).execute(plan);
+  throw new ConfigurationMutationGatewayError(
+    'CONFIGURATION_ROOT_NOT_FOUND',
+    `Configuration root not found for mutation plan: ${resourcePath}`,
+  );
 }
 
-function findCommonDirectory(paths: string[]): string {
-  if (paths.length === 0) {
-    return process.cwd();
-  }
-  const resolved = paths.map((p) => path.resolve(p));
-  let common = resolved[0];
-  while (!fs.existsSync(common) || !fs.statSync(common).isDirectory()) {
-    const parent = path.dirname(common);
-    if (parent === common) {
-      break;
+async function canonicalizeStandalonePlan<T>(
+  markerRoot: string,
+  canonicalRoot: string,
+  plan: MutationPlan<T>,
+): Promise<MutationPlan<T>> {
+  const canonicalizePath = async (originalPath: string): Promise<string> => {
+    const resolved = await assertPathWithinRoot(markerRoot, originalPath);
+    if (!isSamePath(resolved.canonicalRoot, canonicalRoot)) {
+      throw new PathBoundaryError(
+        'PATH_OUTSIDE_ROOT',
+        `Configuration root changed while resolving mutation path: ${originalPath}`,
+        originalPath,
+      );
     }
-    common = parent;
-  }
-  for (const p of resolved) {
-    while (!isPathInside(common, p) && !isSamePath(common, p)) {
-      const parent = path.dirname(common);
-      if (parent === common) {
-        break;
-      }
-      common = parent;
+    return resolved.canonicalTarget;
+  };
+
+  const steps = await Promise.all(plan.steps.map(async (step) => {
+    if (step.type === 'movePath') {
+      const [sourcePath, targetPath] = await Promise.all([
+        canonicalizePath(step.sourcePath),
+        canonicalizePath(step.targetPath),
+      ]);
+      return { ...step, sourcePath, targetPath };
     }
+    return { ...step, targetPath: await canonicalizePath(step.targetPath) };
+  }));
+
+  return { ...plan, steps };
+}
+
+async function isRegularFile(filePath: string): Promise<boolean> {
+  try {
+    return (await fs.promises.lstat(filePath)).isFile();
+  } catch {
+    return false;
   }
-  return common;
 }

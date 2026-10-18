@@ -96,6 +96,38 @@ suite('CommandInterfaceOperations Subsystem Path Containment (Issue #209)', () =
     assert.ok(result.data);
   });
 
+  test('rejects a nested subsystem reached through an outside directory junction', async () => {
+    const nestedParent = path.join(rootA, 'Subsystems', 'SubA', 'Subsystems');
+    await fs.promises.mkdir(nestedParent, { recursive: true });
+    await fs.promises.symlink(
+      path.join(rootB, 'Subsystems', 'SubB'),
+      path.join(nestedParent, 'External'),
+      'junction',
+    );
+
+    const opsA = new CommandInterfaceOperations(rootA);
+    const result = await opsA.getCommandInterface('Subsystems/SubA/Subsystems/External');
+    assert.strictEqual(result.success, false, 'A directory junction must not escape the configuration root');
+    assert.ok(
+      result.error && (result.error.includes('границы') || result.error.includes('outside') || result.code === 'TARGET_OUTSIDE_ROOT'),
+      `Expected containment error, got: ${result.error}`,
+    );
+  });
+
+  test('rejects malformed dotted subsystem metadata paths without writing', async () => {
+    const opsA = new CommandInterfaceOperations(rootA);
+    const malformedPath = 'Subsystem.SubA.Subsystem';
+    const result = await opsA.setCommandVisibility(malformedPath, 'Catalog.Invalid', 'hidden');
+
+    assert.strictEqual(result.success, false);
+    assert.ok(result.error, 'Malformed metadata paths should explain why the file was not resolved');
+    assert.strictEqual(
+      fs.existsSync(path.join(rootA, 'Subsystems', 'SubA', 'Subsystem', 'Ext', 'CommandInterface.xml')),
+      false,
+      'Malformed notation must not be interpreted as a writable filesystem path',
+    );
+  });
+
   test('resolves command interface via absolute xml file path and short subsystem name under Subsystems', async () => {
     const opsA = new CommandInterfaceOperations(rootA);
     // Absolute XML file path (e.g. Subsystem XML descriptor)
