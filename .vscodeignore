@@ -13,6 +13,7 @@ resources/**/node_modules/**
 src/**
 test/**
 out/**
+tmp/**
 build/**
 dist/**/test/**
 dist/**/*.test.*
