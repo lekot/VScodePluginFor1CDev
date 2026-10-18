@@ -51,19 +51,22 @@ class CancellationError extends Error {
   }
 }
 
-const Uri = {
-  file: (fsPath: string) => ({
+function makeMockUri(fsPath: string, scheme: string, originalString?: string): any {
+  return {
     fsPath,
-    scheme: 'file' as const,
-    toString: () => `file:///${fsPath.replace(/\\/g, '/').replace(/^\//, '')}`,
-  }),
+    scheme,
+    with: (change: { scheme?: string }) => makeMockUri(fsPath, change.scheme ?? scheme),
+    toString: () => originalString ?? (scheme === 'file'
+      ? `file:///${fsPath.replace(/\\/g, '/').replace(/^\//, '')}`
+      : `${scheme}:${fsPath.replace(/\\/g, '/')}`),
+  };
+}
+
+const Uri = {
+  file: (fsPath: string) => makeMockUri(fsPath, 'file'),
   joinPath: (base: { fsPath: string; scheme: string }, ...pathSegments: string[]) => {
     const joined = path.join(base.fsPath, ...pathSegments);
-    return {
-      fsPath: joined,
-      scheme: base.scheme,
-      toString: () => `file:///${joined.replace(/\\/g, '/')}`,
-    };
+    return makeMockUri(joined, base.scheme);
   },
   // Minimal subset used by core tests:
   // - parse('file:///tmp/x') for equality checks via `toString()`
@@ -71,11 +74,8 @@ const Uri = {
   parse: (uri: string) => {
     const m = uri.match(/^file:\/\/\/(.*)$/);
     const fsPath = m ? `/${m[1]}` : uri;
-    return {
-      fsPath,
-      scheme: 'file' as const,
-      toString: () => uri,
-    };
+    const scheme = uri.slice(0, uri.indexOf(':')) || 'file';
+    return makeMockUri(fsPath, scheme, uri);
   },
 };
 
@@ -363,6 +363,8 @@ export const vscodeTestState = {
   workspaceConfig: {} as Record<string, unknown>,
   scopedWorkspaceConfig: new Map<string, Record<string, unknown>>(),
   openDocuments: new Map<string, any>(),
+  /** Optional `textDocuments` fixture override for tests that model unsaved editor buffers. */
+  textDocumentsOverride: undefined as any[] | undefined,
   applyEditImpl: undefined as ((edit: any) => Promise<boolean>) | undefined,
   /** Список id команд, зарегистрированных через vscode.commands.registerCommand (P7a-7). */
   registeredCommandIds: [] as string[],
@@ -614,6 +616,7 @@ function createMockTextDocument(uri: any, initialText = ''): any {
   const doc = {
     uri,
     fileName: uri.fsPath || String(uri),
+    get isUntitled() { return doc.uri.scheme === 'untitled'; },
     get isDirty() { return dirty; },
     set isDirty(val: boolean) { dirty = val; },
     getText: () => content,
@@ -631,11 +634,14 @@ function createMockTextDocument(uri: any, initialText = ''): any {
       };
     },
     save: async () => {
-      dirty = false;
-      if (uri.fsPath) {
-        await fs.promises.mkdir(path.dirname(uri.fsPath), { recursive: true });
-        await fs.promises.writeFile(uri.fsPath, content, 'utf8');
+      if (doc.uri.fsPath) {
+        await fs.promises.mkdir(path.dirname(doc.uri.fsPath), { recursive: true });
+        await fs.promises.writeFile(doc.uri.fsPath, content, 'utf8');
       }
+      if (doc.uri.scheme === 'untitled') {
+        doc.uri = Uri.file(doc.uri.fsPath);
+      }
+      dirty = false;
       for (const listener of [...vscodeTestState.onDidSaveDocumentListeners]) {
         try { await listener(doc); } catch {}
       }
@@ -647,7 +653,10 @@ function createMockTextDocument(uri: any, initialText = ''): any {
 
 const workspaceStub = {
   get textDocuments(): any[] {
-    return Array.from(vscodeTestState.openDocuments.values());
+    return vscodeTestState.textDocumentsOverride ?? Array.from(vscodeTestState.openDocuments.values());
+  },
+  set textDocuments(documents: any[]) {
+    vscodeTestState.textDocumentsOverride = documents;
   },
   openTextDocument: async (uriOrOptions: any): Promise<any> => {
     const uri = uriOrOptions && uriOrOptions.fsPath ? uriOrOptions : uriOrOptions?.uri;
@@ -656,11 +665,13 @@ const workspaceStub = {
       let doc = vscodeTestState.openDocuments.get(filePath);
       if (!doc) {
         let content = '';
-        try {
-          content = await fs.promises.readFile(filePath, 'utf8');
-        } catch (e: any) {
-          if (e.code === 'ENOENT') {
-            throw e;
+        if (uri.scheme !== 'untitled') {
+          try {
+            content = await fs.promises.readFile(filePath, 'utf8');
+          } catch (e: any) {
+            if (e.code === 'ENOENT') {
+              throw e;
+            }
           }
         }
         doc = createMockTextDocument(uri, content);
@@ -829,10 +840,25 @@ export function restoreVscodeWorkspaceFoldersGetter(): void {
   });
 }
 
+export function restoreVscodeTextDocumentsGetter(): void {
+  Reflect.deleteProperty(workspaceStub, 'textDocuments');
+  Object.defineProperty(workspaceStub, 'textDocuments', {
+    configurable: true,
+    enumerable: true,
+    get(): any[] {
+      return vscodeTestState.textDocumentsOverride ?? Array.from(vscodeTestState.openDocuments.values());
+    },
+    set(documents: any[] | undefined) {
+      vscodeTestState.textDocumentsOverride = documents;
+    },
+  });
+}
+
 export function resetVscodeTestState(): void {
   vscodeExtensionsTestState.getExtensionImpl = null;
   vscodeTestState.workspaceConfig = {};
   vscodeTestState.scopedWorkspaceConfig = new Map();
+  vscodeTestState.textDocumentsOverride = undefined;
   vscodeTestState.registeredCommandIds = [];
   vscodeTestState.registeredCommandHandlers = new Map();
   vscodeTestState.registeredCompletionProviders = [];
@@ -867,6 +893,7 @@ export function resetVscodeTestState(): void {
   vscodeTestState.outputChannelChunks = [];
   vscodeTestState.openDocuments.clear();
   restoreVscodeWorkspaceFoldersGetter();
+  restoreVscodeTextDocumentsGetter();
 }
 
 /** Задаёт handler для vscode.commands.executeCommand в тестах (P7b-2). */

@@ -442,7 +442,11 @@ suite('templateDiff readGitHead', () => {
     const uri = uriStub.create(path.join(os.tmpdir(), 'Template.xml'));
     const originalDocuments = Reflect.get(vscode.workspace, 'textDocuments');
     const restoreContentProvider = installDocumentContentProviderStub();
-    Reflect.set(vscode.workspace, 'textDocuments', [{ uri, getText: () => '<Template />' }]);
+    assert.strictEqual(
+      Reflect.set(vscode.workspace, 'textDocuments', [{ uri, getText: () => '<Template />' }]),
+      true,
+      'workspace text document fixtures must be replaceable in core tests'
+    );
     vscodeTestState.progressCancellationRequested = true;
     const context = {
       extensionUri: uri,
@@ -479,17 +483,20 @@ suite('templateDiff readGitHead', () => {
     const originalTerminate = processTreeTermination.terminateProcessTree;
     const fake = fakeGitProcess({ staysOpen: true });
     let terminations = 0;
-    Reflect.set(vscode.workspace, 'textDocuments', [{
+    let markTerminationStarted!: () => void;
+    let releaseTermination!: () => void;
+    const terminationStartedPromise = new Promise<void>((resolve) => { markTerminationStarted = resolve; });
+    const terminationGate = new Promise<void>((resolve) => { releaseTermination = resolve; });
+    assert.strictEqual(Reflect.set(vscode.workspace, 'textDocuments', [{
       uri,
-      getText: () => new Promise<string>((_resolve, reject) => {
-        setTimeout(() => reject(new Error('current document read failed')), 20);
-      }),
-    }]);
+      getText: async () => { throw new Error('current document read failed'); },
+    }]), true, 'workspace text document fixtures must be replaceable in core tests');
     setGitApiPath(path.join(os.tmpdir(), 'git.exe'));
     childProcess.spawn = fake.spawnImpl;
     processTreeTermination.terminateProcessTree = async () => {
       terminations += 1;
-      await new Promise((resolve) => setTimeout(resolve, 40));
+      markTerminationStarted();
+      await terminationGate;
       return { terminated: false, hardKillUsed: true, survivingPids: [4132], errors: ['child survived'] };
     };
     const context = {
@@ -503,15 +510,20 @@ suite('templateDiff readGitHead', () => {
         '1c-template-editor.compareWithHead'
       );
       assert.ok(handler);
-      const startedAt = Date.now();
-      await handler(uri);
+      let handlerSettled = false;
+      const handlerPromise = Promise.resolve(handler(uri)).finally(() => { handlerSettled = true; });
+      await terminationStartedPromise;
+      await Promise.resolve();
+      assert.strictEqual(handlerSettled, false, 'progress task remains pending until tree termination completes');
+      releaseTermination();
+      await handlerPromise;
       assert.strictEqual(terminations, 1);
-      assert.ok(Date.now() - startedAt >= 45, 'progress task should await the termination result');
       assert.ok(
         vscodeTestState.errorLog.some((message) => /остановку Git/.test(message)),
         vscodeTestState.errorLog.join('\n')
       );
     } finally {
+      releaseTermination();
       childProcess.spawn = originalSpawn;
       processTreeTermination.terminateProcessTree = originalTerminate;
       restoreContentProvider();

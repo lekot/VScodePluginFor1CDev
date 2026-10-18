@@ -191,12 +191,18 @@ export async function getFormProcedures(
  */
 export async function openModuleInEditor(
   formXmlFsPath: string,
-  procedureName?: string
+  procedureName?: string,
+  associatedDocuments?: ReadonlyMap<string, vscode.TextDocument>,
 ): Promise<void> {
   const { modulePath } = getFormPaths(formXmlFsPath);
   try {
+    const normalizedPath = path.normalize(modulePath);
     const uri = vscode.Uri.file(modulePath);
-    const doc = await vscode.workspace.openTextDocument(uri);
+    const doc = associatedDocuments?.get(normalizedPath)
+      ?? vscode.workspace.textDocuments.find(
+        (candidate) => path.normalize(candidate.uri.fsPath) === normalizedPath
+      )
+      ?? await vscode.workspace.openTextDocument(uri);
     const editor = await vscode.window.showTextDocument(doc, {
       viewColumn: vscode.ViewColumn.One,
       preview: false,

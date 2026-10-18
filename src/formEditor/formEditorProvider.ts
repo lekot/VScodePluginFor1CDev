@@ -17,18 +17,24 @@ import {
   applyExternalPropertyChange,
   reloadFormAndSend,
 
-  type PendingFormModuleTransaction,
   handleCreateEventHandler as handleCreateEventHandlerMsg,
 } from './formMessageHandler';
+import type { PendingFormModuleTransaction } from './pendingFormModuleTransaction';
 import { FormCommandEngine } from './formCommandEngine';
 import { findElementById } from './formTreeOperations';
 import { getWebviewHtml } from './formWebviewHtml';
-import { getFormEditorTitle, loadFormModel, openModuleInEditor, saveFormModel, saveFormModelAs } from './formFileIo';
+import { getFormEditorTitle, loadFormModel, openModuleInEditor, saveFormModel } from './formFileIo';
+import { buildFormXmlDocument } from './formXmlWriter';
 import { createFormXmlSourceSnapshot, type FormXmlSourceSnapshot } from './formXmlTextEditor';
 import { Logger } from '../utils/logger';
-import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
+import { runConfigurationMutation, runConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
+import { readMutationExpectation } from '../services/filesystemReadSemantics';
+import { hashContent } from '../services/configurationSession/atomicFileStorage';
+import { type MutationExpectation, type MutationPlan, type MutationStep } from '../services/configurationSession/mutationPlan';
+import { canonicalizePathWithMissingSuffix, isSamePath } from '../services/configurationSession/pathBoundary';
 import { assertGenericFormMutationAllowed } from './cfeAdoptedFormGuard';
 import { getFormPaths } from './formPaths';
+import { parseBslProceduresFromContent } from './bslModuleParser';
 export { moveNodeInModel } from './formTreeOperations'; // backward compat
 
 /** Custom document whose lifetime is owned by VS Code, not by a webview panel. */
@@ -62,32 +68,6 @@ interface FormEditorBackupPayload {
 
 
 
-interface FileSnapshot {
-  existed: boolean;
-  content?: Buffer;
-}
-
-async function captureFileSnapshot(filePath: string): Promise<FileSnapshot> {
-  const content = await fs.promises.readFile(filePath).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') {
-      return undefined;
-    }
-    throw error;
-  });
-  return { existed: content !== undefined, content };
-}
-
-async function restoreFileSnapshot(filePath: string, snapshot: FileSnapshot): Promise<void> {
-  if (!snapshot.existed) {
-    await fs.promises.rm(filePath, { force: true });
-    return;
-  }
-  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.promises.writeFile(filePath, snapshot.content!);
-}
-
-
-
 export class FormEditorProvider implements vscode.CustomEditorProvider<FormEditorDocument> {
   private readonly changeEmitter = new vscode.EventEmitter<
     vscode.CustomDocumentContentChangeEvent<FormEditorDocument>
@@ -111,27 +91,36 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
     }
   >();
   private readonly isSavingDocument = new Set<string>();
+  private readonly saveOperations = new Map<string, Promise<void>>();
+  private readonly editGenerations = new Map<string, number>();
+  private readonly moduleDocumentsByPath = new Map<string, vscode.TextDocument>();
   private readonly onDidSaveTextDocSubscription: vscode.Disposable;
 
   constructor(
     private readonly onFormSelectionChanged?: (payload: FormSelectionPayload | undefined) => void
   ) {
     this.onDidSaveTextDocSubscription = vscode.workspace.onDidSaveTextDocument(async (textDoc) => {
-      const savedPath = path.normalize(textDoc.uri.fsPath);
+      const savedPath = textDoc.uri.scheme === 'file' ? path.normalize(textDoc.uri.fsPath) : '';
       for (const dirtyKey of Array.from(this.dirtyDocuments)) {
         const ctx = this.contextByDocument.get(dirtyKey);
         if (!ctx) {
           continue;
         }
         const { modulePath } = getFormPaths(ctx.document.uri.fsPath);
-        if (path.normalize(modulePath) === savedPath) {
-          if (!this.isSavingDocument.has(dirtyKey)) {
-            try {
-              await this.saveCustomDocument(ctx.document as FormEditorDocument, new vscode.CancellationTokenSource().token);
-            } catch (err) {
-              Logger.error('Failed to auto-save paired Form.xml', err);
-            }
-          }
+        const normalizedModulePath = path.normalize(modulePath);
+        const isPairedDocument =
+          (textDoc.uri.scheme === 'file' && normalizedModulePath === savedPath) ||
+          this.moduleDocumentsByPath.get(normalizedModulePath) === textDoc;
+        if (!isPairedDocument || this.isSavingDocument.has(dirtyKey)) {
+          continue;
+        }
+        if (!(await this.hasPersistedPendingModuleLinks(dirtyKey, modulePath, textDoc))) {
+          continue;
+        }
+        try {
+          await this.saveCustomDocument(ctx.document as FormEditorDocument, new vscode.CancellationTokenSource().token);
+        } catch (err) {
+          Logger.error('Failed to auto-save paired Form.xml', err);
         }
       }
     });
@@ -195,6 +184,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       commandEngines: this.commandEngines,
       dirtyDocuments: this.dirtyDocuments,
       onDidChangeDocument: () => {
+        this.editGenerations.set(docKey, (this.editGenerations.get(docKey) ?? 0) + 1);
         this.changeEmitter.fire({ document });
       },
       requestSave: async (model) => {
@@ -207,6 +197,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
         await vscode.commands.executeCommand('workbench.action.files.revert');
       },
       pendingModuleTransactions: this.pendingModuleTransactions,
+      moduleDocumentsByPath: this.moduleDocumentsByPath,
       onFormSelectionChanged: (payload) => {
         if (payload) {
           this.activeSelectionDocumentUri = payload.docUri;
@@ -290,42 +281,147 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       throw new vscode.CancellationError();
     }
     const key = document.uri.toString();
-    if (this.isSavingDocument.has(key)) {
-      return;
+    return this.runSaveOperation(key, () => this.saveCustomDocumentSerialized(document, cancellation));
+  }
+
+  private async saveCustomDocumentSerialized(
+    document: FormEditorDocument,
+    cancellation: vscode.CancellationToken,
+  ): Promise<void> {
+    const key = document.uri.toString();
+    if (cancellation.isCancellationRequested) {
+      throw new vscode.CancellationError();
     }
     this.isSavingDocument.add(key);
     try {
-      const model = this.documentModel.get(key);
-      if (!model) {
+      const currentModel = this.documentModel.get(key);
+      if (!currentModel) {
         throw new Error('Нет данных формы для сохранения.');
       }
+      const model = cloneFormModel(currentModel);
+      const generation = this.editGenerations.get(key) ?? 0;
+      const transaction = clonePendingModuleTransaction(this.pendingModuleTransactions.get(key));
       await assertGenericFormMutationAllowed(document.uri.fsPath);
+
+      const { modulePath } = getFormPaths(document.uri.fsPath);
+      const pendingHandlers = getActivePendingModuleHandlerNames(model, transaction, modulePath);
+      const { rollback: rollbackModule } = await this.saveAndValidatePendingModule(modulePath, pendingHandlers);
+
       let savedSnapshot: FormXmlSourceSnapshot | undefined;
-      await runConfigurationMutation(document.uri.fsPath, 'ui.form.save', async () => {
-        savedSnapshot = await saveFormModel(document.uri.fsPath, model, this.sourceSnapshots.get(key));
-      });
+      try {
+        await runConfigurationMutation(document.uri.fsPath, 'ui.form.save', async () => {
+          savedSnapshot = await saveFormModel(document.uri.fsPath, model, this.sourceSnapshots.get(key));
+        });
+      } catch (saveError) {
+        await rollbackModule();
+        throw saveError;
+      }
       if (savedSnapshot) {
         this.sourceSnapshots.set(key, savedSnapshot);
       }
 
-      const { modulePath } = getFormPaths(document.uri.fsPath);
-      const pairedModuleDoc = vscode.workspace.textDocuments.find(
-        (d) => path.normalize(d.uri.fsPath) === path.normalize(modulePath)
-      );
-      if (pairedModuleDoc?.isDirty) {
-        await pairedModuleDoc.save();
-      }
-
       const ctx = this.contextByDocument.get(key);
-      this.commandEngines.get(key)?.markSaved();
-      this.dirtyDocuments.delete(key);
-      if (ctx) {
+      const latestModel = this.documentModel.get(key);
+      const generationIsCurrent = generation === (this.editGenerations.get(key) ?? 0);
+      const modelIsCurrent = latestModel !== undefined && modelsEqual(latestModel, model);
+      if (generationIsCurrent && modelIsCurrent) {
+        this.commandEngines.get(key)?.markSaved();
+        this.dirtyDocuments.delete(key);
+        this.pendingModuleTransactions.delete(key);
+      }
+      if (ctx && generationIsCurrent && modelIsCurrent) {
         ctx.webviewPanel.title = getFormEditorTitle(document.uri.fsPath);
         await ctx.webviewPanel.webview.postMessage({ type: 'saved' });
+      } else if (ctx) {
+        ctx.webviewPanel.title = `${getFormEditorTitle(document.uri.fsPath)} *`;
       }
+    } catch (error) {
+      const ctx = this.contextByDocument.get(key);
+      const message = error instanceof Error ? error.message : String(error);
+      if (ctx) {
+        await ctx.webviewPanel.webview.postMessage({ type: 'error', message });
+      }
+      Logger.error('Form editor save failed', error);
+      throw error;
     } finally {
       this.isSavingDocument.delete(key);
     }
+  }
+
+  private runSaveOperation(documentKey: string, operation: () => Promise<void>): Promise<void> {
+    const previous = this.saveOperations.get(documentKey) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(operation).finally(() => {
+      if (this.saveOperations.get(documentKey) === current) {
+        this.saveOperations.delete(documentKey);
+      }
+    });
+    this.saveOperations.set(documentKey, current);
+    return current;
+  }
+
+  private async saveAndValidatePendingModule(modulePath: string, handlerNames: string[]): Promise<{ rollback(): Promise<void> }> {
+    const normalizedPath = path.normalize(modulePath);
+    const pairedModuleDoc = vscode.workspace.textDocuments.find(
+      (doc) => doc.uri.scheme === 'file' && path.normalize(doc.uri.fsPath) === normalizedPath
+    ) ?? this.moduleDocumentsByPath.get(normalizedPath);
+    let rollback = async () => {};
+    if (pairedModuleDoc?.isDirty) {
+      const preSaveDiskContent = await fs.promises.readFile(modulePath, 'utf8').catch(() => null);
+      const saved = await pairedModuleDoc.save();
+      if (!saved) {
+        throw new Error('Сохранение Module.bsl отменено; Form.xml не сохранён.');
+      }
+      rollback = async () => {
+        if (preSaveDiskContent === null) {
+          await fs.promises.rm(modulePath, { force: true }).catch(() => undefined);
+        } else {
+          await fs.promises.writeFile(modulePath, preSaveDiskContent, 'utf8').catch(() => undefined);
+        }
+        Reflect.set(pairedModuleDoc, 'isDirty', true);
+      };
+    }
+
+    if (handlerNames.length === 0) {
+      return { rollback };
+    }
+
+    const bufferContent = pairedModuleDoc?.getText();
+    const persistedContent = await fs.promises.readFile(modulePath, 'utf8').catch(() => undefined);
+    const containsAllHandlers = (content: string | undefined): boolean => {
+      if (content === undefined) {
+        return false;
+      }
+      const procedures = new Set(parseBslProceduresFromContent(content).map((procedure) => procedure.name.toLowerCase()));
+      return handlerNames.every((handlerName) => procedures.has(handlerName.toLowerCase()));
+    };
+    if (!containsAllHandlers(persistedContent) || (bufferContent !== undefined && !containsAllHandlers(bufferContent))) {
+      await rollback();
+      throw new Error('Module.bsl не содержит все связанные обработчики; привязка Form.xml не записана.');
+    }
+    return { rollback };
+  }
+
+  private async hasPersistedPendingModuleLinks(
+    documentKey: string,
+    modulePath: string,
+    moduleDocument: vscode.TextDocument,
+  ): Promise<boolean> {
+    const transaction = this.pendingModuleTransactions.get(documentKey);
+    const model = this.documentModel.get(documentKey);
+    const handlerNames = model
+      ? getActivePendingModuleHandlerNames(model, transaction, modulePath)
+      : [];
+    if (handlerNames.length === 0) {
+      return false;
+    }
+    const persistedContent = await fs.promises.readFile(modulePath, 'utf8').catch(() => undefined);
+    const persistedNames = new Set(
+      persistedContent === undefined
+        ? []
+        : parseBslProceduresFromContent(persistedContent).map((procedure) => procedure.name.toLowerCase())
+    );
+    const bufferedNames = new Set(parseBslProceduresFromContent(moduleDocument.getText()).map((procedure) => procedure.name.toLowerCase()));
+    return handlerNames.every((name) => persistedNames.has(name.toLowerCase()) && bufferedNames.has(name.toLowerCase()));
   }
 
   async saveCustomDocumentAs(
@@ -337,58 +433,189 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       throw new vscode.CancellationError();
     }
     const key = document.uri.toString();
-    const model = this.documentModel.get(key);
-    if (!model) {
+    return this.runSaveOperation(key, () => this.saveCustomDocumentAsSerialized(document, destination, cancellation));
+  }
+
+  private async saveCustomDocumentAsSerialized(
+    document: FormEditorDocument,
+    destination: vscode.Uri,
+    cancellation: vscode.CancellationToken,
+  ): Promise<void> {
+    if (cancellation.isCancellationRequested) {
+      throw new vscode.CancellationError();
+    }
+    if (destination.scheme !== 'file') {
+      throw new Error('Save As доступен только для файлового пути.');
+    }
+    const key = document.uri.toString();
+    const currentModel = this.documentModel.get(key);
+    if (!currentModel) {
       throw new Error('Нет данных формы для сохранения.');
     }
-    await assertGenericFormMutationAllowed(document.uri.fsPath);
-    const formSnapshot = await captureFileSnapshot(destination.fsPath);
+    const model = cloneFormModel(currentModel);
+    const generation = this.editGenerations.get(key) ?? 0;
     const { modulePath: srcModulePath } = getFormPaths(document.uri.fsPath);
-    const { modulePath: destModulePath } = getFormPaths(destination.fsPath);
+    const sourceModuleDoc = await findOpenTextDocumentCanonical(srcModulePath)
+      ?? this.moduleDocumentsByPath.get(path.normalize(srcModulePath));
+    const sourceModuleVersion = sourceModuleDoc?.version;
+    const sourceModuleText = sourceModuleDoc?.getText();
+    let sourceModuleBytes: Buffer | undefined;
+    let sourceModuleDiskExpectation: Exclude<MutationExpectation, { state: 'directory' }> | undefined;
+    let sourceModuleEncoding: 'utf8' | 'base64' = 'utf8';
 
-    let srcModuleContent: string | undefined;
-    const openModuleDoc = vscode.workspace.textDocuments.find(
-      (d) => path.normalize(d.uri.fsPath) === path.normalize(srcModulePath)
-    );
-    if (openModuleDoc) {
-      srcModuleContent = openModuleDoc.getText();
-    } else if (await fs.promises.access(srcModulePath).then(() => true, () => false)) {
-      srcModuleContent = await fs.promises.readFile(srcModulePath, 'utf8');
+    if (sourceModuleDoc) {
+      if (sourceModuleText === undefined) {
+        throw new Error('Не удалось прочитать открытый Module.bsl для Save As.');
+      }
+    } else {
+      const expectation = await readMutationExpectation(srcModulePath);
+      if (expectation.state === 'directory') {
+        throw new Error(`Module.bsl имеет неверный тип: ${srcModulePath}`);
+      }
+      sourceModuleDiskExpectation = expectation;
+      if (expectation.state === 'file') {
+        sourceModuleBytes = await fs.promises.readFile(srcModulePath);
+        if (hashContent(sourceModuleBytes) !== expectation.hash) {
+          throw new Error(`Module.bsl изменился во время подготовки Save As: ${srcModulePath}`);
+        }
+        sourceModuleEncoding = 'base64';
+      }
     }
 
-    const moduleSnapshot = srcModuleContent !== undefined
-      ? await captureFileSnapshot(destModulePath)
-      : undefined;
-
-    await runConfigurationMutation(destination.fsPath, 'ui.form.saveAs', async () => {
-      try {
-        await fs.promises.mkdir(path.dirname(destination.fsPath), { recursive: true });
-        await saveFormModelAs(destination.fsPath, model);
-        if (srcModuleContent !== undefined) {
-          await fs.promises.mkdir(path.dirname(destModulePath), { recursive: true });
-          await fs.promises.writeFile(destModulePath, srcModuleContent, 'utf8');
-        }
-      } catch (error) {
-        const rollbackErrors: unknown[] = [];
-        await restoreFileSnapshot(destination.fsPath, formSnapshot).catch((rollbackError) => {
-          rollbackErrors.push(rollbackError);
-        });
-        if (moduleSnapshot) {
-          await restoreFileSnapshot(destModulePath, moduleSnapshot).catch((rollbackError) => {
-            rollbackErrors.push(rollbackError);
-          });
-        }
-        if (rollbackErrors.length > 0) {
-          throw combinedError(error, rollbackErrors.map(String).join('; '), 'Save As and rollback both failed.');
-        }
-        throw error;
+    const assertCapturedSourceIsCurrent = (): void => {
+      const latestModel = this.documentModel.get(key);
+      if (
+        (this.editGenerations.get(key) ?? 0) !== generation ||
+        !latestModel ||
+        !modelsEqual(latestModel, model)
+      ) {
+        throw new Error('Форма изменилась во время подготовки Save As; сохранение отменено.');
       }
-    });
-    this.commandEngines.get(key)?.markSaved();
-    this.dirtyDocuments.delete(key);
+      if (sourceModuleDoc && (
+        (sourceModuleVersion !== undefined && sourceModuleDoc.version !== sourceModuleVersion) ||
+        sourceModuleDoc.getText() !== sourceModuleText
+      )) {
+        throw new Error('Module.bsl изменился во время подготовки Save As; сохранение отменено.');
+      }
+    };
+
+    await assertGenericFormMutationAllowed(document.uri.fsPath);
     const ctx = this.contextByDocument.get(key);
-    if (ctx) {
-      await ctx.webviewPanel.webview.postMessage({ type: 'saved' });
+    try {
+      await runConfigurationMutation(destination.fsPath, 'ui.form.saveAs', async () => {
+        if (cancellation.isCancellationRequested) {
+          throw new vscode.CancellationError();
+        }
+        assertCapturedSourceIsCurrent();
+
+        const sourceFormPath = await canonicalizePathWithMissingSuffix(document.uri.fsPath);
+        const destinationFormPath = await canonicalizePathWithMissingSuffix(destination.fsPath);
+        if (isSamePath(sourceFormPath, destinationFormPath)) {
+          throw new Error('Источник и назначение Save As совпадают.');
+        }
+
+        const { modulePath: destinationModulePathRaw } = getFormPaths(destinationFormPath);
+        const destinationModulePath = await canonicalizePathWithMissingSuffix(destinationModulePathRaw);
+        const sourceModulePath = await canonicalizePathWithMissingSuffix(srcModulePath);
+        if (
+          isSamePath(destinationFormPath, destinationModulePath) ||
+          isSamePath(sourceFormPath, destinationModulePath) ||
+          (sourceModuleDoc || sourceModuleBytes) && isSamePath(sourceModulePath, destinationModulePath)
+        ) {
+          throw new Error('Путь назначения Save As пересекается с исходным файлом формы или модуля.');
+        }
+
+        const destinationFormDoc = await findOpenTextDocumentCanonical(destinationFormPath);
+        if (destinationFormDoc?.isDirty) {
+          throw new Error('Целевой Form.xml открыт с несохранёнными изменениями; Save As отменён.');
+        }
+        const destinationModuleDoc = sourceModuleDoc || sourceModuleBytes
+          ? await findOpenTextDocumentCanonical(destinationModulePath)
+            ?? this.moduleDocumentsByPath.get(path.normalize(destinationModulePath))
+          : undefined;
+        if (destinationModuleDoc?.isDirty) {
+          throw new Error('Целевой Module.bsl открыт с несохранёнными изменениями; Save As отменён.');
+        }
+
+        const formExpectation = await readMutationExpectation(destinationFormPath);
+        if (formExpectation.state === 'directory') {
+          throw new Error(`Путь Form.xml занят каталогом: ${destinationFormPath}`);
+        }
+        const existingFormBytes = formExpectation.state === 'file'
+          ? await fs.promises.readFile(destinationFormPath)
+          : undefined;
+        if (formExpectation.state === 'file' && existingFormBytes && hashContent(existingFormBytes) !== formExpectation.hash) {
+          throw new Error(`Целевой Form.xml изменился во время подготовки Save As: ${destinationFormPath}`);
+        }
+        const existingFormContent = existingFormBytes?.toString('utf8');
+        const formContent = buildFormXmlDocument(model, existingFormContent, destinationFormPath);
+
+        const steps: MutationStep[] = [
+          { type: 'ensureDirectory', targetPath: path.dirname(destinationFormPath) },
+          {
+            type: 'writeFile',
+            targetPath: destinationFormPath,
+            content: formContent,
+            encoding: 'utf8',
+            expected: formExpectation,
+          },
+        ];
+
+        let moduleExpectation: MutationExpectation | undefined;
+        if (sourceModuleDoc || sourceModuleBytes) {
+          moduleExpectation = await readMutationExpectation(destinationModulePath);
+          if (moduleExpectation.state === 'directory') {
+            throw new Error(`Путь Module.bsl занят каталогом: ${destinationModulePath}`);
+          }
+          steps.push(
+            { type: 'ensureDirectory', targetPath: path.dirname(destinationModulePath) },
+            {
+              type: 'writeFile',
+              targetPath: destinationModulePath,
+              content: sourceModuleDoc ? sourceModuleText! : sourceModuleBytes!.toString('base64'),
+              encoding: sourceModuleDoc ? 'utf8' : sourceModuleEncoding,
+              expected: moduleExpectation,
+            },
+          );
+        }
+        assertCapturedSourceIsCurrent();
+        if (sourceModuleDiskExpectation) {
+          const currentSourceExpectation = await readMutationExpectation(srcModulePath);
+          if (!mutationExpectationsEqual(sourceModuleDiskExpectation, currentSourceExpectation)) {
+            throw new Error(`Исходный Module.bsl изменился во время подготовки Save As: ${srcModulePath}`);
+          }
+        }
+        const plan: MutationPlan<void> = {
+          kind: 'ui.form.saveAs',
+          steps,
+          result: undefined,
+        };
+        await runConfigurationPlan(destinationFormPath, plan);
+      });
+
+      const latestModel = this.documentModel.get(key);
+      const isCurrent =
+        (this.editGenerations.get(key) ?? 0) === generation &&
+        latestModel !== undefined &&
+        modelsEqual(latestModel, model);
+      if (isCurrent) {
+        this.commandEngines.get(key)?.markSaved();
+        this.dirtyDocuments.delete(key);
+        this.pendingModuleTransactions.delete(key);
+      }
+      if (ctx && isCurrent) {
+        ctx.webviewPanel.title = getFormEditorTitle(document.uri.fsPath);
+        await ctx.webviewPanel.webview.postMessage({ type: 'saved' });
+      } else if (ctx) {
+        ctx.webviewPanel.title = `${getFormEditorTitle(document.uri.fsPath)} *`;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (ctx) {
+        await ctx.webviewPanel.webview.postMessage({ type: 'error', message });
+      }
+      Logger.error('Form editor Save As failed', error);
+      throw error;
     }
   }
 
@@ -576,8 +803,82 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
   }
 }
 
-function combinedError(primary: unknown, rollback: unknown, message: string): Error {
-  const primaryMessage = primary instanceof Error ? primary.message : String(primary);
-  const rollbackMessage = rollback instanceof Error ? rollback.message : String(rollback);
-  return new Error(`${message} Save: ${primaryMessage}. Rollback: ${rollbackMessage}`);
+function cloneFormModel(model: FormModel): FormModel {
+  return JSON.parse(JSON.stringify(model)) as FormModel;
+}
+
+async function findOpenTextDocumentCanonical(targetPath: string): Promise<vscode.TextDocument | undefined> {
+  const canonicalTargetPath = await canonicalizePathWithMissingSuffix(targetPath);
+  for (const candidate of vscode.workspace.textDocuments) {
+    const candidatePath = candidate.uri.fsPath;
+    if (!candidatePath) {
+      continue;
+    }
+    if (isSamePath(candidatePath, targetPath)) {
+      return candidate;
+    }
+    try {
+      const canonicalCandidatePath = await canonicalizePathWithMissingSuffix(candidatePath);
+      if (isSamePath(canonicalCandidatePath, canonicalTargetPath)) {
+        return candidate;
+      }
+    } catch {
+      // Ignore unrelated untitled or unavailable documents while looking for the target.
+    }
+  }
+  return undefined;
+}
+
+function mutationExpectationsEqual(
+  left: Exclude<MutationExpectation, { state: 'directory' }>,
+  right: MutationExpectation,
+): boolean {
+  if (left.state !== right.state) {
+    return false;
+  }
+  return left.state !== 'file' || (right.state === 'file' && left.hash === right.hash);
+}
+
+function clonePendingModuleTransaction(
+  transaction: PendingFormModuleTransaction | undefined,
+): PendingFormModuleTransaction | undefined {
+  return transaction ? JSON.parse(JSON.stringify(transaction)) as PendingFormModuleTransaction : undefined;
+}
+
+function modelsEqual(left: FormModel, right: FormModel): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function getActivePendingModuleHandlerNames(
+  model: FormModel,
+  transaction: PendingFormModuleTransaction | undefined,
+  modulePath: string,
+): string[] {
+  const transactionPath = path.resolve(transaction?.modulePath ?? '');
+  const currentPath = path.resolve(modulePath);
+  const samePath = process.platform === 'win32'
+    ? transactionPath.toLowerCase() === currentPath.toLowerCase()
+    : transactionPath === currentPath;
+  if (!transaction || !samePath) {
+    return [];
+  }
+
+  const activeNames = new Set<string>();
+  for (const binding of transaction.bindings) {
+    if (!binding.methodName) {
+      continue;
+    }
+    if (binding.kind === 'form') {
+      if (model.formEvents?.some((event) => event.name === binding.eventName && event.method === binding.methodName)) {
+        activeNames.add(binding.methodName);
+      }
+      continue;
+    }
+
+    const element = findElementById(model.childItemsRoot, binding.elementId);
+    if (element?.events?.[binding.eventName] === binding.methodName) {
+      activeNames.add(binding.methodName);
+    }
+  }
+  return [...activeNames];
 }

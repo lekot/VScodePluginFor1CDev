@@ -5,6 +5,27 @@ import { getDirective, getEventParams } from './formEventCatalog';
 
 const CRLF = '\r\n';
 
+export async function readModuleStateForEventHandler(
+  modulePath: string,
+  associatedDocuments?: Map<string, vscode.TextDocument>,
+): Promise<{ content: string; existed: boolean }> {
+  const normalizedPath = path.normalize(modulePath);
+  const openDocument = vscode.workspace.textDocuments.find(
+    (document) => document.uri.scheme === 'file' && path.normalize(document.uri.fsPath) === normalizedPath
+  ) ?? associatedDocuments?.get(normalizedPath);
+  const existed = await fs.promises.access(modulePath).then(() => true, () => false);
+  if (openDocument) {
+    return { content: openDocument.getText(), existed };
+  }
+  const content = await fs.promises.readFile(modulePath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') {
+      return '';
+    }
+    throw error;
+  });
+  return { content, existed };
+}
+
 export function buildHandlerProcedureStub(
   handlerName: string,
   eventName: string,
@@ -33,42 +54,57 @@ export async function insertHandlerStubInMemory(
   moduleUri: vscode.Uri,
   handlerName: string,
   eventName: string,
-  isFormLevel: boolean
-): Promise<{ line: number }> {
+  isFormLevel: boolean,
+  associatedDocuments?: Map<string, vscode.TextDocument>,
+): Promise<{ line: number; document: vscode.TextDocument; originalText: string; addedText: string }> {
   const fileOnDisk = fs.existsSync(moduleUri.fsPath);
+  const modulePath = path.normalize(moduleUri.fsPath);
   const openDoc = vscode.workspace.textDocuments.find(
-    (d) => path.normalize(d.uri.fsPath) === path.normalize(moduleUri.fsPath)
+    (d) => d.uri.scheme === 'file' && path.normalize(d.uri.fsPath) === modulePath
   );
-
-  if (!fileOnDisk && !openDoc) {
-    const edit = new vscode.WorkspaceEdit();
-    edit.createFile(moduleUri, { ignoreIfExists: true, contents: Buffer.from('\uFEFF', 'utf8') });
-    await vscode.workspace.applyEdit(edit);
+  let doc = openDoc ?? associatedDocuments?.get(modulePath);
+  let newlyAssociated = false;
+  if (!doc) {
+    if (fileOnDisk) {
+      doc = await vscode.workspace.openTextDocument(moduleUri);
+    } else {
+      // Keep the buffer untitled while associating it with the eventual Module.bsl path.
+      // VS Code can save this document to that path without opening a Save As picker.
+      doc = await vscode.workspace.openTextDocument(moduleUri.with({ scheme: 'untitled' }));
+      newlyAssociated = true;
+    }
   }
-
-  const doc = await vscode.workspace.openTextDocument(moduleUri);
+  const originalText = doc.getText();
+  const generationBaseText = newlyAssociated && originalText.length === 0 ? '\uFEFF' : originalText;
   const { stub, searchToken } = buildHandlerProcedureStub(
     handlerName,
     eventName,
     isFormLevel,
-    doc.getText()
+    generationBaseText
   );
 
   const lastLine = Math.max(0, doc.lineCount - 1);
   const lastLineEnd = doc.lineAt(lastLine).range.end;
 
   const edit = new vscode.WorkspaceEdit();
-  edit.insert(moduleUri, lastLineEnd, stub);
-  await vscode.workspace.applyEdit(edit);
+  edit.insert(doc.uri, lastLineEnd, (generationBaseText === '\uFEFF' ? '\uFEFF' : '') + stub);
+  if (!(await vscode.workspace.applyEdit(edit))) {
+    throw new Error(`Не удалось создать обработчик ${handlerName} в модуле формы.`);
+  }
+  if (newlyAssociated) {
+    associatedDocuments?.set(modulePath, doc);
+  }
 
   for (let i = 0; i < doc.lineCount; i++) {
     const lineText = doc.lineAt(i).text.trim();
     if (lineText.startsWith(searchToken)) {
-      return { line: i + 1 };
+      const nextText = doc.getText();
+      return { line: i + 1, document: doc, originalText, addedText: nextText.slice(originalText.length) };
     }
   }
 
-  return { line: doc.lineCount };
+  const nextText = doc.getText();
+  return { line: doc.lineCount, document: doc, originalText, addedText: nextText.slice(originalText.length) };
 }
 
 /**

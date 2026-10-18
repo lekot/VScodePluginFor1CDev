@@ -27,7 +27,7 @@ import {
   applyAddFormEvent,
 } from './formModelCommands';
 import { generateHandlerName } from './formEventCatalog';
-import { insertHandlerStubInMemory } from './formEventHandlerCreator';
+import { insertHandlerStubInMemory, readModuleStateForEventHandler } from './formEventHandlerCreator';
 import { parseBslProceduresFromContent } from './bslModuleParser';
 import { getFormPaths } from './formPaths';
 import { assertGenericFormMutationAllowed } from './cfeAdoptedFormGuard';
@@ -46,6 +46,7 @@ import {
   type FormEditorCommand,
 } from './formCommandEngine';
 import { isFormCommandEngineEnabled } from './formCommandEngineFeatureFlag';
+import { recordPendingModuleBinding, type PendingEventBinding, type PendingFormModuleTransaction } from './pendingFormModuleTransaction';
 
 /** Minimal custom document interface (matches FormEditorDocument). */
 export interface FormEditorDocument {
@@ -82,29 +83,9 @@ export interface MessageHandlerContext {
   requestRevert?: () => Promise<void>;
   /** Side effects in Module.bsl that are committed together with the form document. */
   pendingModuleTransactions?: Map<string, PendingFormModuleTransaction>;
+  /** Unsaved module documents associated with their intended `Module.bsl` paths. */
+  moduleDocumentsByPath?: Map<string, vscode.TextDocument>;
   onFormSelectionChanged?: (payload: FormSelectionPayload | undefined) => void;
-}
-
-export type PendingEventBinding =
-  | { kind: 'form'; eventName: string; methodName: string }
-  | {
-      kind: 'element';
-      elementId: string;
-      eventName: string;
-      hadPreviousValue: boolean;
-      previousValue?: string;
-    };
-
-export interface PendingFormModuleTransaction {
-  modulePath: string;
-  moduleExisted: boolean;
-  originalContent: string;
-  generatedRegions: Array<{
-    start: number;
-    content: string;
-  }>;
-  expectedContentHash: string;
-  bindings: PendingEventBinding[];
 }
 
 export class PendingModuleRollbackConflictError extends Error {
@@ -1018,22 +999,9 @@ export async function handleCreateEventHandler(
     await assertGenericFormMutationAllowed(ctx.document.uri.fsPath);
     const modulePath = getFormPaths(ctx.document.uri.fsPath).modulePath;
     const moduleUri = vscode.Uri.file(modulePath);
-    let currentModuleContent = '';
-    const openDoc = vscode.workspace.textDocuments.find(
-      (d) => path.normalize(d.uri.fsPath) === path.normalize(modulePath)
-    );
-    if (openDoc) {
-      currentModuleContent = openDoc.getText();
-    } else {
-      currentModuleContent = await fs.promises.readFile(modulePath, 'utf8').catch(
-        (error: NodeJS.ErrnoException) => {
-          if (error.code === 'ENOENT') {
-            return '';
-          }
-          throw error;
-        }
-      );
-    }
+    const moduleState = await readModuleStateForEventHandler(modulePath, ctx.moduleDocumentsByPath);
+    const currentModuleContent = moduleState.content;
+    const moduleExisted = moduleState.existed;
     const procedures = parseBslProceduresFromContent(currentModuleContent);
 
     let resolvedName = handlerName;
@@ -1060,7 +1028,14 @@ export async function handleCreateEventHandler(
       }
     }
 
-    await insertHandlerStubInMemory(moduleUri, resolvedName, eventName, isFormLevel);
+    const previousMethod = targetEl?.events?.[eventName];
+    const inserted = await insertHandlerStubInMemory(
+      moduleUri,
+      resolvedName,
+      eventName,
+      isFormLevel,
+      ctx.moduleDocumentsByPath,
+    );
 
     if (isFormLevel) {
       applyAddFormEvent(model, eventName, resolvedName);
@@ -1074,9 +1049,26 @@ export async function handleCreateEventHandler(
 
     }
 
+    const binding: PendingEventBinding = isFormLevel
+      ? { kind: 'form', eventName, methodName: resolvedName }
+      : {
+          kind: 'element',
+          elementId,
+          eventName,
+          methodName: resolvedName,
+          hadPreviousValue: previousMethod !== undefined,
+          previousValue: previousMethod,
+        };
+    recordPendingModuleBinding(ctx.pendingModuleTransactions, getDocumentKey(ctx), {
+      modulePath,
+      moduleExisted,
+      inserted,
+      binding,
+    });
+
     setDirtyState(ctx, true);
     sendFormData(ctx, model);
-    await openModuleInEditor(ctx.document.uri.fsPath, resolvedName);
+    await openModuleInEditor(ctx.document.uri.fsPath, resolvedName, ctx.moduleDocumentsByPath);
 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
