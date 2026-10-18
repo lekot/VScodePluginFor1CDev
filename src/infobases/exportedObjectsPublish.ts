@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -92,7 +92,7 @@ export async function publishExportedObjects(
     throw new Error(`Источник выгрузки не является каталогом: ${source}`);
   }
 
-  const suffix = `${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
+  const suffix = `${process.pid}-${Date.now()}-${randomUUID()}`;
   const transactionRoot = path.join(destination, `.cdt-objects-publish-${suffix}`);
   const stagingRoot = path.join(transactionRoot, 'staging');
   const backupRoot = path.join(transactionRoot, 'backup');
