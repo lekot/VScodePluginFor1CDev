@@ -1,12 +1,18 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   configureConfigurationMutationGateway,
   resetConfigurationMutationGateway,
   runConfigurationMutation,
+  runConfigurationPlan,
   runExclusiveConfigurationOperation,
 } from '../../src/services/configurationSession/configurationMutationGateway';
 import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
+import { hashContent } from '../../src/services/configurationSession/atomicFileStorage';
+import { MutationPlan, MutationPlanExecutor } from '../../src/services/configurationSession/mutationPlan';
 
 suite('configurationMutationGateway', () => {
   test('delegates nested mutation requests to the session adapter even for the same configuration root', async () => {
@@ -143,20 +149,54 @@ suite('configurationMutationGateway', () => {
   });
 
   test('#206: runConfigurationMutation fails closed when runner is not configured', async () => {
-    resetConfigurationMutationGateway();
+    let mutationCalls = 0;
+    let planCalls = 0;
+    const sentinel = configureConfigurationMutationGateway(
+      async (_path, _kind, operation) => {
+        mutationCalls++;
+        return operation();
+      },
+      async (_path, plan) => {
+        planCalls++;
+        return plan.result;
+      },
+    );
+    const scopedGateway = configureConfigurationMutationGateway(
+      async (_path, _kind, operation) => operation(),
+      async (_path, plan) => plan.result,
+    );
+
     try {
-      await assert.rejects(
-        runConfigurationMutation('/workspace/project/file.xml', 'test.unconfigured', async () => 'mutated'),
-        (err: any) => {
-          assert.strictEqual(err.name, 'ConfigurationMutationGatewayError');
-          assert.strictEqual(err.code, 'RUNNER_NOT_CONFIGURED');
-          return true;
-        },
+      resetConfigurationMutationGateway();
+      try {
+        await assert.rejects(
+          runConfigurationMutation('/workspace/project/file.xml', 'test.unconfigured', async () => 'mutated'),
+          (err: any) => {
+            assert.strictEqual(err.name, 'ConfigurationMutationGatewayError');
+            assert.strictEqual(err.code, 'RUNNER_NOT_CONFIGURED');
+            return true;
+          },
+        );
+      } finally {
+        scopedGateway.dispose();
+      }
+
+      const mutationResult = await runConfigurationMutation(
+        '/workspace/project/sentinel.xml',
+        'test.restored-sentinel',
+        async () => 'sentinel mutation',
       );
+      const planResult = await runConfigurationPlan('/workspace/project/sentinel.xml', {
+        kind: 'test.restored-sentinel-plan',
+        steps: [],
+        result: 'sentinel plan',
+      });
+      assert.strictEqual(mutationResult, 'sentinel mutation');
+      assert.strictEqual(planResult, 'sentinel plan');
+      assert.strictEqual(mutationCalls, 1, 'The previous mutation adapter must be restored');
+      assert.strictEqual(planCalls, 1, 'The previous plan adapter must be restored');
     } finally {
-      configureConfigurationMutationGateway(
-        async (_path, _kind, op) => op(),
-      );
+      sentinel.dispose();
     }
   });
 
@@ -178,6 +218,250 @@ suite('configurationMutationGateway', () => {
 
     assert.strictEqual(outcome.status, 'conflict');
     assert.strictEqual((outcome as any).code, 'CONFIGURATION_CAPABILITY_UNSUPPORTED');
+  });
+
+  test('standalone plans fail closed with a typed error when no marker identifies the configuration root', async () => {
+    const rootPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'gateway-no-marker-'));
+    const inputDir = path.join(rootPath, 'input');
+    const resourcePath = path.join(inputDir, 'Form.xml');
+    const outsideTarget = path.join(rootPath, 'outside.xml');
+    await fs.promises.mkdir(inputDir, { recursive: true });
+    await fs.promises.writeFile(resourcePath, '<Form/>', 'utf8');
+
+    const gateway = configureConfigurationMutationGateway(async (_path, _kind, operation) => operation());
+    try {
+      await assert.rejects(
+        runConfigurationPlan(resourcePath, {
+          kind: 'gateway.no-root',
+          steps: [{
+            type: 'writeFile',
+            targetPath: outsideTarget,
+            content: 'UNEXPECTED',
+            encoding: 'utf8',
+            expected: { state: 'missing' },
+          }],
+          result: 'committed',
+        }),
+        (error: any) => {
+          assert.strictEqual(error.name, 'ConfigurationMutationGatewayError');
+          assert.strictEqual(error.code, 'CONFIGURATION_ROOT_NOT_FOUND');
+          return true;
+        },
+      );
+      assert.strictEqual(fs.existsSync(outsideTarget), false, 'A plan without trusted context must not write its target');
+    } finally {
+      gateway.dispose();
+      await fs.promises.rm(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test('standalone root discovery ignores directory entries named as Designer and EDT markers', async () => {
+    const markerPaths = [
+      'Configuration.xml',
+      path.join('src', 'Configuration', 'Configuration.mdo'),
+    ];
+    const gateway = configureConfigurationMutationGateway(async (_path, _kind, operation) => operation());
+
+    try {
+      for (const markerPath of markerPaths) {
+        const rootPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'gateway-invalid-marker-'));
+        const resourcePath = path.join(rootPath, 'input', 'Form.xml');
+        const targetPath = path.join(rootPath, 'result.xml');
+        await fs.promises.mkdir(path.join(rootPath, markerPath), { recursive: true });
+        await fs.promises.mkdir(path.dirname(resourcePath), { recursive: true });
+        await fs.promises.writeFile(resourcePath, '<Form/>', 'utf8');
+
+        try {
+          await assert.rejects(
+            runConfigurationPlan(resourcePath, {
+              kind: 'gateway.invalid-marker',
+              steps: [{
+                type: 'writeFile',
+                targetPath,
+                content: 'UNEXPECTED',
+                encoding: 'utf8',
+                expected: { state: 'missing' },
+              }],
+              result: 'committed',
+            }),
+            (error: any) => error.code === 'CONFIGURATION_ROOT_NOT_FOUND',
+            `Directory marker ${markerPath} must not grant a plan root`,
+          );
+          assert.strictEqual(fs.existsSync(targetPath), false);
+        } finally {
+          await fs.promises.rm(rootPath, { recursive: true, force: true });
+        }
+      }
+    } finally {
+      gateway.dispose();
+    }
+  });
+
+  test('standalone plans accept real Designer and EDT marker files', async () => {
+    const markerPaths = [
+      'Configuration.xml',
+      path.join('src', 'Configuration', 'Configuration.mdo'),
+    ];
+    const gateway = configureConfigurationMutationGateway(async (_path, _kind, operation) => operation());
+
+    try {
+      for (const markerPath of markerPaths) {
+        const rootPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'gateway-valid-marker-'));
+        const resourcePath = path.join(rootPath, 'input', 'Form.xml');
+        const targetPath = path.join(rootPath, 'result.xml');
+        await fs.promises.mkdir(path.dirname(path.join(rootPath, markerPath)), { recursive: true });
+        await fs.promises.mkdir(path.dirname(resourcePath), { recursive: true });
+        await fs.promises.writeFile(path.join(rootPath, markerPath), '<Configuration/>', 'utf8');
+        await fs.promises.writeFile(resourcePath, '<Form/>', 'utf8');
+
+        try {
+          const result = await runConfigurationPlan(resourcePath, {
+            kind: 'gateway.valid-marker',
+            steps: [{
+              type: 'writeFile',
+              targetPath,
+              content: markerPath,
+              encoding: 'utf8',
+              expected: { state: 'missing' },
+            }],
+            result: 'committed',
+          });
+          assert.strictEqual(result, 'committed');
+          assert.strictEqual(await fs.promises.readFile(targetPath, 'utf8'), markerPath);
+        } finally {
+          await fs.promises.rm(rootPath, { recursive: true, force: true });
+        }
+      }
+    } finally {
+      gateway.dispose();
+    }
+  });
+
+  test('standalone plans canonicalize the marker root before validating paths', async () => {
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'gateway-canonical-root-'));
+    const rootPath = path.join(tempRoot, 'configuration');
+    const aliasPath = path.join(tempRoot, 'configuration-alias');
+    const resourcePath = path.join(aliasPath, 'input', 'Form.xml');
+    const targetPath = path.join(aliasPath, 'result.xml');
+    await fs.promises.mkdir(path.join(rootPath, 'input'), { recursive: true });
+    await fs.promises.writeFile(path.join(rootPath, 'Configuration.xml'), '<Configuration/>', 'utf8');
+    await fs.promises.writeFile(path.join(rootPath, 'input', 'Form.xml'), '<Form/>', 'utf8');
+    await fs.promises.symlink(rootPath, aliasPath, 'junction');
+
+    const gateway = configureConfigurationMutationGateway(async (_path, _kind, operation) => operation());
+    const originalExecute = MutationPlanExecutor.prototype.execute;
+    let executorRoot: string | undefined;
+    MutationPlanExecutor.prototype.execute = function <T>(
+      this: MutationPlanExecutor,
+      plan: MutationPlan<T>,
+      operationId?: string,
+    ): Promise<T> {
+      executorRoot = (this as unknown as { rootPath: string }).rootPath;
+      return originalExecute.call(this, plan, operationId) as Promise<T>;
+    };
+    try {
+      const result = await runConfigurationPlan(resourcePath, {
+        kind: 'gateway.canonical-root',
+        steps: [{
+          type: 'writeFile',
+          targetPath,
+          content: 'CANONICAL ROOT',
+          encoding: 'utf8',
+          expected: { state: 'missing' },
+        }],
+        result: 'committed',
+      });
+
+      assert.strictEqual(result, 'committed');
+      assert.strictEqual(await fs.promises.readFile(path.join(rootPath, 'result.xml'), 'utf8'), 'CANONICAL ROOT');
+      assert.strictEqual(executorRoot, await fs.promises.realpath(rootPath));
+    } finally {
+      MutationPlanExecutor.prototype.execute = originalExecute;
+      gateway.dispose();
+      await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('standalone marker root rejects outside write targets and move sources', async () => {
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'gateway-root-boundary-'));
+    const rootPath = path.join(tempRoot, 'configuration');
+    const resourcePath = path.join(rootPath, 'input', 'Form.xml');
+    const outsideTarget = path.join(tempRoot, 'outside.xml');
+    const outsideSource = path.join(tempRoot, 'outside-source.xml');
+    const moveTarget = path.join(rootPath, 'moved.xml');
+    const sourceContent = 'OUTSIDE SOURCE';
+    const junctionDir = path.join(rootPath, 'linked-outside');
+    const outsideDir = path.join(tempRoot, 'outside-directory');
+    const junctionTarget = path.join(junctionDir, 'target.xml');
+    const junctionSource = path.join(junctionDir, 'source.xml');
+    const junctionMoveTarget = path.join(rootPath, 'junction-moved.xml');
+    await fs.promises.mkdir(path.dirname(resourcePath), { recursive: true });
+    await fs.promises.mkdir(outsideDir, { recursive: true });
+    await fs.promises.writeFile(path.join(rootPath, 'Configuration.xml'), '<Configuration/>', 'utf8');
+    await fs.promises.writeFile(resourcePath, '<Form/>', 'utf8');
+    await fs.promises.writeFile(outsideSource, sourceContent, 'utf8');
+    await fs.promises.writeFile(path.join(outsideDir, 'source.xml'), sourceContent, 'utf8');
+    await fs.promises.symlink(outsideDir, junctionDir, 'junction');
+
+    const gateway = configureConfigurationMutationGateway(async (_path, _kind, operation) => operation());
+    try {
+      await assert.rejects(runConfigurationPlan(resourcePath, {
+        kind: 'gateway.outside-target',
+        steps: [{
+          type: 'writeFile',
+          targetPath: outsideTarget,
+          content: 'OUTSIDE TARGET',
+          encoding: 'utf8',
+          expected: { state: 'missing' },
+        }],
+        result: 'committed',
+      }));
+      assert.strictEqual(fs.existsSync(outsideTarget), false);
+
+      await assert.rejects(runConfigurationPlan(resourcePath, {
+        kind: 'gateway.junction-target',
+        steps: [{
+          type: 'writeFile',
+          targetPath: junctionTarget,
+          content: 'OUTSIDE JUNCTION TARGET',
+          encoding: 'utf8',
+          expected: { state: 'missing' },
+        }],
+        result: 'committed',
+      }));
+      assert.strictEqual(fs.existsSync(path.join(outsideDir, 'target.xml')), false);
+
+      await assert.rejects(runConfigurationPlan(resourcePath, {
+        kind: 'gateway.outside-source',
+        steps: [{
+          type: 'movePath',
+          sourcePath: outsideSource,
+          targetPath: moveTarget,
+          sourceExpected: { state: 'file', hash: hashContent(sourceContent) },
+          targetExpected: { state: 'missing' },
+        }],
+        result: 'committed',
+      }));
+      assert.strictEqual(await fs.promises.readFile(outsideSource, 'utf8'), sourceContent);
+      assert.strictEqual(fs.existsSync(moveTarget), false);
+
+      await assert.rejects(runConfigurationPlan(resourcePath, {
+        kind: 'gateway.junction-source',
+        steps: [{
+          type: 'movePath',
+          sourcePath: junctionSource,
+          targetPath: junctionMoveTarget,
+          sourceExpected: { state: 'file', hash: hashContent(sourceContent) },
+          targetExpected: { state: 'missing' },
+        }],
+        result: 'committed',
+      }));
+      assert.strictEqual(await fs.promises.readFile(path.join(outsideDir, 'source.xml'), 'utf8'), sourceContent);
+      assert.strictEqual(fs.existsSync(junctionMoveTarget), false);
+    } finally {
+      gateway.dispose();
+      await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    }
   });
 });
 

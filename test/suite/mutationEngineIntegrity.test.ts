@@ -7,7 +7,6 @@ import { createForm, deleteElement, duplicateElement, renameElement } from '../.
 import { XMLWriter } from '../../src/utils/XMLWriter';
 import {
   configureConfigurationMutationGateway,
-  resetConfigurationMutationGateway,
   runConfigurationPlan,
 } from '../../src/services/configurationSession/configurationMutationGateway';
 import { MutationPlan, MutationPlanExecutor } from '../../src/services/configurationSession/mutationPlan';
@@ -39,7 +38,6 @@ suite('Mutation Engine Integrity & Bypassed Writers (#351)', () => {
   });
 
   teardown(async () => {
-    resetConfigurationMutationGateway();
     await cleanupTempDir(tempRoot);
   });
 
@@ -306,7 +304,7 @@ suite('Mutation Engine Integrity & Bypassed Writers (#351)', () => {
       let routedPlan: MutationPlan<unknown> | undefined;
       let routedConfigPath: string | undefined;
 
-      configureConfigurationMutationGateway(
+      const mutationGateway = configureConfigurationMutationGateway(
         async (_path, _kind, fn) => fn(),
         async (resPath, plan) => {
           routedConfigPath = resPath;
@@ -315,12 +313,16 @@ suite('Mutation Engine Integrity & Bypassed Writers (#351)', () => {
         },
       );
 
-      await duplicateElement(catNode, 'GoodsCopy');
+      try {
+        await duplicateElement(catNode, 'GoodsCopy');
 
-      assert.ok(routedPlan, 'duplicateElement must route plan through runConfigurationPlan');
-      assert.strictEqual(routedPlan.kind, 'ui.duplicateRootElement');
-      assert.ok(routedConfigPath?.endsWith('Config') || routedConfigPath?.endsWith('Catalogs'));
-      assert.strictEqual(fs.existsSync(path.join(catalogsDir, 'GoodsCopy.xml')), true);
+        assert.ok(routedPlan, 'duplicateElement must route plan through runConfigurationPlan');
+        assert.strictEqual(routedPlan.kind, 'ui.duplicateRootElement');
+        assert.ok(routedConfigPath?.endsWith('Config') || routedConfigPath?.endsWith('Catalogs'));
+        assert.strictEqual(fs.existsSync(path.join(catalogsDir, 'GoodsCopy.xml')), true);
+      } finally {
+        mutationGateway.dispose();
+      }
     });
 
     test('deleteElement routes root deletion plan through runConfigurationPlan gateway', async () => {
@@ -357,7 +359,7 @@ suite('Mutation Engine Integrity & Bypassed Writers (#351)', () => {
 
       let routedPlan: MutationPlan<unknown> | undefined;
 
-      configureConfigurationMutationGateway(
+      const mutationGateway = configureConfigurationMutationGateway(
         async (_path, _kind, fn) => fn(),
         async (resPath, plan) => {
           routedPlan = plan;
@@ -365,11 +367,15 @@ suite('Mutation Engine Integrity & Bypassed Writers (#351)', () => {
         },
       );
 
-      await deleteElement(catNode, { trustedRootPath: configRoot });
+      try {
+        await deleteElement(catNode, { trustedRootPath: configRoot });
 
-      assert.ok(routedPlan, 'deleteElement must route plan through runConfigurationPlan');
-      assert.strictEqual(routedPlan.kind, 'metadata.delete');
-      assert.strictEqual(fs.existsSync(catPath), false);
+        assert.ok(routedPlan, 'deleteElement must route plan through runConfigurationPlan');
+        assert.strictEqual(routedPlan.kind, 'metadata.delete');
+        assert.strictEqual(fs.existsSync(catPath), false);
+      } finally {
+        mutationGateway.dispose();
+      }
     });
 
     test('renameElement routes root rename plan through runConfigurationPlan gateway', async () => {
@@ -421,7 +427,7 @@ suite('Mutation Engine Integrity & Bypassed Writers (#351)', () => {
 
       let routedPlan: MutationPlan<unknown> | undefined;
 
-      configureConfigurationMutationGateway(
+      const mutationGateway = configureConfigurationMutationGateway(
         async (_path, _kind, fn) => fn(),
         async (resPath, plan) => {
           routedPlan = plan;
@@ -429,12 +435,16 @@ suite('Mutation Engine Integrity & Bypassed Writers (#351)', () => {
         },
       );
 
-      await renameElement(catNode, 'NewName', configRoot);
+      try {
+        await renameElement(catNode, 'NewName', configRoot);
 
-      assert.ok(routedPlan, 'renameElement must route plan through runConfigurationPlan');
-      assert.strictEqual(routedPlan.kind, 'metadata.rename');
-      assert.strictEqual(fs.existsSync(path.join(catalogsDir, 'NewName.xml')), true);
-      assert.strictEqual(fs.existsSync(catPath), false);
+        assert.ok(routedPlan, 'renameElement must route plan through runConfigurationPlan');
+        assert.strictEqual(routedPlan.kind, 'metadata.rename');
+        assert.strictEqual(fs.existsSync(path.join(catalogsDir, 'NewName.xml')), true);
+        assert.strictEqual(fs.existsSync(catPath), false);
+      } finally {
+        mutationGateway.dispose();
+      }
     });
   });
 

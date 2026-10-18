@@ -30,24 +30,57 @@ async function resolveCommandInterfacePath(subsystemPath: string, configRootPath
       candidate = path.join(resolved, 'Ext', 'CommandInterface.xml');
     }
   } else {
-    // Relative path with 1C metadata notation like "Subsystems/Администрирование" or "Subsystem.Администрирование"
-    const normalized = subsystemPath
-      .replace(/^Subsystem\./i, '')
-      .replace(/\./g, path.sep);
-
-    // Try under Subsystems/ subfolder of configRoot
-    const underSubsystems = path.join(configRootPath, 'Subsystems', normalized, 'Ext', 'CommandInterface.xml');
-    try {
-      await fs.promises.access(underSubsystems);
-      candidate = underSubsystems;
-    } catch {
-      // Try as-is under configRoot
-      candidate = path.join(configRootPath, normalized, 'Ext', 'CommandInterface.xml');
+    const metadataPathSegments = parseDottedSubsystemMetadataPath(subsystemPath);
+    if (/^Subsystem(?:\.|$)/i.test(subsystemPath)) {
+      if (!metadataPathSegments) {
+        throw new Error(`Некорректный путь подсистемы в формате метаданных: ${subsystemPath}`);
+      }
+      candidate = path.join(configRootPath, ...metadataPathSegments, 'Ext', 'CommandInterface.xml');
+    } else {
+      // Prefer an existing literal subsystem name so dots in names remain part of that name.
+      const literalSubsystemPath = path.join(
+        configRootPath,
+        'Subsystems',
+        subsystemPath,
+        'Ext',
+        'CommandInterface.xml',
+      );
+      try {
+        await fs.promises.access(literalSubsystemPath);
+        candidate = literalSubsystemPath;
+      } catch {
+        // Keep the legacy dotted shorthand for non-filesystem inputs.
+        const normalized = subsystemPath.replace(/\./g, path.sep);
+        const underSubsystems = path.join(configRootPath, 'Subsystems', normalized, 'Ext', 'CommandInterface.xml');
+        try {
+          await fs.promises.access(underSubsystems);
+          candidate = underSubsystems;
+        } catch {
+          // Try as-is under configRoot
+          candidate = path.join(configRootPath, normalized, 'Ext', 'CommandInterface.xml');
+        }
+      }
     }
   }
 
   await assertPathWithinRoot(configRootPath, candidate);
   return candidate;
+}
+
+function parseDottedSubsystemMetadataPath(subsystemPath: string): string[] | undefined {
+  const segments = subsystemPath.split('.');
+  if (segments.length < 2 || segments.length % 2 !== 0) {
+    return undefined;
+  }
+
+  const pathSegments: string[] = [];
+  for (let index = 0; index < segments.length; index += 2) {
+    if (segments[index]?.toLocaleLowerCase() !== 'subsystem' || !segments[index + 1]) {
+      return undefined;
+    }
+    pathSegments.push('Subsystems', segments[index + 1]!);
+  }
+  return pathSegments;
 }
 
 async function readModelWithHash(ciPath: string): Promise<{ model: CommandInterfaceModel; hash: string }> {
