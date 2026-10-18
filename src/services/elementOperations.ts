@@ -23,11 +23,13 @@ import {
   appendRegisterReferenceToRecorderDocument,
 } from './registerRecorderDocumentLinker';
 import {
-  addRootObjectToConfiguration,
+  buildRootObjectConfigurationContent,
 } from './configurationXmlUpdater';
 import type {
   MutationPlan,
+  MutationStep,
 } from './configurationSession/mutationPlan';
+import { hashContent } from './configurationSession/atomicFileStorage';
 import {
   assertNoSymlinkSegments,
   assertPathWithinRoot,
@@ -37,7 +39,7 @@ import {
   assertCfeGenericDuplicateAllowed,
   assertCfeGenericMutationAllowed,
 } from '../extensionSupport/cfeProject/mutationPolicy';
-import { CONFIGURATION_XML, FORM_XML } from '../constants/fileNames';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 import { isSamePath } from '../utils/configurationPathIdentity';
 import {
   appendPredefinedDesignerItem,
@@ -61,7 +63,7 @@ import {
   planRenameMetadataObject,
 } from './metadataCrudService';
 import { runConfigurationPlan } from './configurationSession/configurationMutationGateway';
-import { MutationPlanExecutor } from './configurationSession/mutationPlan';
+import { createForm, deleteForm, buildMinimalExtFormXml } from './elementFormOperations';
 
 async function resolveProjectFormatVersion(configRootPath: string): Promise<string> {
   try {
@@ -266,20 +268,22 @@ async function handleCreateEdtRootObject(
     }
   }
   await assertCfeGenericCreateAllowed(newFilePath, name, { isRootObjectCreate: true });
-  await fs.promises.mkdir(typeFolderPath, { recursive: true });
+
+  const steps: MutationStep[] = [];
+  steps.push({ type: 'ensureDirectory', targetPath: typeFolderPath });
 
   const templateOnlyTypes = new Set([MetadataType.InformationRegister, MetadataType.AccumulationRegister]);
   const rules = templateOnlyTypes.has(parentNode.type) ? undefined : rulesRegistry.get(rootTag);
   const templateXml = rules ? null : await getDesignerTemplateXml(rootTag);
+  let content: string;
   if (rules) {
     const uuid = XMLWriter.generateSimpleUuid();
-    let content = metadataConverter.irToXml(metadataConverter.createDefaultIR(rules, { name, uuid }), rules);
+    content = metadataConverter.irToXml(metadataConverter.createDefaultIR(rules, { name, uuid }), rules);
     content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
     content = normalizeMetaDataObjectRoot(content, targetVersion);
-    await fs.promises.writeFile(newFilePath, content, 'utf-8');
   } else if (templateXml !== null) {
     const uuid = XMLWriter.generateSimpleUuid();
-    let content = substituteDesignerTemplate(templateXml, {
+    content = substituteDesignerTemplate(templateXml, {
       uuid,
       Name: name,
       Synonym_ru: name,
@@ -294,58 +298,87 @@ async function handleCreateEdtRootObject(
     });
     content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
     content = normalizeMetaDataObjectRoot(content, targetVersion);
-    await fs.promises.writeFile(newFilePath, content, 'utf-8');
   } else {
-    await XMLWriter.createMinimalElementFile(newFilePath, rootTag, name, targetVersion);
+    content = XMLWriter.buildMinimalElementContent(rootTag, name, targetVersion);
   }
-
-  if (rootTag === 'BusinessProcess') {
-    await ensureEdtCompanionTask(configurationRootPath, typeFolderPath, name, targetVersion);
-  }
+  steps.push({
+    type: 'writeFile',
+    targetPath: newFilePath,
+    content,
+    encoding: 'utf8',
+    expected: { state: 'missing' },
+  });
 
   const elementDirectory = path.join(typeFolderPath, name);
-  await fs.promises.mkdir(elementDirectory, { recursive: true });
+  steps.push({ type: 'ensureDirectory', targetPath: elementDirectory });
   if (rootTag === 'CommonModule') {
     const modulePath = path.join(elementDirectory, 'Ext', 'Module', 'Module.bsl');
-    await fs.promises.mkdir(path.dirname(modulePath), { recursive: true });
-    await fs.promises.writeFile(modulePath, '', 'utf-8');
+    steps.push({ type: 'ensureDirectory', targetPath: path.dirname(modulePath) });
+    steps.push({ type: 'writeFile', targetPath: modulePath, content: '', encoding: 'utf8', expected: { state: 'missing' } });
   }
 
-  await addRootObjectToConfiguration(configurationRootPath, rootTag, name);
+  let companionTaskName: string | undefined;
+  if (rootTag === 'BusinessProcess') {
+    const taskFolderPath = path.join(path.dirname(typeFolderPath), 'Tasks');
+    const taskFilePath = path.join(taskFolderPath, `${name}.xml`);
+    let taskExists = false;
+    try {
+      await fs.promises.access(taskFilePath);
+      taskExists = true;
+    } catch {
+      taskExists = false;
+    }
+    if (!taskExists) {
+      companionTaskName = name;
+      steps.push({ type: 'ensureDirectory', targetPath: taskFolderPath });
+      const taskTemplateXml = await getDesignerTemplateXml('Task');
+      let taskContent: string;
+      if (taskTemplateXml !== null) {
+        const uuid = XMLWriter.generateSimpleUuid();
+        taskContent = substituteDesignerTemplate(taskTemplateXml, { uuid, Name: name, Synonym_ru: name });
+        taskContent = injectInternalInfoIntoMetadataXml(taskContent, 'Task', name);
+        taskContent = normalizeMetaDataObjectRoot(taskContent, targetVersion);
+      } else {
+        taskContent = XMLWriter.buildMinimalElementContent('Task', name, targetVersion);
+      }
+      steps.push({ type: 'writeFile', targetPath: taskFilePath, content: taskContent, encoding: 'utf8', expected: { state: 'missing' } });
+      steps.push({ type: 'ensureDirectory', targetPath: path.join(taskFolderPath, name) });
+    }
+  }
+
+  const configPath = path.join(configurationRootPath, CONFIGURATION_XML);
+  const configContent = await fs.promises.readFile(configPath, 'utf8');
+  let updatedConfigContent = buildRootObjectConfigurationContent(configContent, {
+    type: 'add',
+    rootTag,
+    objectName: name,
+  });
+  if (companionTaskName) {
+    updatedConfigContent = buildRootObjectConfigurationContent(updatedConfigContent, {
+      type: 'add',
+      rootTag: 'Task',
+      objectName: companionTaskName,
+    });
+  }
+  steps.push({
+    type: 'writeFile',
+    targetPath: configPath,
+    content: updatedConfigContent,
+    encoding: 'utf8',
+    expected: { state: 'file', hash: hashContent(configContent) },
+  });
+
+  const plan: MutationPlan<void> = {
+    kind: 'createEdtRootObject',
+    steps,
+    result: undefined,
+  };
+
+  await runConfigurationPlan(configurationRootPath, plan);
+
   if (rootTag === 'AccumulationRegister') {
     await appendRegisterReferenceToRecorderDocument(configurationRootPath, rootTag, name);
   }
-}
-
-async function ensureEdtCompanionTask(
-  configurationRootPath: string,
-  businessProcessFolderPath: string,
-  taskName: string,
-  targetVersion: string,
-): Promise<void> {
-  const taskFolderPath = path.join(path.dirname(businessProcessFolderPath), 'Tasks');
-  await fs.promises.mkdir(taskFolderPath, { recursive: true });
-  const taskFilePath = path.join(taskFolderPath, `${taskName}.xml`);
-  try {
-    await fs.promises.access(taskFilePath);
-    return;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw error;
-    }
-  }
-  const templateXml = await getDesignerTemplateXml('Task');
-  if (templateXml !== null) {
-    const uuid = XMLWriter.generateSimpleUuid();
-    let content = substituteDesignerTemplate(templateXml, { uuid, Name: taskName, Synonym_ru: taskName });
-    content = injectInternalInfoIntoMetadataXml(content, 'Task', taskName);
-    content = normalizeMetaDataObjectRoot(content, targetVersion);
-    await fs.promises.writeFile(taskFilePath, content, 'utf-8');
-  } else {
-    await XMLWriter.createMinimalElementFile(taskFilePath, 'Task', taskName, targetVersion);
-  }
-  await fs.promises.mkdir(path.join(taskFolderPath, taskName), { recursive: true });
-  await addRootObjectToConfiguration(configurationRootPath, 'Task', taskName);
 }
 
 /** Branch: parentNode is a top-level metadata object (Catalog, Document, …) — create nested Attribute. */
@@ -627,93 +660,7 @@ export async function createElement(
   );
 }
 
-/** Minimal Ext/Form.xml content for a new form (Designer). */
-function buildMinimalExtFormXml(targetVersion: string): string {
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="${targetVersion}">
-\t<Events/>
-\t<ChildItems/>
-\t<Attributes/>
-\t<Commands/>
-</Form>
-`;
-}
-
-/**
- * Creates a new form under the Forms node (Designer format only).
- * 
- * Creates the complete form structure (выгрузка Designer / ibcmd):
- * - Forms/FormName.xml (метаданные формы)
- * - Forms/FormName/Ext/Form.xml и Forms/FormName/Ext/Form/Module.bsl
- * 
- * @param parentNode - The Forms node where the form will be created
- * @param formName - Name for the new form (will be validated)
- * @throws {Error} If parent is not a Forms node or validation fails
- * 
- * @example
- * ```typescript
- * await createForm(formsNode, 'ItemForm');
- * ```
- */
-export async function createForm(parentNode: TreeNode, formName: string): Promise<void> {
-  const name = formName.trim();
-  const err = validateElementName(name, getSiblingNames(parentNode));
-  if (err) {
-    throw new Error(err);
-  }
-  if (parentNode.id !== 'Forms') {
-    throw new Error('Создание формы: выберите узел «Forms» в дереве метаданных.');
-  }
-  const formsPath = parentNode.filePath;
-  if (!formsPath) {
-    throw new Error('Папка форм: не задан путь к каталогу Forms.');
-  }
-  const formOwner = parentNode.parent;
-  await assertCfeGenericCreateAllowed(formsPath, name, {
-    isRootObjectCreate: false,
-    ownerMetadataXmlPath: formOwner?.filePath,
-  });
-  const configRootPath = await findConfigurationRootDir(formsPath);
-  const targetVersion = await resolveProjectFormatVersion(configRootPath);
-  let formsStat: fs.Stats | undefined;
-  try {
-    formsStat = await fs.promises.stat(formsPath);
-  } catch {
-    // directory does not exist yet
-  }
-  if (!formsStat) {
-    await fs.promises.mkdir(formsPath, { recursive: true });
-  } else if (!formsStat.isDirectory()) {
-    throw new Error(`Папка форм не найдена: ${formsPath}`);
-  }
-  const formMetaPath = path.join(formsPath, `${name}.xml`);
-  const extRoot = path.join(formsPath, name);
-  const [metaExists, extRootExists] = await Promise.all([
-    fs.promises.access(formMetaPath).then(() => true).catch(() => false),
-    fs.promises.access(extRoot).then(() => true).catch(() => false),
-  ]);
-  if (metaExists || extRootExists) {
-    throw new Error(`Форма с именем «${name}» уже существует.`);
-  }
-  await XMLWriter.createMinimalElementFile(formMetaPath, 'Form', name, targetVersion);
-  const extDir = path.join(extRoot, 'Ext');
-  const formXmlPath = path.join(extDir, FORM_XML);
-  const formModuleDir = path.join(extDir, 'Form');
-  const modulePath = path.join(formModuleDir, 'Module.bsl');
-  await fs.promises.mkdir(formModuleDir, { recursive: true });
-  await fs.promises.writeFile(formXmlPath, buildMinimalExtFormXml(targetVersion), 'utf-8');
-  await fs.promises.writeFile(modulePath, '', 'utf-8');
-  Logger.info(`Created form: ${formMetaPath}`);
-
-  const owner = parentNode.parent;
-  const ownerXmlPath = owner?.filePath;
-  if (ownerXmlPath && ownerXmlPath.toLowerCase().endsWith('.xml')) {
-    const ownerExists = await fs.promises.access(ownerXmlPath).then(() => true).catch(() => false);
-    if (ownerExists) {
-      await XMLWriter.addDesignerFormReferenceToOwnerMetadata(ownerXmlPath, name);
-    }
-  }
-}
+export { createForm, buildMinimalExtFormXml };
 
 /**
  * Duplicates an existing metadata element with a new name.
@@ -743,7 +690,7 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
     const plan = await planDuplicateRootElement(node, name);
     const { typeFolderPath } = requireRootMutationNode(node);
     const configRootPath = await findConfigurationRootDir(typeFolderPath);
-    await new MutationPlanExecutor(configRootPath).execute(plan);
+    await runConfigurationPlan(configRootPath, plan);
     Logger.info(`Duplicated element to ${path.join(typeFolderPath, `${name}.xml`)}`);
     return;
   }
@@ -1015,54 +962,13 @@ export async function deleteElement(
     if (!plannedDescriptorDelete) {
       throw new Error('Корневой объект не совпадает с выбранным файлом элемента.');
     }
-    await new MutationPlanExecutor(configRootPath).execute(planned.plan);
+    await runConfigurationPlan(configRootPath, planned.plan);
     Logger.info(`Deleted element file ${filePath}`);
     return;
   }
 
   if (node.type === MetadataType.Form && node.id !== 'Forms') {
-    if (parent.id !== 'Forms') {
-      throw new Error('Удаление формы: ожидался родительский узел «Forms».');
-    }
-    const owner = parent.parent;
-    const ownerXmlPath = owner?.filePath;
-    if (ownerXmlPath && ownerXmlPath.toLowerCase().endsWith('.xml')) {
-      const ownerExists = await fs.promises.access(ownerXmlPath).then(() => true).catch(() => false);
-      if (ownerExists) {
-        await XMLWriter.removeDesignerFormFromOwnerMetadata(ownerXmlPath, node.name);
-      }
-    }
-    const fp = node.filePath;
-    if (!fp) {
-      throw new Error('Файл элемента не найден.');
-    }
-    try {
-      await fs.promises.access(fp);
-    } catch {
-      throw new Error('Файл элемента не найден.');
-    }
-    const lower = fp.toLowerCase();
-    if (lower.endsWith('.xml')) {
-      const extRoot = path.join(path.dirname(fp), path.basename(fp, path.extname(fp)));
-      await fs.promises.unlink(fp);
-      let extRootStat: fs.Stats | undefined;
-      try {
-        extRootStat = await fs.promises.stat(extRoot);
-      } catch {
-        // ext dir does not exist
-      }
-      if (extRootStat?.isDirectory()) {
-        await fs.promises.rm(extRoot, { recursive: true, force: true });
-      }
-      Logger.info(`Deleted form metadata ${fp} and ext dir if present`);
-      return;
-    }
-    const stat = await fs.promises.stat(fp);
-    if (!stat.isDirectory()) {
-      throw new Error('Ожидалась папка формы.');
-    }
-    await fs.promises.rm(fp, { recursive: true, force: true });
-    Logger.info(`Deleted form directory ${fp}`);
+    await deleteForm(node);
     return;
   }
 
@@ -1135,7 +1041,7 @@ export async function renameElement(
       { configurationRootPath },
       { type: node.type, oldName, newName: name },
     );
-    await new MutationPlanExecutor(configurationRootPath).execute(planned.plan);
+    await runConfigurationPlan(configurationRootPath, planned.plan);
     return;
   }
 

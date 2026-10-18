@@ -8,6 +8,8 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import type { ChildProcess } from 'child_process';
@@ -143,6 +145,263 @@ suite('SkdOperations — smoke', function () {
         assert.ok(result.error?.includes('templatePath'));
     });
 });
+
+suite('SkdOperations — effective paths and SKD report targets', () => {
+    let tempRoot: string;
+    let configRoot: string;
+    let outsideRoot: string;
+    let calls: Array<{ scriptPath: string; args: string[] }>;
+    let operations: SkdOperations;
+
+    setup(async () => {
+        tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'skd-effective-path-'));
+        configRoot = path.join(tempRoot, 'config');
+        outsideRoot = path.join(tempRoot, 'outside');
+        await fs.promises.mkdir(configRoot, { recursive: true });
+        await fs.promises.mkdir(outsideRoot, { recursive: true });
+        calls = [];
+        operations = new SkdOperations({
+            extensionPath: REAL_EXTENSION_PATH,
+            configRoot,
+            runPowerShellScript: async ({ scriptPath, args }) => {
+                calls.push({ scriptPath, args });
+                if (scriptPath.endsWith('skd-edit.ps1')) {
+                    return { stdout: `[OK] Saved ${argValue(args, '-TemplatePath')}`, stderr: '', exitCode: 0 };
+                }
+                if (scriptPath.endsWith('skd-validate.ps1')) {
+                    return { stdout: '=== Validation OK: Template.xml (1 checks) ===', stderr: '', exitCode: 0 };
+                }
+                if (scriptPath.endsWith('skd-compile.ps1')) {
+                    const output = argValue(args, '-OutputPath');
+                    return { stdout: `OK  ${output}\n    DataSets: 1  Fields: 0  Calculated: 0  Totals: 0  Params: 0  Variants: 0\n    Size: 1 bytes`, stderr: '', exitCode: 0 };
+                }
+                return { stdout: 'SKD report', stderr: '', exitCode: 0 };
+            },
+        });
+    });
+
+    teardown(async () => {
+        await fs.promises.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    });
+
+    async function writeTemplate(filePath: string): Promise<void> {
+        await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+        await fs.promises.writeFile(filePath, '<DataCompositionSchema/>', 'utf8');
+    }
+
+    async function linkDirectory(target: string, link: string): Promise<void> {
+        await fs.promises.mkdir(path.dirname(link), { recursive: true });
+        await fs.promises.symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+    }
+
+    test('rejects folder input whose effective Ext/Template.xml escapes through a nested junction before invoking PowerShell', async () => {
+        const outsideExt = path.join(outsideRoot, 'external', 'Ext');
+        const outsideTemplate = path.join(outsideExt, 'Template.xml');
+        await writeTemplate(outsideTemplate);
+        const folder = path.join(configRoot, 'Reports', 'UnsafeTemplate');
+        await fs.promises.mkdir(folder, { recursive: true });
+        await linkDirectory(outsideExt, path.join(folder, 'Ext'));
+
+        const result = await operations.skdEdit({ templatePath: folder, operation: 'set-query', value: 'SELECT 1' });
+
+        assert.strictEqual(result.success, false, 'effective target outside config must be rejected');
+        assert.ok(result.code === 'PATH_OUTSIDE_ROOT' || result.code === 'TARGET_OUTSIDE_ROOT');
+        assert.strictEqual(calls.length, 0, 'the process boundary must not receive an unresolved folder');
+        assert.strictEqual(await fs.promises.readFile(outsideTemplate, 'utf8'), '<DataCompositionSchema/>');
+    });
+
+    test('normalizes relative paths from configRoot and passes the effective absolute XML path', async () => {
+        const template = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Main', 'Ext', 'Template.xml');
+        await writeTemplate(template);
+        const relative = path.relative(configRoot, template);
+
+        const result = await operations.skdInfo({ templatePath: relative });
+
+        assert.strictEqual(result.success, true, result.error);
+        assert.strictEqual(argValue(calls[0].args, '-TemplatePath'), await fs.promises.realpath(template));
+    });
+
+    test('resolves an existing metadata descriptor to its DCS Template.xml before boundary checking and dispatch', async () => {
+        const template = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Main', 'Ext', 'Template.xml');
+        const descriptor = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Main.xml');
+        await writeTemplate(template);
+        await fs.promises.mkdir(path.dirname(descriptor), { recursive: true });
+        await fs.promises.writeFile(descriptor, '<MetaDataObject><Template><Properties><TemplateType>DataCompositionSchema</TemplateType></Properties></Template></MetaDataObject>', 'utf8');
+
+        const result = await operations.skdValidate({ templatePath: descriptor });
+
+        assert.strictEqual(result.success, true, result.error);
+        assert.strictEqual(argValue(calls[0].args, '-TemplatePath'), await fs.promises.realpath(template));
+    });
+
+    test('parses namespace-qualified TemplateType and decodes XML character references', async () => {
+        const template = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Namespaced', 'Ext', 'Template.xml');
+        const descriptor = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Namespaced.xml');
+        await writeTemplate(template);
+        await fs.promises.mkdir(path.dirname(descriptor), { recursive: true });
+        await fs.promises.writeFile(
+            descriptor,
+            '<xr:MetaDataObject xmlns:xr="urn:1c"><xr:Template><xr:Properties><xr:TemplateType>DataCompositionSchema&#x20;</xr:TemplateType></xr:Properties></xr:Template></xr:MetaDataObject>',
+            'utf8',
+        );
+
+        const result = await operations.skdValidate({ templatePath: descriptor });
+
+        assert.strictEqual(result.success, true, result.error);
+        assert.strictEqual(argValue(calls[0].args, '-TemplatePath'), await fs.promises.realpath(template));
+    });
+
+    test('rejects a malformed descriptor without invoking PowerShell', async () => {
+        const template = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Malformed', 'Ext', 'Template.xml');
+        const descriptor = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Malformed.xml');
+        await writeTemplate(template);
+        await fs.promises.mkdir(path.dirname(descriptor), { recursive: true });
+        await fs.promises.writeFile(
+            descriptor,
+            '<MetaDataObject><Template><Properties><TemplateType>DataCompositionSchema</TemplateType></Properties></Template>',
+            'utf8',
+        );
+
+        const result = await operations.skdValidate({ templatePath: descriptor });
+
+        assert.strictEqual(result.success, false);
+        assert.strictEqual(result.code, 'SKD_DESCRIPTOR_INVALID');
+        assert.strictEqual(calls.length, 0, 'malformed metadata must not be dispatched as an SKD input');
+    });
+
+    test('rejects nested markup inside TemplateType instead of stripping it into a different type', async () => {
+        const template = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Nested', 'Ext', 'Template.xml');
+        const descriptor = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Nested.xml');
+        await writeTemplate(template);
+        await fs.promises.mkdir(path.dirname(descriptor), { recursive: true });
+        await fs.promises.writeFile(
+            descriptor,
+            '<MetaDataObject><Template><Properties><TemplateType>DataCompositionSchema<Unexpected/></TemplateType></Properties></Template></MetaDataObject>',
+            'utf8',
+        );
+
+        const result = await operations.skdValidate({ templatePath: descriptor });
+
+        assert.strictEqual(result.success, false);
+        assert.strictEqual(result.code, 'SKD_DESCRIPTOR_INVALID');
+        assert.strictEqual(calls.length, 0, 'nested markup must not be sanitized into a valid descriptor type');
+    });
+
+    test('preserves validate legacy fallback from Templates/<name>/Template.xml to Ext/Template.xml and checks the resolved target', async () => {
+        const templateDir = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Main');
+        const template = path.join(templateDir, 'Ext', 'Template.xml');
+        const legacyPath = path.join(templateDir, 'Template.xml');
+        await writeTemplate(template);
+
+        const valid = await operations.skdValidate({ templatePath: legacyPath });
+        assert.strictEqual(valid.success, true, valid.error);
+        assert.strictEqual(argValue(calls[0].args, '-TemplatePath'), await fs.promises.realpath(template));
+
+        calls = [];
+        const outsideExt = path.join(outsideRoot, 'external', 'Ext');
+        const outsideTemplate = path.join(outsideExt, 'Template.xml');
+        await writeTemplate(outsideTemplate);
+        const escapedDir = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Unsafe');
+        await fs.promises.mkdir(escapedDir, { recursive: true });
+        await linkDirectory(outsideExt, path.join(escapedDir, 'Ext'));
+        const escaped = await operations.skdValidate({ templatePath: path.join(escapedDir, 'Template.xml') });
+        assert.strictEqual(escaped.success, false);
+        assert.ok(escaped.code === 'TARGET_OUTSIDE_ROOT' || escaped.code === 'PATH_OUTSIDE_ROOT');
+        assert.strictEqual(calls.length, 0, 'the resolved fallback must be boundary-checked before process launch');
+    });
+
+    test('preserves validate legacy fallback from a missing template descriptor to its Ext/Template.xml companion', async () => {
+        const templates = path.join(configRoot, 'Reports', 'Monthly', 'Templates');
+        const template = path.join(templates, 'Main', 'Ext', 'Template.xml');
+        await writeTemplate(template);
+
+        const valid = await operations.skdValidate({ templatePath: path.join(templates, 'Main.xml') });
+        assert.strictEqual(valid.success, true, valid.error);
+        assert.strictEqual(argValue(calls[0].args, '-TemplatePath'), await fs.promises.realpath(template));
+
+        calls = [];
+        const outsideTemplate = path.join(outsideRoot, 'External', 'Ext', 'Template.xml');
+        await writeTemplate(outsideTemplate);
+        const unsafe = path.join(templates, 'Unsafe');
+        await fs.promises.mkdir(unsafe, { recursive: true });
+        await linkDirectory(path.dirname(outsideTemplate), path.join(unsafe, 'Ext'));
+        const escaped = await operations.skdValidate({ templatePath: path.join(templates, 'Unsafe.xml') });
+        assert.strictEqual(escaped.success, false);
+        assert.ok(escaped.code === 'TARGET_OUTSIDE_ROOT' || escaped.code === 'PATH_OUTSIDE_ROOT');
+        assert.strictEqual(calls.length, 0, 'the descriptor fallback target must be checked before process launch');
+    });
+
+    test('resolves info auto-discovery by object folder and rejects an external template reached through a Templates junction', async () => {
+        const objectRoot = path.join(configRoot, 'DataProcessors', 'Monthly');
+        const outsideTemplate = path.join(outsideRoot, 'External', 'Ext', 'Template.xml');
+        await writeTemplate(outsideTemplate);
+        await fs.promises.mkdir(path.join(objectRoot, 'Templates'), { recursive: true });
+        await fs.promises.writeFile(
+            path.join(objectRoot, 'Templates', 'Main.xml'),
+            '<MetaDataObject><Template><Properties><TemplateType>DataCompositionSchema</TemplateType></Properties></Template></MetaDataObject>',
+            'utf8',
+        );
+        await fs.promises.mkdir(path.join(objectRoot, 'Templates', 'Main'), { recursive: true });
+        await linkDirectory(path.dirname(outsideTemplate), path.join(objectRoot, 'Templates', 'Main', 'Ext'));
+
+        const result = await operations.skdInfo({ templatePath: objectRoot });
+
+        assert.strictEqual(result.success, false, 'auto-discovered effective target outside config must be rejected');
+        assert.ok(result.code === 'PATH_OUTSIDE_ROOT' || result.code === 'TARGET_OUTSIDE_ROOT');
+        assert.strictEqual(calls.length, 0);
+    });
+
+    test('validates definitionFile and outputPath before compile and normalizes both relative paths', async () => {
+        const definition = path.join(configRoot, 'skd.json');
+        const output = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Main', 'Ext', 'Template.xml');
+        await fs.promises.writeFile(definition, '{"dataSets":[{}]}', 'utf8');
+
+        const escaped = await operations.skdCompile({ outputPath: output, definitionFile: path.join(outsideRoot, 'foreign.json') });
+        assert.strictEqual(escaped.success, false, 'definitionFile outside config must be rejected');
+        assert.strictEqual(calls.length, 0, 'invalid inputs must fail before process launch');
+
+        const success = await operations.skdCompile({
+            outputPath: path.relative(configRoot, output),
+            definitionFile: path.relative(configRoot, definition),
+        });
+        assert.strictEqual(success.success, true, success.error);
+        assert.strictEqual(argValue(calls[0].args, '-DefinitionFile'), await fs.promises.realpath(definition));
+        assert.strictEqual(
+            argValue(calls[0].args, '-OutputPath'),
+            path.resolve(await fs.promises.realpath(configRoot), path.relative(configRoot, output)),
+        );
+    });
+
+    test('allows only safe report extensions and prevents report output from aliasing the effective template', async () => {
+        const template = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Main', 'Ext', 'Template.xml');
+        await writeTemplate(template);
+        const reportDir = path.join(configRoot, 'Reports', 'Monthly', 'AgentReports');
+        await fs.promises.mkdir(reportDir, { recursive: true });
+        const unsafeTargets = ['metadata.xml', 'source.bsl', 'module.mdo', 'support.bin', 'v8-project.json', 'notes.md'];
+
+        for (const fileName of unsafeTargets) {
+            const beforeCalls = calls.length;
+            const result = await operations.skdInfo({ templatePath: template, outFile: path.join(reportDir, fileName) });
+            assert.strictEqual(result.success, false, `${fileName} must not be a report target`);
+            assert.strictEqual(calls.length, beforeCalls, 'unsafe report suffix must fail before process launch');
+        }
+
+        const aliasReport = path.join(reportDir, 'template.log');
+        try {
+            await fs.promises.symlink(template, aliasReport, 'file');
+        } catch {
+            await fs.promises.link(template, aliasReport);
+        }
+        const aliasResult = await operations.skdValidate({ templatePath: template, outFile: aliasReport });
+        assert.strictEqual(aliasResult.success, false, 'canonical output alias must not overwrite the input template');
+        assert.strictEqual(calls.length, 0);
+    });
+});
+
+function argValue(args: readonly string[], name: string): string {
+    const index = args.indexOf(name);
+    return index >= 0 ? args[index + 1] ?? '' : '';
+}
 
 suite('SkdOperations — background cancellation contract', () => {
     test('forwards task cancellation into PowerShell and preserves a typed inDoubt result', async () => {

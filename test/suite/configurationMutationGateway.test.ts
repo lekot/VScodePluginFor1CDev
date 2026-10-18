@@ -9,7 +9,7 @@ import { ConfigurationSession } from '../../src/services/configurationSession/Co
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 
 suite('configurationMutationGateway', () => {
-  test('nested mutation within the same configuration root re-uses lease and bypasses mutationRunner', async () => {
+  test('delegates nested mutation requests to the session adapter even for the same configuration root', async () => {
     const invocations: string[] = [];
     const gateway = configureConfigurationMutationGateway(
       async (resourcePath, _kind, op) => {
@@ -29,7 +29,7 @@ suite('configurationMutationGateway', () => {
         });
       });
 
-      assert.deepStrictEqual(invocations, [fileA]);
+      assert.deepStrictEqual(invocations, [fileA, fileB]);
     } finally {
       gateway.dispose();
     }
@@ -61,7 +61,7 @@ suite('configurationMutationGateway', () => {
     }
   });
 
-  test('on POSIX, roots differing only by case are treated as distinct configurations and do not bypass mutationRunner', async () => {
+  test('delegates same-root candidates without guessing configuration ownership from path case on POSIX', async () => {
     const origPlatform = process.platform;
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
 
@@ -84,8 +84,6 @@ suite('configurationMutationGateway', () => {
         });
       });
 
-      // On POSIX, /workspace/Config and /workspace/config are distinct configurations;
-      // second call must NOT be treated as a nested lease and must run via mutationRunner
       assert.deepStrictEqual(invocations, [configRootA, configRootB]);
     } finally {
       gateway.dispose();
@@ -93,7 +91,7 @@ suite('configurationMutationGateway', () => {
     }
   });
 
-  test('on Windows, roots differing only by case share the active lease and avoid nested FIFO re-entrancy', async () => {
+  test('delegates case-variant paths to the session adapter on Windows as well', async () => {
     const origPlatform = process.platform;
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 
@@ -116,7 +114,7 @@ suite('configurationMutationGateway', () => {
         });
       });
 
-      assert.deepStrictEqual(invocations, [configRootA]);
+      assert.deepStrictEqual(invocations, [configRootA, configRootB]);
     } finally {
       gateway.dispose();
       Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });

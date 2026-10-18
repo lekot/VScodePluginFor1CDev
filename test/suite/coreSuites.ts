@@ -20,6 +20,8 @@ export const coreSuiteFiles: string[] = [
   'suite/configurationRepository.test.js',
   'suite/configurationPathIdentity.test.js',
   'suite/configurationMutationGateway.test.js',
+  'suite/configurationSessionNestedGateway.test.js',
+  'suite/configurationSessionExecutionLease.test.js',
   'suite/supportSyncCoordinator.test.js',
   'suite/supportPayloadCache.test.js',
   'suite/supportRunJournal.test.js',
@@ -364,6 +366,8 @@ export const coreSuiteFiles: string[] = [
   'suite/editorSessionMatrix.test.js',
   'suite/propertiesMessageHandlerStateSync.test.js',
   'suite/formEditorSync.test.js',
+  'suite/mutationEngineIntegrity.test.js',
+  'suite/agentSkdIntegrity.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),

@@ -45,6 +45,10 @@ export interface AgentResult<T = void> {
     target?: string;
     plannedChanges?: import('./agentRevision').MutationPlannedChanges;
     mutationFailure?: MutationFailureProjection;
+    /** Reconciliation status for a committed mutation that requires a follow-up refresh. */
+    reconciliation?:
+        | { status: 'succeeded' }
+        | { status: 'failed'; code: string; message: string };
 }
 
 export type AgentExternalProcessorContext = ExternalProcessorExecutionContext;
