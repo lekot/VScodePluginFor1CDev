@@ -94,13 +94,7 @@ import type {
   NativeFormsCommandParams,
 } from './agentFormsTypes';
 import type { StaticFormEditParams, StaticFormSelector, StaticFormValidateParams } from './agentStaticForms';
-import { SkdOperations } from './agentSkdOperations';
-import type {
-    SkdCompileParams,
-    SkdInfoParams,
-    SkdEditParams,
-    SkdValidateParams,
-} from './agentSkdTypes';
+import { registerAgentSkdCommands } from './agentSkdCommands';
 import { XdtoAgentOperations } from './agentXdtoOperations';
 import type {
     XdtoCompareParams,
@@ -112,6 +106,7 @@ import type {
 } from './agentXdtoTypes';
 import { WorkspaceRegistry, WorkspaceRegistryError } from '../services/configurationSession/WorkspaceRegistry';
 import type { ConfigurationIdentity } from '../services/configurationSession/types';
+import { PathBoundaryError } from '../services/configurationSession/pathBoundary';
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
 import { AgentRoleRightsError, planSetRoleRights } from './agentRoleRights';
 import { resolveAgentConfiguration } from './agentConfigurationResolver';
@@ -131,6 +126,7 @@ import type {
     AgentTaskIdParams,
 } from './types';
 import type { ConfigurationRepositoryService } from '../services/configurationRepository/configurationRepositoryService';
+import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 import {
     AGENT_SUPPORT_COMMAND_IDS,
     AgentSupportOperations,
@@ -172,6 +168,7 @@ export function registerAgentCommands(
     /** Optional lifecycle hook used by CFE creation after registry discovery succeeds. */
     refreshCfeLifecycle?: () => Promise<void>,
     getRepositoryService?: () => ConfigurationRepositoryService | null,
+    requestConfigurationReload?: RequestConfigurationReload,
 ): { readonly taskManager: AgentTaskManager } {
     const resolveSession = async (
         params: ConfigurationScopedParams = {},
@@ -181,13 +178,9 @@ export function registerAgentCommands(
         if (!registry) {
             throw new WorkspaceRegistryError('CONFIGURATION_NOT_FOUND', 'Корень конфигурации не найден.');
         }
-        if (
-            !params.configurationId
-            && 'configPath' in params
-            && typeof params.configPath === 'string'
-            && params.configPath.trim()
-        ) {
-            const session = await registry.resolveResource(params.configPath);
+        const candidateResource = extractCandidateResourcePath(params);
+        if (!params.configurationId && candidateResource) {
+            const session = await registry.resolveResource(candidateResource);
             if (!session.identity.capabilities[capability]) {
                 throw new WorkspaceRegistryError(
                     'CONFIGURATION_CAPABILITY_UNSUPPORTED',
@@ -259,7 +252,7 @@ export function registerAgentCommands(
                         success: false,
                         code: err instanceof AgentPathError || err instanceof WorkspaceRegistryError
                             ? err.code
-                            : 'FAILED',
+                            : (err instanceof PathBoundaryError ? err.code : 'FAILED'),
                         error: err?.message ?? 'Ошибка чтения конфигурации.',
                     };
                 }
@@ -294,7 +287,7 @@ export function registerAgentCommands(
                 ? outcome.code
                 : (outcomeError instanceof AgentPathError || outcomeError instanceof WorkspaceRegistryError
                     ? outcomeError.code
-                    : outcome.status.toUpperCase());
+                    : (outcomeError instanceof PathBoundaryError ? outcomeError.code : outcome.status.toUpperCase()));
             return {
                 success: false,
                 code: failureCode,
@@ -308,7 +301,7 @@ export function registerAgentCommands(
                 success: false,
                 code: error instanceof WorkspaceRegistryError || error instanceof AgentPathError
                     ? error.code
-                    : 'CONFIGURATION_OPERATION_FAILED',
+                    : (error instanceof PathBoundaryError ? error.code : 'CONFIGURATION_OPERATION_FAILED'),
                 error: error instanceof Error ? error.message : String(error),
             };
         }
@@ -1331,49 +1324,14 @@ export function registerAgentCommands(
         },
     );
 
-    // ─── 1c-metadata-tree.agent.skd.compile ──────────────────────────────────
+    // ─── 1c-metadata-tree.agent.skd.* ─────────────────────────────────────────
 
-    const skdCompileCommand = vscode.commands.registerCommand(
-        '1c-metadata-tree.agent.skd.compile',
-        async (params: SkdCompileParams, requestToken?: vscode.CancellationToken) => {
-            const ops = new SkdOperations({ extensionPath: context.extensionPath });
-            return runAgentLongTask('agent.skd.compile', params.background, requestToken, (token, reportStage) =>
-                ops.skdCompile(params, token, reportStage));
-        }
-    );
-
-    // ─── 1c-metadata-tree.agent.skd.info ─────────────────────────────────────
-
-    const skdInfoCommand = vscode.commands.registerCommand(
-        '1c-metadata-tree.agent.skd.info',
-        async (params: SkdInfoParams, requestToken?: vscode.CancellationToken) => {
-            const ops = new SkdOperations({ extensionPath: context.extensionPath });
-            return runAgentLongTask('agent.skd.info', params.background, requestToken, (token, reportStage) =>
-                ops.skdInfo(params, token, reportStage));
-        }
-    );
-
-    // ─── 1c-metadata-tree.agent.skd.edit ─────────────────────────────────────
-
-    const skdEditCommand = vscode.commands.registerCommand(
-        '1c-metadata-tree.agent.skd.edit',
-        async (params: SkdEditParams, requestToken?: vscode.CancellationToken) => {
-            const ops = new SkdOperations({ extensionPath: context.extensionPath });
-            return runAgentLongTask('agent.skd.edit', params.background, requestToken, (token, reportStage) =>
-                ops.skdEdit(params, token, reportStage));
-        }
-    );
-
-    // ─── 1c-metadata-tree.agent.skd.validate ─────────────────────────────────
-
-    const skdValidateCommand = vscode.commands.registerCommand(
-        '1c-metadata-tree.agent.skd.validate',
-        async (params: SkdValidateParams, requestToken?: vscode.CancellationToken) => {
-            const ops = new SkdOperations({ extensionPath: context.extensionPath });
-            return runAgentLongTask('agent.skd.validate', params.background, requestToken, (token, reportStage) =>
-                ops.skdValidate(params, token, reportStage));
-        }
-    );
+    const skdCommands = registerAgentSkdCommands({
+        extensionPath: context.extensionPath,
+        taskManager,
+        runForConfiguration,
+        requestConfigurationReload,
+    });
 
     const listXdtoPackagesCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.xdto.listPackages',
@@ -1573,7 +1531,7 @@ export function registerAgentCommands(
         formsDiscoverCommand, formsLaunchCommand, formsStartCommand, formsStopCommand,
         formsShotCommand, formsStatusCommand, formsNativeCommand, formsInspectCommand, formsValidateCommand, formsEditCommand,
         syntaxHelpCommand,
-        skdCompileCommand, skdInfoCommand, skdEditCommand, skdValidateCommand,
+        ...skdCommands,
         listXdtoPackagesCommand, getXdtoPackageCommand, exportXdtoXsdCommand,
         importXdtoXsdCommand, createXdtoFromXsdCommand,
         compareXdtoPackageCommand, mergeXdtoPackageCommand,
@@ -1594,6 +1552,22 @@ function isTaskIdParams(value: unknown): value is AgentTaskIdParams {
 
 function invalidTaskParams(): AgentResult<never> {
     return { success: false, code: 'INVALID_ARGUMENTS', error: 'Укажите непустой taskId.' };
+}
+
+function extractCandidateResourcePath(params: ConfigurationScopedParams): string | undefined {
+    if ('configPath' in params && typeof (params as Record<string, unknown>).configPath === 'string') {
+        const val = ((params as Record<string, unknown>).configPath as string).trim();
+        if (val) { return val; }
+    }
+    if ('templatePath' in params && typeof (params as Record<string, unknown>).templatePath === 'string') {
+        const val = ((params as Record<string, unknown>).templatePath as string).trim();
+        if (val) { return val; }
+    }
+    if ('outputPath' in params && typeof (params as Record<string, unknown>).outputPath === 'string') {
+        const val = ((params as Record<string, unknown>).outputPath as string).trim();
+        if (val) { return val; }
+    }
+    return undefined;
 }
 
 function extractCandidateAddress(params: ConfigurationScopedParams): string | undefined {

@@ -18,19 +18,48 @@ import type {
 } from './agentSkdTypes';
 import { runPowerShellScript } from '../services/skd/powershellRunner';
 import { createProcessOutputLineReporter } from '../services/process/processOutputLineReporter';
+import { assertPathWithinRoot, PathBoundaryError } from '../services/configurationSession/pathBoundary';
 
 // ─── SkdOperations ────────────────────────────────────────────────────────────
 
 export interface SkdOperationsDeps {
     /** Путь к корню расширения (context.extensionPath). */
     extensionPath: string;
+    /** Корень конфигурации для валидации границ путей. */
+    configRoot?: string;
     /** Injectable process boundary for tests and host integrations. */
     runPowerShellScript?: typeof runPowerShellScript;
+    /** Injectable path validator (defaults to assertPathWithinRoot). */
+    assertPathWithinRoot?: typeof assertPathWithinRoot;
 }
 
 /** Класс операций Agent SKD API. Инстанциируется при каждом вызове команды. */
 export class SkdOperations {
     constructor(private readonly deps: SkdOperationsDeps) {}
+
+    private async assertPathContained(targetPath: string): Promise<AgentResult<never> | undefined> {
+        if (!this.deps.configRoot) {
+            return undefined;
+        }
+        try {
+            const validator = this.deps.assertPathWithinRoot ?? assertPathWithinRoot;
+            await validator(this.deps.configRoot, targetPath);
+            return undefined;
+        } catch (error) {
+            if (error instanceof PathBoundaryError) {
+                return {
+                    success: false,
+                    code: 'TARGET_OUTSIDE_ROOT',
+                    error: `Целевой путь "${targetPath}" выходит за границы конфигурации (${error.code}).`,
+                };
+            }
+            return {
+                success: false,
+                code: 'PATH_VALIDATION_FAILED',
+                error: error instanceof Error ? error.message : String(error),
+            };
+        }
+    }
 
     private async runScript(
         opts: Parameters<typeof runPowerShellScript>[0],
@@ -69,6 +98,9 @@ export class SkdOperations {
         if (params.definitionFile && params.value) {
             return { success: false, error: 'нельзя использовать оба параметра definitionFile и value одновременно' };
         }
+
+        const boundaryError = await this.assertPathContained(params.outputPath);
+        if (boundaryError) { return boundaryError; }
 
         const scriptPath = path.join(this.deps.extensionPath, 'resources', 'skd', 'skd-compile.ps1');
         const args: string[] = [];
@@ -126,6 +158,13 @@ export class SkdOperations {
         if (stopped) { return stopped; }
         if (!params.templatePath) {
             return { success: false, error: 'параметр templatePath обязателен' };
+        }
+
+        const boundaryError = await this.assertPathContained(params.templatePath);
+        if (boundaryError) { return boundaryError; }
+        if (params.outFile) {
+            const outBoundaryError = await this.assertPathContained(params.outFile);
+            if (outBoundaryError) { return outBoundaryError; }
         }
 
         const scriptPath = path.join(this.deps.extensionPath, 'resources', 'skd', 'skd-info.ps1');
@@ -197,6 +236,9 @@ export class SkdOperations {
             return { success: false, error: 'параметр value обязателен' };
         }
 
+        const boundaryError = await this.assertPathContained(params.templatePath);
+        if (boundaryError) { return boundaryError; }
+
         const scriptPath = path.join(this.deps.extensionPath, 'resources', 'skd', 'skd-edit.ps1');
         const args: string[] = [
             '-TemplatePath', params.templatePath,
@@ -254,6 +296,13 @@ export class SkdOperations {
         if (stopped) { return stopped; }
         if (!params.templatePath) {
             return { success: false, error: 'параметр templatePath обязателен' };
+        }
+
+        const boundaryError = await this.assertPathContained(params.templatePath);
+        if (boundaryError) { return boundaryError; }
+        if (params.outFile) {
+            const outBoundaryError = await this.assertPathContained(params.outFile);
+            if (outBoundaryError) { return outBoundaryError; }
         }
 
         const scriptPath = path.join(this.deps.extensionPath, 'resources', 'skd', 'skd-validate.ps1');
