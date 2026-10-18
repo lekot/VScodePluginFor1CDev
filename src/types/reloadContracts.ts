@@ -9,6 +9,7 @@ export type ReloadReason =
   | 'rename-command'
   | 'repository'
   | 'pull-objects'
+  | 'agent-mutation'
   | 'unknown';
 
 export type ReloadFailureCode =

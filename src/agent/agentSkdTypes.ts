@@ -5,11 +5,19 @@
 
 // ─── skd.compile ─────────────────────────────────────────────────────────────
 
+/** Selects the configuration root used to resolve relative SKD paths. */
+export interface SkdConfigurationSelector {
+    /** Exact configuration selected from the registered configuration roots. */
+    configurationId?: string;
+    /** Explicit configuration root path. Use this when configurationId is unavailable. */
+    configPath?: string;
+}
+
 /**
  * Параметры компиляции СКД из JSON DSL.
  * Один из DefinitionFile / value обязателен; нельзя использовать оба вместе.
  */
-export interface SkdCompileParams {
+export interface SkdCompileParams extends SkdConfigurationSelector {
     /**
      * Путь к JSON-файлу описания СКД (skd-compile.ps1: -DefinitionFile).
      * Взаимоисключающее с value.
@@ -49,7 +57,7 @@ export interface SkdCompileResult {
 /**
  * Параметры получения информации о СКД.
  */
-export interface SkdInfoParams {
+export interface SkdInfoParams extends SkdConfigurationSelector {
     /**
      * Путь к Template.xml или к папке СКД (skd-info.ps1: -TemplatePath, обязателен).
      * Поддерживает: путь к xml, папка (→ Ext/Template.xml), дескриптор (.xml → Stem/Ext/Template.xml).
@@ -70,7 +78,7 @@ export interface SkdInfoParams {
     limit?: number;
     /** Смещение для пагинации (skd-info.ps1: -Offset). */
     offset?: number;
-    /** Путь к выходному файлу (skd-info.ps1: -OutFile). */
+    /** Отчёт в корне конфигурации; разрешены только .txt/.log. Указывает на запись и создаёт mutation receipt. */
     outFile?: string;
     /** Run as a tracked background Agent task when true. MCP defaults this to true. */
     background?: boolean;
@@ -105,7 +113,7 @@ export type SkdEditOperation = (typeof SKD_EDIT_OPERATIONS)[number];
 /**
  * Параметры атомарного редактирования СКД.
  */
-export interface SkdEditParams {
+export interface SkdEditParams extends SkdConfigurationSelector {
     /**
      * Путь к Template.xml или папке СКД (skd-edit.ps1: -TemplatePath, обязателен).
      */
@@ -142,7 +150,7 @@ export interface SkdEditResult {
 /**
  * Параметры валидации СКД.
  */
-export interface SkdValidateParams {
+export interface SkdValidateParams extends SkdConfigurationSelector {
     /**
      * Путь к Template.xml, папке СКД или дескриптору (skd-validate.ps1: -TemplatePath, обязателен).
      */
@@ -151,7 +159,7 @@ export interface SkdValidateParams {
     detailed?: boolean;
     /** Максимальное количество ошибок до остановки (skd-validate.ps1: -MaxErrors, по умолчанию 20). */
     maxErrors?: number;
-    /** Путь к выходному файлу отчёта (skd-validate.ps1: -OutFile). */
+    /** Отчёт в корне конфигурации; разрешены только .txt/.log. Указывает на запись и создаёт mutation receipt. */
     outFile?: string;
     /** Run as a tracked background Agent task when true. MCP defaults this to true. */
     background?: boolean;

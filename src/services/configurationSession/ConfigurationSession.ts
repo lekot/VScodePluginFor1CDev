@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
 import { AtomicFileStorage } from './atomicFileStorage';
 import { MutationPlan, MutationPlanExecutor } from './mutationPlan';
 import { MutationPlanError } from './mutationPlan';
@@ -61,6 +62,37 @@ interface MutationEnvelope<T> {
   readonly _valueType?: T;
 }
 
+export interface ValueMutationErrorMessages {
+  readonly failureMessage: string;
+  readonly cancelledMessage: string;
+}
+
+interface SessionExecutionLease {
+  readonly session: ConfigurationSession;
+  readonly mode: 'read' | 'write';
+  readonly baseSnapshotVersion: number;
+  active: boolean;
+}
+
+export class ConfigurationSessionWriteFromReadError extends Error {
+  readonly code = 'WRITE_FROM_READ';
+
+  constructor() {
+    super('Нельзя выполнять запись конфигурации внутри read-операции той же сессии.');
+    this.name = 'ConfigurationSessionWriteFromReadError';
+  }
+}
+
+const MUTATION_VALUE_ERROR_MESSAGES: ValueMutationErrorMessages = {
+  failureMessage: 'Операция конфигурации не выполнена.',
+  cancelledMessage: 'Операция конфигурации отменена.',
+};
+
+const PLAN_VALUE_ERROR_MESSAGES: ValueMutationErrorMessages = {
+  failureMessage: 'Configuration plan failed.',
+  cancelledMessage: 'Configuration plan was cancelled.',
+};
+
 type QueueEntry =
   | {
       type: 'write';
@@ -79,6 +111,7 @@ export class ConfigurationSession {
   private runningReaders = 0;
   private queue: QueueEntry[] = [];
   private drainResolvers: Array<() => void> = [];
+  private readonly executionContext = new AsyncLocalStorage<SessionExecutionLease>();
   readonly storage: AtomicFileStorage;
   readonly mutations: MutationPlanExecutor;
 
@@ -193,7 +226,15 @@ export class ConfigurationSession {
 
           const baseSnapshotVersion = this._snapshotVersion;
           try {
-            const value = await request.execute({ operationId, baseSnapshotVersion, storage: this.storage });
+            const lease: SessionExecutionLease = {
+              session: this,
+              mode: 'write',
+              baseSnapshotVersion,
+              active: true,
+            };
+            const value = await this.withExecutionLease(lease, () =>
+              request.execute({ operationId, baseSnapshotVersion, storage: this.storage }),
+            );
             if (request.commitWhen && !request.commitWhen(value)) {
               resolve({ ...envelope(), status: 'failed', value });
               return;
@@ -257,10 +298,16 @@ export class ConfigurationSession {
 
           const snapshotVersion = this._snapshotVersion;
           try {
-            const value = await request.execute({
+            const lease: SessionExecutionLease = {
+              session: this,
+              mode: 'read',
+              baseSnapshotVersion: snapshotVersion,
+              active: true,
+            };
+            const value = await this.withExecutionLease(lease, () => request.execute({
               snapshotVersion,
               rootPath: this.identity.rootPath,
-            });
+            }));
             resolve({
               status: 'ok',
               value,
@@ -294,6 +341,39 @@ export class ConfigurationSession {
     });
   }
 
+  /** Runs a mutation callback inline only when this session already owns an active writer lease. */
+  runMutationValue<T>(
+    request: MutationRequest<T>,
+    errorMessages: ValueMutationErrorMessages = MUTATION_VALUE_ERROR_MESSAGES,
+  ): Promise<T> {
+    const operationId = request.operationId ?? randomUUID();
+    const lease = this.executionContext.getStore();
+    if (lease?.active && lease.session === this) {
+      if (lease.mode === 'read') {
+        return Promise.reject(new ConfigurationSessionWriteFromReadError());
+      }
+      return this.executeWithinWriterLease({ ...request, operationId }, lease, errorMessages);
+    }
+    return this.enqueue({ ...request, operationId }).then((outcome) =>
+      unwrapMutationOutcome(outcome, errorMessages),
+    );
+  }
+
+  /** Runs a plan through this session, reusing an active writer lease without another FIFO entry. */
+  runPlanValue<T>(
+    plan: MutationPlan<T>,
+    options: Omit<MutationRequest<T>, 'kind' | 'execute' | 'commitWhen'> = {},
+    errorMessages: ValueMutationErrorMessages = PLAN_VALUE_ERROR_MESSAGES,
+  ): Promise<T> {
+    const operationId = options.operationId ?? randomUUID();
+    return this.runMutationValue({
+      ...options,
+      kind: plan.kind,
+      operationId,
+      execute: () => this.mutations.execute(plan, operationId),
+    }, errorMessages);
+  }
+
   /** Uses the mutation FIFO for a short non-plan configuration critical section. */
   runExclusive<T>(operation: ExclusiveConfigurationOperation<T>): Promise<MutationOutcome<T>> {
     return this.enqueue({
@@ -315,6 +395,58 @@ export class ConfigurationSession {
       this.processQueue();
     });
   }
+
+  private async executeWithinWriterLease<T>(
+    request: MutationRequest<T>,
+    lease: SessionExecutionLease,
+    errorMessages: ValueMutationErrorMessages,
+  ): Promise<T> {
+    if (request.cancellation?.isCancellationRequested) {
+      throw new Error(errorMessages.cancelledMessage);
+    }
+    if (
+      request.clientSnapshotVersion !== undefined
+      && request.clientSnapshotVersion !== lease.baseSnapshotVersion
+    ) {
+      throw new Error('Версия конфигурации изменилась до начала операции.');
+    }
+    try {
+      const value = await request.execute({
+        operationId: request.operationId ?? randomUUID(),
+        baseSnapshotVersion: lease.baseSnapshotVersion,
+        storage: this.storage,
+      });
+      if (request.commitWhen && !request.commitWhen(value)) {
+        throw new Error(errorMessages.failureMessage);
+      }
+      return value;
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  private withExecutionLease<T>(lease: SessionExecutionLease, operation: () => Promise<T>): Promise<T> {
+    return this.executionContext.run(lease, async () => {
+      try {
+        return await operation();
+      } finally {
+        lease.active = false;
+      }
+    });
+  }
+}
+
+function unwrapMutationOutcome<T>(
+  outcome: MutationOutcome<T>,
+  errorMessages: ValueMutationErrorMessages,
+): T {
+  if (outcome.status === 'committed') {
+    return outcome.value;
+  }
+  if (outcome.status === 'failed' || outcome.status === 'conflict') {
+    throw outcome.error ?? new Error(errorMessages.failureMessage);
+  }
+  throw new Error(errorMessages.cancelledMessage);
 }
 
 function snapshotIdentity(identity: ConfigurationIdentity): ConfigurationIdentity {

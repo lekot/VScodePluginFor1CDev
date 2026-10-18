@@ -274,6 +274,7 @@ function repositoryRoot(): string {
 function registeredAgentCommandIds(root: string): Set<string> {
   const registrySources = [
     path.join(root, 'src', 'agent', 'agentCommands.ts'),
+    path.join(root, 'src', 'agent', 'agentSkdCommands.ts'),
     path.join(root, 'src', 'agent', 'agentCfeProjectOperations.ts'),
     path.join(root, 'src', 'agent', 'agentSupportOperations.ts'),
   ];
