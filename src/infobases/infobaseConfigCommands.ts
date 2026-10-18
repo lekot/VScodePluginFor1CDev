@@ -46,10 +46,9 @@ import {
   probeIncrementalSupport,
 } from '../services/ibcmd/ibcmdVersionSupport';
 import { emptyDirectoryContents } from './ibcmdExportTargetDir';
-import {
-  runInfobaseConfigurationOperation,
-  sharedInfobaseConfigurationOperationQueue,
-} from './infobaseConfigurationOperationQueue';
+import { runInfobaseConfigurationOperation, sharedInfobaseConfigurationOperationQueue } from './infobaseConfigurationOperationQueue';
+import { publishExportedObjectsTree } from './exportedObjectsPublisher';
+
 
 const OUTPUT_CHANNEL_NAME = 'CDT 41: Infobase (ibcmd)';
 const OUTPUT_DEBOUNCE_MS = 75;
@@ -984,11 +983,10 @@ export async function runInfobaseConfigExportObjects(
     exportCredentials = { user: entryUser || undefined, password: entryPassword };
   }
 
-  // Export to a temp directory (ibcmd requires --out= to be empty), then copy to workspace.
-  const tempExportDir = path.join(os.tmpdir(), `1cviewer-export-objects-${Date.now()}`);
-  fs.mkdirSync(tempExportDir, { recursive: true });
 
-  const connection = ibcmdOfflineConnectionFromPrepared(prep);
+  const tempExportDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-export-objects-'));
+
+  const connection = ibcmdOfflineConnectionFromPrepared(prep);
   const exportObjectsArgs = buildInfobaseConfigExportObjectsArgs(
     connection,
     tempExportDir,
@@ -1028,7 +1026,7 @@ export async function runInfobaseConfigExportObjects(
 
     // Copy exported files from temp to workspace configRoot.
     if (result.status === 'success') {
-      const copied = await copyTreeOverwrite(tempExportDir, params.configRoot);
+      const copied = await publishExportedObjectsTree(tempExportDir, path.resolve(params.configRoot));
       ch.appendLine(`[export objects${ctx}] Скопировано файлов: ${copied}`);
     }
 
@@ -1036,10 +1034,10 @@ export async function runInfobaseConfigExportObjects(
   } finally {
     flushOutputChannel(outputBuffer);
     await prep.dispose();
-    // Clean up temp directory.
-    try {
-      fs.rmSync(tempExportDir, { recursive: true, force: true });
-    } catch { /* best effort */ }
+
+    await fs.promises.rm(tempExportDir, { recursive: true, force: true }).catch(() => undefined);
+
+
   }
 }
 

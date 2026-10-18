@@ -34,6 +34,7 @@ export const coreSuiteFiles: string[] = [
   'suite/skdValidationCoverage.test.js',
   'suite/agentDeployPartialResult.test.js',
   'suite/deployApplicationService.test.js',
+  'suite/pullSelectedObjectsIntegrity.test.js',
   'suite/formXmlParser.test.js',
   'suite/formXmlWriter.test.js',
   'suite/formXmlTextEditor.test.js',

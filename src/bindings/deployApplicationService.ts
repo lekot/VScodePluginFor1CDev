@@ -36,6 +36,7 @@ import { findBinding } from '../agent/agentBindingResolver';
 import { findWorkspaceFolderForPath } from '../agent/agentWorkspaceContext';
 import { detectIbcmdExtensionNameFromConfigRelativePath, normalizeConfigRelativePath } from './bindingPathUtils';
 import { CONFIGURATION_XML } from '../constants/fileNames';
+import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 
 // ─── Types & Interfaces ──────────────────────────────────────────────────────
 
@@ -118,6 +119,12 @@ export interface DeployApplicationServiceDeps {
   ) => Promise<DeploySupportContext | undefined>;
   readonly deployService?: DeployService;
   readonly gitDeps?: IncrementalChangeDetectorDeps;
+  readonly runConfigurationMutation?: <T>(
+    resourcePath: string,
+    kind: string,
+    operation: () => Promise<T>,
+  ) => Promise<T>;
+  readonly requestConfigurationReload?: RequestConfigurationReload;
 }
 
 // ─── Service Implementation ──────────────────────────────────────────────────
@@ -551,19 +558,27 @@ export class DeployApplicationService {
       return createValidationFailedOutcome('Нет доступных баз для выгрузки.');
     }
 
+    const runMutation = this.deps.runConfigurationMutation ?? (async (_path, _kind, op) => op());
+
     try {
-      const summary = await this.deployService.pullSelectedObjects({
-        binding: context.binding,
-        workspaceFolderRoot: context.workspaceFolderRoot,
-        storage: this.deps.infobaseStorage,
-        entry: targetEntry,
-        selectedNodes,
-        progress,
-        token: cancellation.token,
-        onOutput: onOutputHandler,
+      const summary = await runMutation(context.configRoot, 'pullSelectedObjects', async () => {
+        return this.deployService.pullSelectedObjects({
+          binding: context.binding,
+          workspaceFolderRoot: context.workspaceFolderRoot,
+          storage: this.deps.infobaseStorage,
+          entry: targetEntry,
+          selectedNodes,
+          progress,
+          token: cancellation.token,
+          onOutput: onOutputHandler,
+        });
       });
 
-      return createDeployOutcome(summary, undefined, false);
+      const outcome = createDeployOutcome(summary, undefined, false);
+      if (outcome.success) {
+        await this.deps.requestConfigurationReload?.(context.configRoot, 'pull-objects');
+      }
+      return outcome;
     } finally {
       processOutput.flush();
       cancellation.dispose();

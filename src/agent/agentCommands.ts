@@ -1006,9 +1006,9 @@ export function registerAgentCommands(
         mutationKind: string | undefined,
         operation: (configRoot: string, token?: vscode.CancellationToken, reportStage?: (message: string) => void) => Promise<AgentResult<T>>,
         requestToken?: vscode.CancellationToken,
-    ): Promise<AgentResult<unknown>> => {
+        capability: keyof ConfigurationIdentity['capabilities'] = 'process'): Promise<AgentResult<unknown>> => {
         const run = (token?: vscode.CancellationToken, reportStage?: (message: string) => void) =>
-            runForConfiguration(params, 'process', mutationKind, (configRoot) => operation(configRoot, token, reportStage), token);
+            runForConfiguration(params, capability, mutationKind, (configRoot) => operation(configRoot, token, reportStage), token);
         if (params.background === true) {
             return taskManager.start(name, async (token, reportStage) => {
                 reportStage(`Начата операция ${name}.`);
@@ -1068,7 +1068,7 @@ export function registerAgentCommands(
                 return { success: false, error: 'Выгрузка недоступна: хранилище или привязки не инициализированы.' };
             }
             return runDeployAgentOperation(params, 'agent.pullSelectedObjects', 'agent.pullSelectedObjects', (configRoot, token, reportStage) =>
-                new AgentDeployOperations(deps).pullSelectedObjects({ ...params, configPath: configRoot }, { token, reportStage }), requestToken);
+                new AgentDeployOperations(deps).pullSelectedObjects({ ...params, configPath: configRoot }, { token, reportStage }), requestToken, 'write');
         }
     );
 
