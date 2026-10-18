@@ -35,6 +35,7 @@ import { canonicalizePathWithMissingSuffix, isSamePath } from '../services/confi
 import { assertGenericFormMutationAllowed } from './cfeAdoptedFormGuard';
 import { getFormPaths } from './formPaths';
 import { parseBslProceduresFromContent } from './bslModuleParser';
+import { findModuleTextDocument, restoreModuleDocumentAssociation } from './formModuleDocuments';
 export { moveNodeInModel } from './formTreeOperations'; // backward compat
 
 /** Custom document whose lifetime is owned by VS Code, not by a webview panel. */
@@ -93,6 +94,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
   private readonly isSavingDocument = new Set<string>();
   private readonly saveOperations = new Map<string, Promise<void>>();
   private readonly editGenerations = new Map<string, number>();
+  private readonly lifecycleEpochs = new Map<string, number>();
   private readonly moduleDocumentsByPath = new Map<string, vscode.TextDocument>();
   private readonly onDidSaveTextDocSubscription: vscode.Disposable;
 
@@ -100,18 +102,23 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
     private readonly onFormSelectionChanged?: (payload: FormSelectionPayload | undefined) => void
   ) {
     this.onDidSaveTextDocSubscription = vscode.workspace.onDidSaveTextDocument(async (textDoc) => {
-      const savedPath = textDoc.uri.scheme === 'file' ? path.normalize(textDoc.uri.fsPath) : '';
       for (const dirtyKey of Array.from(this.dirtyDocuments)) {
         const ctx = this.contextByDocument.get(dirtyKey);
         if (!ctx) {
           continue;
         }
         const { modulePath } = getFormPaths(ctx.document.uri.fsPath);
-        const normalizedModulePath = path.normalize(modulePath);
-        const isPairedDocument =
-          (textDoc.uri.scheme === 'file' && normalizedModulePath === savedPath) ||
-          this.moduleDocumentsByPath.get(normalizedModulePath) === textDoc;
-        if (!isPairedDocument || this.isSavingDocument.has(dirtyKey)) {
+        if (this.isSavingDocument.has(dirtyKey)) {
+          continue;
+        }
+        let pairedDocument: vscode.TextDocument | undefined;
+        try {
+          pairedDocument = await findModuleTextDocument(modulePath, this.moduleDocumentsByPath);
+        } catch (error) {
+          Logger.warn('Skipping paired Form auto-save because Module.bsl buffers are ambiguous', error);
+          continue;
+        }
+        if (pairedDocument !== textDoc) {
           continue;
         }
         if (!(await this.hasPersistedPendingModuleLinks(dirtyKey, modulePath, textDoc))) {
@@ -158,6 +165,14 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       this.dirtyDocuments.add(key);
       if (payload.pendingModuleTransaction) {
         this.pendingModuleTransactions.set(key, payload.pendingModuleTransaction);
+        try {
+          await restoreModuleDocumentAssociation(
+            payload.pendingModuleTransaction.modulePath,
+            this.moduleDocumentsByPath,
+          );
+        } catch (error) {
+          Logger.warn('Could not restore an unambiguous live Module.bsl association', error);
+        }
       }
     }
     return document;
@@ -263,6 +278,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
     this.commandEngines.delete(key);
     this.dirtyDocuments.delete(key);
     this.pendingModuleTransactions.delete(key);
+    this.lifecycleEpochs.delete(key);
     this.messageExecutors.delete(key);
     this.latestSelectionByDocument.delete(key);
     if (this.activeSelectionDocumentUri === key) {
@@ -281,17 +297,18 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       throw new vscode.CancellationError();
     }
     const key = document.uri.toString();
-    return this.runSaveOperation(key, () => this.saveCustomDocumentSerialized(document, cancellation));
+    const lifecycleEpoch = this.lifecycleEpochs.get(key) ?? 0;
+    return this.runSaveOperation(key, () => this.saveCustomDocumentSerialized(document, cancellation, lifecycleEpoch));
   }
 
   private async saveCustomDocumentSerialized(
     document: FormEditorDocument,
     cancellation: vscode.CancellationToken,
+    lifecycleEpoch: number,
   ): Promise<void> {
     const key = document.uri.toString();
-    if (cancellation.isCancellationRequested) {
-      throw new vscode.CancellationError();
-    }
+    const assertLifecycleCurrent = (): void => this.assertLifecycleCurrent(key, lifecycleEpoch, cancellation);
+    assertLifecycleCurrent();
     this.isSavingDocument.add(key);
     try {
       const currentModel = this.documentModel.get(key);
@@ -302,20 +319,18 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       const generation = this.editGenerations.get(key) ?? 0;
       const transaction = clonePendingModuleTransaction(this.pendingModuleTransactions.get(key));
       await assertGenericFormMutationAllowed(document.uri.fsPath);
+      assertLifecycleCurrent();
 
       const { modulePath } = getFormPaths(document.uri.fsPath);
       const pendingHandlers = getActivePendingModuleHandlerNames(model, transaction, modulePath);
-      const { rollback: rollbackModule } = await this.saveAndValidatePendingModule(modulePath, pendingHandlers);
+      await this.saveAndValidatePendingModule(modulePath, pendingHandlers, assertLifecycleCurrent);
+      assertLifecycleCurrent();
 
       let savedSnapshot: FormXmlSourceSnapshot | undefined;
-      try {
-        await runConfigurationMutation(document.uri.fsPath, 'ui.form.save', async () => {
-          savedSnapshot = await saveFormModel(document.uri.fsPath, model, this.sourceSnapshots.get(key));
-        });
-      } catch (saveError) {
-        await rollbackModule();
-        throw saveError;
-      }
+      await runConfigurationMutation(document.uri.fsPath, 'ui.form.save', async () => {
+        assertLifecycleCurrent();
+        savedSnapshot = await saveFormModel(document.uri.fsPath, model, this.sourceSnapshots.get(key));
+      });
       if (savedSnapshot) {
         this.sourceSnapshots.set(key, savedSnapshot);
       }
@@ -337,11 +352,13 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       }
     } catch (error) {
       const ctx = this.contextByDocument.get(key);
-      const message = error instanceof Error ? error.message : String(error);
-      if (ctx) {
-        await ctx.webviewPanel.webview.postMessage({ type: 'error', message });
+      if (!isCancellationError(error)) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (ctx) {
+          await ctx.webviewPanel.webview.postMessage({ type: 'error', message });
+        }
+        Logger.error('Form editor save failed', error);
       }
-      Logger.error('Form editor save failed', error);
       throw error;
     } finally {
       this.isSavingDocument.delete(key);
@@ -359,30 +376,36 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
     return current;
   }
 
-  private async saveAndValidatePendingModule(modulePath: string, handlerNames: string[]): Promise<{ rollback(): Promise<void> }> {
-    const normalizedPath = path.normalize(modulePath);
-    const pairedModuleDoc = vscode.workspace.textDocuments.find(
-      (doc) => doc.uri.scheme === 'file' && path.normalize(doc.uri.fsPath) === normalizedPath
-    ) ?? this.moduleDocumentsByPath.get(normalizedPath);
-    let rollback = async () => {};
+  private assertLifecycleCurrent(
+    documentKey: string,
+    lifecycleEpoch: number,
+    cancellation: vscode.CancellationToken,
+  ): void {
+    if (
+      cancellation.isCancellationRequested ||
+      (this.lifecycleEpochs.get(documentKey) ?? 0) !== lifecycleEpoch
+    ) {
+      throw new vscode.CancellationError();
+    }
+  }
+
+  private async saveAndValidatePendingModule(
+    modulePath: string,
+    handlerNames: string[],
+    assertLifecycleCurrent: () => void,
+  ): Promise<void> {
+    const pairedModuleDoc = await findModuleTextDocument(modulePath, this.moduleDocumentsByPath);
     if (pairedModuleDoc?.isDirty) {
-      const preSaveDiskContent = await fs.promises.readFile(modulePath, 'utf8').catch(() => null);
+      assertLifecycleCurrent();
       const saved = await pairedModuleDoc.save();
+      assertLifecycleCurrent();
       if (!saved) {
         throw new Error('Сохранение Module.bsl отменено; Form.xml не сохранён.');
       }
-      rollback = async () => {
-        if (preSaveDiskContent === null) {
-          await fs.promises.rm(modulePath, { force: true }).catch(() => undefined);
-        } else {
-          await fs.promises.writeFile(modulePath, preSaveDiskContent, 'utf8').catch(() => undefined);
-        }
-        Reflect.set(pairedModuleDoc, 'isDirty', true);
-      };
     }
 
     if (handlerNames.length === 0) {
-      return { rollback };
+      return;
     }
 
     const bufferContent = pairedModuleDoc?.getText();
@@ -395,10 +418,8 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       return handlerNames.every((handlerName) => procedures.has(handlerName.toLowerCase()));
     };
     if (!containsAllHandlers(persistedContent) || (bufferContent !== undefined && !containsAllHandlers(bufferContent))) {
-      await rollback();
       throw new Error('Module.bsl не содержит все связанные обработчики; привязка Form.xml не записана.');
     }
-    return { rollback };
   }
 
   private async hasPersistedPendingModuleLinks(
@@ -433,21 +454,22 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       throw new vscode.CancellationError();
     }
     const key = document.uri.toString();
-    return this.runSaveOperation(key, () => this.saveCustomDocumentAsSerialized(document, destination, cancellation));
+    const lifecycleEpoch = this.lifecycleEpochs.get(key) ?? 0;
+    return this.runSaveOperation(key, () => this.saveCustomDocumentAsSerialized(document, destination, cancellation, lifecycleEpoch));
   }
 
   private async saveCustomDocumentAsSerialized(
     document: FormEditorDocument,
     destination: vscode.Uri,
     cancellation: vscode.CancellationToken,
+    lifecycleEpoch: number,
   ): Promise<void> {
-    if (cancellation.isCancellationRequested) {
-      throw new vscode.CancellationError();
-    }
+    const key = document.uri.toString();
+    const assertLifecycleCurrent = (): void => this.assertLifecycleCurrent(key, lifecycleEpoch, cancellation);
+    assertLifecycleCurrent();
     if (destination.scheme !== 'file') {
       throw new Error('Save As доступен только для файлового пути.');
     }
-    const key = document.uri.toString();
     const currentModel = this.documentModel.get(key);
     if (!currentModel) {
       throw new Error('Нет данных формы для сохранения.');
@@ -455,8 +477,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
     const model = cloneFormModel(currentModel);
     const generation = this.editGenerations.get(key) ?? 0;
     const { modulePath: srcModulePath } = getFormPaths(document.uri.fsPath);
-    const sourceModuleDoc = await findOpenTextDocumentCanonical(srcModulePath)
-      ?? this.moduleDocumentsByPath.get(path.normalize(srcModulePath));
+    const sourceModuleDoc = await findModuleTextDocument(srcModulePath, this.moduleDocumentsByPath);
     const sourceModuleVersion = sourceModuleDoc?.version;
     const sourceModuleText = sourceModuleDoc?.getText();
     let sourceModuleBytes: Buffer | undefined;
@@ -483,6 +504,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
     }
 
     const assertCapturedSourceIsCurrent = (): void => {
+      assertLifecycleCurrent();
       const latestModel = this.documentModel.get(key);
       if (
         (this.editGenerations.get(key) ?? 0) !== generation ||
@@ -530,8 +552,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
           throw new Error('Целевой Form.xml открыт с несохранёнными изменениями; Save As отменён.');
         }
         const destinationModuleDoc = sourceModuleDoc || sourceModuleBytes
-          ? await findOpenTextDocumentCanonical(destinationModulePath)
-            ?? this.moduleDocumentsByPath.get(path.normalize(destinationModulePath))
+          ? await findModuleTextDocument(destinationModulePath, this.moduleDocumentsByPath)
           : undefined;
         if (destinationModuleDoc?.isDirty) {
           throw new Error('Целевой Module.bsl открыт с несохранёнными изменениями; Save As отменён.');
@@ -585,6 +606,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
             throw new Error(`Исходный Module.bsl изменился во время подготовки Save As: ${srcModulePath}`);
           }
         }
+        assertCapturedSourceIsCurrent();
         const plan: MutationPlan<void> = {
           kind: 'ui.form.saveAs',
           steps,
@@ -610,11 +632,13 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
         ctx.webviewPanel.title = `${getFormEditorTitle(document.uri.fsPath)} *`;
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (ctx) {
-        await ctx.webviewPanel.webview.postMessage({ type: 'error', message });
+      if (!isCancellationError(error)) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (ctx) {
+          await ctx.webviewPanel.webview.postMessage({ type: 'error', message });
+        }
+        Logger.error('Form editor Save As failed', error);
       }
-      Logger.error('Form editor Save As failed', error);
       throw error;
     }
   }
@@ -627,25 +651,34 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       throw new vscode.CancellationError();
     }
     const key = document.uri.toString();
-    await runConfigurationMutation(document.uri.fsPath, 'ui.form.revert', async () => {
-      const ctx = this.contextByDocument.get(key);
-      if (ctx) {
-        await reloadFormAndSend(ctx);
-        return;
+    this.lifecycleEpochs.set(key, (this.lifecycleEpochs.get(key) ?? 0) + 1);
+    await this.runSaveOperation(key, async () => {
+      if (cancellation.isCancellationRequested) {
+        throw new vscode.CancellationError();
       }
-      const result = await loadFormModel(document.uri.fsPath);
-      if ('error' in result) {
-        throw new Error(result.error);
-      }
-      this.documentModel.set(key, result.model);
+      await runConfigurationMutation(document.uri.fsPath, 'ui.form.revert', async () => {
+        if (cancellation.isCancellationRequested) {
+          throw new vscode.CancellationError();
+        }
+        const ctx = this.contextByDocument.get(key);
+        if (ctx) {
+          await reloadFormAndSend(ctx);
+          return;
+        }
+        const result = await loadFormModel(document.uri.fsPath);
+        if ('error' in result) {
+          throw new Error(result.error);
+        }
+        this.documentModel.set(key, result.model);
 
-      if (result.sourceSnapshot) {
-        this.sourceSnapshots.set(key, result.sourceSnapshot);
-      } else {
-        this.sourceSnapshots.delete(key);
-      }
-      this.commandEngines.delete(key);
-      this.dirtyDocuments.delete(key);
+        if (result.sourceSnapshot) {
+          this.sourceSnapshots.set(key, result.sourceSnapshot);
+        } else {
+          this.sourceSnapshots.delete(key);
+        }
+        this.commandEngines.delete(key);
+        this.dirtyDocuments.delete(key);
+      });
     });
   }
 
@@ -694,6 +727,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
     this.commandEngines.clear();
     this.dirtyDocuments.clear();
     this.pendingModuleTransactions.clear();
+    this.lifecycleEpochs.clear();
     this.messageExecutors.clear();
     this.latestSelectionByDocument.clear();
     this.activeSelectionDocumentUri = null;
@@ -805,6 +839,13 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
 
 function cloneFormModel(model: FormModel): FormModel {
   return JSON.parse(JSON.stringify(model)) as FormModel;
+}
+
+function isCancellationError(error: unknown): boolean {
+  return error instanceof vscode.CancellationError || (
+    error instanceof Error &&
+    (error.name === 'CancellationError' || error.name === 'Canceled' || error.message === 'Canceled')
+  );
 }
 
 async function findOpenTextDocumentCanonical(targetPath: string): Promise<vscode.TextDocument | undefined> {

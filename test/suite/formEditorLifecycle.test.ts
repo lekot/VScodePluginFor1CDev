@@ -27,6 +27,16 @@ function makeModel(width = '100'): FormModel {
   };
 }
 
+async function makeConfigurationFixture(prefix: string): Promise<string> {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
+  await fs.promises.writeFile(
+    path.join(tempDir, 'Configuration.xml'),
+    '<MetaDataObject version="2.20"><Configuration/></MetaDataObject>',
+    'utf8',
+  );
+  return tempDir;
+}
+
 function makePanel(active = true): {
   panel: vscode.WebviewPanel;
   setActive(newActive: boolean): void;
@@ -106,7 +116,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
   });
 
   test('persists and restores a hot-exit backup', async () => {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-backup-'));
+    const tempDir = await makeConfigurationFixture('form-editor-backup-');
     try {
       const provider = new FormEditorProvider();
       const uri = vscode.Uri.file(path.join(tempDir, 'Form.xml'));
@@ -140,7 +150,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
   });
 
   test('save and revert use the custom document model', async () => {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-save-'));
+    const tempDir = await makeConfigurationFixture('form-editor-save-');
     try {
       const provider = new FormEditorProvider();
       const uri = vscode.Uri.file(path.join(tempDir, 'Form.xml'));
@@ -166,7 +176,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
   });
 
   test('provider saves a loaded Form.xml through the captured byte snapshot', async () => {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-source-save-'));
+    const tempDir = await makeConfigurationFixture('form-editor-source-save-');
     try {
       const formXmlPath = path.join(tempDir, 'Catalogs', 'Goods', 'Forms', 'MainForm', 'Ext', 'Form.xml');
       const source = Buffer.from(
@@ -214,7 +224,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
   });
 
   test('fails closed for generic save of an adopted CFE form', async () => {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-adopted-cfe-'));
+    const tempDir = await makeConfigurationFixture('form-editor-adopted-cfe-');
     try {
       const formXmlPath = path.join(tempDir, 'Catalogs', 'Products', 'Forms', 'List', 'Ext', 'Form.xml');
       const metadataPath = path.join(tempDir, 'Catalogs', 'Products', 'Forms', 'List.xml');
@@ -249,7 +259,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
   });
 
   test('fails closed for malformed metadata that explicitly marks an adopted CFE form', async () => {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-malformed-adopted-cfe-'));
+    const tempDir = await makeConfigurationFixture('form-editor-malformed-adopted-cfe-');
     try {
       const formXmlPath = path.join(tempDir, 'Catalogs', 'Products', 'Forms', 'List', 'Ext', 'Form.xml');
       const metadataPath = path.join(tempDir, 'Catalogs', 'Products', 'Forms', 'List.xml');
@@ -280,7 +290,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
   });
 
   test('keeps generic save compatible with malformed metadata without adopted ownership', async () => {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-malformed-own-'));
+    const tempDir = await makeConfigurationFixture('form-editor-malformed-own-');
     try {
       const formXmlPath = path.join(tempDir, 'Catalogs', 'Products', 'Forms', 'List', 'Ext', 'Form.xml');
       const metadataPath = path.join(tempDir, 'Catalogs', 'Products', 'Forms', 'List.xml');
@@ -301,7 +311,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
   });
 
   test('revert rejects malformed disk state and preserves the dirty in-memory model', async () => {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-revert-error-'));
+    const tempDir = await makeConfigurationFixture('form-editor-revert-error-');
     try {
       const formXmlPath = path.join(tempDir, 'Ext', 'Form.xml');
       await fs.promises.mkdir(path.dirname(formXmlPath), { recursive: true });
@@ -349,7 +359,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
   });
 
   test('createEventHandler keeps module clean on disk and revert rejects malformed form XML', async () => {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-handler-revert-'));
+    const tempDir = await makeConfigurationFixture('form-editor-handler-revert-');
     try {
       const formXmlPath = path.join(tempDir, 'Ext', 'Form.xml');
       const modulePath = path.join(tempDir, 'Ext', 'Form', 'Module.bsl');
@@ -386,8 +396,8 @@ suite('FormEditorProvider editable document lifecycle', () => {
     }
   });
 
-  test('failed form save preserves clean disk state and keeps in-memory model dirty', async () => {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-handler-save-'));
+  test('failed form save preserves the module commit and keeps the in-memory form dirty', async () => {
+    const tempDir = await makeConfigurationFixture('form-editor-handler-save-');
     try {
       const formXmlPath = path.join(tempDir, 'Ext', 'Form.xml');
       const modulePath = path.join(tempDir, 'Ext', 'Form', 'Module.bsl');
@@ -412,7 +422,10 @@ suite('FormEditorProvider editable document lifecycle', () => {
       });
       await assert.rejects(provider.saveCustomDocument(document, cancellation));
 
-      assert.strictEqual(await fs.promises.readFile(modulePath, 'utf8'), '// original module\r\n');
+      const committedModule = await fs.promises.readFile(modulePath, 'utf8');
+      assert.match(committedModule, /original module/);
+      assert.match(committedModule, /Field1ПриИзменении/);
+      assert.strictEqual((await fs.promises.stat(formXmlPath)).isDirectory(), true, 'Form.xml writer did not commit over the directory');
       assert.strictEqual((provider as any).dirtyDocuments.has(key), true);
 
       document.dispose();
@@ -423,7 +436,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
   });
 
   test('Save As transfers a pending module transaction and clears dirty state', async () => {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-handler-save-as-'));
+    const tempDir = await makeConfigurationFixture('form-editor-handler-save-as-');
     try {
       const formXmlPath = path.join(tempDir, 'source', 'Ext', 'Form.xml');
       const modulePath = path.join(tempDir, 'source', 'Ext', 'Form', 'Module.bsl');
@@ -469,7 +482,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
   });
 
   test('unrelated module edits do not conflict with in-memory form edits and are preserved on disk', async () => {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-handler-conflict-'));
+    const tempDir = await makeConfigurationFixture('form-editor-handler-conflict-');
     try {
       const formXmlPath = path.join(tempDir, 'Ext', 'Form.xml');
       const modulePath = path.join(tempDir, 'Ext', 'Form', 'Module.bsl');
