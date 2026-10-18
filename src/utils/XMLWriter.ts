@@ -523,18 +523,13 @@ export class XMLWriter {
   }
 
   /**
-   * Create a new XML file with minimal Designer structure for a metadata element.
-   * @param filePath Path for the new file
-   * @param rootTag Root element tag (e.g. 'Catalog', 'Document', 'Enum')
-   * @param elementName Name of the element
-   * @throws Error if file cannot be written
+   * Build minimal Designer XML content for a metadata element without writing to disk.
    */
-  static async createMinimalElementFile(
-    filePath: string,
+  static buildMinimalElementContent(
     rootTag: string,
     elementName: string,
     targetVersion: string
-  ): Promise<void> {
+  ): string {
     const profile = requireWriteFormatProfile(targetVersion);
     const uuid = this.generateSimpleUuid();
     const defaultProps = getDefaultPropertiesForRootTag(rootTag);
@@ -556,7 +551,23 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
 </MetaDataObject>
 `;
     content = injectInternalInfoIntoMetadataXml(content, rootTag, elementName);
-    content = normalizeMetaDataObjectRoot(content, profile.version);
+    return normalizeMetaDataObjectRoot(content, profile.version);
+  }
+
+  /**
+   * Create a new XML file with minimal Designer structure for a metadata element.
+   * @param filePath Path for the new file
+   * @param rootTag Root element tag (e.g. 'Catalog', 'Document', 'Enum')
+   * @param elementName Name of the element
+   * @throws Error if file cannot be written
+   */
+  static async createMinimalElementFile(
+    filePath: string,
+    rootTag: string,
+    elementName: string,
+    targetVersion: string
+  ): Promise<void> {
+    const content = this.buildMinimalElementContent(rootTag, elementName, targetVersion);
     await fs.promises.writeFile(filePath, content, 'utf-8');
     Logger.info(`Created minimal ${rootTag} file ${filePath}`);
   }

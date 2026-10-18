@@ -23,6 +23,10 @@ import { ExchangePlanStrategy } from '../../src/compositionEditor/strategies/exc
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
 import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
+import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
+import type { MutationOutcome, MutationRequest } from '../../src/services/configurationSession/ConfigurationSession';
+import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
+import type { MutationPlan } from '../../src/services/configurationSession/mutationPlan';
 import { CompositionWebviewRuntime } from '../helpers/compositionWebviewRuntime';
 
 // ── diff simulator ────────────────────────────────────────────────────────────
@@ -215,16 +219,7 @@ suite('CompositionEditorProvider — production writers & save entrypoint (Issue
     const filePath = path.join(tmpDir, 'Subsystem.xml');
     await fsp.writeFile(filePath, xmlContent, 'utf-8');
 
-    let gatewayCalled = false;
-    const gateway = configureConfigurationMutationGateway(
-      async (resPath, kind, op) => {
-        gatewayCalled = true;
-        assert.strictEqual(kind, 'ui.composition.save');
-        assert.strictEqual(path.resolve(resPath), path.resolve(filePath));
-        return op();
-      },
-      async (_path, plan) => plan.result
-    );
+    const gateway = await createSessionBackedMutationGateway([tmpDir]);
 
     const provider = new CompositionEditorProvider(
       createMockContext(),
@@ -254,7 +249,21 @@ suite('CompositionEditorProvider — production writers & save entrypoint (Issue
       // Send save message
       await currentMessageHandler({ command: 'save' });
 
-      assert.strictEqual(gatewayCalled, true, 'Save entrypoint must route through configuration mutation gateway');
+      assert.deepStrictEqual(
+        gateway.adapterCalls.map((call) => call.kind),
+        ['ui.composition.save', 'ui.subsystem.composition'],
+        'save entrypoint and subsystem writer must both route through the configuration gateway in order',
+      );
+      assert.deepStrictEqual(
+        gateway.adapterCalls.map((call) => call.rootPath),
+        [gateway.roots[0], gateway.roots[0]],
+        'both gateway layers must resolve to the same configuration session',
+      );
+      assert.deepStrictEqual(
+        gateway.enqueued.map((call) => call.kind),
+        ['ui.composition.save'],
+        'the outer save must be the only FIFO enqueue for this nested write',
+      );
       assert.ok(
         postedMessages.some((m) => m.command === 'saveSuccess'),
         `Expected saveSuccess in webview messages: ${JSON.stringify(postedMessages)}`
@@ -264,7 +273,7 @@ suite('CompositionEditorProvider — production writers & save entrypoint (Issue
       assert.ok(written.includes('Catalog.Users'), 'Subsystem.xml must contain Catalog.Users');
       assert.strictEqual(panelDisposed, true, 'Panel must be disposed on successful save');
     } finally {
-      gateway.dispose();
+      await gateway.dispose();
       provider.dispose();
     }
   });
@@ -591,6 +600,82 @@ function createCompositionTreeProvider(roots: TreeNode[], getChildren?: (node: T
   };
 }
 
+interface SessionGatewayCall {
+  readonly resourcePath: string;
+  readonly kind: string;
+  readonly rootPath: string;
+}
+
+interface SessionEnqueueCall {
+  readonly kind: string;
+  readonly rootPath: string;
+}
+
+interface SessionBackedMutationGateway {
+  readonly adapterCalls: SessionGatewayCall[];
+  readonly enqueued: SessionEnqueueCall[];
+  readonly roots: readonly string[];
+  dispose(): Promise<void>;
+}
+
+async function createSessionBackedMutationGateway(
+  configPaths: readonly string[],
+  beforeMutation?: (call: SessionGatewayCall) => Promise<void>,
+): Promise<SessionBackedMutationGateway> {
+  const registry = new WorkspaceRegistry();
+  const sessions: ConfigurationSession[] = [];
+  const enqueued: SessionEnqueueCall[] = [];
+  const adapterCalls: SessionGatewayCall[] = [];
+  for (const configPath of configPaths) {
+    await fsp.mkdir(configPath, { recursive: true });
+    await fsp.writeFile(
+      path.join(configPath, 'Configuration.xml'),
+      '<MetaDataObject><Configuration uuid="00000000-0000-0000-0000-000000000000"/></MetaDataObject>',
+      'utf8',
+    );
+    const session = await registry.registerTargetedRoot({ configPath });
+    sessions.push(session);
+    const enqueue = session.enqueue.bind(session);
+    const mutableSession = session as unknown as {
+      enqueue<T>(request: MutationRequest<T>): Promise<MutationOutcome<T>>;
+    };
+    mutableSession.enqueue = <T>(request: MutationRequest<T>) => {
+      enqueued.push({ kind: request.kind, rootPath: session.identity.rootPath });
+      return enqueue(request);
+    };
+  }
+
+  const gateway = configureConfigurationMutationGateway(
+    async (resourcePath, kind, operation) => {
+      const session = await registry.resolveResource(resourcePath);
+      const call = { resourcePath: path.resolve(resourcePath), kind, rootPath: session.identity.rootPath };
+      adapterCalls.push(call);
+      return session.runMutationValue({
+        kind,
+        execute: async () => {
+          await beforeMutation?.(call);
+          return operation();
+        },
+      });
+    },
+    async <T>(resourcePath: string, plan: MutationPlan<T>): Promise<T> => {
+      const session = await registry.resolveResource(resourcePath);
+      adapterCalls.push({ resourcePath: path.resolve(resourcePath), kind: plan.kind, rootPath: session.identity.rootPath });
+      return session.runPlanValue(plan);
+    },
+  );
+
+  return {
+    adapterCalls,
+    enqueued,
+    roots: sessions.map((session) => session.identity.rootPath),
+    dispose: async () => {
+      gateway.dispose();
+      await registry.dispose();
+    },
+  };
+}
+
 function subsystemXml(name: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.17">
@@ -629,17 +714,9 @@ suite('CompositionEditorProvider — session fences (#250)', () => {
     const beforeB = Buffer.from(subsystemXml('B'), 'utf8');
     const enteredA = compositionDeferred<void>();
     const releaseA = compositionDeferred<void>();
-    const mutationResources: string[] = [];
     const invalidated: string[] = [];
     let loaded = 0;
-    const gateway = configureConfigurationMutationGateway(async (resourcePath, _kind, operation) => {
-      mutationResources.push(path.resolve(resourcePath));
-      if (path.resolve(resourcePath) === path.resolve(fileA)) {
-        enteredA.resolve();
-        await releaseA.promise;
-      }
-      return operation();
-    }, async (_resourcePath, plan) => plan.result);
+    let gateway: SessionBackedMutationGateway | undefined;
     const panels = patchCompositionPanelFactory();
     const provider = new CompositionEditorProvider(
       createCompositionContext(),
@@ -653,6 +730,12 @@ suite('CompositionEditorProvider — session fences (#250)', () => {
     try {
       await writeCompositionFixture(configA, fileA, subsystemXml('A'));
       await writeCompositionFixture(configB, fileB, beforeB.toString('utf8'));
+      gateway = await createSessionBackedMutationGateway([configA, configB], async (call) => {
+        if (path.resolve(call.resourcePath) === path.resolve(fileA) && call.kind === 'ui.composition.save') {
+          enteredA.resolve();
+          await releaseA.promise;
+        }
+      });
       const tree = createCompositionTreeProvider([]);
       await provider.show(createCompositionNode(fileA, 'A'), tree, configA);
       await provider.handleMessage({ command: 'toggle', data: { ref: 'Catalog.Users', checked: true } });
@@ -669,7 +752,26 @@ suite('CompositionEditorProvider — session fences (#250)', () => {
       assert.ok(afterA.toString('utf8').includes('Catalog.Users'), 'the captured A target must be changed');
       assert.ok(!afterA.toString('utf8').includes('Bad&Name'), 'escaped invalid reference must not corrupt A XML');
       assert.deepStrictEqual(afterB, beforeB, 'B must remain byte-identical while A is queued');
-      assert.deepStrictEqual(mutationResources, [path.resolve(fileA)], 'the mutation gateway must never enter B');
+      assert.deepStrictEqual(
+        gateway.adapterCalls.map((call) => call.resourcePath),
+        [path.resolve(fileA), path.resolve(fileA)],
+        'both writer layers must stay on the captured A target and never enter B',
+      );
+      assert.deepStrictEqual(
+        gateway.adapterCalls.map((call) => call.kind),
+        ['ui.composition.save', 'ui.subsystem.composition'],
+        'outer save and nested subsystem writer must preserve gateway event order',
+      );
+      assert.deepStrictEqual(
+        gateway.adapterCalls.map((call) => call.rootPath),
+        [gateway.roots[0], gateway.roots[0]],
+        'both writer layers must resolve to configuration A',
+      );
+      assert.deepStrictEqual(
+        gateway.enqueued.map((call) => call.kind),
+        ['ui.composition.save'],
+        'save A must acquire one session FIFO entry despite the nested content writer',
+      );
       assert.deepStrictEqual(invalidated, [path.resolve(configA)], 'reconciliation must use captured config A');
       assert.strictEqual(loaded, 1, 'the captured A metadata tree must be reloaded');
       assert.strictEqual(panels.panels.length, 1, 'show B should reuse the active panel');
@@ -680,7 +782,7 @@ suite('CompositionEditorProvider — session fences (#250)', () => {
       );
     } finally {
       releaseA.resolve();
-      gateway.dispose();
+      await gateway?.dispose();
       provider.dispose();
       panels.restore();
       await cleanupTempDir(tempRoot);
@@ -1681,11 +1783,7 @@ suite('CompositionEditorProvider — real webview session state (#250)', () => {
   test('ignored save during a pending show is re-enabled after A recovery with dirty UI intact', async () => {
     const fixture = await createRuntimeCompositionFiles('composition-ui-pending-save-');
     const readB = compositionDeferred<{ refs: string[]; itemSettings: Map<string, Record<string, string>> }>();
-    let writeAttempts = 0;
-    const gateway = configureConfigurationMutationGateway(async (_resourcePath, _kind, operation) => {
-      writeAttempts++;
-      return operation();
-    }, async (_resourcePath, plan) => plan.result);
+    let gateway: SessionBackedMutationGateway | undefined;
     const panels = patchCompositionPanelFactory(true);
     const strategy = {
       ...CommonAttributeStrategy,
@@ -1701,6 +1799,7 @@ suite('CompositionEditorProvider — real webview session state (#250)', () => {
 
     try {
       await writeCompositionFixture(fixture.configA, fixture.fileA, commonAttributeXml('A', 'Catalog.Existing'));
+      gateway = await createSessionBackedMutationGateway([fixture.configA, fixture.configB]);
       const existing = { id: 'Catalog.Existing', name: 'Existing', type: MetadataType.Catalog, properties: {} } as TreeNode;
       const added = { id: 'Catalog.New', name: 'New', type: MetadataType.Catalog, properties: {} } as TreeNode;
       const { tree } = createRuntimeCatalogTree(fixture.configA, fixture.configB, [existing, added]);
@@ -1713,7 +1812,7 @@ suite('CompositionEditorProvider — real webview session state (#250)', () => {
       const showB = provider.show(fixture.nodeB, tree, fixture.configB);
       runtime.getElementById('btn-save').click();
       await runtime.drainExtensionMessages();
-      assert.strictEqual(writeAttempts, 0, 'save is ignored while B is pending');
+      assert.strictEqual(gateway.enqueued.length, 0, 'save is ignored while B is pending');
       assert.strictEqual(runtime.getElementById('btn-save').disabled, true, 'the actual click handler marks save pending');
       readB.reject(new Error('B read failed'));
       await showB;
@@ -1730,13 +1829,27 @@ suite('CompositionEditorProvider — real webview session state (#250)', () => {
 
       saveButton.click();
       await runtime.drainExtensionMessages();
-      assert.strictEqual(writeAttempts, 1, 'the re-enabled button must admit the retry');
+      assert.deepStrictEqual(
+        gateway.adapterCalls.map((call) => call.kind),
+        ['ui.composition.save', 'ui.commonAttribute.content'],
+        'retry must call the outer save adapter and nested content adapter in order',
+      );
+      assert.deepStrictEqual(
+        gateway.adapterCalls.map((call) => call.rootPath),
+        [gateway.roots[0], gateway.roots[0]],
+        'retry layers must remain owned by configuration A',
+      );
+      assert.deepStrictEqual(
+        gateway.enqueued.map((call) => call.kind),
+        ['ui.composition.save'],
+        'the retry must acquire one session FIFO entry',
+      );
       const savedA = await fsp.readFile(fixture.fileA, 'utf8');
       assert.ok(savedA.includes('Catalog.New'), 'retry must save the preserved checked ref');
       assert.ok(savedA.includes('DontUse'), 'retry must save the preserved setting');
     } finally {
       readB.reject(new Error('cleanup B read'));
-      gateway.dispose();
+      await gateway?.dispose();
       provider.dispose();
       panels.restore();
       await cleanupTempDir(fixture.tempRoot);

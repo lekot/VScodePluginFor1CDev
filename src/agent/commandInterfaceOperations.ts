@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { parseCommandInterface, serializeCommandInterface } from '../parsers/commandInterfaceParser';
 import { assertPathWithinRoot, PathBoundaryError } from '../services/configurationSession/pathBoundary';
+import { AtomicFileStorage, hashContent, StorageOutcome } from '../services/configurationSession/atomicFileStorage';
 import type {
   CommandInterfaceModel,
   CommandVisibilityEntry,
@@ -20,18 +21,26 @@ async function resolveCommandInterfacePath(subsystemPath: string, configRootPath
   } else if (path.isAbsolute(subsystemPath)) {
     // If subsystemPath is absolute pointing to a directory
     candidate = path.join(subsystemPath, 'Ext', 'CommandInterface.xml');
+  } else if (subsystemPath.includes('/') || subsystemPath.includes('\\')) {
+    // Relative filesystem path (e.g. "Subsystems/Администрирование" or "../../Outside")
+    const resolved = path.resolve(configRootPath, subsystemPath);
+    if (resolved.endsWith('.xml')) {
+      candidate = path.join(path.dirname(resolved), 'Ext', 'CommandInterface.xml');
+    } else {
+      candidate = path.join(resolved, 'Ext', 'CommandInterface.xml');
+    }
   } else {
-    // Relative path like "Subsystems/Администрирование" or "Subsystem.Администрирование"
+    // Relative path with 1C metadata notation like "Subsystems/Администрирование" or "Subsystem.Администрирование"
     const normalized = subsystemPath
       .replace(/^Subsystem\./i, '')
-      .replace(/\./g, path.sep)
-      .replace(/Subsystem[/\\]/gi, `Subsystems${path.sep}`);
+      .replace(/\./g, path.sep);
 
     // Try under Subsystems/ subfolder of configRoot
     const underSubsystems = path.join(configRootPath, 'Subsystems', normalized, 'Ext', 'CommandInterface.xml');
-    if (fs.existsSync(underSubsystems)) {
+    try {
+      await fs.promises.access(underSubsystems);
       candidate = underSubsystems;
-    } else {
+    } catch {
       // Try as-is under configRoot
       candidate = path.join(configRootPath, normalized, 'Ext', 'CommandInterface.xml');
     }
@@ -41,14 +50,23 @@ async function resolveCommandInterfacePath(subsystemPath: string, configRootPath
   return candidate;
 }
 
-function readModel(ciPath: string): CommandInterfaceModel {
-  const text = fs.readFileSync(ciPath, 'utf8');
-  return parseCommandInterface(text);
+async function readModelWithHash(ciPath: string): Promise<{ model: CommandInterfaceModel; hash: string }> {
+  const text = await fs.promises.readFile(ciPath, 'utf8');
+  return {
+    model: parseCommandInterface(text),
+    hash: hashContent(text),
+  };
 }
 
-function writeModel(ciPath: string, model: CommandInterfaceModel): void {
+async function writeModel(
+  configRootPath: string,
+  ciPath: string,
+  model: CommandInterfaceModel,
+  expectedHash: string,
+): Promise<StorageOutcome> {
   const xml = serializeCommandInterface(model);
-  fs.writeFileSync(ciPath, xml, 'utf8');
+  const storage = new AtomicFileStorage(configRootPath);
+  return storage.replace(ciPath, xml, expectedHash);
 }
 
 export class CommandInterfaceOperations {
@@ -57,10 +75,12 @@ export class CommandInterfaceOperations {
   async getCommandInterface(subsystemPath: string): Promise<AgentResult<CommandInterfaceModel>> {
     try {
       const ciPath = await resolveCommandInterfacePath(subsystemPath, this.configRootPath);
-      if (!fs.existsSync(ciPath)) {
+      try {
+        await fs.promises.access(ciPath);
+      } catch {
         return { success: false, error: `Файл не найден: ${ciPath}` };
       }
-      const model = readModel(ciPath);
+      const { model } = await readModelWithHash(ciPath);
       return { success: true, data: model };
     } catch (err) {
       if (err instanceof PathBoundaryError) {
@@ -74,7 +94,6 @@ export class CommandInterfaceOperations {
     }
   }
 
-
   async setCommandVisibility(
     subsystemPath: string,
     commandName: string,
@@ -82,10 +101,12 @@ export class CommandInterfaceOperations {
   ): Promise<AgentResult> {
     try {
       const ciPath = await resolveCommandInterfacePath(subsystemPath, this.configRootPath);
-      if (!fs.existsSync(ciPath)) {
+      try {
+        await fs.promises.access(ciPath);
+      } catch {
         return { success: false, error: `Файл не найден: ${ciPath}` };
       }
-      const model = readModel(ciPath);
+      const { model, hash } = await readModelWithHash(ciPath);
       let updated: readonly CommandVisibilityEntry[];
       if (common === null) {
         updated = model.visibility.filter((e) => e.commandName !== commandName);
@@ -99,7 +120,13 @@ export class CommandInterfaceOperations {
           updated = [...model.visibility, { commandName, common }];
         }
       }
-      writeModel(ciPath, { ...model, visibility: updated });
+      const outcome = await writeModel(this.configRootPath, ciPath, { ...model, visibility: updated }, hash);
+      if (outcome.status === 'conflict') {
+        return { success: false, code: outcome.code, error: outcome.message };
+      }
+      if (outcome.status !== 'committed') {
+        return { success: false, error: outcome.message };
+      }
       return { success: true };
     } catch (err) {
       if (err instanceof PathBoundaryError) {
@@ -119,11 +146,19 @@ export class CommandInterfaceOperations {
   ): Promise<AgentResult> {
     try {
       const ciPath = await resolveCommandInterfacePath(subsystemPath, this.configRootPath);
-      if (!fs.existsSync(ciPath)) {
+      try {
+        await fs.promises.access(ciPath);
+      } catch {
         return { success: false, error: `Файл не найден: ${ciPath}` };
       }
-      const model = readModel(ciPath);
-      writeModel(ciPath, { ...model, commandsOrder: entries });
+      const { model, hash } = await readModelWithHash(ciPath);
+      const outcome = await writeModel(this.configRootPath, ciPath, { ...model, commandsOrder: entries }, hash);
+      if (outcome.status === 'conflict') {
+        return { success: false, code: outcome.code, error: outcome.message };
+      }
+      if (outcome.status !== 'committed') {
+        return { success: false, error: outcome.message };
+      }
       return { success: true };
     } catch (err) {
       if (err instanceof PathBoundaryError) {
@@ -143,11 +178,19 @@ export class CommandInterfaceOperations {
   ): Promise<AgentResult> {
     try {
       const ciPath = await resolveCommandInterfacePath(subsystemPath, this.configRootPath);
-      if (!fs.existsSync(ciPath)) {
+      try {
+        await fs.promises.access(ciPath);
+      } catch {
         return { success: false, error: `Файл не найден: ${ciPath}` };
       }
-      const model = readModel(ciPath);
-      writeModel(ciPath, { ...model, subsystemsOrder: order });
+      const { model, hash } = await readModelWithHash(ciPath);
+      const outcome = await writeModel(this.configRootPath, ciPath, { ...model, subsystemsOrder: order }, hash);
+      if (outcome.status === 'conflict') {
+        return { success: false, code: outcome.code, error: outcome.message };
+      }
+      if (outcome.status !== 'committed') {
+        return { success: false, error: outcome.message };
+      }
       return { success: true };
     } catch (err) {
       if (err instanceof PathBoundaryError) {
