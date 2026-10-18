@@ -227,6 +227,7 @@ export async function registerAllCommands({
     },
     lifecycle.loadMetadataTree,
     () => state.configurationRepositoryService,
+    requestConfigurationReload,
   );
   state.agentTaskManager = taskManager;
 
