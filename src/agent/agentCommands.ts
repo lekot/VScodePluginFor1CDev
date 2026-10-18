@@ -95,6 +95,7 @@ import type {
 } from './agentFormsTypes';
 import type { StaticFormEditParams, StaticFormSelector, StaticFormValidateParams } from './agentStaticForms';
 import { registerAgentSkdCommands } from './agentSkdCommands';
+import type { SkdOperationsDeps } from './agentSkdOperations';
 import { XdtoAgentOperations } from './agentXdtoOperations';
 import type {
     XdtoCompareParams,
@@ -110,6 +111,7 @@ import { PathBoundaryError } from '../services/configurationSession/pathBoundary
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
 import { AgentRoleRightsError, planSetRoleRights } from './agentRoleRights';
 import { resolveAgentConfiguration } from './agentConfigurationResolver';
+import { resolveSkdConfiguration } from './skdConfigurationResolver';
 import { AgentPathError, parseSourceAddress } from './agentPathResolver';
 import { resolveSourceAddress } from './agentSourceAddressResolver';
 import { findWorkspaceFolderForPath } from './agentWorkspaceContext';
@@ -169,6 +171,7 @@ export function registerAgentCommands(
     refreshCfeLifecycle?: () => Promise<void>,
     getRepositoryService?: () => ConfigurationRepositoryService | null,
     requestConfigurationReload?: RequestConfigurationReload,
+    getSkdOperationsDeps?: () => Pick<SkdOperationsDeps, 'runPowerShellScript'> | undefined,
 ): { readonly taskManager: AgentTaskManager } {
     const resolveSession = async (
         params: ConfigurationScopedParams = {},
@@ -178,6 +181,8 @@ export function registerAgentCommands(
         if (!registry) {
             throw new WorkspaceRegistryError('CONFIGURATION_NOT_FOUND', 'Корень конфигурации не найден.');
         }
+        const skdSession = await resolveSkdConfiguration(registry, params, capability);
+        if (skdSession) { return { session: skdSession }; }
         const candidateResource = extractCandidateResourcePath(params);
         if (!params.configurationId && candidateResource) {
             const session = await registry.resolveResource(candidateResource);
@@ -1331,6 +1336,7 @@ export function registerAgentCommands(
         taskManager,
         runForConfiguration,
         requestConfigurationReload,
+        runPowerShellScript: getSkdOperationsDeps?.()?.runPowerShellScript,
     });
 
     const listXdtoPackagesCommand = vscode.commands.registerCommand(

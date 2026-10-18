@@ -18,7 +18,14 @@ import type {
 } from './agentSkdTypes';
 import { runPowerShellScript } from '../services/skd/powershellRunner';
 import { createProcessOutputLineReporter } from '../services/process/processOutputLineReporter';
-import { assertPathWithinRoot, PathBoundaryError } from '../services/configurationSession/pathBoundary';
+import { assertPathWithinRoot } from '../services/configurationSession/pathBoundary';
+import {
+    mapSkdPathError,
+    resolveSkdExistingFile,
+    resolveSkdOutputPath,
+    resolveSkdReportPath,
+    resolveSkdTemplatePath,
+} from './skdPathResolver';
 
 // ─── SkdOperations ────────────────────────────────────────────────────────────
 
@@ -37,27 +44,55 @@ export interface SkdOperationsDeps {
 export class SkdOperations {
     constructor(private readonly deps: SkdOperationsDeps) {}
 
-    private async assertPathContained(targetPath: string): Promise<AgentResult<never> | undefined> {
-        if (!this.deps.configRoot) {
-            return undefined;
-        }
+    private pathFailure(error: unknown, targetPath: string): AgentResult<never> {
+        const failure = mapSkdPathError(error, targetPath);
+        return { success: false, code: failure.code, error: failure.message };
+    }
+
+    private async resolveTemplatePath(
+        targetPath: string,
+        allowObjectDiscovery: boolean,
+        allowLegacyExtFallback = false,
+    ): Promise<{ readonly path?: string; readonly failure?: AgentResult<never> }> {
+        if (!this.deps.configRoot) { return { path: targetPath }; }
         try {
             const validator = this.deps.assertPathWithinRoot ?? assertPathWithinRoot;
-            await validator(this.deps.configRoot, targetPath);
-            return undefined;
+            return { path: await resolveSkdTemplatePath(this.deps.configRoot, targetPath, allowObjectDiscovery, validator, allowLegacyExtFallback) };
         } catch (error) {
-            if (error instanceof PathBoundaryError) {
-                return {
-                    success: false,
-                    code: 'TARGET_OUTSIDE_ROOT',
-                    error: `Целевой путь "${targetPath}" выходит за границы конфигурации (${error.code}).`,
-                };
-            }
-            return {
-                success: false,
-                code: 'PATH_VALIDATION_FAILED',
-                error: error instanceof Error ? error.message : String(error),
-            };
+            return { failure: this.pathFailure(error, targetPath) };
+        }
+    }
+
+    private async resolveExistingFile(targetPath: string): Promise<{ readonly path?: string; readonly failure?: AgentResult<never> }> {
+        if (!this.deps.configRoot) { return { path: targetPath }; }
+        try {
+            const validator = this.deps.assertPathWithinRoot ?? assertPathWithinRoot;
+            return { path: await resolveSkdExistingFile(this.deps.configRoot, targetPath, validator) };
+        } catch (error) {
+            return { failure: this.pathFailure(error, targetPath) };
+        }
+    }
+
+    private async resolveOutputPath(targetPath: string): Promise<{ readonly path?: string; readonly failure?: AgentResult<never> }> {
+        if (!this.deps.configRoot) { return { path: targetPath }; }
+        try {
+            const validator = this.deps.assertPathWithinRoot ?? assertPathWithinRoot;
+            return { path: await resolveSkdOutputPath(this.deps.configRoot, targetPath, validator) };
+        } catch (error) {
+            return { failure: this.pathFailure(error, targetPath) };
+        }
+    }
+
+    private async resolveReportPath(
+        targetPath: string,
+        effectiveInput: string,
+    ): Promise<{ readonly path?: string; readonly failure?: AgentResult<never> }> {
+        if (!this.deps.configRoot) { return { path: targetPath }; }
+        try {
+            const validator = this.deps.assertPathWithinRoot ?? assertPathWithinRoot;
+            return { path: await resolveSkdReportPath(this.deps.configRoot, targetPath, effectiveInput, validator) };
+        } catch (error) {
+            return { failure: this.pathFailure(error, targetPath) };
         }
     }
 
@@ -99,18 +134,25 @@ export class SkdOperations {
             return { success: false, error: 'нельзя использовать оба параметра definitionFile и value одновременно' };
         }
 
-        const boundaryError = await this.assertPathContained(params.outputPath);
-        if (boundaryError) { return boundaryError; }
+        const resolvedOutput = await this.resolveOutputPath(params.outputPath);
+        if (resolvedOutput.failure) { return resolvedOutput.failure; }
+        const outputPath = resolvedOutput.path!;
+        let definitionFile = params.definitionFile;
+        if (definitionFile) {
+            const resolvedDefinition = await this.resolveExistingFile(definitionFile);
+            if (resolvedDefinition.failure) { return resolvedDefinition.failure; }
+            definitionFile = resolvedDefinition.path!;
+        }
 
         const scriptPath = path.join(this.deps.extensionPath, 'resources', 'skd', 'skd-compile.ps1');
         const args: string[] = [];
 
-        if (params.definitionFile) {
-            args.push('-DefinitionFile', params.definitionFile);
+        if (definitionFile) {
+            args.push('-DefinitionFile', definitionFile);
         } else if (params.value) {
             args.push('-Value', params.value);
         }
-        args.push('-OutputPath', params.outputPath);
+        args.push('-OutputPath', outputPath);
 
         reportStage?.('Компиляция СКД через PowerShell.');
         const result = await this.runScript({ scriptPath, args, token }, reportStage);
@@ -130,13 +172,13 @@ export class SkdOperations {
         // Line 2: "    DataSets: N  Fields: N  Calculated: N  Totals: N  Params: N  Variants: N"
         // Line 3: "    Size: N bytes"
         const lines = result.stdout.trim().split(/\r?\n/);
-        const outputPath = parseCompileOutputPath(lines[0] ?? '');
+        const reportedOutputPath = parseCompileOutputPath(lines[0] ?? '');
         const stats = parseCompileStats(lines[1] ?? '', lines[2] ?? '');
 
         return {
             success: true,
             data: {
-                output: outputPath || params.outputPath,
+                output: reportedOutputPath || outputPath,
                 stats,
                 rawOutput: result.stdout,
             },
@@ -160,15 +202,18 @@ export class SkdOperations {
             return { success: false, error: 'параметр templatePath обязателен' };
         }
 
-        const boundaryError = await this.assertPathContained(params.templatePath);
-        if (boundaryError) { return boundaryError; }
-        if (params.outFile) {
-            const outBoundaryError = await this.assertPathContained(params.outFile);
-            if (outBoundaryError) { return outBoundaryError; }
+        const resolvedTemplate = await this.resolveTemplatePath(params.templatePath, true);
+        if (resolvedTemplate.failure) { return resolvedTemplate.failure; }
+        const templatePath = resolvedTemplate.path!;
+        let outFile = params.outFile;
+        if (outFile) {
+            const resolvedReport = await this.resolveReportPath(outFile, templatePath);
+            if (resolvedReport.failure) { return resolvedReport.failure; }
+            outFile = resolvedReport.path!;
         }
 
         const scriptPath = path.join(this.deps.extensionPath, 'resources', 'skd', 'skd-info.ps1');
-        const args: string[] = ['-TemplatePath', params.templatePath];
+        const args: string[] = ['-TemplatePath', templatePath];
 
         if (params.mode) {
             args.push('-Mode', params.mode);
@@ -185,8 +230,8 @@ export class SkdOperations {
         if (params.offset !== undefined) {
             args.push('-Offset', String(params.offset));
         }
-        if (params.outFile) {
-            args.push('-OutFile', params.outFile);
+        if (outFile) {
+            args.push('-OutFile', outFile);
         }
 
         reportStage?.('Получение сведений о СКД через PowerShell.');
@@ -236,12 +281,13 @@ export class SkdOperations {
             return { success: false, error: 'параметр value обязателен' };
         }
 
-        const boundaryError = await this.assertPathContained(params.templatePath);
-        if (boundaryError) { return boundaryError; }
+        const resolvedTemplate = await this.resolveTemplatePath(params.templatePath, false);
+        if (resolvedTemplate.failure) { return resolvedTemplate.failure; }
+        const templatePath = resolvedTemplate.path!;
 
         const scriptPath = path.join(this.deps.extensionPath, 'resources', 'skd', 'skd-edit.ps1');
         const args: string[] = [
-            '-TemplatePath', params.templatePath,
+            '-TemplatePath', templatePath,
             '-Operation', params.operation,
             '-Value', params.value,
         ];
@@ -275,7 +321,7 @@ export class SkdOperations {
         return {
             success: true,
             data: {
-                output: savedPath || params.templatePath,
+                output: savedPath || templatePath,
                 rawOutput: result.stdout,
             },
         };
@@ -298,15 +344,18 @@ export class SkdOperations {
             return { success: false, error: 'параметр templatePath обязателен' };
         }
 
-        const boundaryError = await this.assertPathContained(params.templatePath);
-        if (boundaryError) { return boundaryError; }
-        if (params.outFile) {
-            const outBoundaryError = await this.assertPathContained(params.outFile);
-            if (outBoundaryError) { return outBoundaryError; }
+        const resolvedTemplate = await this.resolveTemplatePath(params.templatePath, false, true);
+        if (resolvedTemplate.failure) { return resolvedTemplate.failure; }
+        const templatePath = resolvedTemplate.path!;
+        let outFile = params.outFile;
+        if (outFile) {
+            const resolvedReport = await this.resolveReportPath(outFile, templatePath);
+            if (resolvedReport.failure) { return resolvedReport.failure; }
+            outFile = resolvedReport.path!;
         }
 
         const scriptPath = path.join(this.deps.extensionPath, 'resources', 'skd', 'skd-validate.ps1');
-        const args: string[] = ['-TemplatePath', params.templatePath];
+        const args: string[] = ['-TemplatePath', templatePath];
 
         if (params.detailed) {
             args.push('-Detailed');
@@ -314,8 +363,8 @@ export class SkdOperations {
         if (params.maxErrors !== undefined) {
             args.push('-MaxErrors', String(params.maxErrors));
         }
-        if (params.outFile) {
-            args.push('-OutFile', params.outFile);
+        if (outFile) {
+            args.push('-OutFile', outFile);
         }
 
         reportStage?.('Проверка СКД через PowerShell.');
