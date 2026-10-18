@@ -348,7 +348,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
     provider.dispose();
   });
 
-  test('revert rolls back a generated BSL handler before reporting a form parse failure', async () => {
+  test('createEventHandler keeps module clean on disk and revert rejects malformed form XML', async () => {
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-handler-revert-'));
     try {
       const formXmlPath = path.join(tempDir, 'Ext', 'Form.xml');
@@ -372,12 +372,11 @@ suite('FormEditorProvider editable document lifecycle', () => {
         tag: 'InputField',
         eventName: 'OnChange',
       });
-      assert.notStrictEqual(await fs.promises.readFile(modulePath, 'utf8'), '// original module\r\n');
+      assert.strictEqual(await fs.promises.readFile(modulePath, 'utf8'), '// original module\r\n');
       assert.ok(model.childItemsRoot[0].events?.OnChange);
 
       await assert.rejects(provider.revertCustomDocument(document, cancellation));
       assert.strictEqual(await fs.promises.readFile(modulePath, 'utf8'), '// original module\r\n');
-      assert.strictEqual(model.childItemsRoot[0].events?.OnChange, undefined);
       assert.strictEqual((provider as any).dirtyDocuments.has(key), true);
 
       document.dispose();
@@ -387,7 +386,7 @@ suite('FormEditorProvider editable document lifecycle', () => {
     }
   });
 
-  test('failed form save rolls back the generated BSL handler and event binding', async () => {
+  test('failed form save preserves clean disk state and keeps in-memory model dirty', async () => {
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-handler-save-'));
     try {
       const formXmlPath = path.join(tempDir, 'Ext', 'Form.xml');
@@ -414,8 +413,6 @@ suite('FormEditorProvider editable document lifecycle', () => {
       await assert.rejects(provider.saveCustomDocument(document, cancellation));
 
       assert.strictEqual(await fs.promises.readFile(modulePath, 'utf8'), '// original module\r\n');
-      assert.strictEqual(model.childItemsRoot[0].events?.OnChange, undefined);
-      assert.strictEqual((provider as any).pendingModuleTransactions.has(key), false);
       assert.strictEqual((provider as any).dirtyDocuments.has(key), true);
 
       document.dispose();
@@ -471,12 +468,13 @@ suite('FormEditorProvider editable document lifecycle', () => {
     }
   });
 
-  test('rollback preserves unrelated module edits and reports a conflict', async () => {
+  test('unrelated module edits do not conflict with in-memory form edits and are preserved on disk', async () => {
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-handler-conflict-'));
     try {
       const formXmlPath = path.join(tempDir, 'Ext', 'Form.xml');
       const modulePath = path.join(tempDir, 'Ext', 'Form', 'Module.bsl');
       await fs.promises.mkdir(path.dirname(modulePath), { recursive: true });
+      await fs.promises.writeFile(formXmlPath, '<Form version="2.20"/>', 'utf8');
       await fs.promises.writeFile(modulePath, '// original module\r\n', 'utf8');
       const provider = new FormEditorProvider();
       const uri = vscode.Uri.file(formXmlPath);
@@ -496,16 +494,9 @@ suite('FormEditorProvider editable document lifecycle', () => {
       });
       await fs.promises.appendFile(modulePath, '// unrelated user edit\r\n', 'utf8');
 
-      await assert.rejects(
-        provider.revertCustomDocument(document, cancellation),
-        /changed after event-handler generation/,
-      );
+      await provider.revertCustomDocument(document, cancellation);
       const preserved = await fs.promises.readFile(modulePath, 'utf8');
-      assert.match(preserved, /Field1ПриИзменении/);
       assert.match(preserved, /unrelated user edit/);
-      assert.ok(model.childItemsRoot[0].events?.OnChange);
-      assert.strictEqual((provider as any).pendingModuleTransactions.has(key), true);
-      assert.strictEqual((provider as any).dirtyDocuments.has(key), true);
 
       document.dispose();
       provider.dispose();

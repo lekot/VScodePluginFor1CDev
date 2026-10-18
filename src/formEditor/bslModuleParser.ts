@@ -12,6 +12,19 @@ export interface BslProcedureInfo {
 }
 
 /**
+ * Parse procedure/function names with line numbers from string content.
+ */
+export function parseBslProceduresFromContent(content: string): BslProcedureInfo[] {
+  if (!content) {
+    return [];
+  }
+  return parseBslRoutines(content).routines.map((routine) => ({
+    name: routine.name,
+    line: routine.range.startLine,
+  }));
+}
+
+/**
  * Read Module.bsl and return list of procedure/function names with line numbers (1-based).
  */
 export async function parseBslModuleProcedures(modulePath: string): Promise<BslProcedureInfo[]> {
@@ -22,8 +35,5 @@ export async function parseBslModuleProcedures(modulePath: string): Promise<BslP
     Logger.debug(`Cannot read Module.bsl: ${modulePath}`, err);
     return [];
   }
-  return parseBslRoutines(content).routines.map((routine) => ({
-    name: routine.name,
-    line: routine.range.startLine,
-  }));
+  return parseBslProceduresFromContent(content);
 }

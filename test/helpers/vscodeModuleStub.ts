@@ -3,6 +3,7 @@
  * (matrix e2e and any future core test that imports `src/providers/treeDataProvider`).
  */
 import * as path from 'path';
+import * as fs from 'fs';
 import Module = require('module');
 
 const TreeItemCollapsibleState = {
@@ -103,6 +104,31 @@ class Range {
   }
 }
 
+class Selection extends Range {
+  readonly anchor: Position;
+  readonly active: Position;
+  constructor(anchor: Position, active: Position);
+  constructor(anchorLine: number, anchorCharacter: number, activeLine: number, activeCharacter: number);
+  constructor(a: any, b: any, c?: any, d?: any) {
+    if (typeof a === 'number') {
+      super(new Position(a, b), new Position(c, d));
+      this.anchor = new Position(a, b);
+      this.active = new Position(c, d);
+    } else {
+      super(a, b);
+      this.anchor = a;
+      this.active = b;
+    }
+  }
+}
+
+const TextEditorRevealType = {
+  Default: 0,
+  InCenter: 1,
+  InCenterIfOutsideViewport: 2,
+  AtTop: 3,
+} as const;
+
 class Location {
   public readonly range: Range;
   constructor(
@@ -119,8 +145,30 @@ class Location {
 
 class WorkspaceEdit {
   public readonly replaces: Array<{ uri: any; range: Range; newText: string }> = [];
+  public readonly entriesList: Array<{
+    type: 'createFile' | 'insert' | 'replace' | 'delete';
+    uri: any;
+    position?: any;
+    range?: any;
+    newText?: string;
+    options?: any;
+  }> = [];
+
+  createFile(uri: any, options?: any): void {
+    this.entriesList.push({ type: 'createFile', uri, options });
+  }
+
+  insert(uri: any, position: any, newText: string): void {
+    this.entriesList.push({ type: 'insert', uri, position, newText });
+  }
+
   replace(uri: any, range: Range, newText: string): void {
     this.replaces.push({ uri, range, newText });
+    this.entriesList.push({ type: 'replace', uri, range, newText });
+  }
+
+  delete(uri: any, range: Range): void {
+    this.entriesList.push({ type: 'delete', uri, range });
   }
 }
 
@@ -314,6 +362,7 @@ class CancellationTokenSourceStub {
 export const vscodeTestState = {
   workspaceConfig: {} as Record<string, unknown>,
   scopedWorkspaceConfig: new Map<string, Record<string, unknown>>(),
+  openDocuments: new Map<string, any>(),
   applyEditImpl: undefined as ((edit: any) => Promise<boolean>) | undefined,
   /** Список id команд, зарегистрированных через vscode.commands.registerCommand (P7a-7). */
   registeredCommandIds: [] as string[],
@@ -426,6 +475,15 @@ const windowStub = {
   createWebviewPanel: (): never => {
     throw new Error('vscode.window.createWebviewPanel: override in test');
   },
+  showTextDocument: async (document: any, _options?: any): Promise<any> => {
+    return {
+      document,
+      revealRange: (_range: any, _type?: any) => undefined,
+      selection: new Selection(0, 0, 0, 0),
+    };
+  },
+
+
   showErrorMessage: async (message: string): Promise<undefined> => {
     vscodeTestState.errorLog.push(message);
     return undefined;
@@ -537,6 +595,7 @@ const windowStub = {
   registerCustomEditorProvider: (_viewType: string, _provider: unknown, _options?: unknown) => ({
     dispose: () => undefined,
   }),
+
   createOutputChannel: (_name: string) => ({
     appendLine: (s: string) => {
       vscodeTestState.outputChannelLines.push(s);
@@ -549,10 +608,99 @@ const windowStub = {
   }),
 };
 
+function createMockTextDocument(uri: any, initialText = ''): any {
+  let content = initialText;
+  let dirty = false;
+  const doc = {
+    uri,
+    fileName: uri.fsPath || String(uri),
+    get isDirty() { return dirty; },
+    set isDirty(val: boolean) { dirty = val; },
+    getText: () => content,
+    setText: (t: string) => { content = t; },
+    get lineCount() { return content.split(/\r?\n/).length; },
+    lineAt: (lineIndex: number) => {
+      const lines = content.split(/\r?\n/);
+      const lineText = lines[lineIndex] ?? '';
+      return {
+        text: lineText,
+        range: {
+          start: { line: lineIndex, character: 0 },
+          end: { line: lineIndex, character: lineText.length },
+        },
+      };
+    },
+    save: async () => {
+      dirty = false;
+      if (uri.fsPath) {
+        await fs.promises.mkdir(path.dirname(uri.fsPath), { recursive: true });
+        await fs.promises.writeFile(uri.fsPath, content, 'utf8');
+      }
+      for (const listener of [...vscodeTestState.onDidSaveDocumentListeners]) {
+        try { await listener(doc); } catch {}
+      }
+      return true;
+    },
+  };
+  return doc;
+}
+
 const workspaceStub = {
+  get textDocuments(): any[] {
+    return Array.from(vscodeTestState.openDocuments.values());
+  },
+  openTextDocument: async (uriOrOptions: any): Promise<any> => {
+    const uri = uriOrOptions && uriOrOptions.fsPath ? uriOrOptions : uriOrOptions?.uri;
+    const filePath = uri?.fsPath ? path.normalize(uri.fsPath) : undefined;
+    if (filePath) {
+      let doc = vscodeTestState.openDocuments.get(filePath);
+      if (!doc) {
+        let content = '';
+        try {
+          content = await fs.promises.readFile(filePath, 'utf8');
+        } catch (e: any) {
+          if (e.code === 'ENOENT') {
+            throw e;
+          }
+        }
+        doc = createMockTextDocument(uri, content);
+        vscodeTestState.openDocuments.set(filePath, doc);
+      }
+      return doc;
+    }
+    throw new Error('Unsupported openTextDocument call in stub');
+  },
   applyEdit: async (edit: any): Promise<boolean> => {
     if (vscodeTestState.applyEditImpl) {
       return vscodeTestState.applyEditImpl(edit);
+    }
+    if (edit && Array.isArray(edit.entriesList)) {
+      for (const entry of edit.entriesList) {
+        const filePath = entry.uri?.fsPath ? path.normalize(entry.uri.fsPath) : undefined;
+        if (entry.type === 'createFile') {
+          if (filePath && !vscodeTestState.openDocuments.has(filePath)) {
+            const initialText = entry.options?.contents
+              ? Buffer.from(entry.options.contents).toString('utf8')
+              : '';
+            const doc = createMockTextDocument(entry.uri, initialText);
+            vscodeTestState.openDocuments.set(filePath, doc);
+          }
+        } else if (entry.type === 'insert') {
+          let doc = filePath ? vscodeTestState.openDocuments.get(filePath) : undefined;
+          if (!doc && filePath) {
+            let diskContent = '';
+            try {
+              diskContent = fs.readFileSync(filePath, 'utf8');
+            } catch {}
+            doc = createMockTextDocument(entry.uri, diskContent);
+            vscodeTestState.openDocuments.set(filePath, doc);
+          }
+          if (doc) {
+            doc.setText(doc.getText() + (entry.newText ?? ''));
+            doc.isDirty = true;
+          }
+        }
+      }
     }
     return true;
   },
@@ -717,6 +865,7 @@ export function resetVscodeTestState(): void {
   vscodeTestState.treeVisibilityListeners.clear();
   vscodeTestState.outputChannelLines = [];
   vscodeTestState.outputChannelChunks = [];
+  vscodeTestState.openDocuments.clear();
   restoreVscodeWorkspaceFoldersGetter();
 }
 
@@ -1059,6 +1208,8 @@ export const vscodeStub = {
   CancellationTokenSource: CancellationTokenSourceStub,
   Position,
   Range,
+  Selection,
+  TextEditorRevealType,
   Location,
   WorkspaceEdit,
   Breakpoint,

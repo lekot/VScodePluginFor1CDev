@@ -35,7 +35,7 @@
       "reason": "CFE form modification and extension support (#201)"
     },
     "src/formEditor/formMessageHandler.ts": {
-      "maxLines": 1248,
+      "maxLines": 1107,
       "reason": "Form editor webview message routing and dispatch (#201)"
     },
     "src/formEditor/formWebviewHtml.ts": {
@@ -61,10 +61,6 @@
     "src/parsers/edtParser.ts": {
       "maxLines": 1184,
       "reason": "EDT XML format parser (#201)"
-    },
-    "src/providers/propertiesMessageHandler.ts": {
-      "maxLines": 1121,
-      "reason": "Properties webview message handling and updates (#201)"
     },
     "src/providers/propertiesWebviewContent.ts": {
       "maxLines": 1848,
