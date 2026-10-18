@@ -17,6 +17,7 @@ import type {
     FilterCriterionCreateOptions,
 } from '../services/metadataCrudService';
 import type { MutationFailureProjection } from '../services/configurationSession/mutationReceiptError';
+import type { ReconciliationOutcome } from '../types/reloadContracts';
 
 export interface MutationResultData {
     filePath?: string;
@@ -46,9 +47,7 @@ export interface AgentResult<T = void> {
     plannedChanges?: import('./agentRevision').MutationPlannedChanges;
     mutationFailure?: MutationFailureProjection;
     /** Reconciliation status for a committed mutation that requires a follow-up refresh. */
-    reconciliation?:
-        | { status: 'succeeded' }
-        | { status: 'failed'; code: string; message: string };
+    reconciliation?: ReconciliationOutcome;
 }
 
 export type AgentExternalProcessorContext = ExternalProcessorExecutionContext;

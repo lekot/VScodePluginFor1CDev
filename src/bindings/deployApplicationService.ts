@@ -21,6 +21,8 @@ import {
 import type { ConfigurationBinding } from './models/configurationBinding';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
+import { reconcileAfterCommit } from '../reload/reconciliation';
+import type { ReconciliationOutcome } from '../types/reloadContracts';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import {
@@ -65,6 +67,7 @@ export interface DeployExecutionOptions {
   readonly progress?: vscode.Progress<{ message?: string; increment?: number }>;
   readonly onOutput?: (chunk: string) => void;
   readonly reportStage?: (stage: string) => void;
+  readonly reconciliationMode?: 'after-execution' | 'defer-to-caller';
 }
 
 export type DeployOutcomeStatus = 'success' | 'partial' | 'inDoubt' | 'cancelled' | 'error';
@@ -96,6 +99,7 @@ export interface DeployOutcome {
   readonly message: string;
   readonly summary: DeployRunSummary;
   readonly data: DeployResultData;
+  readonly reconciliation?: ReconciliationOutcome;
 }
 
 export interface ExportStatusOutcome {
@@ -131,7 +135,6 @@ export class DeployApplicationService {
   constructor(private readonly deps: DeployApplicationServiceDeps) {
     this.deployService = deps.deployService ?? new DeployService({
       runConfigurationMutation: deps.runConfigurationMutation,
-      requestConfigurationReload: deps.requestConfigurationReload,
     });
   }
 
@@ -568,10 +571,24 @@ export class DeployApplicationService {
         token: cancellation.token,
         onOutput: onOutputHandler,
         runConfigurationMutation: this.deps.runConfigurationMutation,
-        requestConfigurationReload: this.deps.requestConfigurationReload,
       });
 
-      return createDeployOutcome(summary, undefined, false);
+      const outcome = createDeployOutcome(summary, undefined, false);
+      if (
+        options.reconciliationMode !== 'defer-to-caller'
+        && hasCommittedPull(summary)
+        && this.deps.requestConfigurationReload
+      ) {
+        return {
+          ...outcome,
+          reconciliation: await reconcileAfterCommit(
+            context.configRoot,
+            'pull-objects',
+            this.deps.requestConfigurationReload,
+          ),
+        };
+      }
+      return outcome;
     } finally {
       processOutput.flush();
       cancellation.dispose();
@@ -728,6 +745,14 @@ export class DeployApplicationService {
     }
     return this.executeExportStatus(plan.context, options);
   }
+}
+
+function hasCommittedPull(summary: DeployRunSummary): boolean {
+  return summary.successCount > 0
+    && summary.errorCount === 0
+    && summary.inDoubtCount === 0
+    && !summary.cancelledMidChain
+    && !summary.hasPartial;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

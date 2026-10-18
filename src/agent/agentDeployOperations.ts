@@ -74,6 +74,7 @@ export interface ExportStatusAgentParams extends ConfigurationScopedParams {
 interface AgentDeployExecutionOptions {
     readonly token?: vscode.CancellationToken;
     readonly reportStage?: (message: string) => void;
+    readonly reconciliationMode?: 'after-execution' | 'defer-to-caller';
 }
 
 // ---------------------------------------------------------------------------
@@ -356,5 +357,6 @@ function deployOutcomeToAgentResult(outcome: DeployOutcome): AgentResult<DeployR
         code: outcome.code,
         data: outcome.data,
         error: outcome.error,
+        ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
     };
 }
