@@ -107,6 +107,7 @@ export const coreSuiteFiles: string[] = [
   'suite/formTreeRootDragPreservation.test.js',
   'suite/formEditorMessageHandling.test.js',
   'suite/formEditorLifecycle.test.js',
+  'suite/formEditorIssue363.test.js',
   'suite/formWebviewSecurity.test.js',
   'suite/editorWebviewSecurity.test.js',
   'suite/formWebviewPagesPreview.test.js',

@@ -15,6 +15,7 @@ import { writeFormXml } from './formXmlWriter';
 import { parseBslModuleProcedures, parseBslProceduresFromContent } from './bslModuleParser';
 import { getFormPaths } from './formPaths';
 import { getFormEditorTitle } from './formEditorTitle';
+import { findModuleTextDocument } from './formModuleDocuments';
 import {
   applyFormXmlEdits,
   createFormXmlSourceSnapshot,
@@ -176,9 +177,7 @@ export async function getFormProcedures(
 ): Promise<Array<{ name: string; line?: number }>> {
   const formDirectory = path.dirname(path.dirname(formXmlFsPath));
   const modulePath = path.join(formDirectory, 'Ext', 'Form', 'Module.bsl');
-  const openDoc = vscode.workspace.textDocuments.find(
-    (d) => path.normalize(d.uri.fsPath) === path.normalize(modulePath)
-  );
+  const openDoc = await findModuleTextDocument(modulePath);
   if (openDoc) {
     return parseBslProceduresFromContent(openDoc.getText()).map((p) => ({ name: p.name, line: p.line }));
   }
@@ -196,12 +195,8 @@ export async function openModuleInEditor(
 ): Promise<void> {
   const { modulePath } = getFormPaths(formXmlFsPath);
   try {
-    const normalizedPath = path.normalize(modulePath);
     const uri = vscode.Uri.file(modulePath);
-    const doc = associatedDocuments?.get(normalizedPath)
-      ?? vscode.workspace.textDocuments.find(
-        (candidate) => path.normalize(candidate.uri.fsPath) === normalizedPath
-      )
+    const doc = await findModuleTextDocument(modulePath, associatedDocuments)
       ?? await vscode.workspace.openTextDocument(uri);
     const editor = await vscode.window.showTextDocument(doc, {
       viewColumn: vscode.ViewColumn.One,
