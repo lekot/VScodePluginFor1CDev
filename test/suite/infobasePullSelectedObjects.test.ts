@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { resetVscodeTestState } from '../helpers/vscodeModuleStub';
+import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 import {
   publishExportedObjects,
   runInfobaseConfigExportObjects,
@@ -16,6 +16,16 @@ import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
 import type { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
 import { MetadataType } from '../../src/models/treeNode';
 import type { ReloadReason } from '../../src/types/reloadContracts';
+import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
+import { WorkspaceRegistryCoordinator } from '../../src/services/configurationSession/WorkspaceRegistryCoordinator';
+import {
+  configureConfigurationMutationGateway,
+  runConfigurationMutation,
+} from '../../src/services/configurationSession/configurationMutationGateway';
+import { registerAgentCommands } from '../../src/agent/agentCommands';
+import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
+import { BindingManager } from '../../src/bindings/bindingManager';
+import { ConfigFormat } from '../../src/parsers/formatDetector';
 
 function baseBinding(overrides: Partial<ConfigurationBinding> = {}): ConfigurationBinding {
   return {
@@ -59,7 +69,8 @@ suite('infobasePullSelectedObjects #350', () => {
       resolveExecutablePathAsync: async () => ({ kind: 'resolved', path: 'ibcmd-mock' }),
       getTimeoutMs: () => 30_000,
     } as unknown as any);
-    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-pull-test-'));
+    const rawTemp = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-pull-test-'));
+    tempRoot = await fs.realpath(rawTemp);
   });
 
   teardown(async () => {
@@ -96,6 +107,44 @@ suite('infobasePullSelectedObjects #350', () => {
       // Verify transaction artifacts were cleaned up
       const destEntries = await fs.readdir(destination);
       assert.ok(!destEntries.some((e) => e.startsWith('.cdt-objects-publish-')));
+    });
+
+    test('publishes one EDT object unit without replacing its whole type folder or sibling objects', async () => {
+      const source = path.join(tempRoot, 'source');
+      const destination = path.join(tempRoot, 'dest');
+      const sourceObject = path.join(source, 'src', 'Catalogs', 'Goods');
+      const destinationType = path.join(destination, 'src', 'Catalogs');
+      const selectedObject = path.join(destinationType, 'Goods');
+      const siblingObject = path.join(destinationType, 'Other');
+
+      await fs.mkdir(path.join(sourceObject, 'Ext'), { recursive: true });
+      await fs.mkdir(path.join(selectedObject, 'Ext'), { recursive: true });
+      await fs.mkdir(siblingObject, { recursive: true });
+      await fs.writeFile(path.join(sourceObject, 'Goods.mdo'), '<Goods new="true"/>', 'utf8');
+      await fs.writeFile(path.join(sourceObject, 'Ext', 'ManagerModule.bsl'), 'new module', 'utf8');
+      await fs.writeFile(path.join(selectedObject, 'Goods.mdo'), '<Goods old="true"/>', 'utf8');
+      await fs.writeFile(path.join(siblingObject, 'Other.mdo'), '<Other/>', 'utf8');
+
+      await publishExportedObjects(source, destination);
+
+      assert.strictEqual(await fs.readFile(path.join(selectedObject, 'Goods.mdo'), 'utf8'), '<Goods new="true"/>');
+      assert.strictEqual(await fs.readFile(path.join(selectedObject, 'Ext', 'ManagerModule.bsl'), 'utf8'), 'new module');
+      assert.strictEqual(await fs.readFile(path.join(siblingObject, 'Other.mdo'), 'utf8'), '<Other/>');
+    });
+
+    test('rejects a destination type folder that is a junction to an external workspace path', async () => {
+      const source = path.join(tempRoot, 'source');
+      const destination = path.join(tempRoot, 'dest');
+      const external = path.join(tempRoot, 'external');
+      await fs.mkdir(path.join(source, 'Catalogs'), { recursive: true });
+      await fs.mkdir(external, { recursive: true });
+      await fs.mkdir(destination, { recursive: true });
+      await fs.writeFile(path.join(source, 'Catalogs', 'Goods.xml'), '<Goods new="true"/>', 'utf8');
+      await fs.writeFile(path.join(external, 'Goods.xml'), '<Goods external="preserve"/>', 'utf8');
+      await fs.symlink(external, path.join(destination, 'Catalogs'), 'junction');
+
+      await assert.rejects(publishExportedObjects(source, destination));
+      assert.strictEqual(await fs.readFile(path.join(external, 'Goods.xml'), 'utf8'), '<Goods external="preserve"/>');
     });
 
     test('removes stale nested files and forms when infobase object replaces workspace object', async () => {
@@ -218,6 +267,313 @@ suite('infobasePullSelectedObjects #350', () => {
       }
       assert.strictEqual(newTxtExists, false);
     });
+
+    test('restores the source entry when backup rename moves it before throwing', async () => {
+      const source = path.join(tempRoot, 'source');
+      const destination = path.join(tempRoot, 'dest');
+      const relativePath = path.join('Catalogs', 'Goods.xml');
+      const destinationFile = path.join(destination, relativePath);
+      await fs.mkdir(path.dirname(destinationFile), { recursive: true });
+      await fs.mkdir(path.join(source, 'Catalogs'), { recursive: true });
+      await fs.writeFile(destinationFile, '<Goods old="true"/>', 'utf8');
+      await fs.writeFile(path.join(source, relativePath), '<Goods new="true"/>', 'utf8');
+
+      const failingHooks = {
+        rename: async (from: string, to: string) => {
+          await fs.rename(from, to);
+          if (from.endsWith(path.join('Catalogs', 'Goods.xml')) && to.includes(`${path.sep}backup${path.sep}`)) {
+            throw new Error('backup renamed before reported failure');
+          }
+        },
+      };
+
+      await assert.rejects(
+        publishExportedObjects(source, destination, failingHooks),
+        /backup renamed before reported failure/u,
+      );
+      assert.strictEqual(await fs.readFile(destinationFile, 'utf8'), '<Goods old="true"/>');
+    });
+
+    test('preserves a competing install file and retains backup instead of overwriting it during rollback', async () => {
+      const source = path.join(tempRoot, 'source');
+      const destination = path.join(tempRoot, 'dest');
+      const relativePath = path.join('Catalogs', 'Goods.xml');
+      const destinationFile = path.join(destination, relativePath);
+      const original = '<Goods old="true"/>';
+      const competitor = '<Goods from="another-writer"/>';
+      await fs.mkdir(path.dirname(destinationFile), { recursive: true });
+      await fs.mkdir(path.join(source, 'Catalogs'), { recursive: true });
+      await fs.writeFile(destinationFile, original, 'utf8');
+      await fs.writeFile(path.join(source, relativePath), '<Goods new="true"/>', 'utf8');
+
+      await assert.rejects(
+        publishExportedObjects(source, destination, {
+          beforeRename: async (from: string, to: string) => {
+            if (from.includes(`${path.sep}staging${path.sep}`) && to.endsWith(path.join('Catalogs', 'Goods.xml'))) {
+              await fs.writeFile(destinationFile, competitor, 'utf8');
+            }
+          },
+        }),
+        (error: unknown) => error instanceof Error && /Резервная копия сохранена:/u.test(error.message),
+      );
+
+      assert.strictEqual(await fs.readFile(destinationFile, 'utf8'), competitor);
+      const transaction = (await fs.readdir(destination)).find((entry) => entry.startsWith('.cdt-objects-publish-'));
+      assert.ok(transaction, 'transaction evidence must be retained when rollback meets a competing file');
+      const backupFile = path.join(destination, transaction!, 'backup', relativePath);
+      assert.strictEqual(await fs.readFile(backupFile, 'utf8'), original);
+    });
+
+    test('preserves a file that appears immediately before rollback restore', async () => {
+      const source = path.join(tempRoot, 'source');
+      const destination = path.join(tempRoot, 'dest');
+      const relativePath = path.join('Catalogs', 'Goods.xml');
+      const destinationFile = path.join(destination, relativePath);
+      const original = '<Goods old="true"/>';
+      const competitor = '<Goods from="late-writer"/>';
+      await fs.mkdir(path.dirname(destinationFile), { recursive: true });
+      await fs.mkdir(path.join(source, 'Catalogs'), { recursive: true });
+      await fs.writeFile(destinationFile, original, 'utf8');
+      await fs.writeFile(path.join(source, relativePath), '<Goods new="true"/>', 'utf8');
+
+      await assert.rejects(
+        publishExportedObjects(source, destination, {
+          beforeRename: async (from: string, to: string) => {
+            if (from.includes(`${path.sep}backup${path.sep}`) && to.endsWith(path.join('Catalogs', 'Goods.xml'))) {
+              await fs.writeFile(destinationFile, competitor, 'utf8');
+            }
+          },
+          rename: async (from: string, to: string) => {
+            if (from.includes(`${path.sep}staging${path.sep}`) && to.endsWith(path.join('Catalogs', 'Goods.xml'))) {
+              throw new Error('injected install failure before moving');
+            }
+            await fs.rename(from, to);
+          },
+        }),
+        (error: unknown) => error instanceof Error && /Резервная копия сохранена:/u.test(error.message),
+      );
+
+      assert.strictEqual(await fs.readFile(destinationFile, 'utf8'), competitor);
+      const transaction = (await fs.readdir(destination)).find((entry) => entry.startsWith('.cdt-objects-publish-'));
+      assert.ok(transaction, 'rollback must retain the original backup on a destination conflict');
+      assert.strictEqual(
+        await fs.readFile(path.join(destination, transaction!, 'backup', relativePath), 'utf8'),
+        original,
+      );
+    });
+
+    test('removes an installed entry and restores the original when install rename moves then throws', async () => {
+      const source = path.join(tempRoot, 'source');
+      const destination = path.join(tempRoot, 'dest');
+      const relativePath = path.join('Catalogs', 'Goods.xml');
+      const destinationFile = path.join(destination, relativePath);
+      await fs.mkdir(path.dirname(destinationFile), { recursive: true });
+      await fs.mkdir(path.join(source, 'Catalogs'), { recursive: true });
+      await fs.writeFile(destinationFile, '<Goods old="true"/>', 'utf8');
+      await fs.writeFile(path.join(source, relativePath), '<Goods new="true"/>', 'utf8');
+
+      await assert.rejects(
+        publishExportedObjects(source, destination, {
+          rename: async (from: string, to: string) => {
+            await fs.rename(from, to);
+            if (from.includes(`${path.sep}staging${path.sep}`) && to.endsWith(path.join('Catalogs', 'Goods.xml'))) {
+              throw new Error('install moved before reported failure');
+            }
+          },
+        }),
+        /install moved before reported failure/u,
+      );
+
+      assert.strictEqual(await fs.readFile(destinationFile, 'utf8'), '<Goods old="true"/>');
+      assert.ok(!(await fs.readdir(destination)).some((entry) => entry.startsWith('.cdt-objects-publish-')));
+    });
+
+    test('retains recovery backup when an install post-check finds a substituted junction', async () => {
+      const source = path.join(tempRoot, 'source');
+      const destination = path.join(tempRoot, 'dest');
+      const external = path.join(tempRoot, 'external');
+      const relativePath = path.join('Catalogs', 'Goods.xml');
+      const destinationFile = path.join(destination, relativePath);
+      await fs.mkdir(path.dirname(destinationFile), { recursive: true });
+      await fs.mkdir(path.join(source, 'Catalogs'), { recursive: true });
+      await fs.mkdir(external, { recursive: true });
+      await fs.writeFile(destinationFile, '<Goods old="true"/>', 'utf8');
+      await fs.writeFile(path.join(source, relativePath), '<Goods new="true"/>', 'utf8');
+      await fs.writeFile(path.join(external, 'sentinel.txt'), 'external data', 'utf8');
+
+      await assert.rejects(
+        publishExportedObjects(source, destination, {
+          rename: async (from: string, to: string) => {
+            await fs.rename(from, to);
+            if (from.includes(`${path.sep}staging${path.sep}`) && to.endsWith(path.join('Catalogs', 'Goods.xml'))) {
+              await fs.rm(to, { recursive: true, force: true });
+              await fs.symlink(external, to, process.platform === 'win32' ? 'junction' : 'dir');
+            }
+          },
+        }),
+        (error: unknown) => error instanceof Error && /Резервная копия сохранена:/u.test(error.message),
+      );
+
+      assert.strictEqual(await fs.readFile(path.join(external, 'sentinel.txt'), 'utf8'), 'external data');
+      const transaction = (await fs.readdir(destination)).find((entry) => entry.startsWith('.cdt-objects-publish-'));
+      assert.ok(transaction, 'transaction evidence must survive a failed post-rename validation');
+      assert.strictEqual(
+        await fs.readFile(path.join(destination, transaction!, 'backup', relativePath), 'utf8'),
+        '<Goods old="true"/>',
+      );
+    });
+
+    test('publishes EDT partial export across multiple categories preserving sibling objects and configuration descriptor', async () => {
+      const source = path.join(tempRoot, 'source');
+      const destination = path.join(tempRoot, 'dest');
+
+      const srcRoot = path.join(source, 'src');
+      const dstRoot = path.join(destination, 'src');
+
+      await fs.mkdir(path.join(dstRoot, 'Catalogs', 'Goods'), { recursive: true });
+      await fs.mkdir(path.join(dstRoot, 'Catalogs', 'Other'), { recursive: true });
+      await fs.mkdir(path.join(dstRoot, 'Documents', 'Invoice'), { recursive: true });
+      await fs.mkdir(path.join(dstRoot, 'Documents', 'Receipt'), { recursive: true });
+      await fs.mkdir(path.join(dstRoot, 'Configuration'), { recursive: true });
+
+      await fs.writeFile(path.join(dstRoot, 'Catalogs', 'Goods', 'Goods.mdo'), '<Goods old="true"/>', 'utf8');
+      await fs.writeFile(path.join(dstRoot, 'Catalogs', 'Other', 'Other.mdo'), '<Other intact="true"/>', 'utf8');
+      await fs.writeFile(path.join(dstRoot, 'Documents', 'Invoice', 'Invoice.mdo'), '<Invoice old="true"/>', 'utf8');
+      await fs.writeFile(path.join(dstRoot, 'Documents', 'Receipt', 'Receipt.mdo'), '<Receipt intact="true"/>', 'utf8');
+      await fs.writeFile(path.join(dstRoot, 'Configuration', 'Configuration.mdo'), '<Configuration intact="true"/>', 'utf8');
+      await fs.writeFile(path.join(dstRoot, 'README.md'), '# Preserved documentation', 'utf8');
+
+      await fs.mkdir(path.join(srcRoot, 'Catalogs', 'Goods'), { recursive: true });
+      await fs.mkdir(path.join(srcRoot, 'Documents', 'Invoice'), { recursive: true });
+
+      await fs.writeFile(path.join(srcRoot, 'Catalogs', 'Goods', 'Goods.mdo'), '<Goods new="true"/>', 'utf8');
+      await fs.writeFile(path.join(srcRoot, 'Documents', 'Invoice', 'Invoice.mdo'), '<Invoice new="true"/>', 'utf8');
+
+      const copied = await publishExportedObjects(source, destination);
+      assert.strictEqual(copied, 2);
+
+      assert.strictEqual(await fs.readFile(path.join(dstRoot, 'Catalogs', 'Goods', 'Goods.mdo'), 'utf8'), '<Goods new="true"/>');
+      assert.strictEqual(await fs.readFile(path.join(dstRoot, 'Documents', 'Invoice', 'Invoice.mdo'), 'utf8'), '<Invoice new="true"/>');
+      assert.strictEqual(await fs.readFile(path.join(dstRoot, 'Catalogs', 'Other', 'Other.mdo'), 'utf8'), '<Other intact="true"/>');
+      assert.strictEqual(await fs.readFile(path.join(dstRoot, 'Documents', 'Receipt', 'Receipt.mdo'), 'utf8'), '<Receipt intact="true"/>');
+      assert.strictEqual(await fs.readFile(path.join(dstRoot, 'Configuration', 'Configuration.mdo'), 'utf8'), '<Configuration intact="true"/>');
+      assert.strictEqual(await fs.readFile(path.join(dstRoot, 'README.md'), 'utf8'), '# Preserved documentation');
+    });
+
+    test('rolls back mid-install failure across multiple categories, restoring originals and preserving siblings', async () => {
+      const source = path.join(tempRoot, 'source');
+      const destination = path.join(tempRoot, 'dest');
+
+      const srcRoot = path.join(source, 'src');
+      const dstRoot = path.join(destination, 'src');
+
+      await fs.mkdir(path.join(dstRoot, 'Catalogs', 'Goods'), { recursive: true });
+      await fs.mkdir(path.join(dstRoot, 'Catalogs', 'Other'), { recursive: true });
+      await fs.mkdir(path.join(dstRoot, 'Documents', 'Invoice'), { recursive: true });
+
+      await fs.writeFile(path.join(dstRoot, 'Catalogs', 'Goods', 'Goods.mdo'), '<Goods orig="true"/>', 'utf8');
+      await fs.writeFile(path.join(dstRoot, 'Catalogs', 'Other', 'Other.mdo'), '<Other intact="true"/>', 'utf8');
+      await fs.writeFile(path.join(dstRoot, 'Documents', 'Invoice', 'Invoice.mdo'), '<Invoice orig="true"/>', 'utf8');
+
+      await fs.mkdir(path.join(srcRoot, 'Catalogs', 'Goods'), { recursive: true });
+      await fs.mkdir(path.join(srcRoot, 'Documents', 'Invoice'), { recursive: true });
+      await fs.writeFile(path.join(srcRoot, 'Catalogs', 'Goods', 'Goods.mdo'), '<Goods new="true"/>', 'utf8');
+      await fs.writeFile(path.join(srcRoot, 'Documents', 'Invoice', 'Invoice.mdo'), '<Invoice new="true"/>', 'utf8');
+
+      const failingHooks = {
+        rename: async (from: string, to: string) => {
+          if (from.includes('staging') && to.includes('Invoice')) {
+            throw new Error('Simulated failure during Documents.Invoice install');
+          }
+          await fs.rename(from, to);
+        },
+      };
+
+      await assert.rejects(
+        publishExportedObjects(source, destination, failingHooks),
+        /Simulated failure during Documents\.Invoice install/,
+      );
+
+      assert.strictEqual(await fs.readFile(path.join(dstRoot, 'Catalogs', 'Goods', 'Goods.mdo'), 'utf8'), '<Goods orig="true"/>');
+      assert.strictEqual(await fs.readFile(path.join(dstRoot, 'Documents', 'Invoice', 'Invoice.mdo'), 'utf8'), '<Invoice orig="true"/>');
+      assert.strictEqual(await fs.readFile(path.join(dstRoot, 'Catalogs', 'Other', 'Other.mdo'), 'utf8'), '<Other intact="true"/>');
+    });
+
+    test('rejects destination file that is a symlink pointing outside configRoot before any staging or backup', async () => {
+      const source = path.join(tempRoot, 'source');
+      const destination = path.join(tempRoot, 'dest');
+      const external = path.join(tempRoot, 'external');
+      await fs.mkdir(path.join(source, 'Catalogs'), { recursive: true });
+      await fs.mkdir(external, { recursive: true });
+      await fs.mkdir(path.join(destination, 'Catalogs'), { recursive: true });
+      await fs.writeFile(path.join(source, 'Catalogs', 'Goods.xml'), '<Goods new="true"/>', 'utf8');
+      const externalFile = path.join(external, 'Escaped.xml');
+      await fs.writeFile(externalFile, '<Escaped/>', 'utf8');
+
+      try {
+        await fs.symlink(externalFile, path.join(destination, 'Catalogs', 'Goods.xml'), 'file');
+      } catch (err: unknown) {
+        if (process.platform === 'win32' && (err as NodeJS.ErrnoException)?.code === 'EPERM') {
+          return;
+        }
+        throw err;
+      }
+
+      await assert.rejects(
+        publishExportedObjects(source, destination),
+        /(?:Символическая ссылка запрещена в дереве публикации|Путь выходит за границы конфигурации)/u,
+      );
+      assert.strictEqual(await fs.readFile(externalFile, 'utf8'), '<Escaped/>');
+      const destEntries = await fs.readdir(destination);
+      assert.ok(!destEntries.some((e) => e.startsWith('.cdt-objects-publish-')), 'Transaction directory must not remain');
+    });
+
+    test('rejects destination object directory that is a junction pointing outside configRoot before any staging or backup', async () => {
+      const source = path.join(tempRoot, 'source');
+      const destination = path.join(tempRoot, 'dest');
+      const external = path.join(tempRoot, 'external');
+      await fs.mkdir(path.join(source, 'Catalogs', 'Goods'), { recursive: true });
+      await fs.mkdir(external, { recursive: true });
+      await fs.mkdir(path.join(destination, 'Catalogs'), { recursive: true });
+      await fs.writeFile(path.join(source, 'Catalogs', 'Goods.xml'), '<Goods new="true"/>', 'utf8');
+      await fs.writeFile(path.join(source, 'Catalogs', 'Goods', 'Form.xml'), '<Form/>', 'utf8');
+      await fs.writeFile(path.join(external, 'Secret.txt'), 'secret data', 'utf8');
+
+      await fs.symlink(external, path.join(destination, 'Catalogs', 'Goods'), process.platform === 'win32' ? 'junction' : 'dir');
+
+      await assert.rejects(
+        publishExportedObjects(source, destination),
+        /(?:Символическая ссылка запрещена в дереве публикации|Путь выходит за границы конфигурации)/u,
+      );
+      assert.strictEqual(await fs.readFile(path.join(external, 'Secret.txt'), 'utf8'), 'secret data');
+      const destEntries = await fs.readdir(destination);
+      assert.ok(!destEntries.some((e) => e.startsWith('.cdt-objects-publish-')), 'Transaction directory must not remain');
+    });
+
+    test('rejects nested symlink inside destination object companion folder before any staging or backup', async () => {
+      const source = path.join(tempRoot, 'source');
+      const destination = path.join(tempRoot, 'dest');
+      const external = path.join(tempRoot, 'external');
+      await fs.mkdir(path.join(source, 'Catalogs', 'Goods'), { recursive: true });
+      await fs.mkdir(external, { recursive: true });
+      await fs.mkdir(path.join(destination, 'Catalogs', 'Goods', 'Forms'), { recursive: true });
+      await fs.writeFile(path.join(source, 'Catalogs', 'Goods.xml'), '<Goods new="true"/>', 'utf8');
+      await fs.writeFile(path.join(source, 'Catalogs', 'Goods', 'Form.xml'), '<Form/>', 'utf8');
+      await fs.writeFile(path.join(destination, 'Catalogs', 'Goods.xml'), '<Goods old="true"/>', 'utf8');
+
+      const externalTarget = path.join(external, 'TargetDir');
+      await fs.mkdir(externalTarget, { recursive: true });
+      await fs.writeFile(path.join(externalTarget, 'data.txt'), 'untouchable', 'utf8');
+
+      await fs.symlink(externalTarget, path.join(destination, 'Catalogs', 'Goods', 'Forms', 'ItemForm'), process.platform === 'win32' ? 'junction' : 'dir');
+
+      await assert.rejects(
+        publishExportedObjects(source, destination),
+        /(?:Символическая ссылка запрещена в дереве публикации|Путь выходит за границы конфигурации)/u,
+      );
+      assert.strictEqual(await fs.readFile(path.join(externalTarget, 'data.txt'), 'utf8'), 'untouchable');
+      assert.strictEqual(await fs.readFile(path.join(destination, 'Catalogs', 'Goods.xml'), 'utf8'), '<Goods old="true"/>');
+    });
   });
 
   suite('DeployService.pullSelectedObjects session lock and reload trigger', () => {
@@ -338,6 +694,231 @@ suite('infobasePullSelectedObjects #350', () => {
 
       assert.strictEqual(summary.skippedCount, 1);
       assert.strictEqual(reloadCalls.length, 0, 'Must not reload on cancelled pull');
+    });
+
+    test('serializes UI pullSelectedObjects with a real ConfigurationSession and blocks a concurrent writer until completion', async () => {
+      const configRoot = tempRoot;
+      await fs.writeFile(
+        path.join(configRoot, 'Configuration.xml'),
+        '<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>PullUiTest</Name></Properties></Configuration></MetaDataObject>',
+        'utf8',
+      );
+
+      const registry = new WorkspaceRegistry();
+      const session = await registry.registerTargetedRoot({ configPath: configRoot, format: ConfigFormat.Designer });
+      const coordinator = new WorkspaceRegistryCoordinator(registry, {
+        getWorkspaceFolders: () => [tempRoot],
+        getWorkspaceFolderForPath: () => tempRoot,
+      });
+
+      const gateway = configureConfigurationMutationGateway(
+        async (resourcePath, kind, operation) => {
+          const owner = await coordinator.resolveResource(resourcePath);
+          return owner.runMutationValue({ kind, execute: operation }, {
+            failureMessage: 'Операция конфигурации не выполнена.',
+            cancelledMessage: 'Операция конфигурации отменена.',
+          });
+        },
+      );
+
+      const reloadCalls: Array<{ configPath: string; reason: ReloadReason }> = [];
+      const mockReload = async (p: string, reason: ReloadReason): Promise<void> => {
+        reloadCalls.push({ configPath: p, reason });
+      };
+
+      let exportStartedResolve!: () => void;
+      const exportStarted = new Promise<void>((r) => { exportStartedResolve = r; });
+      let finishExportResolve!: () => void;
+      const finishExport = new Promise<void>((r) => { finishExportResolve = r; });
+
+      const service = new DeployService({
+        runConfigurationMutation: (resPath, kind, op) => runConfigurationMutation(resPath, kind, op),
+        runConfigurationExportObjects: async () => {
+          exportStartedResolve();
+          await finishExport;
+          return { status: 'success', exitCode: 0, userMessage: 'Export OK', logExcerpt: '' };
+        },
+        requestConfigurationReload: mockReload,
+      });
+
+      try {
+        const pullPromise = service.pullSelectedObjects({
+          binding: baseBinding({ configRelativePath: 'Configuration.xml', infobaseIds: ['base1'] }),
+          workspaceFolderRoot: tempRoot,
+          storage: mockStorage,
+          entry: fileEntry('base1', 'Base 1', 'C:\\ib'),
+          selectedNodes: [{
+            id: 'Catalog.Products',
+            name: 'Products',
+            type: MetadataType.Catalog,
+            properties: {},
+          }],
+          progress: { report: () => undefined },
+          token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+        });
+
+        await exportStarted;
+
+        let concurrentWriterRan = false;
+        let concurrentWriterFinished = false;
+        const concurrentWriterPromise = runConfigurationMutation(configRoot, 'test.concurrentWriter', async () => {
+          concurrentWriterRan = true;
+          return 'writer-done';
+        }).then((res) => {
+          concurrentWriterFinished = true;
+          return res;
+        });
+
+        await new Promise((r) => setTimeout(r, 50));
+        assert.strictEqual(concurrentWriterRan, false, 'Concurrent writer must wait in FIFO while pullSelectedObjects is running');
+        assert.strictEqual(concurrentWriterFinished, false);
+
+        finishExportResolve();
+
+        const summary = await pullPromise;
+        assert.strictEqual(summary.successCount, 1);
+        assert.strictEqual(reloadCalls.length, 1);
+        assert.strictEqual(reloadCalls[0]!.reason, 'pull-objects');
+
+        const writerResult = await concurrentWriterPromise;
+        assert.strictEqual(writerResult, 'writer-done');
+        assert.strictEqual(concurrentWriterRan, true);
+        assert.strictEqual(concurrentWriterFinished, true);
+        assert.strictEqual(session.snapshotVersion, 2, 'Two serialized mutations must increment snapshotVersion to 2');
+      } finally {
+        gateway.dispose();
+        await registry.dispose();
+      }
+    });
+
+    test('executes agent.pullSelectedObjects with a real ConfigurationSession and blocks a concurrent writer without deadlocking', async () => {
+      const configRoot = tempRoot;
+      await fs.writeFile(
+        path.join(configRoot, 'Configuration.xml'),
+        '<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>PullAgentTest</Name></Properties></Configuration></MetaDataObject>',
+        'utf8',
+      );
+
+      vscodeTestState.mockWorkspaceFolders = [
+        { name: 'ws', index: 0, uri: { fsPath: tempRoot, scheme: 'file' } },
+      ];
+
+      const registry = new WorkspaceRegistry();
+      const session = await registry.registerTargetedRoot({ configPath: configRoot, format: ConfigFormat.Designer });
+      const configurationId = session.identity.configurationId;
+
+      const coordinator = new WorkspaceRegistryCoordinator(registry, {
+        getWorkspaceFolders: () => [tempRoot],
+        getWorkspaceFolderForPath: () => tempRoot,
+      });
+
+      const gateway = configureConfigurationMutationGateway(
+        async (resourcePath, kind, operation) => {
+          const owner = await coordinator.resolveResource(resourcePath);
+          return owner.runMutationValue({ kind, execute: operation }, {
+            failureMessage: 'Операция конфигурации не выполнена.',
+            cancelledMessage: 'Операция конфигурации отменена.',
+          });
+        },
+      );
+
+      const reloadCalls: Array<{ configPath: string; reason: ReloadReason }> = [];
+      const mockReload = async (p: string, reason: ReloadReason): Promise<void> => {
+        reloadCalls.push({ configPath: p, reason });
+      };
+
+      let exportStartedResolve!: () => void;
+      const exportStarted = new Promise<void>((r) => { exportStartedResolve = r; });
+      let finishExportResolve!: () => void;
+      const finishExport = new Promise<void>((r) => { finishExportResolve = r; });
+
+      const binding = baseBinding({ workspaceFolder: 'ws', configRelativePath: 'Configuration.xml', infobaseIds: ['base1'] });
+      const targetEntry = fileEntry('base1', 'Base 1', 'C:\\ib');
+
+      const bindingManager = {
+        get: async () => binding,
+        listAll: async () => [binding],
+        getBindingForConfig: () => binding,
+        getBindingsForWorkspaceFolder: () => [binding],
+      } as unknown as BindingManager;
+
+      const infobaseStorage = {
+        load: async () => [targetEntry],
+        readCatalog: async () => [targetEntry],
+        readPasswordSecret: async () => null,
+      } as unknown as InfobaseStorageService;
+
+      const service = new DeployService({
+        runConfigurationMutation: (resPath, kind, op) => runConfigurationMutation(resPath, kind, op),
+        runConfigurationExportObjects: async () => {
+          exportStartedResolve();
+          await finishExport;
+          return { status: 'success', exitCode: 0, userMessage: 'Export OK', logExcerpt: '' };
+        },
+        requestConfigurationReload: mockReload,
+      });
+
+      const context = { subscriptions: [] as Array<{ dispose(): void }> };
+      registerAgentCommands(
+        context as never,
+        () => null,
+        async () => registry,
+        new DebugSessionRegistry(),
+        undefined,
+        () => ({
+          bindingManager,
+          infobaseStorage,
+          getConfigPath: () => configRoot,
+          deployService: service,
+          runConfigurationMutation: (resPath, kind, op) => runConfigurationMutation(resPath, kind, op),
+          requestConfigurationReload: mockReload,
+        }),
+        undefined,
+        undefined,
+        undefined,
+        mockReload,
+      );
+
+      try {
+        const pullHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.pullSelectedObjects');
+        assert.ok(pullHandler, 'agent.pullSelectedObjects command must be registered');
+
+        const pullPromise = pullHandler({
+          configurationId,
+          objectIds: ['Catalog.Products'],
+        }) as Promise<{ success: boolean; data?: unknown; error?: string }>;
+
+        await exportStarted;
+
+        let concurrentWriterRan = false;
+        let concurrentWriterFinished = false;
+        const concurrentWriterPromise = runConfigurationMutation(configRoot, 'test.concurrentAgentWriter', async () => {
+          concurrentWriterRan = true;
+          return 'agent-writer-done';
+        }).then((res) => {
+          concurrentWriterFinished = true;
+          return res;
+        });
+
+        await new Promise((r) => setTimeout(r, 50));
+        assert.strictEqual(concurrentWriterRan, false, 'Concurrent writer must wait in FIFO while agent.pullSelectedObjects holds lock');
+        assert.strictEqual(concurrentWriterFinished, false);
+
+        finishExportResolve();
+
+        const agentResult = await pullPromise;
+        assert.strictEqual(agentResult.success, true, `agent.pullSelectedObjects must succeed: ${agentResult.error}`);
+        assert.strictEqual(reloadCalls.length, 1);
+        assert.strictEqual(reloadCalls[0]!.reason, 'pull-objects');
+
+        const writerResult = await concurrentWriterPromise;
+        assert.strictEqual(writerResult, 'agent-writer-done');
+        assert.strictEqual(concurrentWriterRan, true);
+        assert.strictEqual(concurrentWriterFinished, true);
+      } finally {
+        gateway.dispose();
+        await registry.dispose();
+      }
     });
   });
 });

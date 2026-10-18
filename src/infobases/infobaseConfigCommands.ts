@@ -48,7 +48,10 @@ import {
 import { emptyDirectoryContents } from './ibcmdExportTargetDir';
 import { runInfobaseConfigurationOperation, sharedInfobaseConfigurationOperationQueue } from './infobaseConfigurationOperationQueue';
 import { publishExportedObjects, type ExportedObjectsPublishHooks } from './exportedObjectsPublish';
+import { publishConfigurationTreeUnits } from './configurationTreePublish';
+import type { ConfigurationTreePublishHooks } from './configurationTreePublish';
 export { publishExportedObjects, type ExportedObjectsPublishHooks };
+export type { ConfigurationTreePublishHooks } from './configurationTreePublish';
 
 const OUTPUT_CHANNEL_NAME = 'CDT 41: Infobase (ibcmd)';
 const OUTPUT_DEBOUNCE_MS = 75;
@@ -883,23 +886,6 @@ export async function runInfobaseConfigIncrementalImport(
   }
 }
 
-/** Recursively copies all files from srcDir into destDir, creating subdirectories and overwriting existing files. */
-async function copyTreeOverwrite(srcDir: string, destDir: string): Promise<number> {
-  let count = 0;
-  for (const entry of await fs.promises.readdir(srcDir, { withFileTypes: true })) {
-    const srcPath = path.join(srcDir, entry.name);
-    const destPath = path.join(destDir, entry.name);
-    if (entry.isDirectory()) {
-      await fs.promises.mkdir(destPath, { recursive: true });
-      count += await copyTreeOverwrite(srcPath, destPath);
-    } else if (entry.isFile()) {
-      await fs.promises.copyFile(srcPath, destPath);
-      count++;
-    }
-  }
-  return count;
-}
-
 export interface ExportObjectsParams {
   storage: InfobaseStorageService;
   entry: InfobaseEntry;
@@ -1105,178 +1091,22 @@ const GENERATED_CONFIGURATION_ROOT_ENTRIES = [
   ...GENERATED_CONFIGURATION_ROOT_DIRECTORIES,
 ] as const;
 
-export interface ConfigurationTreePublishHooks {
-  /** Replace the default recursive copy in tests or in a host with an audited FS wrapper. */
-  readonly copyEntry?: (sourcePath: string, destinationPath: string) => Promise<number>;
-  readonly rename?: (sourcePath: string, destinationPath: string) => Promise<void>;
-  readonly remove?: (targetPath: string, options: { recursive?: boolean; force?: boolean }) => Promise<void>;
-}
-
-interface PublishedConfigurationEntry {
-  readonly name: string;
-  readonly sourcePath: string;
-  readonly destinationPath: string;
-  readonly stagingPath: string;
-  readonly backupPath: string;
-  sourceExists: boolean;
-  destinationExists: boolean;
-  staged: boolean;
-  backedUp: boolean;
-  installed: boolean;
-}
-
-async function pathExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.promises.lstat(filePath);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return false;
-    }
-    throw error;
-  }
-}
-
-async function copyConfigurationPublishEntry(sourcePath: string, destinationPath: string): Promise<number> {
-  const stat = await fs.promises.lstat(sourcePath);
-  if (stat.isDirectory()) {
-    await fs.promises.mkdir(destinationPath, { recursive: true });
-    return copyTreeOverwrite(sourcePath, destinationPath);
-  }
-  if (stat.isFile()) {
-    await fs.promises.mkdir(path.dirname(destinationPath), { recursive: true });
-    await fs.promises.copyFile(sourcePath, destinationPath);
-    return 1;
-  }
-  throw new Error(`Неподдерживаемый тип записи выгрузки: ${sourcePath}`);
-}
-
-/**
- * Publishes a full configuration export as an allow-listed transactional
- * mirror. Only generated 1C root entries are replaced; arbitrary workspace
- * files next to Configuration.xml remain byte-identical. A failed publication
- * rolls back each moved generated entry. If a rollback itself fails, the
- * backup directory is deliberately retained and its path is included in the
- * thrown error so recovery is explicit and lossless.
- */
 export async function publishConfigurationTree(
   sourceDir: string,
   destinationDir: string,
   hooks: ConfigurationTreePublishHooks = {},
 ): Promise<number> {
-  const source = path.resolve(sourceDir);
-  const destination = path.resolve(destinationDir);
-  if (source === destination) {
-    throw new Error('Нельзя опубликовать конфигурацию поверх исходного каталога.');
-  }
-  const sourceStat = await fs.promises.stat(source);
-  if (!sourceStat.isDirectory()) {
-    throw new Error(`Источник выгрузки не является каталогом: ${source}`);
-  }
-
-  const suffix = `${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
-  // Keep transaction artefacts inside the destination volume. We never move
-  // the workspace root itself, which also avoids a cross-volume rename on Windows.
-  const transactionRoot = path.join(destination, `.cdt-config-publish-${suffix}`);
-  const stagingRoot = path.join(transactionRoot, 'staging');
-  const backupRoot = path.join(transactionRoot, 'backup');
-  const rename = hooks.rename ?? (async (from: string, to: string) => fs.promises.rename(from, to));
-  const remove = hooks.remove ?? (async (target: string, options: { recursive?: boolean; force?: boolean }) => {
-    await fs.promises.rm(target, options);
-  });
-  const copyEntry = hooks.copyEntry ?? copyConfigurationPublishEntry;
-
-  await fs.promises.mkdir(destination, { recursive: true });
-  await fs.promises.mkdir(stagingRoot, { recursive: true });
-  await fs.promises.mkdir(backupRoot, { recursive: true });
-
-  const entries: PublishedConfigurationEntry[] = GENERATED_CONFIGURATION_ROOT_ENTRIES.map((name) => ({
-    name,
-    sourcePath: path.join(source, name),
-    destinationPath: path.join(destination, name),
-    stagingPath: path.join(stagingRoot, name),
-    backupPath: path.join(backupRoot, name),
-    sourceExists: false,
-    destinationExists: false,
-    staged: false,
-    backedUp: false,
-    installed: false,
-  }));
-
-  let copied = 0;
-  let committed = false;
-  let rollbackFailure: unknown;
-  try {
-    // Stage only entries from the allow-list. Missing source entries are
-    // intentional: if the destination has one, it is a stale generated entry.
-    for (const entry of entries) {
-      entry.sourceExists = await pathExists(entry.sourcePath);
-      if (!entry.sourceExists) {
-        continue;
-      }
-      copied += await copyEntry(entry.sourcePath, entry.stagingPath);
-      entry.staged = true;
-    }
-
-    for (const entry of entries) {
-      entry.destinationExists = await pathExists(entry.destinationPath);
-      if (!entry.destinationExists) {
-        continue;
-      }
-      await rename(entry.destinationPath, entry.backupPath);
-      entry.backedUp = true;
-    }
-
-    for (const entry of entries) {
-      if (!entry.staged) {
-        continue;
-      }
-      await rename(entry.stagingPath, entry.destinationPath);
-      entry.installed = true;
-    }
-    committed = true;
-    return copied;
-  } catch (error) {
-    // Remove newly installed entries first; then restore the old generated
-    // entries in reverse order. Unknown root entries are never touched.
-    try {
-      for (const entry of [...entries].reverse()) {
-        if (!entry.installed) {
-          continue;
-        }
-        await remove(entry.destinationPath, { recursive: true, force: true });
-      }
-      for (const entry of [...entries].reverse()) {
-        if (!entry.backedUp) {
-          continue;
-        }
-        await rename(entry.backupPath, entry.destinationPath);
-      }
-    } catch (restoreError) {
-      rollbackFailure = restoreError;
-    }
-
-    if (rollbackFailure !== undefined) {
-      throw new Error(
-        `Не удалось опубликовать выгрузку и полностью восстановить прежние файлы. ` +
-        `Резервная копия сохранена: ${backupRoot}. ` +
-        `Исходная ошибка: ${error instanceof Error ? error.message : String(error)}. ` +
-        `Ошибка восстановления: ${rollbackFailure instanceof Error ? rollbackFailure.message : String(rollbackFailure)}`,
-      );
-    }
-    throw error;
-  } finally {
-    // On success and a clean rollback no backup is needed. If rollback failed,
-    // keep backupRoot (and its transaction parent) for explicit recovery.
-    if (committed || rollbackFailure === undefined) {
-      await remove(transactionRoot, { recursive: true, force: true }).catch(() => undefined);
-    } else {
-      // Staging is disposable; backup is the recovery artefact and must remain.
-      await remove(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
-    }
-  }
+  return publishConfigurationTreeUnits(
+    sourceDir,
+    destinationDir,
+    GENERATED_CONFIGURATION_ROOT_ENTRIES.map((relativePath) => ({
+      relativePath,
+      removeWhenMissing: true,
+    })),
+    'config',
+    hooks,
+  );
 }
-
 export interface ExportConfigurationToDirectoryParams {
   storage: InfobaseStorageService;
   entry: InfobaseEntry;

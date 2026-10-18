@@ -217,6 +217,8 @@ export async function registerAllCommands({
           runConfigurationMutation,
           requestConfigurationReload,
         }),
+        runConfigurationMutation,
+        requestConfigurationReload,
       };
     },
     () => {

@@ -1,81 +1,23 @@
-import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { METADATA_TYPE_DESCRIPTORS } from '../constants/metadataTypeDescriptors';
+import {
+  publishConfigurationTreeUnits,
+  type ConfigurationTreePublishHooks,
+  type ConfigurationTreePublishUnit,
+} from './configurationTreePublish';
 
-export interface ExportedObjectsPublishHooks {
-  /** Replace the default recursive copy in tests or in a host with an audited FS wrapper. */
-  readonly copyEntry?: (sourcePath: string, destinationPath: string) => Promise<number>;
-  readonly rename?: (sourcePath: string, destinationPath: string) => Promise<void>;
-  readonly remove?: (targetPath: string, options: { recursive?: boolean; force?: boolean }) => Promise<void>;
-}
+export type ExportedObjectsPublishHooks = ConfigurationTreePublishHooks;
+export type { ConfigurationTreePublishHooks };
 
-interface PublishedObjectUnit {
-  readonly relativePath: string;
-  readonly kind: 'file' | 'directory';
-  readonly action: 'install' | 'remove';
-  readonly sourcePath: string;
-  readonly destinationPath: string;
-  readonly stagingPath: string;
-  readonly backupPath: string;
-  sourceExists: boolean;
-  destinationExists: boolean;
-  staged: boolean;
-  backedUp: boolean;
-  installed: boolean;
-}
-
-async function pathExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.promises.lstat(filePath);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return false;
-    }
-    throw error;
-  }
-}
-
-async function copyTree(srcDir: string, destDir: string): Promise<number> {
-  let count = 0;
-  for (const entry of await fs.promises.readdir(srcDir, { withFileTypes: true })) {
-    const srcPath = path.join(srcDir, entry.name);
-    const destPath = path.join(destDir, entry.name);
-    if (entry.isDirectory()) {
-      await fs.promises.mkdir(destPath, { recursive: true });
-      count += await copyTree(srcPath, destPath);
-    } else if (entry.isFile()) {
-      await fs.promises.copyFile(srcPath, destPath);
-      count++;
-    }
-  }
-  return count;
-}
-
-async function defaultCopyPublishEntry(sourcePath: string, destinationPath: string): Promise<number> {
-  const stat = await fs.promises.lstat(sourcePath);
-  if (stat.isDirectory()) {
-    await fs.promises.mkdir(destinationPath, { recursive: true });
-    return copyTree(sourcePath, destinationPath);
-  }
-  if (stat.isFile()) {
-    await fs.promises.mkdir(path.dirname(destinationPath), { recursive: true });
-    await fs.promises.copyFile(sourcePath, destinationPath);
-    return 1;
-  }
-  throw new Error(`Неподдерживаемый тип записи выгрузки: ${sourcePath}`);
-}
+const ROOT_METADATA_FILES = new Set(['configuration.xml', 'configdumpinfo.xml']);
+const ROOT_CONFIGURATION_MDO = 'configuration.mdo';
 
 /**
- * Publishes exported metadata objects from a temporary directory into the workspace
- * configuration root with staging, backup, and atomic rollback guarantees (#350).
- *
- * For each exported object descriptor `<Category>/<Name>.xml`:
- * - Stages the descriptor file and its corresponding object directory `<Category>/<Name>` (if present).
- * - If the object directory existed in destination but not in the export (e.g. all forms/templates
- *   were deleted in the infobase), the stale destination directory is backed up and removed.
- * - Sibling metadata objects and non-metadata workspace files remain untouched.
- * - On failure during install, all changes are rolled back from backup.
+ * Publishes only metadata units present in an ibcmd object export. Designer
+ * objects use their descriptor and companion directory; EDT objects use one
+ * `src/<type>/<object>` directory. Unselected categories and sibling objects
+ * are never promoted to publication units.
  */
 export async function publishExportedObjects(
   sourceDir: string,
@@ -83,180 +25,134 @@ export async function publishExportedObjects(
   hooks: ExportedObjectsPublishHooks = {},
 ): Promise<number> {
   const source = path.resolve(sourceDir);
-  const destination = path.resolve(destinationDir);
-  if (source === destination) {
-    throw new Error('Нельзя опубликовать объекты поверх исходного каталога.');
-  }
-  const sourceStat = await fs.promises.stat(source);
-  if (!sourceStat.isDirectory()) {
-    throw new Error(`Источник выгрузки не является каталогом: ${source}`);
-  }
+  const units = await discoverMetadataUnits(source);
+  return publishConfigurationTreeUnits(source, destinationDir, units, 'objects', hooks);
+}
 
-  const suffix = `${process.pid}-${Date.now()}-${randomUUID()}`;
-  const transactionRoot = path.join(destination, `.cdt-objects-publish-${suffix}`);
-  const stagingRoot = path.join(transactionRoot, 'staging');
-  const backupRoot = path.join(transactionRoot, 'backup');
-  const rename = hooks.rename ?? (async (from: string, to: string) => fs.promises.rename(from, to));
-  const remove = hooks.remove ?? (async (target: string, options: { recursive?: boolean; force?: boolean }) => {
-    await fs.promises.rm(target, options);
-  });
-  const copyEntry = hooks.copyEntry ?? defaultCopyPublishEntry;
+async function discoverMetadataUnits(sourceRoot: string): Promise<ConfigurationTreePublishUnit[]> {
+  const rootEntries = await readDirectoryEntries(sourceRoot);
+  const units: ConfigurationTreePublishUnit[] = [];
 
-  await fs.promises.mkdir(destination, { recursive: true });
-  await fs.promises.mkdir(stagingRoot, { recursive: true });
-  await fs.promises.mkdir(backupRoot, { recursive: true });
-
-  const units: PublishedObjectUnit[] = [];
-  const handledDirs = new Set<string>();
-
-  const isDir = async (p: string): Promise<boolean> => {
-    try {
-      const s = await fs.promises.lstat(p);
-      return s.isDirectory();
-    } catch {
-      return false;
+  for (const entry of rootEntries) {
+    const lowerName = entry.name.toLocaleLowerCase();
+    if (entry.isFile() && ROOT_METADATA_FILES.has(lowerName)) {
+      units.push({ relativePath: entry.name });
+      continue;
     }
-  };
+    if (!entry.isDirectory()) { continue; }
 
-  const addUnit = (
-    relativePath: string,
-    kind: 'file' | 'directory',
-    action: 'install' | 'remove',
-  ) => {
+    if (lowerName === 'src') {
+      units.push(...await discoverEdtUnits(sourceRoot, entry.name));
+      continue;
+    }
+
+    if (findMetadataType(entry.name)) {
+      units.push(...await discoverDesignerUnits(sourceRoot, entry.name));
+    }
+  }
+
+  return units;
+}
+
+async function discoverDesignerUnits(
+  sourceRoot: string,
+  typeFolder: string,
+): Promise<ConfigurationTreePublishUnit[]> {
+  const typePath = path.join(sourceRoot, typeFolder);
+  const entries = await readDirectoryEntries(typePath);
+  const objectFolders = new Map(
+    entries.filter((entry) => entry.isDirectory()).map((entry) => [entry.name.toLocaleLowerCase(), entry.name]),
+  );
+  const units: ConfigurationTreePublishUnit[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || path.extname(entry.name).toLocaleLowerCase() !== '.xml') { continue; }
+    const objectName = path.basename(entry.name, path.extname(entry.name));
+    const companionFolder = objectFolders.get(objectName.toLocaleLowerCase());
+    units.push({ relativePath: path.posix.join(typeFolder, entry.name) });
     units.push({
-      relativePath,
-      kind,
-      action,
-      sourcePath: path.join(source, relativePath),
-      destinationPath: path.join(destination, relativePath),
-      stagingPath: path.join(stagingRoot, relativePath),
-      backupPath: path.join(backupRoot, relativePath),
-      sourceExists: action === 'install',
-      destinationExists: false,
-      staged: false,
-      backedUp: false,
-      installed: false,
+      relativePath: path.posix.join(typeFolder, companionFolder ?? objectName),
+      removeWhenMissing: true,
     });
-  };
+  }
 
-  const rootEntries = await fs.promises.readdir(source, { withFileTypes: true });
-  for (const rootEntry of rootEntries) {
-    if (rootEntry.isFile()) {
-      addUnit(rootEntry.name, 'file', 'install');
-    } else if (rootEntry.isDirectory()) {
-      const categoryName = rootEntry.name;
-      const categorySourceDir = path.join(source, categoryName);
-      const catEntries = await fs.promises.readdir(categorySourceDir, { withFileTypes: true });
+  return units;
+}
 
-      // First pass: scan files (descriptors)
-      for (const catEntry of catEntries) {
-        if (catEntry.isFile()) {
-          const relFilePath = path.join(categoryName, catEntry.name);
-          addUnit(relFilePath, 'file', 'install');
+async function discoverEdtUnits(sourceRoot: string, srcFolder: string): Promise<ConfigurationTreePublishUnit[]> {
+  const srcPath = path.join(sourceRoot, srcFolder);
+  const typeEntries = await readDirectoryEntries(srcPath);
+  const units: ConfigurationTreePublishUnit[] = [];
 
-          if (catEntry.name.toLowerCase().endsWith('.xml')) {
-            const baseName = catEntry.name.slice(0, -4);
-            const relDirPath = path.join(categoryName, baseName);
-            const sourceDirPath = path.join(source, relDirPath);
-            const destDirPath = path.join(destination, relDirPath);
-            handledDirs.add(relDirPath.toLowerCase());
+  for (const typeEntry of typeEntries) {
+    if (typeEntry.isFile() && typeEntry.name.toLocaleLowerCase() === ROOT_CONFIGURATION_MDO) {
+      units.push({ relativePath: path.posix.join(srcFolder, typeEntry.name) });
+      continue;
+    }
+    if (!typeEntry.isDirectory()) { continue; }
 
-            if (await isDir(sourceDirPath)) {
-              addUnit(relDirPath, 'directory', 'install');
-            } else if (await isDir(destDirPath)) {
-              // The object in infobase has no child artifacts, but destination has a stale folder
-              addUnit(relDirPath, 'directory', 'remove');
-            }
-          }
-        }
+    if (typeEntry.name.toLocaleLowerCase() === 'configuration') {
+      const configEntries = await readDirectoryEntries(path.join(srcPath, typeEntry.name));
+      if (configEntries.some((entry) => entry.isFile() && entry.name.toLocaleLowerCase() === ROOT_CONFIGURATION_MDO)) {
+        units.push({ relativePath: path.posix.join(srcFolder, typeEntry.name) });
       }
+      continue;
+    }
 
-      // Second pass: scan directories that were not paired with a descriptor
-      for (const catEntry of catEntries) {
-        if (catEntry.isDirectory()) {
-          const relDirPath = path.join(categoryName, catEntry.name);
-          if (!handledDirs.has(relDirPath.toLowerCase())) {
-            handledDirs.add(relDirPath.toLowerCase());
-            addUnit(relDirPath, 'directory', 'install');
-          }
-        }
+    const metadataType = findMetadataType(typeEntry.name);
+    if (!metadataType) { continue; }
+    const objectEntries = await readDirectoryEntries(path.join(srcPath, typeEntry.name));
+    for (const objectEntry of objectEntries) {
+      if (!objectEntry.isDirectory()) { continue; }
+      const objectPath = path.join(srcPath, typeEntry.name, objectEntry.name);
+      const objectContents = await readDirectoryEntries(objectPath);
+      if (containsObjectDescriptor(objectContents, objectEntry.name, metadataType.edtFileName)) {
+        units.push({ relativePath: path.posix.join(srcFolder, typeEntry.name, objectEntry.name) });
       }
     }
   }
 
-  let copied = 0;
-  let committed = false;
-  let rollbackFailure: unknown;
+  return units;
+}
 
-  try {
-    // 1. Staging pass
-    for (const unit of units) {
-      if (unit.action !== 'install') {
-        continue;
-      }
-      await fs.promises.mkdir(path.dirname(unit.stagingPath), { recursive: true });
-      copied += await copyEntry(unit.sourcePath, unit.stagingPath);
-      unit.staged = true;
-    }
+function containsObjectDescriptor(
+  entries: readonly fs.Dirent[],
+  objectName: string,
+  typeDescriptorName: string,
+): boolean {
+  const acceptedNames = new Set([
+    `${objectName}.mdo`.toLocaleLowerCase(),
+    typeDescriptorName.toLocaleLowerCase(),
+  ]);
+  return entries.some((entry) =>
+    entry.isFile() && path.extname(entry.name).toLocaleLowerCase() === '.mdo'
+    && acceptedNames.has(entry.name.toLocaleLowerCase()),
+  );
+}
 
-    // 2. Backup pass
-    for (const unit of units) {
-      unit.destinationExists = await pathExists(unit.destinationPath);
-      if (!unit.destinationExists) {
-        continue;
-      }
-      await fs.promises.mkdir(path.dirname(unit.backupPath), { recursive: true });
-      await rename(unit.destinationPath, unit.backupPath);
-      unit.backedUp = true;
-    }
+function findMetadataType(folder: string) {
+  const lowerFolder = folder.toLocaleLowerCase();
+  return METADATA_TYPE_DESCRIPTORS.find((descriptor) =>
+    descriptor.designerFolder.toLocaleLowerCase() === lowerFolder
+    || descriptor.edtFolder.toLocaleLowerCase() === lowerFolder,
+  );
+}
 
-    // 3. Install pass
-    for (const unit of units) {
-      if (unit.action !== 'install' || !unit.staged) {
-        continue;
-      }
-      await fs.promises.mkdir(path.dirname(unit.destinationPath), { recursive: true });
-      await rename(unit.stagingPath, unit.destinationPath);
-      unit.installed = true;
+async function readDirectoryEntries(directory: string): Promise<fs.Dirent[]> {
+  const stat = await fs.promises.lstat(directory);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(`Ожидался обычный каталог экспорта: ${directory}`);
+  }
+  const entries = await fs.promises.readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = path.join(directory, entry.name);
+    const entryStat = await fs.promises.lstat(entryPath);
+    if (entryStat.isSymbolicLink()) {
+      throw new Error(`Символическая ссылка запрещена в каталоге экспорта: ${entryPath}`);
     }
-
-    committed = true;
-    return copied;
-  } catch (error) {
-    try {
-      // Rollback: remove newly installed units
-      for (const unit of [...units].reverse()) {
-        if (!unit.installed) {
-          continue;
-        }
-        await remove(unit.destinationPath, { recursive: true, force: true });
-      }
-      // Rollback: restore backed-up units
-      for (const unit of [...units].reverse()) {
-        if (!unit.backedUp) {
-          continue;
-        }
-        await fs.promises.mkdir(path.dirname(unit.destinationPath), { recursive: true });
-        await rename(unit.backupPath, unit.destinationPath);
-      }
-    } catch (restoreError) {
-      rollbackFailure = restoreError;
-    }
-
-    if (rollbackFailure !== undefined) {
-      throw new Error(
-        `Не удалось опубликовать выгруженные объекты и восстановить прежние файлы. ` +
-        `Резервная копия сохранена: ${backupRoot}. ` +
-        `Исходная ошибка: ${error instanceof Error ? error.message : String(error)}. ` +
-        `Ошибка восстановления: ${rollbackFailure instanceof Error ? rollbackFailure.message : String(rollbackFailure)}`,
-      );
-    }
-    throw error;
-  } finally {
-    if (committed || rollbackFailure === undefined) {
-      await remove(transactionRoot, { recursive: true, force: true }).catch(() => undefined);
-    } else {
-      await remove(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
+    if (!entryStat.isFile() && !entryStat.isDirectory()) {
+      throw new Error(`Неподдерживаемый тип записи экспорта: ${entryPath}`);
     }
   }
+  return entries;
 }
