@@ -19,6 +19,7 @@ import {
 import { showIbcmdInfobaseOutputChannel } from '../infobases/infobaseConfigCommands';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDialog';
+import { createRequestConfigurationReload } from '../reload/requestConfigurationReload';
 import {
   DeployApplicationService,
   formatDeployRunSummary,
@@ -116,6 +117,9 @@ function getDeployAppService(state: ExtensionState): DeployApplicationService {
     resolveSupportContext: async (_configRoot, workspaceFolderRoot, binding) => {
       return resolveDeploySupportContext(state, workspaceFolderRoot, binding);
     },
+    requestConfigurationReload: state.reloadCoordinator
+      ? createRequestConfigurationReload(state)
+      : undefined,
   });
 }
 

@@ -7,6 +7,7 @@ export type ReloadReason =
   | 'create-command'
   | 'duplicate-command'
   | 'rename-command'
+  | 'pull-command'
   | 'repository'
   | 'unknown';
 

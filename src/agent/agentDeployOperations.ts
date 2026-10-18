@@ -14,6 +14,7 @@ import type { ConfigurationBinding } from '../bindings/models/configurationBindi
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import type { AgentResult, ConfigurationScopedParams } from './types';
+import type { ReloadReason } from '../types/reloadContracts';
 import {
     DeployApplicationService,
     type DeployOutcome,
@@ -31,6 +32,7 @@ export interface AgentDeployOperationsDeps {
      */
     resolveSupportContext?: (configRoot: string) => Promise<DeploySupportContext | undefined>;
     deployService?: DeployService;
+    requestConfigurationReload?: (configRoot: string, reason: ReloadReason) => Promise<void>;
 }
 
 export interface DeployParams extends ConfigurationScopedParams {
@@ -97,6 +99,7 @@ export class AgentDeployOperations {
                 ? (configRoot) => deps.resolveSupportContext!(configRoot)
                 : undefined,
             deployService: deps.deployService,
+            requestConfigurationReload: deps.requestConfigurationReload,
         });
     }
 

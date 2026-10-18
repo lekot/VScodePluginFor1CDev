@@ -22,6 +22,7 @@ import type { ConfigurationBinding } from './models/configurationBinding';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
+import type { ReloadReason } from '../types/reloadContracts';
 import {
   detectChangedConfigFiles,
   findDeepestContainingRepository,
@@ -118,6 +119,7 @@ export interface DeployApplicationServiceDeps {
   ) => Promise<DeploySupportContext | undefined>;
   readonly deployService?: DeployService;
   readonly gitDeps?: IncrementalChangeDetectorDeps;
+  readonly requestConfigurationReload?: (configRoot: string, reason: ReloadReason) => Promise<void>;
 }
 
 // ─── Service Implementation ──────────────────────────────────────────────────
@@ -126,7 +128,9 @@ export class DeployApplicationService {
   private readonly deployService: DeployService;
 
   constructor(private readonly deps: DeployApplicationServiceDeps) {
-    this.deployService = deps.deployService ?? new DeployService();
+    this.deployService = deps.deployService ?? new DeployService({
+      requestConfigurationReload: deps.requestConfigurationReload,
+    });
   }
 
   // ─── 1. Target and Context Resolution ─────────────────────────────────────

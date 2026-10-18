@@ -219,6 +219,8 @@ export async function registerAllCommands({
         getConfigPath: () => state.treeDataProvider?.getConfigPath() ?? null,
         resolveSupportContext: (configRoot) =>
           resolveAgentDeploySupportContext(configRoot, state, getConfigurationRegistry),
+        requestConfigurationReload: (configRoot, reason) =>
+          requestConfigurationReload(configRoot, reason),
       };
     },
     () => {

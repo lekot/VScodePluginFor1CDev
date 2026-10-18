@@ -46,10 +46,8 @@ import {
   probeIncrementalSupport,
 } from '../services/ibcmd/ibcmdVersionSupport';
 import { emptyDirectoryContents } from './ibcmdExportTargetDir';
-import {
-  runInfobaseConfigurationOperation,
-  sharedInfobaseConfigurationOperationQueue,
-} from './infobaseConfigurationOperationQueue';
+import { publishExportedObjectsTree } from './exportedObjectsTreePublisher'; export { publishExportedObjectsTree };
+import { runInfobaseConfigurationOperation, sharedInfobaseConfigurationOperationQueue } from './infobaseConfigurationOperationQueue';
 
 const OUTPUT_CHANNEL_NAME = 'CDT 41: Infobase (ibcmd)';
 const OUTPUT_DEBOUNCE_MS = 75;
@@ -914,7 +912,7 @@ export interface ExportObjectsParams {
   /** WOW Phase 4 — `ibcmd --extension` при работе с расширением. */
   ibcmdExtensionName?: string;
   /** Receives live decoded process output after ibcmd credentials have been redacted. */
-  onOutput?: (chunk: string) => void;
+  onOutput?: (chunk: string) => void; publishHooks?: ConfigurationTreePublishHooks;
 }
 
 /**
@@ -985,8 +983,8 @@ export async function runInfobaseConfigExportObjects(
   }
 
   // Export to a temp directory (ibcmd requires --out= to be empty), then copy to workspace.
-  const tempExportDir = path.join(os.tmpdir(), `1cviewer-export-objects-${Date.now()}`);
-  fs.mkdirSync(tempExportDir, { recursive: true });
+  const tempExportDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-export-objects-'));
+  // tempExportDir created by mkdtemp
 
   const connection = ibcmdOfflineConnectionFromPrepared(prep);
   const exportObjectsArgs = buildInfobaseConfigExportObjectsArgs(
@@ -1028,7 +1026,7 @@ export async function runInfobaseConfigExportObjects(
 
     // Copy exported files from temp to workspace configRoot.
     if (result.status === 'success') {
-      const copied = await copyTreeOverwrite(tempExportDir, params.configRoot);
+      const copied = await publishExportedObjectsTree(tempExportDir, params.configRoot, params.publishHooks);
       ch.appendLine(`[export objects${ctx}] Скопировано файлов: ${copied}`);
     }
 

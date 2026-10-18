@@ -9,15 +9,15 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { normalizeConfigRelativePath } from './bindingPathUtils';
 import type { ConfigurationBinding } from './models/configurationBinding';
+import type { ReloadReason } from '../types/reloadContracts';
+import { runConfigurationMutation, ConfigurationMutationGatewayError } from '../services/configurationSession/configurationMutationGateway';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import type { InfobaseStorageService } from '../infobases/infobaseStorageService';
 import type { IbcmdInfobaseOperationResult } from '../services/ibcmd/ibcmdInfobaseOperationResult';
 import {
-  appendIbcmdOutputLine,
-  runInfobaseConfigImportFromDirectory,
-  runInfobaseConfigIncrementalImport,
-  runInfobaseConfigExportObjects,
+  appendIbcmdOutputLine, runInfobaseConfigImportFromDirectory,
+  runInfobaseConfigIncrementalImport, runInfobaseConfigExportObjects,
 } from '../infobases/infobaseConfigCommands';
 import {
   InfobaseConfigurationOperationCancelledError,
@@ -557,13 +557,15 @@ export interface PullSelectedObjectsParams {
   onOutput?: (chunk: string) => void;
 }
 
+export interface DeployServiceDeps {
+  runXmlPreflight?: typeof runIbcmdXmlImportPreflight;
+  runIncrementalImport?: typeof runInfobaseConfigIncrementalImport;
+  runExportObjects?: typeof runInfobaseConfigExportObjects;
+  requestConfigurationReload?: (configRoot: string, reason: ReloadReason) => Promise<void>;
+}
+
 export class DeployService {
-  constructor(
-    private readonly deps: {
-      runXmlPreflight?: typeof runIbcmdXmlImportPreflight;
-      runIncrementalImport?: typeof runInfobaseConfigIncrementalImport;
-    } = {},
-  ) {}
+  constructor(private readonly deps: DeployServiceDeps = {}) {}
 
   /**
    * Последовательная раскатка: ошибка на одной базе не прерывает остальные (design §12.5).
@@ -1449,43 +1451,38 @@ export class DeployService {
 
     params.progress.report({ message: `Выгрузка объектов из: ${params.entry.name}`, increment: 0 });
 
-    const interpreted = await runInfobaseConfigExportObjects({
-      storage: params.storage,
-      entry: params.entry,
-      configRoot,
-      objectIds,
-      token: params.token,
-      logContext: 'выгрузка',
-      ibcmdExtensionName: params.binding.ibcmdExtensionName,
-      onOutput: params.onOutput,
+    const runExport = () => (this.deps.runExportObjects ?? runInfobaseConfigExportObjects)({
+      storage: params.storage, entry: params.entry, configRoot, objectIds,
+      token: params.token, logContext: 'выгрузка',
+      ibcmdExtensionName: params.binding.ibcmdExtensionName, onOutput: params.onOutput,
     });
+    let interpreted: IbcmdInfobaseOperationResult;
+    try {
+      interpreted = await runConfigurationMutation(configRoot, 'pullSelectedObjects', runExport);
+    } catch (error) {
+      if (error instanceof ConfigurationMutationGatewayError && error.code === 'RUNNER_NOT_CONFIGURED') {
+        interpreted = await runExport();
+      } else { throw error; }
+    }
 
     const results: DeployItemResult[] = [];
-    if (interpreted.status === 'cancelled') {
+    const isCancelled = interpreted.status === 'cancelled';
+    if (isCancelled) {
       appendIbcmdOutputLine(`[выгрузка объектов] ${params.entry.name}: отменено — ${interpreted.userMessage}`);
       results.push({ infobaseId: params.entry.id, name: params.entry.name, status: 'skipped', message: interpreted.userMessage });
-      const s = summarizeDeployRun(results, true);
-      appendDeployRunSummaryLine(s);
-      return s;
-    }
-
-    if (interpreted.status === 'inDoubt') {
+    } else if (interpreted.status === 'inDoubt') {
       appendIbcmdOutputLine(`[выгрузка объектов] ${params.entry.name}: результат неопределён — ${interpreted.userMessage}`);
       results.push(toInDoubtDeployItem(params.entry, interpreted));
-      const s = summarizeDeployRun(results, false);
-      appendDeployRunSummaryLine(s);
-      return s;
-    }
-
-    if (interpreted.status === 'success') {
+    } else if (interpreted.status === 'success') {
       appendIbcmdOutputLine(`[выгрузка объектов] ${params.entry.name}: успех — ${interpreted.userMessage}`);
       results.push({ infobaseId: params.entry.id, name: params.entry.name, status: 'success', message: interpreted.userMessage });
+      await this.deps.requestConfigurationReload?.(configRoot, 'pull-command');
     } else {
       appendIbcmdOutputLine(`[выгрузка объектов] ${params.entry.name}: ошибка — ${interpreted.userMessage}`);
       results.push({ infobaseId: params.entry.id, name: params.entry.name, status: 'error', message: interpreted.userMessage });
     }
 
-    const s = summarizeDeployRun(results, false);
+    const s = summarizeDeployRun(results, isCancelled);
     appendDeployRunSummaryLine(s);
     return s;
   }
