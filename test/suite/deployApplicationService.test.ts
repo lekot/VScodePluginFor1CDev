@@ -19,6 +19,11 @@ import { runPullSelectedObjectsFromTree } from '../../src/bindings/bindingComman
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 import type { GitRepository, IncrementalChangeDetectorDeps } from '../../src/services/ibcmd/incrementalChangeDetector';
 
+interface MutableIbcmdServiceModule {
+  getIbcmdService(): { resolveExecutablePathAsync: () => Promise<{ kind: string; path?: string }>; getTimeoutMs: () => number };
+}
+const ibcmdServiceModule = module.require('../../src/services/ibcmd/ibcmdServiceSingleton') as MutableIbcmdServiceModule;
+
 suite('DeployApplicationService (#255)', () => {
   let tempDir: string;
   let configDir: string;
@@ -1114,35 +1119,41 @@ suite('DeployApplicationService (#255)', () => {
     const state = new ExtensionState();
     state.bindingManager = mockBindingManager as never;
     state.infobaseStorage = mockStorage as never;
+    const originalGetIbcmdService = ibcmdServiceModule.getIbcmdService;
     const originalPull = DeployApplicationService.prototype.executePullSelectedObjects;
-    DeployApplicationService.prototype.executePullSelectedObjects = async () => ({
-      success: true,
-      status: 'success',
-      message: 'Выгрузка завершена: 1 успешно.',
-      summary: {
-        successCount: 1,
-        errorCount: 0,
-        inDoubtCount: 0,
-        skippedCount: 0,
-        hasPartial: false,
-        cancelledMidChain: false,
-        results: [],
-      },
-      data: { summary: { success: 1, error: 0, inDoubt: 0, skipped: 0, hasPartial: false }, results: [] },
-      reconciliation: { status: 'failed', code: 'AUDIT_RELOAD_FAILURE', message: 'tree reload failed' },
-    });
-    const tree = {
-      resolveNodeForUi: (node: TreeNode) => node,
-      getConfigPathForNode: () => configDir,
-    } as never;
-    const node: TreeNode = {
-      id: 'Configuration',
-      name: 'Configuration',
-      type: MetadataType.Configuration,
-      properties: {},
-    };
-    vscodeTestState.warningMessageReturnQueue.push('Выгрузить');
     try {
+      ibcmdServiceModule.getIbcmdService = () => ({
+        resolveExecutablePathAsync: async () => ({ kind: 'resolved', path: 'ibcmd-test' }),
+        getTimeoutMs: () => 30_000,
+      });
+      DeployApplicationService.prototype.executePullSelectedObjects = async () => ({
+        success: true,
+        status: 'success',
+        message: 'Выгрузка завершена: 1 успешно.',
+        summary: {
+          successCount: 1,
+          errorCount: 0,
+          inDoubtCount: 0,
+          skippedCount: 0,
+          hasPartial: false,
+          cancelledMidChain: false,
+          results: [],
+        },
+        data: { summary: { success: 1, error: 0, inDoubt: 0, skipped: 0, hasPartial: false }, results: [] },
+        reconciliation: { status: 'failed', code: 'AUDIT_RELOAD_FAILURE', message: 'tree reload failed' },
+      });
+
+      const tree = {
+        resolveNodeForUi: (node: TreeNode) => node,
+        getConfigPathForNode: () => configDir,
+      } as never;
+      const node: TreeNode = {
+        id: 'Configuration',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+      };
+      vscodeTestState.warningMessageReturnQueue.push('Выгрузить');
       await runPullSelectedObjectsFromTree(node, [], state, tree);
       assert.ok(
         vscodeTestState.warningLog.some((message) =>
@@ -1152,6 +1163,7 @@ suite('DeployApplicationService (#255)', () => {
       assert.strictEqual(vscodeTestState.informationLog.length, 0, 'a failed reconciliation must not be presented as fully successful');
     } finally {
       DeployApplicationService.prototype.executePullSelectedObjects = originalPull;
+      ibcmdServiceModule.getIbcmdService = originalGetIbcmdService;
     }
   });
 
