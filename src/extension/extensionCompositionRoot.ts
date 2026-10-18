@@ -411,13 +411,10 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       operation: () => Promise<T>,
     ): Promise<T> => {
       const session = await registryCoordinator.resolveResource(configPath);
-      const outcome = await session.enqueue({ kind, execute: operation });
-      if (outcome.status === 'committed') {
-        return outcome.value;
-      }
-      throw outcome.status === 'failed' || outcome.status === 'conflict'
-        ? outcome.error ?? new Error('Операция конфигурации не выполнена.')
-        : new Error('Операция конфигурации отменена.');
+      return session.runMutationValue({ kind, execute: operation }, {
+        failureMessage: 'Операция конфигурации не выполнена.',
+        cancelledMessage: 'Операция конфигурации отменена.',
+      });
     };
 
     const runConfigurationPlan = async <T>(
@@ -425,13 +422,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
     ): Promise<T> => {
       const session = await registryCoordinator.resolveResource(configPath);
-      const outcome = await session.enqueuePlan(plan);
-      if (outcome.status === 'committed') {
-        return outcome.value;
-      }
-      throw outcome.status === 'failed' || outcome.status === 'conflict'
-        ? outcome.error ?? new Error('Configuration plan failed.')
-        : new Error('Configuration plan was cancelled.');
+      return session.runPlanValue(plan);
     };
 
     const gatewayDisposable = configureConfigurationMutationGateway(
