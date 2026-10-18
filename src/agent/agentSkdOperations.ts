@@ -18,6 +18,7 @@ import type {
 } from './agentSkdTypes';
 import { runPowerShellScript } from '../services/skd/powershellRunner';
 import { createProcessOutputLineReporter } from '../services/process/processOutputLineReporter';
+import { assertPathWithinRoot, PathBoundaryError } from '../services/configurationSession/pathBoundary';
 
 // ─── SkdOperations ────────────────────────────────────────────────────────────
 
@@ -26,11 +27,43 @@ export interface SkdOperationsDeps {
     extensionPath: string;
     /** Injectable process boundary for tests and host integrations. */
     runPowerShellScript?: typeof runPowerShellScript;
+    /** Корень конфигурации для проверки границ путей. */
+    configRoot?: string;
 }
 
 /** Класс операций Agent SKD API. Инстанциируется при каждом вызове команды. */
 export class SkdOperations {
     constructor(private readonly deps: SkdOperationsDeps) {}
+
+    private async validatePathInsideRoot(targetPath: string): Promise<AgentResult<never> | undefined> {
+        if (!this.deps.configRoot) {
+            return undefined;
+        }
+        try {
+            const resolved = path.isAbsolute(targetPath) ? targetPath : path.resolve(this.deps.configRoot, targetPath);
+            await assertPathWithinRoot(this.deps.configRoot, resolved);
+            return undefined;
+        } catch (error) {
+            if (error instanceof PathBoundaryError) {
+                return {
+                    success: false,
+                    code: error.code,
+                    error: error.message,
+                };
+            }
+            throw error;
+        }
+    }
+
+    private resolveTargetPath(targetPath: string): string {
+        return (this.deps.configRoot && !path.isAbsolute(targetPath))
+            ? path.resolve(this.deps.configRoot, targetPath)
+            : targetPath;
+    }
+
+    private getScriptPath(scriptName: string): string {
+        return path.join(this.deps.extensionPath || '', 'resources', 'skd', scriptName);
+    }
 
     private async runScript(
         opts: Parameters<typeof runPowerShellScript>[0],
@@ -70,15 +103,22 @@ export class SkdOperations {
             return { success: false, error: 'нельзя использовать оба параметра definitionFile и value одновременно' };
         }
 
-        const scriptPath = path.join(this.deps.extensionPath, 'resources', 'skd', 'skd-compile.ps1');
+        const outBoundaryError = await this.validatePathInsideRoot(params.outputPath);
+        if (outBoundaryError) { return outBoundaryError; }
+        if (params.definitionFile) {
+            const defBoundaryError = await this.validatePathInsideRoot(params.definitionFile);
+            if (defBoundaryError) { return defBoundaryError; }
+        }
+
+        const scriptPath = this.getScriptPath('skd-compile.ps1');
         const args: string[] = [];
 
         if (params.definitionFile) {
-            args.push('-DefinitionFile', params.definitionFile);
+            args.push('-DefinitionFile', this.resolveTargetPath(params.definitionFile));
         } else if (params.value) {
             args.push('-Value', params.value);
         }
-        args.push('-OutputPath', params.outputPath);
+        args.push('-OutputPath', this.resolveTargetPath(params.outputPath));
 
         reportStage?.('Компиляция СКД через PowerShell.');
         const result = await this.runScript({ scriptPath, args, token }, reportStage);
@@ -128,8 +168,15 @@ export class SkdOperations {
             return { success: false, error: 'параметр templatePath обязателен' };
         }
 
-        const scriptPath = path.join(this.deps.extensionPath, 'resources', 'skd', 'skd-info.ps1');
-        const args: string[] = ['-TemplatePath', params.templatePath];
+        const tmplBoundaryError = await this.validatePathInsideRoot(params.templatePath);
+        if (tmplBoundaryError) { return tmplBoundaryError; }
+        if (params.outFile) {
+            const outBoundaryError = await this.validatePathInsideRoot(params.outFile);
+            if (outBoundaryError) { return outBoundaryError; }
+        }
+
+        const scriptPath = this.getScriptPath('skd-info.ps1');
+        const args: string[] = ['-TemplatePath', this.resolveTargetPath(params.templatePath)];
 
         if (params.mode) {
             args.push('-Mode', params.mode);
@@ -147,7 +194,7 @@ export class SkdOperations {
             args.push('-Offset', String(params.offset));
         }
         if (params.outFile) {
-            args.push('-OutFile', params.outFile);
+            args.push('-OutFile', this.resolveTargetPath(params.outFile));
         }
 
         reportStage?.('Получение сведений о СКД через PowerShell.');
@@ -197,9 +244,12 @@ export class SkdOperations {
             return { success: false, error: 'параметр value обязателен' };
         }
 
-        const scriptPath = path.join(this.deps.extensionPath, 'resources', 'skd', 'skd-edit.ps1');
+        const tmplBoundaryError = await this.validatePathInsideRoot(params.templatePath);
+        if (tmplBoundaryError) { return tmplBoundaryError; }
+
+        const scriptPath = this.getScriptPath('skd-edit.ps1');
         const args: string[] = [
-            '-TemplatePath', params.templatePath,
+            '-TemplatePath', this.resolveTargetPath(params.templatePath),
             '-Operation', params.operation,
             '-Value', params.value,
         ];
@@ -256,8 +306,15 @@ export class SkdOperations {
             return { success: false, error: 'параметр templatePath обязателен' };
         }
 
-        const scriptPath = path.join(this.deps.extensionPath, 'resources', 'skd', 'skd-validate.ps1');
-        const args: string[] = ['-TemplatePath', params.templatePath];
+        const tmplBoundaryError = await this.validatePathInsideRoot(params.templatePath);
+        if (tmplBoundaryError) { return tmplBoundaryError; }
+        if (params.outFile) {
+            const outBoundaryError = await this.validatePathInsideRoot(params.outFile);
+            if (outBoundaryError) { return outBoundaryError; }
+        }
+
+        const scriptPath = this.getScriptPath('skd-validate.ps1');
+        const args: string[] = ['-TemplatePath', this.resolveTargetPath(params.templatePath)];
 
         if (params.detailed) {
             args.push('-Detailed');
@@ -266,7 +323,7 @@ export class SkdOperations {
             args.push('-MaxErrors', String(params.maxErrors));
         }
         if (params.outFile) {
-            args.push('-OutFile', params.outFile);
+            args.push('-OutFile', this.resolveTargetPath(params.outFile));
         }
 
         reportStage?.('Проверка СКД через PowerShell.');

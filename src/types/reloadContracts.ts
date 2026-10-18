@@ -8,6 +8,7 @@ export type ReloadReason =
   | 'duplicate-command'
   | 'rename-command'
   | 'repository'
+  | 'skd-mutation'
   | 'unknown';
 
 export type ReloadFailureCode =

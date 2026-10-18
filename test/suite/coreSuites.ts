@@ -32,6 +32,7 @@ export const coreSuiteFiles: string[] = [
   'suite/skdAtomicSave.test.js',
   'suite/skdOperationsParity.test.js',
   'suite/skdValidationCoverage.test.js',
+  'suite/agentSkdSessionIntegrity.test.js',
   'suite/agentDeployPartialResult.test.js',
   'suite/deployApplicationService.test.js',
   'suite/formXmlParser.test.js',

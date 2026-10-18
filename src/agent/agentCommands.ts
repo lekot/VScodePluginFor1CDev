@@ -94,13 +94,7 @@ import type {
   NativeFormsCommandParams,
 } from './agentFormsTypes';
 import type { StaticFormEditParams, StaticFormSelector, StaticFormValidateParams } from './agentStaticForms';
-import { SkdOperations } from './agentSkdOperations';
-import type {
-    SkdCompileParams,
-    SkdInfoParams,
-    SkdEditParams,
-    SkdValidateParams,
-} from './agentSkdTypes';
+import { SkdOperations, type SkdOperationsDeps } from './agentSkdOperations';
 import { XdtoAgentOperations } from './agentXdtoOperations';
 import type {
     XdtoCompareParams,
@@ -131,6 +125,7 @@ import type {
     AgentTaskIdParams,
 } from './types';
 import type { ConfigurationRepositoryService } from '../services/configurationRepository/configurationRepositoryService';
+import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 import {
     AGENT_SUPPORT_COMMAND_IDS,
     AgentSupportOperations,
@@ -172,6 +167,8 @@ export function registerAgentCommands(
     /** Optional lifecycle hook used by CFE creation after registry discovery succeeds. */
     refreshCfeLifecycle?: () => Promise<void>,
     getRepositoryService?: () => ConfigurationRepositoryService | null,
+    getRequestConfigurationReload?: () => RequestConfigurationReload | undefined,
+    getSkdDeps?: () => Partial<SkdOperationsDeps> | undefined,
 ): { readonly taskManager: AgentTaskManager } {
     const resolveSession = async (
         params: ConfigurationScopedParams = {},
@@ -181,13 +178,13 @@ export function registerAgentCommands(
         if (!registry) {
             throw new WorkspaceRegistryError('CONFIGURATION_NOT_FOUND', 'Корень конфигурации не найден.');
         }
-        if (
-            !params.configurationId
-            && 'configPath' in params
-            && typeof params.configPath === 'string'
-            && params.configPath.trim()
-        ) {
-            const session = await registry.resolveResource(params.configPath);
+        const candidateResource =
+            (!params.configurationId && 'configPath' in params && typeof params.configPath === 'string' && params.configPath.trim())
+            || (!params.configurationId && 'templatePath' in params && typeof (params as Record<string, unknown>).templatePath === 'string' && ((params as Record<string, unknown>).templatePath as string).trim())
+            || (!params.configurationId && 'outputPath' in params && typeof (params as Record<string, unknown>).outputPath === 'string' && ((params as Record<string, unknown>).outputPath as string).trim())
+            || undefined;
+        if (candidateResource) {
+            const session = await registry.resolveResource(candidateResource);
             if (!session.identity.capabilities[capability]) {
                 throw new WorkspaceRegistryError(
                     'CONFIGURATION_CAPABILITY_UNSUPPORTED',
@@ -1006,9 +1003,10 @@ export function registerAgentCommands(
         mutationKind: string | undefined,
         operation: (configRoot: string, token?: vscode.CancellationToken, reportStage?: (message: string) => void) => Promise<AgentResult<T>>,
         requestToken?: vscode.CancellationToken,
+        capability: keyof ConfigurationIdentity['capabilities'] = 'process',
     ): Promise<AgentResult<unknown>> => {
         const run = (token?: vscode.CancellationToken, reportStage?: (message: string) => void) =>
-            runForConfiguration(params, 'process', mutationKind, (configRoot) => operation(configRoot, token, reportStage), token);
+            runForConfiguration(params, capability, mutationKind, (configRoot) => operation(configRoot, token, reportStage), token);
         if (params.background === true) {
             return taskManager.start(name, async (token, reportStage) => {
                 reportStage(`Начата операция ${name}.`);
@@ -1331,49 +1329,34 @@ export function registerAgentCommands(
         },
     );
 
-    // ─── 1c-metadata-tree.agent.skd.compile ──────────────────────────────────
+    const runSkd = <TParams extends ConfigurationScopedParams & { readonly background?: boolean }, TResult>(
+        name: string,
+        capability: keyof ConfigurationIdentity['capabilities'],
+        mutationKind: string | undefined,
+        execute: (ops: SkdOperations, params: TParams, token?: vscode.CancellationToken, reportStage?: (msg: string) => void) => Promise<AgentResult<TResult>>,
+    ) => async (params: TParams, requestToken?: vscode.CancellationToken) => {
+        return runDeployAgentOperation(params, name, mutationKind, async (configRoot, token, reportStage) => {
+            const ops = new SkdOperations({
+                extensionPath: context.extensionPath,
+                configRoot,
+                ...getSkdDeps?.(),
+            });
+            const result = await execute(ops, params, token, reportStage);
+            if (result.success && mutationKind) {
+                await getRequestConfigurationReload?.()?.(configRoot, 'skd-mutation');
+            }
+            return result;
+        }, requestToken, capability);
+    };
 
-    const skdCompileCommand = vscode.commands.registerCommand(
-        '1c-metadata-tree.agent.skd.compile',
-        async (params: SkdCompileParams, requestToken?: vscode.CancellationToken) => {
-            const ops = new SkdOperations({ extensionPath: context.extensionPath });
-            return runAgentLongTask('agent.skd.compile', params.background, requestToken, (token, reportStage) =>
-                ops.skdCompile(params, token, reportStage));
-        }
-    );
-
-    // ─── 1c-metadata-tree.agent.skd.info ─────────────────────────────────────
-
-    const skdInfoCommand = vscode.commands.registerCommand(
-        '1c-metadata-tree.agent.skd.info',
-        async (params: SkdInfoParams, requestToken?: vscode.CancellationToken) => {
-            const ops = new SkdOperations({ extensionPath: context.extensionPath });
-            return runAgentLongTask('agent.skd.info', params.background, requestToken, (token, reportStage) =>
-                ops.skdInfo(params, token, reportStage));
-        }
-    );
-
-    // ─── 1c-metadata-tree.agent.skd.edit ─────────────────────────────────────
-
-    const skdEditCommand = vscode.commands.registerCommand(
-        '1c-metadata-tree.agent.skd.edit',
-        async (params: SkdEditParams, requestToken?: vscode.CancellationToken) => {
-            const ops = new SkdOperations({ extensionPath: context.extensionPath });
-            return runAgentLongTask('agent.skd.edit', params.background, requestToken, (token, reportStage) =>
-                ops.skdEdit(params, token, reportStage));
-        }
-    );
-
-    // ─── 1c-metadata-tree.agent.skd.validate ─────────────────────────────────
-
-    const skdValidateCommand = vscode.commands.registerCommand(
-        '1c-metadata-tree.agent.skd.validate',
-        async (params: SkdValidateParams, requestToken?: vscode.CancellationToken) => {
-            const ops = new SkdOperations({ extensionPath: context.extensionPath });
-            return runAgentLongTask('agent.skd.validate', params.background, requestToken, (token, reportStage) =>
-                ops.skdValidate(params, token, reportStage));
-        }
-    );
+    const skdCompileCommand = vscode.commands.registerCommand('1c-metadata-tree.agent.skd.compile',
+        runSkd('agent.skd.compile', 'write', 'agent.skd.compile', (ops, p, t, r) => ops.skdCompile(p, t, r)));
+    const skdInfoCommand = vscode.commands.registerCommand('1c-metadata-tree.agent.skd.info',
+        runSkd('agent.skd.info', 'read', undefined, (ops, p, t, r) => ops.skdInfo(p, t, r)));
+    const skdEditCommand = vscode.commands.registerCommand('1c-metadata-tree.agent.skd.edit',
+        runSkd('agent.skd.edit', 'write', 'agent.skd.edit', (ops, p, t, r) => ops.skdEdit(p, t, r)));
+    const skdValidateCommand = vscode.commands.registerCommand('1c-metadata-tree.agent.skd.validate',
+        runSkd('agent.skd.validate', 'read', undefined, (ops, p, t, r) => ops.skdValidate(p, t, r)));
 
     const listXdtoPackagesCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.xdto.listPackages',
