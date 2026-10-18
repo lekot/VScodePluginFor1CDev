@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { getDirective, getEventParams } from './formEventCatalog';
+import { findModuleTextDocument } from './formModuleDocuments';
 
 const CRLF = '\r\n';
 
@@ -9,10 +10,7 @@ export async function readModuleStateForEventHandler(
   modulePath: string,
   associatedDocuments?: Map<string, vscode.TextDocument>,
 ): Promise<{ content: string; existed: boolean }> {
-  const normalizedPath = path.normalize(modulePath);
-  const openDocument = vscode.workspace.textDocuments.find(
-    (document) => document.uri.scheme === 'file' && path.normalize(document.uri.fsPath) === normalizedPath
-  ) ?? associatedDocuments?.get(normalizedPath);
+  const openDocument = await findModuleTextDocument(modulePath, associatedDocuments);
   const existed = await fs.promises.access(modulePath).then(() => true, () => false);
   if (openDocument) {
     return { content: openDocument.getText(), existed };
@@ -58,11 +56,8 @@ export async function insertHandlerStubInMemory(
   associatedDocuments?: Map<string, vscode.TextDocument>,
 ): Promise<{ line: number; document: vscode.TextDocument; originalText: string; addedText: string }> {
   const fileOnDisk = fs.existsSync(moduleUri.fsPath);
-  const modulePath = path.normalize(moduleUri.fsPath);
-  const openDoc = vscode.workspace.textDocuments.find(
-    (d) => d.uri.scheme === 'file' && path.normalize(d.uri.fsPath) === modulePath
-  );
-  let doc = openDoc ?? associatedDocuments?.get(modulePath);
+  const modulePath = moduleUri.fsPath;
+  let doc = await findModuleTextDocument(modulePath, associatedDocuments);
   let newlyAssociated = false;
   if (!doc) {
     if (fileOnDisk) {
