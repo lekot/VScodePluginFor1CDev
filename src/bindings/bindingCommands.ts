@@ -223,6 +223,17 @@ export function showDeployRunSummaryToast(summary: DeployRunSummaryPresentationI
 
 function showDeployOutcomeToast(outcome: DeployOutcome): void {
   const showOut = 'Показать вывод';
+  if (outcome.reconciliation?.status === 'failed') {
+    void vscode.window.showWarningMessage(
+      `Запись выполнена успешно, но дерево метаданных не обновилось: ${outcome.reconciliation.message}`,
+      showOut,
+    ).then((r) => {
+      if (r === showOut) {
+        showIbcmdInfobaseOutputChannel();
+      }
+    });
+    return;
+  }
   if (outcome.success) {
     void vscode.window.showInformationMessage(outcome.message, showOut).then((r) => {
       if (r === showOut) {

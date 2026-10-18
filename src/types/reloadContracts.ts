@@ -20,6 +20,10 @@ export type ReloadFailureCode =
   | 'CONFIGURATION_PARSE_FAILED'
   | 'UNKNOWN_RELOAD_FAILURE';
 
+export type ReconciliationOutcome =
+  | { readonly status: 'succeeded' }
+  | { readonly status: 'failed'; readonly code: string; readonly message: string };
+
 export interface ReloadFailure {
   code: ReloadFailureCode;
   message: string;

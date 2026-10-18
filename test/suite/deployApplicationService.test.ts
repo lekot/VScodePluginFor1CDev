@@ -14,6 +14,8 @@ import type { ConfigurationBinding } from '../../src/bindings/models/configurati
 import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
 import { MetadataType, type TreeNode } from '../../src/models/treeNode';
 import { AgentDeployOperations } from '../../src/agent/agentDeployOperations';
+import { ExtensionState } from '../../src/state/extensionState';
+import { runPullSelectedObjectsFromTree } from '../../src/bindings/bindingCommands';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 import type { GitRepository, IncrementalChangeDetectorDeps } from '../../src/services/ibcmd/incrementalChangeDetector';
 
@@ -953,6 +955,204 @@ suite('DeployApplicationService (#255)', () => {
     const outNoTargets = await svc.executePullSelectedObjects(emptyContext, []);
     assert.strictEqual(outNoTargets.success, false);
     assert.strictEqual(outNoTargets.code, 'VALIDATION_FAILED');
+  });
+
+  test('reconciles a committed pull after its mutation returns and keeps reload failure separate from write success', async () => {
+    const successfulSummary: DeployRunSummary = {
+      successCount: 1,
+      errorCount: 0,
+      inDoubtCount: 0,
+      skippedCount: 0,
+      hasPartial: false,
+      cancelledMidChain: false,
+      results: [{ infobaseId: 'ib-1', name: 'TargetBase', status: 'success', message: 'Pulled' }],
+    };
+    let currentSummary = successfulSummary;
+    let mutationReturned = false;
+    let mutationHadReturnedAtReload = false;
+    const reloadCalls: Array<{ configPath: string; reason: string }> = [];
+    const reloadError = Object.assign(new Error('tree reload failed'), { code: 'AUDIT_RELOAD_FAILURE' });
+    const mockDeployService = {
+      pullSelectedObjects: async (params: {
+        runConfigurationMutation?: <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
+      }) => {
+        assert.ok(params.runConfigurationMutation, 'application facade must pass the mutation runner to DeployService');
+        return params.runConfigurationMutation('/config', 'infobase.pullSelectedObjects', async () => currentSummary);
+      },
+    };
+    const service = new DeployApplicationService({
+      bindingManager: mockBindingManager,
+      infobaseStorage: mockStorage,
+      deployService: mockDeployService as unknown as DeployService,
+      runConfigurationMutation: async (_resourcePath, _kind, operation) => {
+        const result = await operation();
+        mutationReturned = true;
+        return result;
+      },
+      requestConfigurationReload: async (configPath, reason) => {
+        reloadCalls.push({ configPath, reason });
+        mutationHadReturnedAtReload = mutationReturned;
+        throw reloadError;
+      },
+    });
+    const prepared = await service.prepareDeploy({ kind: 'path', path: configXmlPath });
+    assert.strictEqual(prepared.ok, true);
+    if (!prepared.ok) return;
+    const nodes: TreeNode[] = [{ id: 'Catalog.Items', name: 'Items', type: MetadataType.Catalog, properties: {} }];
+
+    const outcome = await service.executePullSelectedObjects(prepared.context, nodes);
+    assert.strictEqual(outcome.success, true);
+    assert.strictEqual(outcome.status, 'success');
+    assert.strictEqual(outcome.summary, successfulSummary);
+    assert.strictEqual(mutationHadReturnedAtReload, true);
+    assert.deepStrictEqual(reloadCalls, [{ configPath: configDir, reason: 'pull-objects' }]);
+    assert.deepStrictEqual(outcome.reconciliation, {
+      status: 'failed',
+      code: 'AUDIT_RELOAD_FAILURE',
+      message: 'tree reload failed',
+    });
+
+    currentSummary = {
+      successCount: 0,
+      errorCount: 0,
+      inDoubtCount: 0,
+      skippedCount: 1,
+      hasPartial: false,
+      cancelledMidChain: true,
+      results: [{ infobaseId: 'ib-1', name: 'TargetBase', status: 'skipped', message: 'Cancelled' }],
+    };
+    const cancelled = await service.executePullSelectedObjects(prepared.context, nodes);
+    assert.strictEqual(cancelled.success, false);
+    assert.strictEqual(cancelled.reconciliation, undefined);
+    assert.strictEqual(reloadCalls.length, 1, 'cancelled pull must not request reload');
+
+    currentSummary = {
+      successCount: 0,
+      errorCount: 0,
+      inDoubtCount: 0,
+      skippedCount: 1,
+      hasPartial: false,
+      cancelledMidChain: false,
+      results: [{ infobaseId: 'ib-1', name: 'TargetBase', status: 'skipped', message: 'No export' }],
+    };
+    const noOp = await service.executePullSelectedObjects(prepared.context, nodes);
+    assert.strictEqual(noOp.reconciliation, undefined);
+    assert.strictEqual(reloadCalls.length, 1, 'skipped/no-op pull must not request reload');
+
+    currentSummary = {
+      successCount: 0,
+      errorCount: 1,
+      inDoubtCount: 0,
+      skippedCount: 0,
+      hasPartial: false,
+      cancelledMidChain: false,
+      results: [{ infobaseId: 'ib-1', name: 'TargetBase', status: 'error', message: 'export failed' }],
+    };
+    const failed = await service.executePullSelectedObjects(prepared.context, nodes);
+    assert.strictEqual(failed.success, false);
+    assert.strictEqual(failed.reconciliation, undefined);
+    assert.strictEqual(reloadCalls.length, 1, 'failed pull must not request reload');
+
+    currentSummary = {
+      successCount: 0,
+      errorCount: 0,
+      inDoubtCount: 1,
+      skippedCount: 0,
+      hasPartial: false,
+      cancelledMidChain: false,
+      results: [{ infobaseId: 'ib-1', name: 'TargetBase', status: 'inDoubt', message: 'effect uncertain' }],
+    };
+    const inDoubt = await service.executePullSelectedObjects(prepared.context, nodes);
+    assert.strictEqual(inDoubt.success, false);
+    assert.strictEqual(inDoubt.reconciliation, undefined);
+    assert.strictEqual(reloadCalls.length, 1, 'in-doubt pull must not request reload');
+
+    currentSummary = successfulSummary;
+    const deferred = await service.executePullSelectedObjects(prepared.context, nodes, {
+      reconciliationMode: 'defer-to-caller',
+    });
+    assert.strictEqual(deferred.success, true);
+    assert.strictEqual(deferred.reconciliation, undefined);
+    assert.strictEqual(reloadCalls.length, 1, 'deferred reconciliation remains owned by its caller');
+  });
+
+  test('direct AgentDeployOperations keeps application-owned pull reconciliation', async () => {
+    let reloadCount = 0;
+    const summary: DeployRunSummary = {
+      successCount: 1,
+      errorCount: 0,
+      inDoubtCount: 0,
+      skippedCount: 0,
+      hasPartial: false,
+      cancelledMidChain: false,
+      results: [{ infobaseId: 'ib-1', name: 'TargetBase', status: 'success', message: 'Pulled' }],
+    };
+    const deployService = {
+      pullSelectedObjects: async (params: {
+        runConfigurationMutation?: <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
+      }) => params.runConfigurationMutation
+        ? params.runConfigurationMutation(configDir, 'infobase.pullSelectedObjects', async () => summary)
+        : summary,
+    };
+    const operations = new AgentDeployOperations({
+      bindingManager: mockBindingManager,
+      infobaseStorage: mockStorage,
+      getConfigPath: () => configDir,
+      deployService: deployService as unknown as DeployService,
+      runConfigurationMutation: async (_resourcePath, _kind, operation) => operation(),
+      requestConfigurationReload: async () => { reloadCount += 1; },
+    });
+
+    const result = await operations.pullSelectedObjects({ configPath: configDir, objectIds: ['Catalog.Items'] });
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.data?.summary.success, 1);
+    assert.deepStrictEqual(result.reconciliation, { status: 'succeeded' });
+    assert.strictEqual(reloadCount, 1, 'direct facade call defaults to application-owned reconciliation');
+  });
+
+  test('pull command warns that the write succeeded when tree reconciliation failed', async () => {
+    const state = new ExtensionState();
+    state.bindingManager = mockBindingManager as never;
+    state.infobaseStorage = mockStorage as never;
+    const originalPull = DeployApplicationService.prototype.executePullSelectedObjects;
+    DeployApplicationService.prototype.executePullSelectedObjects = async () => ({
+      success: true,
+      status: 'success',
+      message: 'Выгрузка завершена: 1 успешно.',
+      summary: {
+        successCount: 1,
+        errorCount: 0,
+        inDoubtCount: 0,
+        skippedCount: 0,
+        hasPartial: false,
+        cancelledMidChain: false,
+        results: [],
+      },
+      data: { summary: { success: 1, error: 0, inDoubt: 0, skipped: 0, hasPartial: false }, results: [] },
+      reconciliation: { status: 'failed', code: 'AUDIT_RELOAD_FAILURE', message: 'tree reload failed' },
+    });
+    const tree = {
+      resolveNodeForUi: (node: TreeNode) => node,
+      getConfigPathForNode: () => configDir,
+    } as never;
+    const node: TreeNode = {
+      id: 'Configuration',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+    };
+    vscodeTestState.warningMessageReturnQueue.push('Выгрузить');
+    try {
+      await runPullSelectedObjectsFromTree(node, [], state, tree);
+      assert.ok(
+        vscodeTestState.warningLog.some((message) =>
+          message.includes('Запись выполнена успешно') && message.includes('дерево метаданных не обновилось') && message.includes('tree reload failed')),
+        `expected a success-with-reload-failure warning; got ${JSON.stringify(vscodeTestState.warningLog)}`,
+      );
+      assert.strictEqual(vscodeTestState.informationLog.length, 0, 'a failed reconciliation must not be presented as fully successful');
+    } finally {
+      DeployApplicationService.prototype.executePullSelectedObjects = originalPull;
+    }
   });
 
   test('exportStatus and executeExportStatus handle missing dump info and target infobase', async () => {

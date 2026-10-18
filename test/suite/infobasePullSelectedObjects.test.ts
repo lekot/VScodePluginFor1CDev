@@ -24,6 +24,7 @@ import {
 } from '../../src/services/configurationSession/configurationMutationGateway';
 import { registerAgentCommands } from '../../src/agent/agentCommands';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
+import type { AgentResult } from '../../src/agent/types';
 import { BindingManager } from '../../src/bindings/bindingManager';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 
@@ -618,54 +619,9 @@ suite('infobasePullSelectedObjects #350', () => {
       assert.strictEqual(mutationCalls[0]!.path, configRoot);
     });
 
-    test('triggers requestConfigurationReload with pull-objects on successful pull', async () => {
+    test('returns cancelled export without reconciliation', async () => {
       const configRoot = tempRoot;
       await fs.writeFile(path.join(configRoot, 'Configuration.xml'), '<Configuration/>', 'utf8');
-
-      const reloadCalls: Array<{ configPath: string; reason: ReloadReason }> = [];
-      const mockReload = async (p: string, reason: ReloadReason): Promise<void> => {
-        reloadCalls.push({ configPath: p, reason });
-      };
-
-      const service = new DeployService({
-        runConfigurationExportObjects: async () => ({
-          status: 'success',
-          exitCode: 0,
-          userMessage: 'OK',
-          logExcerpt: '',
-        }),
-        requestConfigurationReload: mockReload,
-      });
-
-      const summary = await service.pullSelectedObjects({
-        binding: baseBinding({ configRelativePath: 'Configuration.xml', infobaseIds: ['base1'] }),
-        workspaceFolderRoot: tempRoot,
-        storage: mockStorage,
-        entry: fileEntry('base1', 'Base 1', 'C:\\ib'),
-        selectedNodes: [{
-          id: 'Catalog.Products',
-          name: 'Products',
-          type: MetadataType.Catalog,
-          properties: {},
-        }],
-        progress: { report: () => undefined },
-        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
-      });
-
-      assert.strictEqual(summary.successCount, 1);
-      assert.strictEqual(reloadCalls.length, 1);
-      assert.strictEqual(reloadCalls[0]!.configPath, configRoot);
-      assert.strictEqual(reloadCalls[0]!.reason, 'pull-objects');
-    });
-
-    test('does not trigger reload when export is cancelled or in doubt', async () => {
-      const configRoot = tempRoot;
-      await fs.writeFile(path.join(configRoot, 'Configuration.xml'), '<Configuration/>', 'utf8');
-
-      const reloadCalls: Array<{ configPath: string; reason: ReloadReason }> = [];
-      const mockReload = async (p: string, reason: ReloadReason): Promise<void> => {
-        reloadCalls.push({ configPath: p, reason });
-      };
 
       const service = new DeployService({
         runConfigurationExportObjects: async () => ({
@@ -674,7 +630,6 @@ suite('infobasePullSelectedObjects #350', () => {
           userMessage: 'Cancelled',
           logExcerpt: '',
         }),
-        requestConfigurationReload: mockReload,
       });
 
       const summary = await service.pullSelectedObjects({
@@ -693,7 +648,6 @@ suite('infobasePullSelectedObjects #350', () => {
       });
 
       assert.strictEqual(summary.skippedCount, 1);
-      assert.strictEqual(reloadCalls.length, 0, 'Must not reload on cancelled pull');
     });
 
     test('serializes UI pullSelectedObjects with a real ConfigurationSession and blocks a concurrent writer until completion', async () => {
@@ -721,11 +675,6 @@ suite('infobasePullSelectedObjects #350', () => {
         },
       );
 
-      const reloadCalls: Array<{ configPath: string; reason: ReloadReason }> = [];
-      const mockReload = async (p: string, reason: ReloadReason): Promise<void> => {
-        reloadCalls.push({ configPath: p, reason });
-      };
-
       let exportStartedResolve!: () => void;
       const exportStarted = new Promise<void>((r) => { exportStartedResolve = r; });
       let finishExportResolve!: () => void;
@@ -738,7 +687,6 @@ suite('infobasePullSelectedObjects #350', () => {
           await finishExport;
           return { status: 'success', exitCode: 0, userMessage: 'Export OK', logExcerpt: '' };
         },
-        requestConfigurationReload: mockReload,
       });
 
       try {
@@ -777,8 +725,6 @@ suite('infobasePullSelectedObjects #350', () => {
 
         const summary = await pullPromise;
         assert.strictEqual(summary.successCount, 1);
-        assert.strictEqual(reloadCalls.length, 1);
-        assert.strictEqual(reloadCalls[0]!.reason, 'pull-objects');
 
         const writerResult = await concurrentWriterPromise;
         assert.strictEqual(writerResult, 'writer-done');
@@ -791,7 +737,7 @@ suite('infobasePullSelectedObjects #350', () => {
       }
     });
 
-    test('executes agent.pullSelectedObjects with a real ConfigurationSession and blocks a concurrent writer without deadlocking', async () => {
+    test('reconciles registered agent pull after commit and preserves its receipt when reload fails', async () => {
       const configRoot = tempRoot;
       await fs.writeFile(
         path.join(configRoot, 'Configuration.xml'),
@@ -823,8 +769,43 @@ suite('infobasePullSelectedObjects #350', () => {
       );
 
       const reloadCalls: Array<{ configPath: string; reason: ReloadReason }> = [];
+      const reloadObservations: Array<{
+        snapshotVersion: number;
+        writerCount: number;
+        readCompletedDuringReload: boolean;
+        readSnapshotVersion?: number;
+        nestedWriterCompleted: boolean;
+      }> = [];
+      let reloadStartedResolve!: () => void;
+      const reloadStarted = new Promise<void>((resolve) => { reloadStartedResolve = resolve; });
+      let finishReloadResolve!: () => void;
+      const finishReload = new Promise<void>((resolve) => { finishReloadResolve = resolve; });
       const mockReload = async (p: string, reason: ReloadReason): Promise<void> => {
         reloadCalls.push({ configPath: p, reason });
+        const observation: typeof reloadObservations[number] = {
+          snapshotVersion: session.snapshotVersion,
+          writerCount: (session as unknown as { runningWriters: number }).runningWriters,
+          readCompletedDuringReload: false,
+          nestedWriterCompleted: false,
+        };
+        reloadObservations.push(observation);
+
+        const readPromise = session.runRead(async ({ snapshotVersion: readSnapshotVersion }) => readSnapshotVersion);
+        if (observation.writerCount === 0) {
+          const readResult = await readPromise;
+          observation.readCompletedDuringReload = readResult.status === 'ok';
+          if (readResult.status === 'ok') {
+            observation.readSnapshotVersion = readResult.value;
+          }
+        } else {
+          void readPromise;
+        }
+
+        await runConfigurationMutation(configRoot, 'test.reloadWriter', async () => 'reload-writer-done');
+        observation.nestedWriterCompleted = true;
+        reloadStartedResolve();
+        await finishReload;
+        throw Object.assign(new Error('injected reconciliation failure'), { code: 'AUDIT_RELOAD_FAILURE' });
       };
 
       let exportStartedResolve!: () => void;
@@ -855,7 +836,6 @@ suite('infobasePullSelectedObjects #350', () => {
           await finishExport;
           return { status: 'success', exitCode: 0, userMessage: 'Export OK', logExcerpt: '' };
         },
-        requestConfigurationReload: mockReload,
       });
 
       const context = { subscriptions: [] as Array<{ dispose(): void }> };
@@ -883,39 +863,216 @@ suite('infobasePullSelectedObjects #350', () => {
         const pullHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.pullSelectedObjects');
         assert.ok(pullHandler, 'agent.pullSelectedObjects command must be registered');
 
-        const pullPromise = pullHandler({
+        const taskReceipt = await pullHandler({
           configurationId,
           objectIds: ['Catalog.Products'],
-        }) as Promise<{ success: boolean; data?: unknown; error?: string }>;
+          background: true,
+        }) as AgentResult<{ status: string; taskId: string }>;
+        assert.strictEqual(taskReceipt.success, true, 'background pull must return its task receipt');
+        assert.strictEqual(taskReceipt.data?.status, 'working');
+        const taskId = taskReceipt.data!.taskId;
 
+        await exportStarted;
+        finishExportResolve();
+        await reloadStarted;
+
+        const statusHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.task.status');
+        const resultHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.task.result');
+        const cancelHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.task.cancel');
+        assert.ok(statusHandler && resultHandler && cancelHandler, 'background task lifecycle commands must be registered');
+        const whileReconciling = await statusHandler({ taskId }) as AgentResult<{ status: string; cancellationRequested: boolean }>;
+        assert.strictEqual(whileReconciling.data?.status, 'running', 'task must remain running while reload reconciliation is pending');
+        const pendingResult = await resultHandler({ taskId }) as AgentResult<{ status: string; result?: AgentResult<unknown> }>;
+        assert.strictEqual(pendingResult.data?.status, 'running');
+        assert.strictEqual(pendingResult.data?.result, undefined, 'the task must not settle before reconciliation completes');
+
+        const lateCancel = await cancelHandler({ taskId }) as AgentResult<{ status: string; cancellationRequested: boolean }>;
+        assert.strictEqual(lateCancel.data?.status, 'running');
+        assert.strictEqual(lateCancel.data?.cancellationRequested, true, 'a late cancellation request must not erase the committed pull');
+        assert.strictEqual(reloadCalls.length, 1, 'a late cancellation after commit must not suppress reconciliation');
+        finishReloadResolve();
+
+        let completed: AgentResult<{ status: string; result?: AgentResult<unknown> }> | undefined;
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          completed = await resultHandler({ taskId }) as AgentResult<{ status: string; result?: AgentResult<unknown> }>;
+          if (completed.data?.status !== 'running') break;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        assert.strictEqual(completed?.data?.status, 'completed', 'successfully committed pull remains completed after a late cancel');
+        const agentResult = completed?.data?.result;
+        assert.ok(agentResult?.success, `agent.pullSelectedObjects must succeed: ${agentResult?.error}`);
+        assert.strictEqual(reloadCalls.length, 1);
+        assert.strictEqual(reloadCalls[0]!.reason, 'pull-objects');
+        assert.deepStrictEqual(reloadObservations, [{
+          snapshotVersion: 1,
+          writerCount: 0,
+          readCompletedDuringReload: true,
+          readSnapshotVersion: 1,
+          nestedWriterCompleted: true,
+        }], 'reload must observe the committed snapshot with the writer released and allow session reads/writes');
+        assert.strictEqual(agentResult?.configurationId, configurationId);
+        assert.ok(agentResult?.operationId, 'the committed operation receipt must be preserved');
+        assert.strictEqual(agentResult?.snapshotVersion, 1);
+        assert.deepStrictEqual(agentResult?.reconciliation, {
+          status: 'failed',
+          code: 'AUDIT_RELOAD_FAILURE',
+          message: 'injected reconciliation failure',
+        });
+        assert.strictEqual(session.snapshotVersion, 2, 'reload callback writer should finish after the pull commit');
+
+        const noOpSummary = {
+          successCount: 0,
+          errorCount: 0,
+          inDoubtCount: 0,
+          skippedCount: 1,
+          hasPartial: false,
+          cancelledMidChain: false,
+          results: [{ infobaseId: 'base1', name: 'Base 1', status: 'skipped' as const, message: 'No exported files' }],
+        };
+        const noOpService = {
+          pullSelectedObjects: async (params: PullSelectedObjectsParams) =>
+            params.runConfigurationMutation
+              ? params.runConfigurationMutation(configRoot, 'infobase.pullSelectedObjects', async () => noOpSummary)
+              : noOpSummary,
+        } as unknown as DeployService;
+        registerAgentCommands(
+          context as never,
+          () => null,
+          async () => registry,
+          new DebugSessionRegistry(),
+          undefined,
+          () => ({
+            bindingManager,
+            infobaseStorage,
+            getConfigPath: () => configRoot,
+            deployService: noOpService,
+            runConfigurationMutation: (resourcePath, kind, operation) => runConfigurationMutation(resourcePath, kind, operation),
+            requestConfigurationReload: mockReload,
+          }),
+          undefined,
+          undefined,
+          undefined,
+          mockReload,
+        );
+        const noOpHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.pullSelectedObjects');
+        assert.ok(noOpHandler);
+        const noOpResult = await noOpHandler({ configurationId, objectIds: ['Catalog.Products'] }) as AgentResult<{
+          summary: { success: number };
+        }>;
+        assert.strictEqual(noOpResult.success, true, 'a confirmed no-op remains an Agent success result');
+        assert.strictEqual(noOpResult.data?.summary.success, 0);
+        assert.strictEqual(noOpResult.snapshotVersion, 3, 'the no-op still receives its authoritative session receipt');
+        assert.strictEqual(reloadCalls.length, 1, 'a receipt without an exported success must not trigger reconciliation');
+      } finally {
+        gateway.dispose();
+        await registry.dispose();
+      }
+    });
+
+    test('registered agent pull holds its writer lease while export runs', async () => {
+      const configRoot = tempRoot;
+      await fs.writeFile(
+        path.join(configRoot, 'Configuration.xml'),
+        '<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>PullAgentQueueTest</Name></Properties></Configuration></MetaDataObject>',
+        'utf8',
+      );
+      vscodeTestState.mockWorkspaceFolders = [
+        { name: 'ws', index: 0, uri: { fsPath: tempRoot, scheme: 'file' } },
+      ];
+
+      const registry = new WorkspaceRegistry();
+      const session = await registry.registerTargetedRoot({ configPath: configRoot, format: ConfigFormat.Designer });
+      const configurationId = session.identity.configurationId;
+      const coordinator = new WorkspaceRegistryCoordinator(registry, {
+        getWorkspaceFolders: () => [tempRoot],
+        getWorkspaceFolderForPath: () => tempRoot,
+      });
+      const gateway = configureConfigurationMutationGateway(
+        async (resourcePath, kind, operation) => {
+          const owner = await coordinator.resolveResource(resourcePath);
+          return owner.runMutationValue({ kind, execute: operation }, {
+            failureMessage: 'Операция конфигурации не выполнена.',
+            cancelledMessage: 'Операция конфигурации отменена.',
+          });
+        },
+      );
+
+      let exportStartedResolve!: () => void;
+      const exportStarted = new Promise<void>((resolve) => { exportStartedResolve = resolve; });
+      let finishExportResolve!: () => void;
+      const finishExport = new Promise<void>((resolve) => { finishExportResolve = resolve; });
+      let reloadCount = 0;
+      const mockReload = async (): Promise<void> => { reloadCount += 1; };
+      const binding = baseBinding({ workspaceFolder: 'ws', configRelativePath: 'Configuration.xml', infobaseIds: ['base1'] });
+      const targetEntry = fileEntry('base1', 'Base 1', 'C:\\ib');
+      const bindingManager = {
+        get: async () => binding,
+        listAll: async () => [binding],
+        getBindingForConfig: () => binding,
+        getBindingsForWorkspaceFolder: () => [binding],
+      } as unknown as BindingManager;
+      const infobaseStorage = {
+        load: async () => [targetEntry],
+        readCatalog: async () => [targetEntry],
+        readPasswordSecret: async () => null,
+      } as unknown as InfobaseStorageService;
+      const service = new DeployService({
+        runConfigurationMutation: (resourcePath, kind, operation) => runConfigurationMutation(resourcePath, kind, operation),
+        runConfigurationExportObjects: async () => {
+          exportStartedResolve();
+          await finishExport;
+          return { status: 'success', exitCode: 0, userMessage: 'Export OK', logExcerpt: '' };
+        },
+      });
+      const context = { subscriptions: [] as Array<{ dispose(): void }> };
+      registerAgentCommands(
+        context as never,
+        () => null,
+        async () => registry,
+        new DebugSessionRegistry(),
+        undefined,
+        () => ({
+          bindingManager,
+          infobaseStorage,
+          getConfigPath: () => configRoot,
+          deployService: service,
+          runConfigurationMutation: (resourcePath, kind, operation) => runConfigurationMutation(resourcePath, kind, operation),
+          requestConfigurationReload: mockReload,
+        }),
+        undefined,
+        undefined,
+        undefined,
+        mockReload,
+      );
+
+      try {
+        const pullHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.pullSelectedObjects');
+        assert.ok(pullHandler, 'agent.pullSelectedObjects command must be registered');
+        const pullPromise = pullHandler({ configurationId, objectIds: ['Catalog.Products'] }) as Promise<AgentResult<unknown>>;
         await exportStarted;
 
         let concurrentWriterRan = false;
-        let concurrentWriterFinished = false;
-        const concurrentWriterPromise = runConfigurationMutation(configRoot, 'test.concurrentAgentWriter', async () => {
-          concurrentWriterRan = true;
-          return 'agent-writer-done';
-        }).then((res) => {
-          concurrentWriterFinished = true;
-          return res;
+        const concurrentWriter = session.enqueue({
+          kind: 'test.concurrentAgentWriter',
+          execute: async () => {
+            concurrentWriterRan = true;
+            return 'writer-done';
+          },
         });
-
-        await new Promise((r) => setTimeout(r, 50));
-        assert.strictEqual(concurrentWriterRan, false, 'Concurrent writer must wait in FIFO while agent.pullSelectedObjects holds lock');
-        assert.strictEqual(concurrentWriterFinished, false);
+        assert.strictEqual(concurrentWriterRan, false, 'a concurrent session writer must wait while the registered Agent export is running');
 
         finishExportResolve();
-
-        const agentResult = await pullPromise;
-        assert.strictEqual(agentResult.success, true, `agent.pullSelectedObjects must succeed: ${agentResult.error}`);
-        assert.strictEqual(reloadCalls.length, 1);
-        assert.strictEqual(reloadCalls[0]!.reason, 'pull-objects');
-
-        const writerResult = await concurrentWriterPromise;
-        assert.strictEqual(writerResult, 'agent-writer-done');
+        const result = await pullPromise;
+        assert.strictEqual(result.success, true, `agent.pullSelectedObjects must succeed: ${result.error}`);
+        assert.ok(result.operationId);
+        const writerOutcome = await concurrentWriter;
+        assert.strictEqual(writerOutcome.status, 'committed');
         assert.strictEqual(concurrentWriterRan, true);
-        assert.strictEqual(concurrentWriterFinished, true);
+        assert.strictEqual(reloadCount, 1);
       } finally {
+        for (const disposable of context.subscriptions) {
+          disposable.dispose();
+        }
         gateway.dispose();
         await registry.dispose();
       }

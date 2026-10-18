@@ -116,6 +116,7 @@ import { AgentPathError, parseSourceAddress } from './agentPathResolver';
 import { resolveSourceAddress } from './agentSourceAddressResolver';
 import { findWorkspaceFolderForPath } from './agentWorkspaceContext';
 import { AgentTaskManager } from './agentTaskManager';
+import { createDeployAgentOperationRunner } from './deployAgentOperationRunner';
 import { AgentRepositoryOperations } from './agentRepositoryOperations';
 import type {
     AgentRepositoryCommitParams,
@@ -129,6 +130,8 @@ import type {
 } from './types';
 import type { ConfigurationRepositoryService } from '../services/configurationRepository/configurationRepositoryService';
 import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
+import { reconcileAfterCommit } from '../reload/reconciliation';
+import { hasSuccessfulAgentPullWrite } from './pullReconciliation';
 import {
     AGENT_SUPPORT_COMMAND_IDS,
     AgentSupportOperations,
@@ -998,23 +1001,7 @@ export function registerAgentCommands(
 
     // ─── 1c-metadata-tree.agent.deploy ───────────────────────────────────
 
-    const runDeployAgentOperation = async <T>(
-        params: ConfigurationScopedParams & { readonly background?: boolean },
-        name: string,
-        mutationKind: string | undefined,
-        operation: (configRoot: string, token?: vscode.CancellationToken, reportStage?: (message: string) => void) => Promise<AgentResult<T>>,
-        requestToken?: vscode.CancellationToken,
-    ): Promise<AgentResult<unknown>> => {
-        const run = (token?: vscode.CancellationToken, reportStage?: (message: string) => void) =>
-            runForConfiguration(params, 'process', mutationKind, (configRoot) => operation(configRoot, token, reportStage), token);
-        if (params.background === true) {
-            return taskManager.start(name, async (token, reportStage) => {
-                reportStage(`Начата операция ${name}.`);
-                return run(token, reportStage);
-            });
-        }
-        return run(requestToken);
-    };
+    const runDeployAgentOperation = createDeployAgentOperationRunner(runForConfiguration, taskManager);
 
     const deployCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deploy',
@@ -1069,7 +1056,23 @@ export function registerAgentCommands(
                 new AgentDeployOperations({
                     ...deps,
                     requestConfigurationReload: deps.requestConfigurationReload ?? requestConfigurationReload,
-                }).pullSelectedObjects({ ...params, configPath: configRoot }, { token, reportStage }), requestToken);
+                }).pullSelectedObjects({ ...params, configPath: configRoot }, {
+                    token,
+                    reportStage,
+                    reconciliationMode: 'defer-to-caller',
+                }), requestToken, async (result, configRoot) => {
+                    if (!hasSuccessfulAgentPullWrite(result)) {
+                        return result;
+                    }
+                    const reloadRequester = deps.requestConfigurationReload ?? requestConfigurationReload;
+                    if (!reloadRequester) {
+                        return result;
+                    }
+                    return {
+                        ...result,
+                        reconciliation: await reconcileAfterCommit(configRoot, 'pull-objects', reloadRequester),
+                    };
+                });
         }
     );
 

@@ -215,7 +215,6 @@ export async function registerAllCommands({
           resolveAgentDeploySupportContext(configRoot, state, getConfigurationRegistry),
         deployService: new DeployService({
           runConfigurationMutation,
-          requestConfigurationReload,
         }),
         runConfigurationMutation,
         requestConfigurationReload,

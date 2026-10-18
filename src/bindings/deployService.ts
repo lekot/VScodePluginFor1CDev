@@ -16,7 +16,6 @@ import type { IbcmdInfobaseOperationResult } from '../services/ibcmd/ibcmdInfoba
 import { appendIbcmdOutputLine, runInfobaseConfigImportFromDirectory, runInfobaseConfigIncrementalImport, runInfobaseConfigExportObjects } from '../infobases/infobaseConfigCommands';
 import { InfobaseConfigurationOperationCancelledError, runInfobaseConfigurationOperation } from '../infobases/infobaseConfigurationOperationQueue';
 import { runConfigurationMutation as defaultRunConfigurationMutation, isConfigurationMutationGatewayConfigured } from '../services/configurationSession/configurationMutationGateway';
-import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 import { resolveInfobaseCanonicalIdentity } from '../infobases/infobaseCanonicalIdentity';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { collectFilesForSelection, resolveIbcmdObjectId } from '../services/ibcmd/objectFileCollector';
@@ -535,7 +534,6 @@ export interface PullSelectedObjectsParams {
   token: vscode.CancellationToken;
   onOutput?: (chunk: string) => void;
   runConfigurationMutation?: <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
-  requestConfigurationReload?: RequestConfigurationReload;
 }
 
 export interface DeployServiceDeps {
@@ -543,7 +541,6 @@ export interface DeployServiceDeps {
   runIncrementalImport?: typeof runInfobaseConfigIncrementalImport;
   runConfigurationExportObjects?: typeof runInfobaseConfigExportObjects;
   runConfigurationMutation?: <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
-  requestConfigurationReload?: RequestConfigurationReload;
 }
 
 export class DeployService {
@@ -1471,14 +1468,6 @@ export class DeployService {
     if (interpreted.status === 'success') {
       appendIbcmdOutputLine(`[выгрузка объектов] ${params.entry.name}: успех — ${interpreted.userMessage}`);
       results.push({ infobaseId: params.entry.id, name: params.entry.name, status: 'success', message: interpreted.userMessage });
-      const reloadRequester = params.requestConfigurationReload ?? this.deps.requestConfigurationReload;
-      if (reloadRequester) {
-        try {
-          await reloadRequester(configRoot, 'pull-objects');
-        } catch (reloadErr) {
-          appendIbcmdOutputLine(`[выгрузка объектов] Предупреждение: ошибка обновления дерева метаданных: ${reloadErr instanceof Error ? reloadErr.message : String(reloadErr)}`);
-        }
-      }
     } else {
       appendIbcmdOutputLine(`[выгрузка объектов] ${params.entry.name}: ошибка — ${interpreted.userMessage}`);
       results.push({ infobaseId: params.entry.id, name: params.entry.name, status: 'error', message: interpreted.userMessage });
