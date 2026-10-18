@@ -46,10 +46,9 @@ import {
   probeIncrementalSupport,
 } from '../services/ibcmd/ibcmdVersionSupport';
 import { emptyDirectoryContents } from './ibcmdExportTargetDir';
-import {
-  runInfobaseConfigurationOperation,
-  sharedInfobaseConfigurationOperationQueue,
-} from './infobaseConfigurationOperationQueue';
+import { runInfobaseConfigurationOperation, sharedInfobaseConfigurationOperationQueue } from './infobaseConfigurationOperationQueue';
+import { publishExportedObjects, type ExportedObjectsPublishHooks } from './exportedObjectsPublish';
+export { publishExportedObjects, type ExportedObjectsPublishHooks };
 
 const OUTPUT_CHANNEL_NAME = 'CDT 41: Infobase (ibcmd)';
 const OUTPUT_DEBOUNCE_MS = 75;
@@ -985,8 +984,8 @@ export async function runInfobaseConfigExportObjects(
   }
 
   // Export to a temp directory (ibcmd requires --out= to be empty), then copy to workspace.
-  const tempExportDir = path.join(os.tmpdir(), `1cviewer-export-objects-${Date.now()}`);
-  fs.mkdirSync(tempExportDir, { recursive: true });
+  const tempExportDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-export-objects-'));
+
 
   const connection = ibcmdOfflineConnectionFromPrepared(prep);
   const exportObjectsArgs = buildInfobaseConfigExportObjectsArgs(
@@ -1028,7 +1027,7 @@ export async function runInfobaseConfigExportObjects(
 
     // Copy exported files from temp to workspace configRoot.
     if (result.status === 'success') {
-      const copied = await copyTreeOverwrite(tempExportDir, params.configRoot);
+      const copied = await publishExportedObjects(tempExportDir, path.resolve(params.configRoot));
       ch.appendLine(`[export objects${ctx}] Скопировано файлов: ${copied}`);
     }
 
@@ -1038,7 +1037,7 @@ export async function runInfobaseConfigExportObjects(
     await prep.dispose();
     // Clean up temp directory.
     try {
-      fs.rmSync(tempExportDir, { recursive: true, force: true });
+      await fs.promises.rm(tempExportDir, { recursive: true, force: true });
     } catch { /* best effort */ }
   }
 }

@@ -20,6 +20,7 @@ import {
 } from './deployService';
 import type { ConfigurationBinding } from './models/configurationBinding';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
+import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import {
@@ -118,6 +119,8 @@ export interface DeployApplicationServiceDeps {
   ) => Promise<DeploySupportContext | undefined>;
   readonly deployService?: DeployService;
   readonly gitDeps?: IncrementalChangeDetectorDeps;
+  readonly runConfigurationMutation?: <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
+  readonly requestConfigurationReload?: RequestConfigurationReload;
 }
 
 // ─── Service Implementation ──────────────────────────────────────────────────
@@ -126,7 +129,10 @@ export class DeployApplicationService {
   private readonly deployService: DeployService;
 
   constructor(private readonly deps: DeployApplicationServiceDeps) {
-    this.deployService = deps.deployService ?? new DeployService();
+    this.deployService = deps.deployService ?? new DeployService({
+      runConfigurationMutation: deps.runConfigurationMutation,
+      requestConfigurationReload: deps.requestConfigurationReload,
+    });
   }
 
   // ─── 1. Target and Context Resolution ─────────────────────────────────────
@@ -561,6 +567,8 @@ export class DeployApplicationService {
         progress,
         token: cancellation.token,
         onOutput: onOutputHandler,
+        runConfigurationMutation: this.deps.runConfigurationMutation,
+        requestConfigurationReload: this.deps.requestConfigurationReload,
       });
 
       return createDeployOutcome(summary, undefined, false);

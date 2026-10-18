@@ -26,6 +26,8 @@ import {
   resolveBindingTargetFromMetadataTreeNode,
   type DeployOutcome,
 } from './deployApplicationService';
+import { runConfigurationMutation as defaultRunConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
+import { createRequestConfigurationReload } from '../reload/requestConfigurationReload';
 
 export {
   resolveConfigRootFromAnyNode,
@@ -116,6 +118,10 @@ function getDeployAppService(state: ExtensionState): DeployApplicationService {
     resolveSupportContext: async (_configRoot, workspaceFolderRoot, binding) => {
       return resolveDeploySupportContext(state, workspaceFolderRoot, binding);
     },
+    runConfigurationMutation: defaultRunConfigurationMutation,
+    requestConfigurationReload: state.reloadCoordinator
+      ? createRequestConfigurationReload(state)
+      : undefined,
   });
 }
 

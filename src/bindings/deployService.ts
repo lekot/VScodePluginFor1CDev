@@ -13,16 +13,10 @@ import { configurationPathKey } from '../utils/configurationPathIdentity';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import type { InfobaseStorageService } from '../infobases/infobaseStorageService';
 import type { IbcmdInfobaseOperationResult } from '../services/ibcmd/ibcmdInfobaseOperationResult';
-import {
-  appendIbcmdOutputLine,
-  runInfobaseConfigImportFromDirectory,
-  runInfobaseConfigIncrementalImport,
-  runInfobaseConfigExportObjects,
-} from '../infobases/infobaseConfigCommands';
-import {
-  InfobaseConfigurationOperationCancelledError,
-  runInfobaseConfigurationOperation,
-} from '../infobases/infobaseConfigurationOperationQueue';
+import { appendIbcmdOutputLine, runInfobaseConfigImportFromDirectory, runInfobaseConfigIncrementalImport, runInfobaseConfigExportObjects } from '../infobases/infobaseConfigCommands';
+import { InfobaseConfigurationOperationCancelledError, runInfobaseConfigurationOperation } from '../infobases/infobaseConfigurationOperationQueue';
+import { runConfigurationMutation as defaultRunConfigurationMutation, isConfigurationMutationGatewayConfigured } from '../services/configurationSession/configurationMutationGateway';
+import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 import { resolveInfobaseCanonicalIdentity } from '../infobases/infobaseCanonicalIdentity';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { collectFilesForSelection, resolveIbcmdObjectId } from '../services/ibcmd/objectFileCollector';
@@ -32,23 +26,13 @@ import { expandBslSiblings } from './bslExpansion';
 import { checkRecentDeploy, computeFilesContentSignature, recordDeploy } from './deployDedupCache';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
 import type { ProcessTreeTerminationOutcome } from '../services/ibcmd/processTreeTermination';
-import {
-  DeployLockedObjectsPlanner,
-  type DeploySupportPlannerRequest,
-  type DeploySupportPreflight,
-  type DeploySupportPreflightErrorCode,
-  filterOutLockedObjectFiles,
-} from './deployLockedObjectsFilter';
+import { DeployLockedObjectsPlanner, type DeploySupportPlannerRequest, type DeploySupportPreflight, type DeploySupportPreflightErrorCode, filterOutLockedObjectFiles } from './deployLockedObjectsFilter';
 import { MESSAGES } from '../constants/messages';
 import type { TreeNode } from '../models/treeNode';
 import type { ConfigurationId } from '../services/configurationSession/types';
 import type { SupportApplicationFacade } from '../support/supportApplicationServiceRegistry';
 import type { MasterSupportState, SupportStatusResult } from '../support/supportTypes';
-import {
-  assertExistingPathWithinRootSync,
-  PathBoundaryError,
-  validateWorkspaceRelativePath,
-} from '../services/configurationSession/pathBoundary';
+import { assertExistingPathWithinRootSync, PathBoundaryError, validateWorkspaceRelativePath } from '../services/configurationSession/pathBoundary';
 
 export type DeployItemStatus = 'success' | 'error' | 'inDoubt' | 'skipped';
 
@@ -84,14 +68,9 @@ export interface DeployProgressSink {
 
 export type DeploySupportErrorCode =
   | DeploySupportPreflightErrorCode
-  | 'SUPPORT_DEPLOY_TARGET_NOT_REPLICATED'
-  | 'SUPPORT_BINDING_INVALID'
-  | 'SUPPORT_TARGET_UNSUPPORTED'
-  | 'SUPPORT_FILE_MISSING'
-  | 'SUPPORT_NOT_MANAGED'
-  | 'SUPPORT_REPLICATION_FAILED'
-  | 'SUPPORT_REPLICATION_INCOMPLETE'
-  | 'SUPPORT_TARGET_SELECTION_REJECTED';
+  | 'SUPPORT_DEPLOY_TARGET_NOT_REPLICATED' | 'SUPPORT_BINDING_INVALID' | 'SUPPORT_TARGET_UNSUPPORTED'
+  | 'SUPPORT_FILE_MISSING' | 'SUPPORT_NOT_MANAGED' | 'SUPPORT_REPLICATION_FAILED'
+  | 'SUPPORT_REPLICATION_INCOMPLETE' | 'SUPPORT_TARGET_SELECTION_REJECTED';
 
 export type DeployItemErrorCode = DeploySupportErrorCode | 'DEPLOY_OPERATION_IN_DOUBT';
 
@@ -555,15 +534,20 @@ export interface PullSelectedObjectsParams {
   progress: DeployProgressSink;
   token: vscode.CancellationToken;
   onOutput?: (chunk: string) => void;
+  runConfigurationMutation?: <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
+  requestConfigurationReload?: RequestConfigurationReload;
+}
+
+export interface DeployServiceDeps {
+  runXmlPreflight?: typeof runIbcmdXmlImportPreflight;
+  runIncrementalImport?: typeof runInfobaseConfigIncrementalImport;
+  runConfigurationExportObjects?: typeof runInfobaseConfigExportObjects;
+  runConfigurationMutation?: <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
+  requestConfigurationReload?: RequestConfigurationReload;
 }
 
 export class DeployService {
-  constructor(
-    private readonly deps: {
-      runXmlPreflight?: typeof runIbcmdXmlImportPreflight;
-      runIncrementalImport?: typeof runInfobaseConfigIncrementalImport;
-    } = {},
-  ) {}
+  constructor(private readonly deps: DeployServiceDeps = {}) {}
 
   /**
    * Последовательная раскатка: ошибка на одной базе не прерывает остальные (design §12.5).
@@ -1449,16 +1433,23 @@ export class DeployService {
 
     params.progress.report({ message: `Выгрузка объектов из: ${params.entry.name}`, increment: 0 });
 
-    const interpreted = await runInfobaseConfigExportObjects({
-      storage: params.storage,
-      entry: params.entry,
-      configRoot,
-      objectIds,
-      token: params.token,
-      logContext: 'выгрузка',
-      ibcmdExtensionName: params.binding.ibcmdExtensionName,
-      onOutput: params.onOutput,
-    });
+    const exportObjectsFn = this.deps.runConfigurationExportObjects ?? runInfobaseConfigExportObjects;
+    const runMutation = params.runConfigurationMutation ?? this.deps.runConfigurationMutation ?? (
+      isConfigurationMutationGatewayConfigured() ? defaultRunConfigurationMutation : async <T>(_p: string, _k: string, op: () => Promise<T>) => op()
+    );
+
+    const interpreted = await runMutation(configRoot, 'infobase.pullSelectedObjects', async () =>
+      exportObjectsFn({
+        storage: params.storage,
+        entry: params.entry,
+        configRoot,
+        objectIds,
+        token: params.token,
+        logContext: 'выгрузка',
+        ibcmdExtensionName: params.binding.ibcmdExtensionName,
+        onOutput: params.onOutput,
+      }),
+    );
 
     const results: DeployItemResult[] = [];
     if (interpreted.status === 'cancelled') {
@@ -1480,6 +1471,14 @@ export class DeployService {
     if (interpreted.status === 'success') {
       appendIbcmdOutputLine(`[выгрузка объектов] ${params.entry.name}: успех — ${interpreted.userMessage}`);
       results.push({ infobaseId: params.entry.id, name: params.entry.name, status: 'success', message: interpreted.userMessage });
+      const reloadRequester = params.requestConfigurationReload ?? this.deps.requestConfigurationReload;
+      if (reloadRequester) {
+        try {
+          await reloadRequester(configRoot, 'pull-objects');
+        } catch (reloadErr) {
+          appendIbcmdOutputLine(`[выгрузка объектов] Предупреждение: ошибка обновления дерева метаданных: ${reloadErr instanceof Error ? reloadErr.message : String(reloadErr)}`);
+        }
+      }
     } else {
       appendIbcmdOutputLine(`[выгрузка объектов] ${params.entry.name}: ошибка — ${interpreted.userMessage}`);
       results.push({ infobaseId: params.entry.id, name: params.entry.name, status: 'error', message: interpreted.userMessage });

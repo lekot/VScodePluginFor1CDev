@@ -177,6 +177,7 @@ export const coreSuiteFiles: string[] = [
   'suite/v8iParser.test.js',
   'suite/v8iBuilder.test.js',
   'suite/infobaseConfigCommands.test.js',
+  'suite/infobasePullSelectedObjects.test.js',
   'suite/infobaseTreeProvider.test.js',
   'suite/platformDetector.test.js',
   'suite/platformLauncherArgs.test.js',
