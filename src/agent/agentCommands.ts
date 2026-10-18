@@ -1066,7 +1066,10 @@ export function registerAgentCommands(
                 return { success: false, error: 'Выгрузка недоступна: хранилище или привязки не инициализированы.' };
             }
             return runDeployAgentOperation(params, 'agent.pullSelectedObjects', 'agent.pullSelectedObjects', (configRoot, token, reportStage) =>
-                new AgentDeployOperations(deps).pullSelectedObjects({ ...params, configPath: configRoot }, { token, reportStage }), requestToken);
+                new AgentDeployOperations({
+                    ...deps,
+                    requestConfigurationReload: deps.requestConfigurationReload ?? requestConfigurationReload,
+                }).pullSelectedObjects({ ...params, configPath: configRoot }, { token, reportStage }), requestToken);
         }
     );
 

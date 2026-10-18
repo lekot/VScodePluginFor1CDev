@@ -32,6 +32,10 @@ export function resetConfigurationMutationGateway(): void {
   planRunner = undefined;
 }
 
+export function isConfigurationMutationGatewayConfigured(): boolean {
+  return mutationRunner !== undefined;
+}
+
 export class ConfigurationMutationGatewayError extends Error {
   constructor(readonly code: 'RUNNER_NOT_CONFIGURED', message: string) {
     super(message);

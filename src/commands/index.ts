@@ -31,6 +31,7 @@ import {
   WorkspaceRegistryCoordinator,
 } from '../services/configurationSession';
 import { configureConfigurationMutationGateway } from '../services/configurationSession/configurationMutationGateway';
+import { DeployService } from '../bindings/deployService';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import { sharedInfobaseConfigurationOperationQueue } from '../infobases/infobaseConfigurationOperationQueue';
 import { createSupportServiceComposition } from '../support/supportServiceComposition';
@@ -212,6 +213,12 @@ export async function registerAllCommands({
         getConfigPath: () => state.treeDataProvider?.getConfigPath() ?? null,
         resolveSupportContext: (configRoot) =>
           resolveAgentDeploySupportContext(configRoot, state, getConfigurationRegistry),
+        deployService: new DeployService({
+          runConfigurationMutation,
+          requestConfigurationReload,
+        }),
+        runConfigurationMutation,
+        requestConfigurationReload,
       };
     },
     () => {

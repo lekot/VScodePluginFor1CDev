@@ -20,6 +20,7 @@ import {
     type DeployResultData,
     type ResolvedDeployContext,
 } from '../bindings/deployApplicationService';
+import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 
 export interface AgentDeployOperationsDeps {
     bindingManager: BindingManager;
@@ -31,6 +32,8 @@ export interface AgentDeployOperationsDeps {
      */
     resolveSupportContext?: (configRoot: string) => Promise<DeploySupportContext | undefined>;
     deployService?: DeployService;
+    runConfigurationMutation?: <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
+    requestConfigurationReload?: RequestConfigurationReload;
 }
 
 export interface DeployParams extends ConfigurationScopedParams {
@@ -97,6 +100,8 @@ export class AgentDeployOperations {
                 ? (configRoot) => deps.resolveSupportContext!(configRoot)
                 : undefined,
             deployService: deps.deployService,
+            runConfigurationMutation: deps.runConfigurationMutation,
+            requestConfigurationReload: deps.requestConfigurationReload,
         });
     }
 

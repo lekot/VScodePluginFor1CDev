@@ -8,6 +8,7 @@ export type ReloadReason =
   | 'duplicate-command'
   | 'rename-command'
   | 'repository'
+  | 'pull-objects'
   | 'agent-mutation'
   | 'unknown';
 
