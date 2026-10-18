@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { XMLParser, XMLValidator } from 'fast-xml-parser';
+import { localName } from '../parsers/xmlNavHelpers';
 import {
   assertPathWithinRoot,
   canonicalizePathWithMissingSuffix,
@@ -15,6 +17,16 @@ export class SkdPathResolutionError extends Error {
 }
 
 type BoundaryValidator = typeof assertPathWithinRoot;
+
+const skdDescriptorParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: '@_',
+  textNodeName: '#text',
+  parseTagValue: false,
+  trimValues: true,
+  removeNSPrefix: false,
+  htmlEntities: true,
+});
 
 export async function resolveSkdTemplatePath(
   configRoot: string,
@@ -190,8 +202,64 @@ async function discoverObjectTemplate(
 
 async function readTemplateType(filePath: string): Promise<string | undefined> {
   const source = await fs.promises.readFile(filePath, 'utf8');
-  const match = source.match(/<(?:[\w.-]+:)?TemplateType\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?TemplateType\s*>/i);
-  return match?.[1]?.replace(/<[^>]+>/g, '').trim() || undefined;
+  const parsed = skdDescriptorParser.parse(source) as Record<string, unknown>;
+  const templateTypes = findXmlValuesByLocalName(parsed, 'TemplateType');
+  if (templateTypes.length === 0) { return undefined; }
+  const validation = XMLValidator.validate(source);
+  if (validation !== true) {
+    throw new SkdPathResolutionError(
+      'SKD_DESCRIPTOR_INVALID',
+      `Некорректный XML-дескриптор СКД: ${validation.err.msg}`,
+    );
+  }
+  if (templateTypes.length !== 1) {
+    throw new SkdPathResolutionError('SKD_DESCRIPTOR_INVALID', 'В XML найдено несколько элементов TemplateType.');
+  }
+  const typeValue = readSimpleXmlText(templateTypes[0]);
+  if (!typeValue.valid) {
+    throw new SkdPathResolutionError('SKD_DESCRIPTOR_INVALID', 'Элемент TemplateType должен содержать только текст.');
+  }
+  return typeValue.value || undefined;
+}
+
+function findXmlValuesByLocalName(value: unknown, expectedName: string): unknown[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => findXmlValuesByLocalName(item, expectedName));
+  }
+  if (value === null || typeof value !== 'object') { return []; }
+
+  const found: unknown[] = [];
+  for (const [key, child] of Object.entries(value)) {
+    if (key === ':@' || key.startsWith('@_') || key.startsWith('#') || key === '__cdata') { continue; }
+    if (localName(key) === expectedName) {
+      found.push(child);
+      continue;
+    }
+    found.push(...findXmlValuesByLocalName(child, expectedName));
+  }
+  return found;
+}
+
+function readSimpleXmlText(value: unknown): { valid: true; value: string } | { valid: false } {
+  if (typeof value === 'string' || typeof value === 'number') {
+    return { valid: true, value: String(value).trim() };
+  }
+  if (Array.isArray(value)) {
+    if (value.length !== 1) { return { valid: false }; }
+    return readSimpleXmlText(value[0]);
+  }
+  if (value === null || typeof value !== 'object') { return { valid: true, value: '' }; }
+
+  const record = value as Record<string, unknown>;
+  const childElements = Object.keys(record).filter((key) =>
+    key !== '#text' && key !== '__cdata' && key !== ':@' && !key.startsWith('@_'),
+  );
+  if (childElements.length > 0) { return { valid: false }; }
+  const text = record['#text'];
+  const cdata = record.__cdata;
+  if (text !== undefined && typeof text !== 'string') { return { valid: false }; }
+  if (cdata !== undefined && typeof cdata !== 'string') { return { valid: false }; }
+  return { valid: true, value: `${typeof text === 'string' ? text : ''}${typeof cdata === 'string' ? cdata : ''}`.trim() };
 }
 
 async function isFile(filePath: string): Promise<boolean> {

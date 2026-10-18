@@ -234,6 +234,59 @@ suite('SkdOperations — effective paths and SKD report targets', () => {
         assert.strictEqual(argValue(calls[0].args, '-TemplatePath'), await fs.promises.realpath(template));
     });
 
+    test('parses namespace-qualified TemplateType and decodes XML character references', async () => {
+        const template = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Namespaced', 'Ext', 'Template.xml');
+        const descriptor = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Namespaced.xml');
+        await writeTemplate(template);
+        await fs.promises.mkdir(path.dirname(descriptor), { recursive: true });
+        await fs.promises.writeFile(
+            descriptor,
+            '<xr:MetaDataObject xmlns:xr="urn:1c"><xr:Template><xr:Properties><xr:TemplateType>DataCompositionSchema&#x20;</xr:TemplateType></xr:Properties></xr:Template></xr:MetaDataObject>',
+            'utf8',
+        );
+
+        const result = await operations.skdValidate({ templatePath: descriptor });
+
+        assert.strictEqual(result.success, true, result.error);
+        assert.strictEqual(argValue(calls[0].args, '-TemplatePath'), await fs.promises.realpath(template));
+    });
+
+    test('rejects a malformed descriptor without invoking PowerShell', async () => {
+        const template = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Malformed', 'Ext', 'Template.xml');
+        const descriptor = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Malformed.xml');
+        await writeTemplate(template);
+        await fs.promises.mkdir(path.dirname(descriptor), { recursive: true });
+        await fs.promises.writeFile(
+            descriptor,
+            '<MetaDataObject><Template><Properties><TemplateType>DataCompositionSchema</TemplateType></Properties></Template>',
+            'utf8',
+        );
+
+        const result = await operations.skdValidate({ templatePath: descriptor });
+
+        assert.strictEqual(result.success, false);
+        assert.strictEqual(result.code, 'SKD_DESCRIPTOR_INVALID');
+        assert.strictEqual(calls.length, 0, 'malformed metadata must not be dispatched as an SKD input');
+    });
+
+    test('rejects nested markup inside TemplateType instead of stripping it into a different type', async () => {
+        const template = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Nested', 'Ext', 'Template.xml');
+        const descriptor = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Nested.xml');
+        await writeTemplate(template);
+        await fs.promises.mkdir(path.dirname(descriptor), { recursive: true });
+        await fs.promises.writeFile(
+            descriptor,
+            '<MetaDataObject><Template><Properties><TemplateType>DataCompositionSchema<Unexpected/></TemplateType></Properties></Template></MetaDataObject>',
+            'utf8',
+        );
+
+        const result = await operations.skdValidate({ templatePath: descriptor });
+
+        assert.strictEqual(result.success, false);
+        assert.strictEqual(result.code, 'SKD_DESCRIPTOR_INVALID');
+        assert.strictEqual(calls.length, 0, 'nested markup must not be sanitized into a valid descriptor type');
+    });
+
     test('preserves validate legacy fallback from Templates/<name>/Template.xml to Ext/Template.xml and checks the resolved target', async () => {
         const templateDir = path.join(configRoot, 'Reports', 'Monthly', 'Templates', 'Main');
         const template = path.join(templateDir, 'Ext', 'Template.xml');
