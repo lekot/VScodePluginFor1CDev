@@ -2,6 +2,7 @@ import type { MutationPlan } from './mutationPlan';
 import * as fs from 'fs';
 import * as path from 'path';
 import { MutationPlanExecutor } from './mutationPlan';
+import { isPathInside, isSamePath } from './pathBoundary';
 
 export type MutationRunner = <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
 export type PlanRunner = <T>(resourcePath: string, plan: MutationPlan<T>) => Promise<T>;
@@ -87,7 +88,12 @@ async function executeStandalone<T>(resourcePath: string, plan: MutationPlan<T>)
       await fs.promises.access(path.join(cursor, 'Configuration.xml'));
       isConfigurationRoot = true;
     } catch {
-      // Continue with the parent directory.
+      try {
+        await fs.promises.access(path.join(cursor, 'src', 'Configuration', 'Configuration.mdo'));
+        isConfigurationRoot = true;
+      } catch {
+        // Continue with the parent directory.
+      }
     }
     if (isConfigurationRoot) {
       return new MutationPlanExecutor(cursor).execute(plan);
@@ -99,5 +105,39 @@ async function executeStandalone<T>(resourcePath: string, plan: MutationPlan<T>)
       cursor = parent;
     }
   }
-  throw new Error(`Configuration root not found for mutation plan: ${resourcePath}`);
+
+  const allPaths: string[] = [resourcePath];
+  for (const step of plan.steps) {
+    allPaths.push(step.targetPath);
+    if (step.type === 'movePath') {
+      allPaths.push(step.sourcePath);
+    }
+  }
+  const fallbackRoot = findCommonDirectory(allPaths);
+  return new MutationPlanExecutor(fallbackRoot).execute(plan);
+}
+
+function findCommonDirectory(paths: string[]): string {
+  if (paths.length === 0) {
+    return process.cwd();
+  }
+  const resolved = paths.map((p) => path.resolve(p));
+  let common = resolved[0];
+  while (!fs.existsSync(common) || !fs.statSync(common).isDirectory()) {
+    const parent = path.dirname(common);
+    if (parent === common) {
+      break;
+    }
+    common = parent;
+  }
+  for (const p of resolved) {
+    while (!isPathInside(common, p) && !isSamePath(common, p)) {
+      const parent = path.dirname(common);
+      if (parent === common) {
+        break;
+      }
+      common = parent;
+    }
+  }
+  return common;
 }

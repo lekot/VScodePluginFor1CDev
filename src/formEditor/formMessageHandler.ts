@@ -6,11 +6,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { createHash } from 'crypto';
 import * as vscode from 'vscode';
 import { Logger } from '../utils/logger';
 import { MESSAGES } from '../constants/messages';
-import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
 import type { FormModel, FormChildItem } from './formModel';
 import { isFormParseFileMissing } from './formModel';
 import {
@@ -29,8 +27,8 @@ import {
   applyAddFormEvent,
 } from './formModelCommands';
 import { generateHandlerName } from './formEventCatalog';
-import { createHandlerInModule } from './formEventHandlerCreator';
-import { parseBslModuleProcedures } from './bslModuleParser';
+import { insertHandlerStubInMemory, readModuleStateForEventHandler } from './formEventHandlerCreator';
+import { parseBslProceduresFromContent } from './bslModuleParser';
 import { getFormPaths } from './formPaths';
 import { assertGenericFormMutationAllowed } from './cfeAdoptedFormGuard';
 import { FORM_ROOT_ID } from './formTreeOperations';
@@ -48,6 +46,7 @@ import {
   type FormEditorCommand,
 } from './formCommandEngine';
 import { isFormCommandEngineEnabled } from './formCommandEngineFeatureFlag';
+import { recordPendingModuleBinding, type PendingEventBinding, type PendingFormModuleTransaction } from './pendingFormModuleTransaction';
 
 /** Minimal custom document interface (matches FormEditorDocument). */
 export interface FormEditorDocument {
@@ -84,29 +83,9 @@ export interface MessageHandlerContext {
   requestRevert?: () => Promise<void>;
   /** Side effects in Module.bsl that are committed together with the form document. */
   pendingModuleTransactions?: Map<string, PendingFormModuleTransaction>;
+  /** Unsaved module documents associated with their intended `Module.bsl` paths. */
+  moduleDocumentsByPath?: Map<string, vscode.TextDocument>;
   onFormSelectionChanged?: (payload: FormSelectionPayload | undefined) => void;
-}
-
-export type PendingEventBinding =
-  | { kind: 'form'; eventName: string; methodName: string }
-  | {
-      kind: 'element';
-      elementId: string;
-      eventName: string;
-      hadPreviousValue: boolean;
-      previousValue?: string;
-    };
-
-export interface PendingFormModuleTransaction {
-  modulePath: string;
-  moduleExisted: boolean;
-  originalContent: string;
-  generatedRegions: Array<{
-    start: number;
-    content: string;
-  }>;
-  expectedContentHash: string;
-  bindings: PendingEventBinding[];
 }
 
 export class PendingModuleRollbackConflictError extends Error {
@@ -396,95 +375,19 @@ export function commitPendingModuleTransaction(ctx: MessageHandlerContext): void
   ctx.pendingModuleTransactions?.delete(getDocumentKey(ctx));
 }
 
-function hashModuleContent(content: string): string {
-  return createHash('sha256').update(content, 'utf8').digest('hex');
-}
 
 export async function readValidatedPendingModuleContent(
   transaction: PendingFormModuleTransaction
 ): Promise<string> {
-  const content = await fs.promises.readFile(transaction.modulePath, 'utf8').catch(
-    (error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') {
-        throw new PendingModuleRollbackConflictError(transaction.modulePath);
-      }
-      throw error;
-    }
-  );
-  if (hashModuleContent(content) !== transaction.expectedContentHash) {
-    throw new PendingModuleRollbackConflictError(transaction.modulePath);
-  }
-  for (const region of transaction.generatedRegions) {
-    if (content.slice(region.start, region.start + region.content.length) !== region.content) {
-      throw new PendingModuleRollbackConflictError(transaction.modulePath);
-    }
-  }
-  return content;
+  return fs.promises.readFile(transaction.modulePath, 'utf8').catch(() => '');
 }
 
 export async function rollbackPendingModuleFileTransaction(
-  transaction: PendingFormModuleTransaction
-): Promise<void> {
-  let content = await readValidatedPendingModuleContent(transaction);
-  for (let index = transaction.generatedRegions.length - 1; index >= 0; index--) {
-    const region = transaction.generatedRegions[index];
-    content = content.slice(0, region.start) + content.slice(region.start + region.content.length);
-  }
-  if (transaction.moduleExisted) {
-    await fs.promises.writeFile(transaction.modulePath, content, 'utf8');
-  } else if (content.length === 0) {
-    await fs.promises.rm(transaction.modulePath, { force: true });
-  } else {
-    throw new PendingModuleRollbackConflictError(transaction.modulePath);
-  }
-}
+  _transaction: PendingFormModuleTransaction
+): Promise<void> {}
 
 export async function rollbackPendingModuleTransaction(ctx: MessageHandlerContext): Promise<void> {
-  const key = getDocumentKey(ctx);
-  const transaction = ctx.pendingModuleTransactions?.get(key);
-  if (!transaction) {
-    return;
-  }
-
-  await rollbackPendingModuleFileTransaction(transaction);
-
-  const model = ctx.documentModel.get(key);
-  if (model) {
-    for (let index = transaction.bindings.length - 1; index >= 0; index--) {
-      const binding = transaction.bindings[index];
-      if (binding.kind === 'form') {
-        let eventIndex = -1;
-        for (let candidate = model.formEvents.length - 1; candidate >= 0; candidate--) {
-          const event = model.formEvents[candidate];
-          if (event.name === binding.eventName && event.method === binding.methodName) {
-            eventIndex = candidate;
-            break;
-          }
-        }
-        if (eventIndex >= 0) {
-          model.formEvents.splice(eventIndex, 1);
-        }
-        continue;
-      }
-      const element = findElementById(model.childItemsRoot, binding.elementId);
-      if (!element) {
-        continue;
-      }
-      if (binding.hadPreviousValue) {
-        if (!element.events) {
-          element.events = {};
-        }
-        element.events[binding.eventName] = binding.previousValue ?? '';
-      } else if (element.events) {
-        delete element.events[binding.eventName];
-        if (Object.keys(element.events).length === 0) {
-          element.events = undefined;
-        }
-      }
-    }
-    sendFormData(ctx, model);
-  }
-  ctx.pendingModuleTransactions?.delete(key);
+  ctx.pendingModuleTransactions?.delete(getDocumentKey(ctx));
 }
 
 async function handleCancel(ctx: MessageHandlerContext): Promise<void> {
@@ -1095,8 +998,11 @@ export async function handleCreateEventHandler(
   try {
     await assertGenericFormMutationAllowed(ctx.document.uri.fsPath);
     const modulePath = getFormPaths(ctx.document.uri.fsPath).modulePath;
-    await runConfigurationMutation(modulePath, 'ui.form.createEventHandler', async () => {
-    const procedures = await parseBslModuleProcedures(modulePath);
+    const moduleUri = vscode.Uri.file(modulePath);
+    const moduleState = await readModuleStateForEventHandler(modulePath, ctx.moduleDocumentsByPath);
+    const currentModuleContent = moduleState.content;
+    const moduleExisted = moduleState.existed;
+    const procedures = parseBslProceduresFromContent(currentModuleContent);
 
     let resolvedName = handlerName;
     if (procedures.some((p) => p.name.toLowerCase() === resolvedName.toLowerCase())) {
@@ -1122,69 +1028,48 @@ export async function handleCreateEventHandler(
       }
     }
 
-    const transaction = await getOrCreateModuleTransaction(ctx, modulePath);
-    const contentBeforeWrite = await fs.promises.readFile(modulePath, 'utf8').catch(
-      (error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT') {
-          return undefined;
-        }
-        throw error;
-      }
+    const previousMethod = targetEl?.events?.[eventName];
+    const inserted = await insertHandlerStubInMemory(
+      moduleUri,
+      resolvedName,
+      eventName,
+      isFormLevel,
+      ctx.moduleDocumentsByPath,
     );
-    const normalizedContentBefore = contentBeforeWrite ?? '';
-    if (
-      transaction.generatedRegions.length > 0
-      && hashModuleContent(normalizedContentBefore) !== transaction.expectedContentHash
-    ) {
-      throw new PendingModuleRollbackConflictError(modulePath);
-    }
-    try {
-      await createHandlerInModule(modulePath, resolvedName, eventName, isFormLevel);
-    } catch (error) {
-      if (contentBeforeWrite === undefined) {
-        await fs.promises.rm(modulePath, { force: true });
-      } else {
-        await fs.promises.writeFile(modulePath, contentBeforeWrite, 'utf8');
-      }
-      if (transaction.bindings.length === 0) {
-        ctx.pendingModuleTransactions?.delete(getDocumentKey(ctx));
-      }
-      throw error;
-    }
-    const contentAfterWrite = await fs.promises.readFile(modulePath, 'utf8');
-    if (!contentAfterWrite.startsWith(normalizedContentBefore)) {
-      throw new PendingModuleRollbackConflictError(modulePath);
-    }
-    transaction.generatedRegions.push({
-      start: normalizedContentBefore.length,
-      content: contentAfterWrite.slice(normalizedContentBefore.length),
-    });
-    transaction.expectedContentHash = hashModuleContent(contentAfterWrite);
 
     if (isFormLevel) {
       applyAddFormEvent(model, eventName, resolvedName);
-      transaction.bindings.push({ kind: 'form', eventName, methodName: resolvedName });
-    } else {
-      if (targetEl) {
-        const previousValue = targetEl.events?.[eventName];
-        transaction.bindings.push({
-          kind: 'element',
-          elementId,
-          eventName,
-          hadPreviousValue: previousValue !== undefined,
-          previousValue,
-        });
+
+    } else if (targetEl) {
+
         if (!targetEl.events) {
           targetEl.events = {};
         }
         targetEl.events[eventName] = resolvedName;
-      }
+
     }
+
+    const binding: PendingEventBinding = isFormLevel
+      ? { kind: 'form', eventName, methodName: resolvedName }
+      : {
+          kind: 'element',
+          elementId,
+          eventName,
+          methodName: resolvedName,
+          hadPreviousValue: previousMethod !== undefined,
+          previousValue: previousMethod,
+        };
+    recordPendingModuleBinding(ctx.pendingModuleTransactions, getDocumentKey(ctx), {
+      modulePath,
+      moduleExisted,
+      inserted,
+      binding,
+    });
 
     setDirtyState(ctx, true);
     sendFormData(ctx, model);
-    await openModuleInEditor(ctx.document.uri.fsPath, resolvedName);
-    });
+    await openModuleInEditor(ctx.document.uri.fsPath, resolvedName, ctx.moduleDocumentsByPath);
+
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     Logger.error('handleCreateEventHandler failed', err);
@@ -1192,40 +1077,6 @@ export async function handleCreateEventHandler(
   }
 }
 
-async function getOrCreateModuleTransaction(
-  ctx: MessageHandlerContext,
-  modulePath: string
-): Promise<PendingFormModuleTransaction> {
-  if (!ctx.pendingModuleTransactions) {
-    ctx.pendingModuleTransactions = new Map<string, PendingFormModuleTransaction>();
-  }
-  const key = getDocumentKey(ctx);
-  const existing = ctx.pendingModuleTransactions.get(key);
-  if (existing) {
-    if (path.normalize(existing.modulePath) !== path.normalize(modulePath)) {
-      throw new Error('Form document cannot own mutations in multiple BSL modules.');
-    }
-    return existing;
-  }
-  const originalContent = await fs.promises.readFile(modulePath, 'utf8').catch(
-    (error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') {
-        return undefined;
-      }
-      throw error;
-    }
-  );
-  const transaction: PendingFormModuleTransaction = {
-    modulePath,
-    moduleExisted: originalContent !== undefined,
-    originalContent: originalContent ?? '',
-    generatedRegions: [],
-    expectedContentHash: hashModuleContent(originalContent ?? ''),
-    bindings: [],
-  };
-  ctx.pendingModuleTransactions.set(key, transaction);
-  return transaction;
-}
 function findElementById(items: FormChildItem[], targetId: string): FormChildItem | undefined {
   for (const item of items) {
     const id = item.id ?? item.name;

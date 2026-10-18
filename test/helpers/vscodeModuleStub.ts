@@ -3,6 +3,7 @@
  * (matrix e2e and any future core test that imports `src/providers/treeDataProvider`).
  */
 import * as path from 'path';
+import * as fs from 'fs';
 import Module = require('module');
 
 const TreeItemCollapsibleState = {
@@ -50,19 +51,22 @@ class CancellationError extends Error {
   }
 }
 
-const Uri = {
-  file: (fsPath: string) => ({
+function makeMockUri(fsPath: string, scheme: string, originalString?: string): any {
+  return {
     fsPath,
-    scheme: 'file' as const,
-    toString: () => `file:///${fsPath.replace(/\\/g, '/').replace(/^\//, '')}`,
-  }),
+    scheme,
+    with: (change: { scheme?: string }) => makeMockUri(fsPath, change.scheme ?? scheme),
+    toString: () => originalString ?? (scheme === 'file'
+      ? `file:///${fsPath.replace(/\\/g, '/').replace(/^\//, '')}`
+      : `${scheme}:${fsPath.replace(/\\/g, '/')}`),
+  };
+}
+
+const Uri = {
+  file: (fsPath: string) => makeMockUri(fsPath, 'file'),
   joinPath: (base: { fsPath: string; scheme: string }, ...pathSegments: string[]) => {
     const joined = path.join(base.fsPath, ...pathSegments);
-    return {
-      fsPath: joined,
-      scheme: base.scheme,
-      toString: () => `file:///${joined.replace(/\\/g, '/')}`,
-    };
+    return makeMockUri(joined, base.scheme);
   },
   // Minimal subset used by core tests:
   // - parse('file:///tmp/x') for equality checks via `toString()`
@@ -70,11 +74,8 @@ const Uri = {
   parse: (uri: string) => {
     const m = uri.match(/^file:\/\/\/(.*)$/);
     const fsPath = m ? `/${m[1]}` : uri;
-    return {
-      fsPath,
-      scheme: 'file' as const,
-      toString: () => uri,
-    };
+    const scheme = uri.slice(0, uri.indexOf(':')) || 'file';
+    return makeMockUri(fsPath, scheme, uri);
   },
 };
 
@@ -103,6 +104,31 @@ class Range {
   }
 }
 
+class Selection extends Range {
+  readonly anchor: Position;
+  readonly active: Position;
+  constructor(anchor: Position, active: Position);
+  constructor(anchorLine: number, anchorCharacter: number, activeLine: number, activeCharacter: number);
+  constructor(a: any, b: any, c?: any, d?: any) {
+    if (typeof a === 'number') {
+      super(new Position(a, b), new Position(c, d));
+      this.anchor = new Position(a, b);
+      this.active = new Position(c, d);
+    } else {
+      super(a, b);
+      this.anchor = a;
+      this.active = b;
+    }
+  }
+}
+
+const TextEditorRevealType = {
+  Default: 0,
+  InCenter: 1,
+  InCenterIfOutsideViewport: 2,
+  AtTop: 3,
+} as const;
+
 class Location {
   public readonly range: Range;
   constructor(
@@ -119,8 +145,30 @@ class Location {
 
 class WorkspaceEdit {
   public readonly replaces: Array<{ uri: any; range: Range; newText: string }> = [];
+  public readonly entriesList: Array<{
+    type: 'createFile' | 'insert' | 'replace' | 'delete';
+    uri: any;
+    position?: any;
+    range?: any;
+    newText?: string;
+    options?: any;
+  }> = [];
+
+  createFile(uri: any, options?: any): void {
+    this.entriesList.push({ type: 'createFile', uri, options });
+  }
+
+  insert(uri: any, position: any, newText: string): void {
+    this.entriesList.push({ type: 'insert', uri, position, newText });
+  }
+
   replace(uri: any, range: Range, newText: string): void {
     this.replaces.push({ uri, range, newText });
+    this.entriesList.push({ type: 'replace', uri, range, newText });
+  }
+
+  delete(uri: any, range: Range): void {
+    this.entriesList.push({ type: 'delete', uri, range });
   }
 }
 
@@ -314,6 +362,9 @@ class CancellationTokenSourceStub {
 export const vscodeTestState = {
   workspaceConfig: {} as Record<string, unknown>,
   scopedWorkspaceConfig: new Map<string, Record<string, unknown>>(),
+  openDocuments: new Map<string, any>(),
+  /** Optional `textDocuments` fixture override for tests that model unsaved editor buffers. */
+  textDocumentsOverride: undefined as any[] | undefined,
   applyEditImpl: undefined as ((edit: any) => Promise<boolean>) | undefined,
   /** Список id команд, зарегистрированных через vscode.commands.registerCommand (P7a-7). */
   registeredCommandIds: [] as string[],
@@ -426,6 +477,15 @@ const windowStub = {
   createWebviewPanel: (): never => {
     throw new Error('vscode.window.createWebviewPanel: override in test');
   },
+  showTextDocument: async (document: any, _options?: any): Promise<any> => {
+    return {
+      document,
+      revealRange: (_range: any, _type?: any) => undefined,
+      selection: new Selection(0, 0, 0, 0),
+    };
+  },
+
+
   showErrorMessage: async (message: string): Promise<undefined> => {
     vscodeTestState.errorLog.push(message);
     return undefined;
@@ -537,6 +597,7 @@ const windowStub = {
   registerCustomEditorProvider: (_viewType: string, _provider: unknown, _options?: unknown) => ({
     dispose: () => undefined,
   }),
+
   createOutputChannel: (_name: string) => ({
     appendLine: (s: string) => {
       vscodeTestState.outputChannelLines.push(s);
@@ -549,10 +610,108 @@ const windowStub = {
   }),
 };
 
+function createMockTextDocument(uri: any, initialText = ''): any {
+  let content = initialText;
+  let dirty = false;
+  const doc = {
+    uri,
+    fileName: uri.fsPath || String(uri),
+    get isUntitled() { return doc.uri.scheme === 'untitled'; },
+    get isDirty() { return dirty; },
+    set isDirty(val: boolean) { dirty = val; },
+    getText: () => content,
+    setText: (t: string) => { content = t; },
+    get lineCount() { return content.split(/\r?\n/).length; },
+    lineAt: (lineIndex: number) => {
+      const lines = content.split(/\r?\n/);
+      const lineText = lines[lineIndex] ?? '';
+      return {
+        text: lineText,
+        range: {
+          start: { line: lineIndex, character: 0 },
+          end: { line: lineIndex, character: lineText.length },
+        },
+      };
+    },
+    save: async () => {
+      if (doc.uri.fsPath) {
+        await fs.promises.mkdir(path.dirname(doc.uri.fsPath), { recursive: true });
+        await fs.promises.writeFile(doc.uri.fsPath, content, 'utf8');
+      }
+      if (doc.uri.scheme === 'untitled') {
+        doc.uri = Uri.file(doc.uri.fsPath);
+      }
+      dirty = false;
+      for (const listener of [...vscodeTestState.onDidSaveDocumentListeners]) {
+        try { await listener(doc); } catch {}
+      }
+      return true;
+    },
+  };
+  return doc;
+}
+
 const workspaceStub = {
+  get textDocuments(): any[] {
+    return vscodeTestState.textDocumentsOverride ?? Array.from(vscodeTestState.openDocuments.values());
+  },
+  set textDocuments(documents: any[]) {
+    vscodeTestState.textDocumentsOverride = documents;
+  },
+  openTextDocument: async (uriOrOptions: any): Promise<any> => {
+    const uri = uriOrOptions && uriOrOptions.fsPath ? uriOrOptions : uriOrOptions?.uri;
+    const filePath = uri?.fsPath ? path.normalize(uri.fsPath) : undefined;
+    if (filePath) {
+      let doc = vscodeTestState.openDocuments.get(filePath);
+      if (!doc) {
+        let content = '';
+        if (uri.scheme !== 'untitled') {
+          try {
+            content = await fs.promises.readFile(filePath, 'utf8');
+          } catch (e: any) {
+            if (e.code === 'ENOENT') {
+              throw e;
+            }
+          }
+        }
+        doc = createMockTextDocument(uri, content);
+        vscodeTestState.openDocuments.set(filePath, doc);
+      }
+      return doc;
+    }
+    throw new Error('Unsupported openTextDocument call in stub');
+  },
   applyEdit: async (edit: any): Promise<boolean> => {
     if (vscodeTestState.applyEditImpl) {
       return vscodeTestState.applyEditImpl(edit);
+    }
+    if (edit && Array.isArray(edit.entriesList)) {
+      for (const entry of edit.entriesList) {
+        const filePath = entry.uri?.fsPath ? path.normalize(entry.uri.fsPath) : undefined;
+        if (entry.type === 'createFile') {
+          if (filePath && !vscodeTestState.openDocuments.has(filePath)) {
+            const initialText = entry.options?.contents
+              ? Buffer.from(entry.options.contents).toString('utf8')
+              : '';
+            const doc = createMockTextDocument(entry.uri, initialText);
+            vscodeTestState.openDocuments.set(filePath, doc);
+          }
+        } else if (entry.type === 'insert') {
+          let doc = filePath ? vscodeTestState.openDocuments.get(filePath) : undefined;
+          if (!doc && filePath) {
+            let diskContent = '';
+            try {
+              diskContent = fs.readFileSync(filePath, 'utf8');
+            } catch {}
+            doc = createMockTextDocument(entry.uri, diskContent);
+            vscodeTestState.openDocuments.set(filePath, doc);
+          }
+          if (doc) {
+            doc.setText(doc.getText() + (entry.newText ?? ''));
+            doc.isDirty = true;
+          }
+        }
+      }
     }
     return true;
   },
@@ -681,10 +840,25 @@ export function restoreVscodeWorkspaceFoldersGetter(): void {
   });
 }
 
+export function restoreVscodeTextDocumentsGetter(): void {
+  Reflect.deleteProperty(workspaceStub, 'textDocuments');
+  Object.defineProperty(workspaceStub, 'textDocuments', {
+    configurable: true,
+    enumerable: true,
+    get(): any[] {
+      return vscodeTestState.textDocumentsOverride ?? Array.from(vscodeTestState.openDocuments.values());
+    },
+    set(documents: any[] | undefined) {
+      vscodeTestState.textDocumentsOverride = documents;
+    },
+  });
+}
+
 export function resetVscodeTestState(): void {
   vscodeExtensionsTestState.getExtensionImpl = null;
   vscodeTestState.workspaceConfig = {};
   vscodeTestState.scopedWorkspaceConfig = new Map();
+  vscodeTestState.textDocumentsOverride = undefined;
   vscodeTestState.registeredCommandIds = [];
   vscodeTestState.registeredCommandHandlers = new Map();
   vscodeTestState.registeredCompletionProviders = [];
@@ -717,7 +891,9 @@ export function resetVscodeTestState(): void {
   vscodeTestState.treeVisibilityListeners.clear();
   vscodeTestState.outputChannelLines = [];
   vscodeTestState.outputChannelChunks = [];
+  vscodeTestState.openDocuments.clear();
   restoreVscodeWorkspaceFoldersGetter();
+  restoreVscodeTextDocumentsGetter();
 }
 
 /** Задаёт handler для vscode.commands.executeCommand в тестах (P7b-2). */
@@ -1059,6 +1235,8 @@ export const vscodeStub = {
   CancellationTokenSource: CancellationTokenSourceStub,
   Position,
   Range,
+  Selection,
+  TextEditorRevealType,
   Location,
   WorkspaceEdit,
   Breakpoint,

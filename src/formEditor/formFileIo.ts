@@ -12,7 +12,7 @@ import { parseFormXmlContent } from './formXmlParser';
 import { createEmptyFormModel, isFormParseError } from './formModel';
 import type { FormModel } from './formModel';
 import { writeFormXml } from './formXmlWriter';
-import { parseBslModuleProcedures } from './bslModuleParser';
+import { parseBslModuleProcedures, parseBslProceduresFromContent } from './bslModuleParser';
 import { getFormPaths } from './formPaths';
 import { getFormEditorTitle } from './formEditorTitle';
 import {
@@ -176,6 +176,12 @@ export async function getFormProcedures(
 ): Promise<Array<{ name: string; line?: number }>> {
   const formDirectory = path.dirname(path.dirname(formXmlFsPath));
   const modulePath = path.join(formDirectory, 'Ext', 'Form', 'Module.bsl');
+  const openDoc = vscode.workspace.textDocuments.find(
+    (d) => path.normalize(d.uri.fsPath) === path.normalize(modulePath)
+  );
+  if (openDoc) {
+    return parseBslProceduresFromContent(openDoc.getText()).map((p) => ({ name: p.name, line: p.line }));
+  }
   const procedures = await parseBslModuleProcedures(modulePath);
   return procedures.map((p) => ({ name: p.name, line: p.line }));
 }
@@ -185,19 +191,25 @@ export async function getFormProcedures(
  */
 export async function openModuleInEditor(
   formXmlFsPath: string,
-  procedureName?: string
+  procedureName?: string,
+  associatedDocuments?: ReadonlyMap<string, vscode.TextDocument>,
 ): Promise<void> {
   const { modulePath } = getFormPaths(formXmlFsPath);
   try {
+    const normalizedPath = path.normalize(modulePath);
     const uri = vscode.Uri.file(modulePath);
-    const doc = await vscode.workspace.openTextDocument(uri);
+    const doc = associatedDocuments?.get(normalizedPath)
+      ?? vscode.workspace.textDocuments.find(
+        (candidate) => path.normalize(candidate.uri.fsPath) === normalizedPath
+      )
+      ?? await vscode.workspace.openTextDocument(uri);
     const editor = await vscode.window.showTextDocument(doc, {
       viewColumn: vscode.ViewColumn.One,
       preview: false,
     });
     if (procedureName) {
-      const procedures = await parseBslModuleProcedures(modulePath);
-      const proc = procedures.find((p) => p.name === procedureName);
+      const procedures = parseBslProceduresFromContent(doc.getText());
+      const proc = procedures.find((p) => p.name.toLowerCase() === procedureName.toLowerCase());
       if (proc && proc.line) {
         const line = Math.max(0, proc.line - 1);
         const range = new vscode.Range(line, 0, line, 0);

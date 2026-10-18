@@ -32,6 +32,7 @@ export class PropertiesProvider {
   private currentFormSelectionRevision = 0;
   private disposables: vscode.Disposable[] = [];
   private _isSaving = false;
+  private _saveGeneration = 0;
   private _isDirty = false;
   private pendingProperties: Record<string, unknown> | undefined;
   private objectTypeEditorProvider: ObjectTypeEditorProvider;
@@ -454,6 +455,25 @@ export class PropertiesProvider {
     });
   }
 
+  public beginSave(): number {
+    this._isSaving = true;
+    return ++this._saveGeneration;
+  }
+
+  public endSave(generation: number, delayMs = 600): void {
+    if (delayMs <= 0) {
+      if (this._saveGeneration === generation) {
+        this._isSaving = false;
+      }
+      return;
+    }
+    setTimeout(() => {
+      if (this._saveGeneration === generation) {
+        this._isSaving = false;
+      }
+    }, delayMs);
+  }
+
   /**
    * Create webview panel with proper configuration
    */
@@ -597,6 +617,8 @@ export class PropertiesProvider {
       postMessage: (msg) => this.postMessage(msg),
       updateWebviewContent: () => { void this.updateWebviewContent(); },
       setIsSaving: (value) => { this._isSaving = value; },
+      beginSave: () => this.beginSave(),
+      endSave: (generation, delayMs) => this.endSave(generation, delayMs),
       setIsDirty: (isDirty, properties, token) => { this.setIsDirty(isDirty, properties, token); },
     };
   }

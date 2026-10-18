@@ -321,46 +321,7 @@ export async function writeFormXml(
         throw readErr;
       }
     }
-    const profile = existingContent?.trim()
-      ? requireDocumentWriteFormatProfile(existingContent)
-      : requireWriteFormatProfile(model.version);
-    const effectiveModel: FormModel = { ...model, version: profile.version };
-
-    const rawContent = buildFormContent(effectiveModel);
-    const head = rawContent[0] as Record<string, unknown> | undefined;
-    const formAttrs =
-      head && typeof head === 'object' && Object.keys(head).length === 1 && head[':@'] !== undefined
-        ? (head[':@'] as Record<string, string>)
-        : {};
-    const body = head && Object.keys(head).length === 1 && head[':@'] !== undefined ? rawContent.slice(1) : rawContent;
-    const normalizedBody = body.map(normalizePreserveOrderNode);
-    const root = [{ Form: normalizedBody, ':@': formAttrs }];
-    const builder = new XMLBuilder(BUILDER_OPTIONS);
-    let xmlString: string;
-    try {
-      xmlString = builder.build(root);
-    } catch (buildErr) {
-      Logger.error(`Failed to build Form.xml for ${formXmlPath}`, buildErr);
-      throw new Error(
-        `Не удалось сформировать Form.xml. ${buildErr instanceof Error ? buildErr.message : String(buildErr)}`
-      );
-    }
-
-    // Inject xmlns declarations (XMLBuilder strips them with ignoreNameSpace:true)
-    if (effectiveModel.xmlnsDeclarations && Object.keys(effectiveModel.xmlnsDeclarations).length) {
-      xmlString = injectXmlnsIntoFormTag(xmlString, effectiveModel.xmlnsDeclarations);
-    }
-    xmlString = injectMissingFormOpenTagAttrs(xmlString, effectiveModel);
-
-    // Validate: never write empty Form when model has content
-    if ((model.childItemsRoot?.length ?? 0) > 0 && /^<Form\s*\/>$|^<Form>\s*<\/Form>$/.test(xmlString.trim())) {
-      throw new Error(
-        'Validation failed: XMLBuilder generated empty <Form> for a non-empty model. Write aborted.'
-      );
-    }
-
-    const declaration = '<?xml version="1.0" encoding="UTF-8"?>\n';
-    const fullContent = declaration + xmlString;
+    const fullContent = buildFormXmlDocument(model, existingContent, formXmlPath);
 
     await writeUtf8FileWithBackup(formXmlPath, existingContent, fullContent, {
       ...options,
@@ -368,4 +329,44 @@ export async function writeFormXml(
     });
     Logger.info(`Form.xml written: ${formXmlPath}`);
   });
+}
+
+/** Builds a validated Form.xml without performing filesystem writes. */
+export function buildFormXmlDocument(
+  model: FormModel,
+  existingContent?: string,
+  formXmlPath = 'Form.xml',
+): string {
+  const profile = existingContent?.trim()
+    ? requireDocumentWriteFormatProfile(existingContent)
+    : requireWriteFormatProfile(model.version);
+  const effectiveModel: FormModel = { ...model, version: profile.version };
+  const rawContent = buildFormContent(effectiveModel);
+  const head = rawContent[0] as Record<string, unknown> | undefined;
+  const formAttrs =
+    head && typeof head === 'object' && Object.keys(head).length === 1 && head[':@'] !== undefined
+      ? (head[':@'] as Record<string, string>)
+      : {};
+  const body = head && Object.keys(head).length === 1 && head[':@'] !== undefined ? rawContent.slice(1) : rawContent;
+  const normalizedBody = body.map(normalizePreserveOrderNode);
+  const root = [{ Form: normalizedBody, ':@': formAttrs }];
+  const builder = new XMLBuilder(BUILDER_OPTIONS);
+  let xmlString: string;
+  try {
+    xmlString = builder.build(root);
+  } catch (buildErr) {
+    Logger.error(`Failed to build Form.xml for ${formXmlPath}`, buildErr);
+    throw new Error(
+      `Не удалось сформировать Form.xml. ${buildErr instanceof Error ? buildErr.message : String(buildErr)}`
+    );
+  }
+
+  if (effectiveModel.xmlnsDeclarations && Object.keys(effectiveModel.xmlnsDeclarations).length) {
+    xmlString = injectXmlnsIntoFormTag(xmlString, effectiveModel.xmlnsDeclarations);
+  }
+  xmlString = injectMissingFormOpenTagAttrs(xmlString, effectiveModel);
+  if ((model.childItemsRoot?.length ?? 0) > 0 && /^<Form\s*\/>$|^<Form>\s*<\/Form>$/.test(xmlString.trim())) {
+    throw new Error('Validation failed: XMLBuilder generated empty <Form> for a non-empty model. Write aborted.');
+  }
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' + xmlString;
 }
