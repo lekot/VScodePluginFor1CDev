@@ -235,6 +235,109 @@ suite('XMLWriter', () => {
         }
       );
     });
+
+    test('should preserve LocalStringType (v8:item) and complex properties when updating Comment on Designer Catalog', async () => {
+      const designerCatalogXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+  <Catalog uuid="11111111-1111-4111-8111-111111111111">
+    <Properties>
+      <Name>CrudAcceptance</Name>
+      <Synonym>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>CrudAcceptance</v8:content>
+        </v8:item>
+      </Synonym>
+      <Comment/>
+      <ExtendedListPresentation>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>CrudAcceptance</v8:content>
+        </v8:item>
+      </ExtendedListPresentation>
+      <ListPresentation>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>CrudAcceptance</v8:content>
+        </v8:item>
+      </ListPresentation>
+      <Explanation/>
+      <InputByString>
+        <xr:Field>Catalog.CrudAcceptance.StandardAttribute.Description</xr:Field>
+      </InputByString>
+      <StandardAttributes>
+        <xr:StandardAttribute name="Description">
+          <xr:FillChecking>ShowError</xr:FillChecking>
+        </xr:StandardAttribute>
+      </StandardAttributes>
+    </Properties>
+    <ChildObjects/>
+  </Catalog>
+</MetaDataObject>`;
+      fs.writeFileSync(tempXmlPath, designerCatalogXml, 'utf-8');
+
+      await XMLWriter.updateProperty(tempXmlPath, 'Comment', 'Acceptance updated comment');
+
+      const afterCommentXml = fs.readFileSync(tempXmlPath, 'utf-8');
+      assert.ok(!afterCommentXml.includes('[object Object]'), 'XML must never contain [object Object]');
+      assert.ok(afterCommentXml.includes('<Comment>Acceptance updated comment</Comment>'));
+      assert.match(
+        afterCommentXml,
+        /<ExtendedListPresentation>\s*<v8:item>\s*<v8:lang>ru<\/v8:lang>\s*<v8:content>CrudAcceptance<\/v8:content>\s*<\/v8:item>\s*<\/ExtendedListPresentation>/s
+      );
+      assert.match(
+        afterCommentXml,
+        /<ListPresentation>\s*<v8:item>\s*<v8:lang>ru<\/v8:lang>\s*<v8:content>CrudAcceptance<\/v8:content>\s*<\/v8:item>\s*<\/ListPresentation>/s
+      );
+      assert.ok(afterCommentXml.includes('<xr:Field>Catalog.CrudAcceptance.StandardAttribute.Description</xr:Field>'));
+      assert.ok(afterCommentXml.includes('<xr:StandardAttribute name="Description">'));
+    });
+
+    test('should update LocalStringType properties (Synonym, Explanation) using v8:item structure and clear to empty tag when blank', async () => {
+      const designerCatalogXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+  <Catalog uuid="11111111-1111-4111-8111-111111111111">
+    <Properties>
+      <Name>CrudAcceptance</Name>
+      <Synonym>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>Старый синоним</v8:content>
+        </v8:item>
+      </Synonym>
+      <Explanation/>
+      <ExtendedListPresentation>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>Старый список</v8:content>
+        </v8:item>
+      </ExtendedListPresentation>
+    </Properties>
+  </Catalog>
+</MetaDataObject>`;
+      fs.writeFileSync(tempXmlPath, designerCatalogXml, 'utf-8');
+
+      await XMLWriter.updateProperty(tempXmlPath, 'Synonym', 'Новый синоним');
+      await XMLWriter.updateProperty(tempXmlPath, 'Explanation', 'Пояснение справочника');
+      await XMLWriter.updateProperty(tempXmlPath, 'ExtendedListPresentation', '');
+
+      const updatedXml = fs.readFileSync(tempXmlPath, 'utf-8');
+      assert.ok(!updatedXml.includes('[object Object]'));
+      assert.match(
+        updatedXml,
+        /<Synonym>\s*<v8:item>\s*<v8:lang>ru<\/v8:lang>\s*<v8:content>Новый синоним<\/v8:content>\s*<\/v8:item>\s*<\/Synonym>/s,
+        'Synonym must keep v8:item structure instead of plain text'
+      );
+      assert.match(
+        updatedXml,
+        /<Explanation>\s*<v8:item>\s*<v8:lang>ru<\/v8:lang>\s*<v8:content>Пояснение справочника<\/v8:content>\s*<\/v8:item>\s*<\/Explanation>/s,
+        'Previously empty LocalStringType property must be written as v8:item when given non-empty text'
+      );
+      assert.ok(
+        !/<ExtendedListPresentation>\s*<v8:item>/s.test(updatedXml),
+        'Cleared LocalStringType property must not keep stale v8:item'
+      );
+    });
   });
 
   suite('error handling', () => {
@@ -368,6 +471,14 @@ suite('XMLWriter', () => {
       await XMLWriter.createMinimalElementFile(p, 'SessionParameter', 'Параметр1', '2.20');
       const raw = await fs.promises.readFile(p, 'utf-8');
       assert.ok(!raw.includes('<ChildObjects'), 'SessionParameter must not emit ChildObjects');
+    });
+
+    test('creates Interface without InternalInfo or ChildObjects (ibcmd contract)', async () => {
+      const p = path.join(tmpDir, 'TestInterface.xml');
+      await XMLWriter.createMinimalElementFile(p, 'Interface', 'Интерфейс1', '2.20');
+      const raw = await fs.promises.readFile(p, 'utf-8');
+      assert.ok(!raw.includes('<InternalInfo'), 'Interface must not emit InternalInfo');
+      assert.ok(!raw.includes('<ChildObjects'), 'Interface must not emit ChildObjects');
     });
   });
 

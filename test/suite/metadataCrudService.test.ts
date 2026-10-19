@@ -118,6 +118,46 @@ suite('MetadataCrudService', () => {
     assert.doesNotMatch(await fs.promises.readFile(configurationFile, 'utf8'), /<Sequence>PostingOrder<\/Sequence>/);
   });
 
+  test('Sequence create with recorderDocument populates Documents MDObjectRef and validates registration', async () => {
+    const context = { configurationRootPath: tempRoot };
+    const configWithDoc = MINIMAL_CONFIG_XML.replace(
+      '<ChildObjects/>',
+      '<ChildObjects><Document>DocRecorder</Document></ChildObjects>',
+    );
+    await fs.promises.writeFile(path.join(tempRoot, 'Configuration.xml'), configWithDoc, 'utf8');
+    await fs.promises.mkdir(path.join(tempRoot, 'Documents'), { recursive: true });
+    await fs.promises.writeFile(
+      path.join(tempRoot, 'Documents', 'DocRecorder.xml'),
+      recorderDocumentXml('DocRecorder', ''),
+      'utf8',
+    );
+
+    await assert.rejects(
+      () =>
+        planCreateMetadataObject(context, {
+          type: MetadataType.Sequence,
+          name: 'SeqMissingDoc',
+          recorderDocument: 'NonExistentDoc',
+        }),
+      /NonExistentDoc/,
+    );
+
+    const create = await planCreateMetadataObject(context, {
+      type: MetadataType.Sequence,
+      name: 'SeqWithDoc',
+      recorderDocument: 'DocRecorder',
+    });
+    await new MutationPlanExecutor(tempRoot).execute(create.plan);
+
+    const seqXml = await fs.promises.readFile(path.join(tempRoot, 'Sequences', 'SeqWithDoc.xml'), 'utf8');
+    assert.match(
+      seqXml,
+      /<Documents>\s*<xr:Item\s+xsi:type="xr:MDObjectRef">Document\.DocRecorder<\/xr:Item>\s*<\/Documents>/,
+      'Sequence XML must contain participating Document in <Documents>',
+    );
+    assert.match(seqXml, /<InternalInfo>[\s\S]*?<xr:GeneratedType\s+name="SequenceRecord\.SeqWithDoc"/);
+  });
+
   test('AccumulationRegister deletion cleans exact RegisterRecords items in every registered Document', async () => {
     const fixture = await createRegisterDeleteFixture(tempRoot, ['RecorderOne', 'RecorderTwo'], ['Unregistered']);
     const oneBefore = recorderDocumentXml('RecorderOne', [

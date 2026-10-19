@@ -3,6 +3,7 @@ import { TypeParser } from '../../parsers/typeParser';
 import { TypeFormatter } from '../typeFormatter';
 import { xmlParser } from './xmlCore';
 import { isStructuredTypePropertyValue } from '../../serializers/typeSerializer';
+import { extractV8String } from '../xmlPropertyUtils';
 
 /**
  * Convert string boolean values to actual boolean primitives.
@@ -172,6 +173,45 @@ function flattenPropertiesArray(propertiesArray: unknown[]): Record<string, unkn
   return flattened;
 }
 
+const LOCAL_STRING_PROPERTY_NAMES = new Set([
+  'Synonym',
+  'ToolTip',
+  'Explanation',
+  'ObjectPresentation',
+  'ExtendedObjectPresentation',
+  'ListPresentation',
+  'ExtendedListPresentation',
+  'RecordPresentation',
+  'ExtendedRecordPresentation',
+  'ExtendedPresentation',
+  'Heading',
+  'Title',
+]);
+
+function isV8LocalStringObject(val: unknown): boolean {
+  if (!val || typeof val !== 'object') {
+    return false;
+  }
+  if (Array.isArray(val)) {
+    return val.some((entry) => isV8LocalStringObject(entry));
+  }
+  const obj = val as Record<string, unknown>;
+  return 'v8:item' in obj || 'item' in obj;
+}
+
+function buildV8LocalStringValue(text: string): Record<string, unknown> | string {
+  const normalized = text;
+  if (!normalized) {
+    return '';
+  }
+  return {
+    'v8:item': {
+      'v8:lang': 'ru',
+      'v8:content': normalized,
+    },
+  };
+}
+
 function flattenProperties(properties: Record<string, unknown>): Record<string, unknown> {
   const flattened: Record<string, unknown> = {};
 
@@ -187,6 +227,8 @@ function flattenProperties(properties: Record<string, unknown>): Record<string, 
       const obj = value as Record<string, unknown>;
       if ('#text' in obj) {
         flattened[key] = obj['#text'];
+      } else if (isV8LocalStringObject(obj)) {
+        flattened[key] = extractV8String(obj) ?? '';
       } else if ('v8:Type' in obj) {
         // Source property (and similar xml-fragment properties) — preserve as-is if TypeParser fails
         try {
@@ -397,6 +439,10 @@ function updatePropertiesObject(
       result[key] = newVal.content;
       continue;
     }
+    if (typeof newVal === 'object' && newVal !== null) {
+      result[key] = newVal;
+      continue;
+    }
     // XML fragment string for Source property (EventSubscription.Source containing v8:Type elements).
     // Detected by matching the property key as the root tag of the fragment.
     // Explicitly exclude 'Type' (handled by type editor via TypeSerializer — passed through as a string).
@@ -415,9 +461,17 @@ function updatePropertiesObject(
         continue;
       }
     }
+    const existing = result[key];
+    if (
+      typeof newVal === 'string' &&
+      (isV8LocalStringObject(existing) ||
+        (LOCAL_STRING_PROPERTY_NAMES.has(key) && (existing === '' || existing === undefined || existing === null)))
+    ) {
+      result[key] = buildV8LocalStringValue(newVal);
+      continue;
+    }
     const textVal =
       typeof newVal === 'boolean' || typeof newVal === 'number' ? newVal : String(newVal);
-    const existing = result[key];
     if (Array.isArray(existing) && existing.length > 0) {
       const first = existing[0];
       if (first && typeof first === 'object' && '#text' in (first as object)) {
@@ -465,6 +519,11 @@ function updatePropertiesArray(
           continue;
         }
 
+        if (typeof newValue === 'object' && newValue !== null) {
+          result[key] = newValue;
+          continue;
+        }
+
         // XML fragment string for Source-like properties — only when fragment root tag matches property key.
         // Exclude 'Type' which is handled separately by the type editor flow.
         if (key !== 'Type' && typeof newValue === 'string' && newValue.trim().startsWith(`<${key}`)) {
@@ -481,6 +540,15 @@ function updatePropertiesArray(
             }
             continue;
           }
+        }
+
+        if (
+          typeof newValue === 'string' &&
+          (isV8LocalStringObject(value) ||
+            (LOCAL_STRING_PROPERTY_NAMES.has(key) && (value === '' || value === undefined || value === null)))
+        ) {
+          result[key] = buildV8LocalStringValue(newValue);
+          continue;
         }
 
         if (Array.isArray(value) && value.length > 0) {

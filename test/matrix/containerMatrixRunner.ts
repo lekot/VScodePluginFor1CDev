@@ -12,7 +12,12 @@ import {
   dfsPreorderNodes,
   getRepoRootFromCompiledTestFile,
 } from '../helpers/matrixTreeWalker';
-import { runIbcmdConfigCheck, runIbcmdOnWorkDir } from './ibcmdAdapter';
+import {
+  runIbcmdConfigApply,
+  runIbcmdConfigCheck,
+  runIbcmdOnWorkDir,
+  runInfobaseStartupCheck,
+} from './ibcmdAdapter';
 import { isMatrixTarget, isNestedMatrixTargetUnderMatrixObject, isR6ContainerNode } from './matrixTargetPredicate';
 
 export { isMatrixTarget, isNestedMatrixTargetUnderMatrixObject };
@@ -64,6 +69,10 @@ export interface ContainerMatrixReport {
   ibcmd: ContainerMatrixIbcmdBlock;
   /** `ibcmd infobase config check` after successful import (skipped when import skipped/failed or `IBMATRIX_SKIP_CONFIG_CHECK=1`). */
   ibcmdCheck: ContainerMatrixIbcmdBlock;
+  /** `ibcmd infobase config apply` after successful check (skipped when check skipped/failed or `IBMATRIX_SKIP_CONFIG_APPLY=1`). */
+  ibcmdApply: ContainerMatrixIbcmdBlock;
+  /** Launch updated file database in 1C:Enterprise mode (skipped when apply skipped/failed or `IBMATRIX_SKIP_STARTUP_CHECK=1`). */
+  ibcmdStartup: ContainerMatrixIbcmdBlock;
 }
 
 /** Короткий стабильный отпечаток цели — длинный targetId давал имена > 80 символов (лимит 1С), обрезка в XML ломала поиск при delete. */
@@ -421,6 +430,63 @@ export async function runContainerMatrix(
     return runIbcmdConfigCheck();
   })();
 
+  const ibcmdApply: ContainerMatrixIbcmdBlock = await (async () => {
+    if (process.env.IBMATRIX_SKIP_CONFIG_APPLY === '1') {
+      return {
+        status: 'skipped',
+        exitCode: null,
+        logSnippet: 'IBMATRIX_SKIP_CONFIG_APPLY=1 (config apply not run).',
+      };
+    }
+    if (ibcmd.status === 'skipped') {
+      return {
+        status: 'skipped',
+        exitCode: null,
+        logSnippet: 'ibcmd import skipped; config apply not run.',
+      };
+    }
+    if (ibcmd.status === 'failed') {
+      return {
+        status: 'skipped',
+        exitCode: null,
+        logSnippet: 'ibcmd import failed; config apply not run.',
+      };
+    }
+    if (ibcmdCheck.status === 'failed') {
+      return {
+        status: 'skipped',
+        exitCode: null,
+        logSnippet: 'ibcmd config check failed; config apply not run.',
+      };
+    }
+    return runIbcmdConfigApply();
+  })();
+
+  const ibcmdStartup: ContainerMatrixIbcmdBlock = await (async () => {
+    if (process.env.IBMATRIX_SKIP_STARTUP_CHECK === '1') {
+      return {
+        status: 'skipped',
+        exitCode: null,
+        logSnippet: 'IBMATRIX_SKIP_STARTUP_CHECK=1 (startup check not run).',
+      };
+    }
+    if (ibcmdApply.status === 'skipped') {
+      return {
+        status: 'skipped',
+        exitCode: null,
+        logSnippet: 'config apply skipped; startup check not run.',
+      };
+    }
+    if (ibcmdApply.status === 'failed') {
+      return {
+        status: 'skipped',
+        exitCode: null,
+        logSnippet: 'config apply failed; startup check not run.',
+      };
+    }
+    return runInfobaseStartupCheck();
+  })();
+
   const runId = `matrix-${Date.now()}-${randomBytes(4).toString('hex')}`;
   const report: ContainerMatrixReport = {
     runId,
@@ -432,6 +498,8 @@ export async function runContainerMatrix(
     stepSummary,
     ibcmd,
     ibcmdCheck,
+    ibcmdApply,
+    ibcmdStartup,
   };
 
   const reportFile = resolveReportFile(options.reportPath);

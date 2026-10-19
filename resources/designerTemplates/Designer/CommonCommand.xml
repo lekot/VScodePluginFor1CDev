@@ -3,7 +3,7 @@
   <CommonCommand uuid="{uuid}">
     <Properties>
       <Comment />
-      <Group />
+      <Group>NavigationPanelOrdinary</Group>
       <Name>{Name}</Name>
       <Representation>Picture</Representation>
       <Synonym>

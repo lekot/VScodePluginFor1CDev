@@ -2,48 +2,22 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { XMLValidator } from 'fast-xml-parser';
 import { MetadataType } from '../models/treeNode';
-import {
-  assertMetadataCrudSupported,
-  getMetadataTypeDescriptorByType,
-} from '../constants/metadataTypeDescriptors';
+import { assertMetadataCrudSupported, getMetadataTypeDescriptorByType } from '../constants/metadataTypeDescriptors';
 import { rulesRegistry, metadataConverter } from '../rules';
-import {
-  buildRootObjectConfigurationContent,
-  isRootObjectRegisteredInConfiguration,
-} from './configurationXmlUpdater';
+import { buildRootObjectConfigurationContent, isRootObjectRegisteredInConfiguration } from './configurationXmlUpdater';
 import { getDesignerTemplateXml } from './designerTemplateRepository';
 import { substituteDesignerTemplate } from './designerTemplateSubstitutor';
-import {
-  generateChartOfAccountsXml,
-  generatePredefinedAccountsXml,
-  type ChartOfAccountsWizardParams,
-} from './chartOfAccountsWizardService';
-import {
-  generateFilterCriterionXml,
-  validateContentItemCompatibility,
-  type FilterCriterionWizardParams,
-} from './filterCriterionWizardService';
-import {
-  appendRegisterReferenceToRecorderDocumentXml,
-  removeRegisterReferenceFromRecorderDocumentXml,
-} from './registerRecorderDocumentLinker';
+import { generateChartOfAccountsXml, generatePredefinedAccountsXml, type ChartOfAccountsWizardParams } from './chartOfAccountsWizardService';
+import { generateFilterCriterionXml, validateContentItemCompatibility, type FilterCriterionWizardParams } from './filterCriterionWizardService';
+import { appendRegisterReferenceToRecorderDocumentXml, removeRegisterReferenceFromRecorderDocumentXml, type RecorderRegisterKind } from './registerRecorderDocumentLinker';
 import { hashContent } from './configurationSession/atomicFileStorage';
 import { assertPathWithinRoot } from './configurationSession/pathBoundary';
-import {
-  calculateDirectoryFingerprint,
-  calculateDirectoryFingerprintFromEntries,
-  isReadOnlyAssertionStep,
-  MutationPlanError,
-} from './configurationSession/mutationPlan';
+import { calculateDirectoryFingerprint, calculateDirectoryFingerprintFromEntries, isReadOnlyAssertionStep, MutationPlanError } from './configurationSession/mutationPlan';
 import type { DirectoryFingerprintEntry } from './configurationSession/mutationPlan';
 import type { MutationPlan, MutationStep } from './configurationSession/mutationPlan';
 import { planIdentityTokenReplacements } from '../utils/referenceFinder';
 import { listXmlSiblingNames, readMutationExpectation } from './filesystemReadSemantics';
-import {
-  assertCfeGenericCreateAllowed,
-  assertCfeGenericDuplicateAllowed,
-  assertCfeGenericMutationAllowed,
-} from '../extensionSupport/cfeProject/mutationPolicy';
+import { assertCfeGenericCreateAllowed, assertCfeGenericDuplicateAllowed, assertCfeGenericMutationAllowed } from '../extensionSupport/cfeProject/mutationPolicy';
 import { validateElementName } from '../utils/elementNameValidator';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { requireProjectWriteFormatProfile } from '../utils/format/formatRank';
@@ -104,7 +78,12 @@ export interface PlannedMetadataMutation<T> {
   readonly impact: MetadataMutationImpact;
 }
 
-const TEMPLATE_ONLY_TYPES = new Set([MetadataType.InformationRegister, MetadataType.AccumulationRegister]);
+const TEMPLATE_ONLY_TYPES = new Set([
+  MetadataType.InformationRegister,
+  MetadataType.AccumulationRegister,
+  MetadataType.AccountingRegister,
+  MetadataType.CalculationRegister,
+]);
 
 export async function planCreateMetadataObject(
   context: MetadataCrudContext,
@@ -145,8 +124,11 @@ export async function planCreateMetadataObject(
   }
 
   const recorderDocument = resolveRecorderDocument(request.recorderDocument);
-  if (recorderDocument && request.type !== MetadataType.DocumentJournal && request.type !== MetadataType.AccumulationRegister) {
-    throw new Error('recorderDocument is supported only when creating a DocumentJournal or AccumulationRegister.');
+  const isRegisterKind = request.type === MetadataType.AccumulationRegister
+    || request.type === MetadataType.AccountingRegister
+    || request.type === MetadataType.CalculationRegister;
+  if (recorderDocument && request.type !== MetadataType.DocumentJournal && request.type !== MetadataType.Sequence && !isRegisterKind) {
+    throw new Error('recorderDocument is supported only when creating a DocumentJournal, AccumulationRegister, Sequence, AccountingRegister, or CalculationRegister.');
   }
 
   const configurationPath = path.join(context.configurationRootPath, CONFIGURATION_XML);
@@ -165,9 +147,9 @@ export async function planCreateMetadataObject(
   let recorderDocumentOriginalContent: string | undefined;
   let recorderDocumentPath: string | undefined;
   let recorderDocumentExpected: Awaited<ReturnType<typeof readMutationExpectation>> | undefined;
-  if (recorderDocument && request.type === MetadataType.DocumentJournal) {
+  if (recorderDocument && (request.type === MetadataType.DocumentJournal || request.type === MetadataType.Sequence)) {
     await resolveRegisteredRecorderDocument(context.configurationRootPath, recorderDocument);
-  } else if (recorderDocument && request.type === MetadataType.AccumulationRegister) {
+  } else if (recorderDocument && isRegisterKind) {
     const recorder = await resolveRegisteredRecorderDocument(context.configurationRootPath, recorderDocument);
     recorderDocumentPath = recorder.filePath;
     recorderDocumentExpected = recorder.expected;
@@ -175,7 +157,7 @@ export async function planCreateMetadataObject(
     await assertCfeGenericMutationAllowed(recorderDocumentPath, 'update');
     recorderDocumentContent = appendRegisterReferenceToRecorderDocumentXml(
       recorder.content,
-      'AccumulationRegister',
+      request.type as RecorderRegisterKind,
       name,
     );
   }
@@ -213,6 +195,15 @@ export async function planCreateMetadataObject(
     const overrides: Record<string, unknown> = {};
     if (request.synonym !== undefined) {
       overrides['Synonym'] = request.synonym;
+      overrides['synonym'] = request.synonym;
+    }
+    if (request.type === MetadataType.Sequence && recorderDocument) {
+      overrides['documents'] = {
+        'xr:Item': {
+          '@_xsi:type': 'xr:MDObjectRef',
+          '#text': `Document.${recorderDocument}`,
+        },
+      };
     }
     if (request.properties) {
       Object.assign(overrides, request.properties);
@@ -508,8 +499,11 @@ export async function planDeleteMetadataObject(
   assertWellFormedXml(configurationContent, configurationPath);
   requireProjectWriteFormatProfile(configurationContent);
 
-  const recorderCleanupSteps = request.type === MetadataType.AccumulationRegister
-    ? await planRegisterRecorderCleanup(rootPath, request.name, configurationContent)
+  const isRegisterKind = request.type === MetadataType.AccumulationRegister
+    || request.type === MetadataType.AccountingRegister
+    || request.type === MetadataType.CalculationRegister;
+  const recorderCleanupSteps = isRegisterKind
+    ? await planRegisterRecorderCleanup(rootPath, request.type as RecorderRegisterKind, request.name, configurationContent)
     : [];
   const steps: MutationStep[] = [
     ...recorderCleanupSteps,
@@ -535,6 +529,7 @@ export async function planDeleteMetadataObject(
 
 async function planRegisterRecorderCleanup(
   configurationRootPath: string,
+  registerKind: RecorderRegisterKind,
   registerName: string,
   configurationContent: string,
 ): Promise<MutationStep[]> {
@@ -560,7 +555,7 @@ async function planRegisterRecorderCleanup(
 
     const updatedContent = removeRegisterReferenceFromRecorderDocumentXml(
       content,
-      'AccumulationRegister',
+      registerKind,
       registerName,
     );
     if (updatedContent === content) {

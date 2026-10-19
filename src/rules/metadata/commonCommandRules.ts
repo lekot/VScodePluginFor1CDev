@@ -10,7 +10,7 @@ export const commonCommandRules: MetadataObjectRules = {
     },
     properties: {
         comment: { type: 'string', order: 1, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },
-        group: { type: 'string', order: 2, xml: 'Group', defaultValueXML: '' },
+        group: { type: 'string', order: 2, xml: 'Group', defaultValueXML: 'NavigationPanelOrdinary' },
         name: { type: 'string', order: 3, xml: 'Name', yaml: 'Имя', required: true },
         representation: { type: 'SystemEnumeration', order: 4, xml: 'Representation', yaml: 'Отображение', defaultValueXML: 'Picture', typeSE: 'ButtonRepresentation' },
         synonym: { type: 'I8nText', order: 5, xml: 'Synonym', yaml: 'Синоним' },

@@ -29,6 +29,7 @@ export const ROOT_TAGS_WITHOUT_INTERNALINFO = new Set<string>([
   'FunctionalOption',
   'WebService',
   'StyleItem',
+  'Interface',
 ]);
 
 type GeneratedTypeSpec = {
@@ -137,7 +138,13 @@ function getSpecsForRootTag(rootTag: string): GeneratedTypeSpec[] {
         { namePrefix: 'CalculationRegisterList', category: 'List' },
         { namePrefix: 'CalculationRegisterRecordSet', category: 'RecordSet' },
         { namePrefix: 'CalculationRegisterRecordKey', category: 'RecordKey' },
-        { namePrefix: 'CalculationRegisterRecalcs', category: 'Recalcs' },
+        { namePrefix: 'RecalculationsManager', category: 'Recalcs' },
+      ];
+    case 'ExternalDataSource':
+      return [
+        { namePrefix: 'ExternalDataSourceManager', category: 'Manager' },
+        { namePrefix: 'ExternalDataSourceTablesManager', category: 'TablesManager' },
+        { namePrefix: 'ExternalDataSourceCubesManager', category: 'CubesManager' },
       ];
     case 'Sequence':
       return [

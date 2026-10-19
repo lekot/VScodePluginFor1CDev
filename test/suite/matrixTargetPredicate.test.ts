@@ -107,6 +107,81 @@ suite('matrixTargetPredicate (isMatrixTarget)', () => {
     };
     assert.strictEqual(isMatrixTarget(constantInstance), false);
   });
+
+  test('Root instances without generic Attribute support (Subsystem, Enum, Sequence, HTTPService, IntegrationService, SettingsStorage, DocumentJournal) are false for isMatrixTarget', () => {
+    const configuration: TreeNode = {
+      id: 'cfg',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+    const common: TreeNode = {
+      id: 'Common',
+      name: 'Общие',
+      type: MetadataType.Unknown,
+      properties: {},
+      parent: configuration,
+      children: [],
+    };
+    configuration.children = [common];
+
+    const nonAttributeRootCases: Array<{ folderId: string; type: MetadataType; underCommon?: boolean }> = [
+      { folderId: 'Subsystems', type: MetadataType.Subsystem, underCommon: true },
+      { folderId: 'Enums', type: MetadataType.Enum },
+      { folderId: 'Sequences', type: MetadataType.Sequence },
+      { folderId: 'HTTPServices', type: MetadataType.HTTPService, underCommon: true },
+      { folderId: 'IntegrationServices', type: MetadataType.IntegrationService, underCommon: true },
+      { folderId: 'SettingsStorages', type: MetadataType.SettingsStorage, underCommon: true },
+      { folderId: 'DocumentJournals', type: MetadataType.DocumentJournal },
+      { folderId: 'WebServices', type: MetadataType.WebService, underCommon: true },
+      { folderId: 'FilterCriteria', type: MetadataType.FilterCriterion, underCommon: true },
+      { folderId: 'ExternalDataSources', type: MetadataType.ExternalDataSource },
+    ];
+
+    for (const c of nonAttributeRootCases) {
+      const folderParent = c.underCommon ? common : configuration;
+      const typeFolder: TreeNode = {
+        id: c.folderId,
+        name: c.folderId,
+        type: c.type,
+        properties: {},
+        parent: folderParent,
+        children: [],
+      };
+      const instanceNode: TreeNode = {
+        id: `${c.folderId}.TestObj1`,
+        name: 'TestObj1',
+        type: c.type,
+        properties: {},
+        parent: typeFolder,
+        children: [],
+      };
+      assert.strictEqual(
+        isMatrixTarget(instanceNode),
+        false,
+        `${c.folderId}.TestObj1 (${c.type}) must not be a direct Attribute create target`
+      );
+    }
+
+    const catalogsFolder: TreeNode = {
+      id: 'Catalogs',
+      name: 'Справочники',
+      type: MetadataType.Catalog,
+      properties: {},
+      parent: configuration,
+      children: [],
+    };
+    const catalogInstance: TreeNode = {
+      id: 'Catalogs.TestCatalog1',
+      name: 'TestCatalog1',
+      type: MetadataType.Catalog,
+      properties: {},
+      parent: catalogsFolder,
+      children: [],
+    };
+    assert.strictEqual(isMatrixTarget(catalogInstance), true, 'Catalog instance supports direct Attribute creation');
+  });
 });
 
 suite('matrixTargetPredicate (nested matrix pass)', () => {
@@ -240,4 +315,158 @@ suite('matrixTargetPredicate (nested matrix pass)', () => {
     };
     assert.strictEqual(isNestedMatrixTargetUnderMatrixObject(predef), false);
   });
+
+  test('isNestedMatrixTargetUnderMatrixObject: Dimensions/Resources under AccountingRegister and CalculationRegister false', () => {
+    const accFolder: TreeNode = {
+      id: 'AccountingRegisters',
+      name: 'Регистры бухгалтерии',
+      type: MetadataType.AccountingRegister,
+      properties: {},
+    };
+    const matrixAcc: TreeNode = {
+      id: 'AccountingRegisters.Matrix_acc',
+      name: 'Matrix_acc',
+      type: MetadataType.AccountingRegister,
+      properties: {},
+      parent: accFolder,
+    };
+    const accDims: TreeNode = {
+      id: 'Dimensions',
+      name: 'Субконто',
+      type: MetadataType.Dimension,
+      properties: {},
+      parent: matrixAcc,
+    };
+    const accRes: TreeNode = {
+      id: 'Resources',
+      name: 'Ресурсы',
+      type: MetadataType.Resource,
+      properties: {},
+      parent: matrixAcc,
+    };
+    assert.strictEqual(isNestedMatrixTargetUnderMatrixObject(accDims), false);
+    assert.strictEqual(isNestedMatrixTargetUnderMatrixObject(accRes), false);
+
+    const calcFolder: TreeNode = {
+      id: 'CalculationRegisters',
+      name: 'Регистры расчета',
+      type: MetadataType.CalculationRegister,
+      properties: {},
+    };
+    const matrixCalc: TreeNode = {
+      id: 'CalculationRegisters.Matrix_calc',
+      name: 'Matrix_calc',
+      type: MetadataType.CalculationRegister,
+      properties: {},
+      parent: calcFolder,
+    };
+    const calcDims: TreeNode = {
+      id: 'Dimensions',
+      name: 'Измерения',
+      type: MetadataType.Dimension,
+      properties: {},
+      parent: matrixCalc,
+    };
+    const calcRes: TreeNode = {
+      id: 'Resources',
+      name: 'Ресурсы',
+      type: MetadataType.Resource,
+      properties: {},
+      parent: matrixCalc,
+    };
+    assert.strictEqual(isNestedMatrixTargetUnderMatrixObject(calcDims), false);
+    assert.strictEqual(isNestedMatrixTargetUnderMatrixObject(calcRes), false);
+  });
 });
+
+suite('matrixTargetPredicate (isIbcmdFragileTypeFolder rules)', () => {
+  const originalRecorderDoc = process.env.IBCMD_RECORDER_DOCUMENT;
+
+  teardown(() => {
+    if (originalRecorderDoc === undefined) {
+      delete process.env.IBCMD_RECORDER_DOCUMENT;
+    } else {
+      process.env.IBCMD_RECORDER_DOCUMENT = originalRecorderDoc;
+    }
+  });
+
+  test('DocumentJournals and AccumulationRegisters depend on IBCMD_RECORDER_DOCUMENT', () => {
+    const configuration: TreeNode = {
+      id: 'cfg',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+    const djFolder: TreeNode = {
+      id: 'DocumentJournals',
+      name: 'Журналы документов',
+      type: MetadataType.DocumentJournal,
+      properties: {},
+      parent: configuration,
+    };
+    const arFolder: TreeNode = {
+      id: 'AccumulationRegisters',
+      name: 'Регистры накопления',
+      type: MetadataType.AccumulationRegister,
+      properties: {},
+      parent: configuration,
+    };
+
+    delete process.env.IBCMD_RECORDER_DOCUMENT;
+    assert.strictEqual(isMatrixTarget(djFolder), false, 'DocumentJournals must be skipped when IBCMD_RECORDER_DOCUMENT unset');
+    assert.strictEqual(isMatrixTarget(arFolder), false, 'AccumulationRegisters must be skipped when IBCMD_RECORDER_DOCUMENT unset');
+
+    process.env.IBCMD_RECORDER_DOCUMENT = 'ДокументТестРаботает';
+    assert.strictEqual(isMatrixTarget(djFolder), true, 'DocumentJournals allowed when IBCMD_RECORDER_DOCUMENT set');
+    assert.strictEqual(isMatrixTarget(arFolder), true, 'AccumulationRegisters allowed when IBCMD_RECORDER_DOCUMENT set');
+  });
+
+  test('Fragile folders without minimal Designer template (ChartsOfAccounts, AccountingRegisters, CalculationRegisters, CommonCommands) are always skipped', () => {
+    const configuration: TreeNode = {
+      id: 'cfg',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+    const common: TreeNode = {
+      id: 'Common',
+      name: 'Общие',
+      type: MetadataType.Unknown,
+      properties: {},
+      parent: configuration,
+      children: [],
+    };
+    const folders: Array<{ id: string; type: MetadataType; underCommon?: boolean }> = [
+      { id: 'ChartsOfAccounts', type: MetadataType.ChartOfAccounts },
+      { id: 'AccountingRegisters', type: MetadataType.AccountingRegister },
+      { id: 'CalculationRegisters', type: MetadataType.CalculationRegister },
+      { id: 'CommonCommands', type: MetadataType.CommonCommand, underCommon: true },
+      { id: 'WebServices', type: MetadataType.WebService, underCommon: true },
+      { id: 'EventSubscriptions', type: MetadataType.EventSubscription, underCommon: true },
+      { id: 'ScheduledJobs', type: MetadataType.ScheduledJob, underCommon: true },
+      { id: 'FunctionalOptions', type: MetadataType.FunctionalOption, underCommon: true },
+      { id: 'FunctionalOptionsParameters', type: MetadataType.FunctionalOptionsParameter, underCommon: true },
+      { id: 'FilterCriteria', type: MetadataType.FilterCriterion, underCommon: true },
+      { id: 'ExternalDataSources', type: MetadataType.ExternalDataSource },
+    ];
+
+    process.env.IBCMD_RECORDER_DOCUMENT = 'ДокументТестРаботает';
+    for (const f of folders) {
+      const node: TreeNode = {
+        id: f.id,
+        name: f.id,
+        type: f.type,
+        properties: {},
+        parent: f.underCommon ? common : configuration,
+      };
+      assert.strictEqual(
+        isMatrixTarget(node),
+        false,
+        `${f.id} must be skipped in ibcmd fragile type folder checks`
+      );
+    }
+  });
+});
+
