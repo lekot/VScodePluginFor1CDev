@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'child_process';
+import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -9,6 +9,10 @@ import {
   tryParseInfobaseFileScalarFromYaml,
 } from '../../src/infobases/ibcmdConfigPathResolver';
 import { decodeConsoleStreamAuto } from '../../src/services/ibcmd/consoleStreamDecoder';
+import {
+  runNativeTestClientStartupCheck,
+  type NativeTestClientStartupDependencies,
+} from './startupReadiness';
 
 const execFileAsync = promisify(execFile);
 
@@ -406,10 +410,12 @@ function resolvePlatformClientForIbcmd(ibcmdPath: string): string | undefined {
 }
 
 /**
- * Launch the updated file infobase in 1C:Enterprise mode to verify the database configuration starts cleanly.
- * Uses `/Out` log file and waits for startup window (or immediate exit if startup fails with exitCode != 0).
+ * Confirm the file infobase accepts a native TestClient attach and returns its main window.
+ * The check does not claim to exercise all application startup scenarios.
  */
-export async function runInfobaseStartupCheck(): Promise<IbcmdStepOutcome> {
+export async function runInfobaseStartupCheck(
+  dependencies: NativeTestClientStartupDependencies = {},
+): Promise<IbcmdStepOutcome> {
   const ibcmdPath = process.env.IBCMD_PATH?.trim();
   if (!ibcmdPath) {
     return { status: 'skipped', exitCode: null, logSnippet: '' };
@@ -434,131 +440,17 @@ export async function runInfobaseStartupCheck(): Promise<IbcmdStepOutcome> {
       logSnippet: 'Startup check requires a file infobase (file: in IBCMD_INFOBASE_CONFIG).',
     };
   }
-
-  const outLogPath = path.join(
-    os.tmpdir(),
-    `matrix-1cv8-startup-${process.pid}-${Date.now()}.log`
-  );
-  const args = [
-    'ENTERPRISE',
-    '/F',
-    fileDbPath,
-    '/DisableStartupDialogs',
-    '/DisableStartupMessages',
-    '/Out',
-    outLogPath,
-  ];
   const user = process.env.IBCMD_USER?.trim();
   const password = process.env.IBCMD_PASSWORD?.trim();
-  if (user) {
-    args.push('/N', user);
-  }
-  if (password) {
-    args.push('/P', password);
-  }
-
-  const startupAliveMs = parseInt(process.env.IBMATRIX_STARTUP_ALIVE_MS ?? '4000', 10);
-  const waitMs = Number.isFinite(startupAliveMs) && startupAliveMs > 0 ? startupAliveMs : 4000;
-
-  return new Promise<IbcmdStepOutcome>((resolve) => {
-    let settled = false;
-    const child = spawn(clientExe, args, {
-      windowsHide: true,
-      stdio: 'ignore',
-    });
-
-    const readOutLog = (): string => {
-      try {
-        if (fs.existsSync(outLogPath)) {
-          const buf = fs.readFileSync(outLogPath);
-          return decodeConsoleStreamAuto(buf).trim();
-        }
-      } catch {
-        /* ignore */
-      }
-      return '';
-    };
-
-    const cleanupLog = (): void => {
-      try {
-        if (fs.existsSync(outLogPath)) {
-          fs.unlinkSync(outLogPath);
-        }
-      } catch {
-        /* ignore */
-      }
-    };
-
-    const timer = setTimeout(() => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      const logContent = readOutLog();
-      try {
-        if (process.platform === 'win32' && child.pid) {
-          execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {
-            cleanupLog();
-            resolve({
-              status: 'executed',
-              exitCode: 0,
-              logSnippet: logContent
-                ? `1C:Enterprise started and stayed alive (${waitMs}ms). Log: ${logContent.slice(0, LOG_MAX)}`
-                : `1C:Enterprise started and stayed alive (${waitMs}ms) without errors.`,
-            });
-          });
-          return;
-        }
-        child.kill('SIGTERM');
-      } catch {
-        /* ignore */
-      }
-      cleanupLog();
-      resolve({
-        status: 'executed',
-        exitCode: 0,
-        logSnippet: logContent
-          ? `1C:Enterprise started and stayed alive (${waitMs}ms). Log: ${logContent.slice(0, LOG_MAX)}`
-          : `1C:Enterprise started and stayed alive (${waitMs}ms) without errors.`,
-      });
-    }, waitMs);
-
-    child.on('error', (err) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      cleanupLog();
-      resolve({
-        status: 'failed',
-        exitCode: null,
-        logSnippet: `Failed to spawn ${clientExe}: ${err.message}`,
-      });
-    });
-
-    child.on('exit', (code) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      const logContent = readOutLog();
-      cleanupLog();
-      if (code === 0 && !logContent) {
-        resolve({
-          status: 'executed',
-          exitCode: 0,
-          logSnippet: '1C:Enterprise exited cleanly with code 0.',
-        });
-      } else {
-        resolve({
-          status: 'failed',
-          exitCode: code,
-          logSnippet: `1C:Enterprise exited prematurely (code=${code}). Log: ${logContent}`.slice(0, LOG_MAX),
-        });
-      }
-    });
-  });
+  const startupTimeoutMs = Number.parseInt(process.env.IBMATRIX_STARTUP_READY_TIMEOUT_MS ?? '', 10);
+  return runNativeTestClientStartupCheck({
+    fileDbPath,
+    user,
+    password,
+    platformPath: clientExe,
+    waitTimeoutMs: Number.isFinite(startupTimeoutMs) && startupTimeoutMs > 0
+      ? startupTimeoutMs
+      : undefined,
+  }, dependencies);
 }
 

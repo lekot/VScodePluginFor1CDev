@@ -2,7 +2,10 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { XMLParser } from 'fast-xml-parser';
 import { XMLWriter } from '../../src/utils/XMLWriter';
+import { xmlParser, XML_WRITER_OPTIONS } from '../../src/utils/xml/xmlCore';
+import { updatePropertiesInStructure } from '../../src/utils/xml/xmlPropertiesService';
 
 suite('XMLWriter', () => {
   // Use source fixtures path, not compiled path
@@ -168,6 +171,32 @@ suite('XMLWriter', () => {
   });
 
   suite('updateProperty', () => {
+    const buildLocalStringDocument = (synonymMarkup: string): string => `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+  <Catalog uuid="11111111-1111-4111-8111-111111111111">
+    <Properties>
+      <Name>LocalStringAcceptance</Name>
+      ${synonymMarkup}
+      <Comment>Keep this neighboring field</Comment>
+    </Properties>
+  </Catalog>
+</MetaDataObject>`;
+
+    const getPropertyNode = (xml: string, propertyName: string): Record<string, unknown> => {
+      const parsed = xmlParser.parse(xml) as Record<string, unknown>;
+      const metadataObject = parsed.MetaDataObject as Record<string, unknown>;
+      const catalog = metadataObject.Catalog as Record<string, unknown>;
+      const properties = catalog.Properties as Record<string, unknown>;
+      return properties[propertyName] as Record<string, unknown>;
+    };
+
+    const getLocalStringItems = (xml: string, propertyName: string): Record<string, unknown>[] => {
+      const property = getPropertyNode(xml, propertyName);
+      const rawItems = property['v8:item'] ?? property.item;
+      const items = Array.isArray(rawItems) ? rawItems : [rawItems];
+      return items.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'));
+    };
+
     test('should update single property', async () => {
       // Copy test file to temp location
       fs.copyFileSync(testXmlPath, tempXmlPath);
@@ -234,6 +263,194 @@ suite('XMLWriter', () => {
           message: /File not found/,
         }
       );
+    });
+
+    test('updates the Russian LocalString item in either order and preserves neighboring values and attributes', async () => {
+      const itemOrders = [
+        [
+          '<v8:item marker="english"><v8:lang>en</v8:lang><v8:content>Original English</v8:content></v8:item>',
+          '<v8:item marker="russian"><v8:lang>ru</v8:lang><v8:content>Исходный русский</v8:content></v8:item>',
+        ],
+        [
+          '<v8:item marker="russian"><v8:lang>ru</v8:lang><v8:content>Исходный русский</v8:content></v8:item>',
+          '<v8:item marker="english"><v8:lang>en</v8:lang><v8:content>Original English</v8:content></v8:item>',
+        ],
+      ];
+
+      for (const items of itemOrders) {
+        fs.writeFileSync(
+          tempXmlPath,
+          buildLocalStringDocument(`<Synonym origin="designer">${items.join('')}</Synonym>`),
+          'utf-8'
+        );
+
+        await XMLWriter.updateProperty(tempXmlPath, 'Synonym', 'Updated Russian');
+
+        const updatedXml = fs.readFileSync(tempXmlPath, 'utf-8');
+        const synonym = getPropertyNode(updatedXml, 'Synonym');
+        const localizedItems = getLocalStringItems(updatedXml, 'Synonym');
+        const values = localizedItems.map((item) => [item['v8:lang'], item['v8:content']]);
+        assert.deepStrictEqual(values, items[0].includes('lang>en')
+          ? [['en', 'Original English'], ['ru', 'Updated Russian']]
+          : [['ru', 'Updated Russian'], ['en', 'Original English']]);
+        assert.strictEqual(synonym['@_origin'], 'designer', 'LocalString property attributes must be preserved');
+        assert.deepStrictEqual(localizedItems.map((item) => item['@_marker']),
+          items[0].includes('lang>en') ? ['english', 'russian'] : ['russian', 'english']);
+
+        const updatedProperties = await XMLWriter.readProperties(tempXmlPath);
+        assert.strictEqual(updatedProperties.Name, 'LocalStringAcceptance');
+        assert.strictEqual(updatedProperties.Comment, 'Keep this neighboring field');
+        assert.strictEqual(updatedProperties.Synonym, 'Updated Russian');
+      }
+    });
+
+    test('updates the first existing LocalString item when no Russian item exists', async () => {
+      fs.writeFileSync(
+        tempXmlPath,
+        buildLocalStringDocument('<Synonym origin="designer"><v8:item marker="english"><v8:lang>en</v8:lang><v8:content>Original English</v8:content></v8:item></Synonym>'),
+        'utf-8'
+      );
+
+      await XMLWriter.updateProperty(tempXmlPath, 'Synonym', 'Updated English');
+
+      const updatedXml = fs.readFileSync(tempXmlPath, 'utf-8');
+      const synonym = getPropertyNode(updatedXml, 'Synonym');
+      const localizedItems = getLocalStringItems(updatedXml, 'Synonym');
+      assert.deepStrictEqual(localizedItems.map((item) => [item['v8:lang'], item['v8:content']]), [
+        ['en', 'Updated English'],
+      ]);
+      assert.strictEqual(localizedItems[0]['@_marker'], 'english');
+      assert.strictEqual(synonym['@_origin'], 'designer');
+      assert.ok(!updatedXml.includes('<v8:lang>ru</v8:lang>'), 'An English-only value must not gain a Russian item');
+      const updatedProperties = await XMLWriter.readProperties(tempXmlPath);
+      assert.strictEqual(updatedProperties.Synonym, 'Updated English', 'Read policy should fall back to the first existing language');
+    });
+
+    test('clears only the selected LocalString language and preserves all remaining items', async () => {
+      fs.writeFileSync(
+        tempXmlPath,
+        buildLocalStringDocument('<Synonym origin="designer"><v8:item marker="english"><v8:lang>en</v8:lang><v8:content>Keep English</v8:content></v8:item><v8:item marker="russian"><v8:lang>ru</v8:lang><v8:content>Clear Russian</v8:content></v8:item></Synonym>'),
+        'utf-8'
+      );
+
+      await XMLWriter.updateProperty(tempXmlPath, 'Synonym', '');
+
+      const updatedXml = fs.readFileSync(tempXmlPath, 'utf-8');
+      const synonym = getPropertyNode(updatedXml, 'Synonym');
+      const localizedItems = getLocalStringItems(updatedXml, 'Synonym');
+      assert.deepStrictEqual(localizedItems.map((item) => [item['v8:lang'], item['v8:content']]), [
+        ['en', 'Keep English'],
+      ]);
+      assert.strictEqual(localizedItems[0]['@_marker'], 'english');
+      assert.strictEqual(synonym['@_origin'], 'designer');
+      assert.ok(!updatedXml.includes('Clear Russian'));
+    });
+
+    test('creates Russian LocalString content for an empty property and escapes updated text', async () => {
+      fs.writeFileSync(tempXmlPath, buildLocalStringDocument('<Synonym/>'), 'utf-8');
+      const value = 'A & <B> "quoted"';
+
+      await XMLWriter.updateProperty(tempXmlPath, 'Synonym', value);
+
+      const updatedXml = fs.readFileSync(tempXmlPath, 'utf-8');
+      const localizedItems = getLocalStringItems(updatedXml, 'Synonym');
+      assert.deepStrictEqual(localizedItems.map((item) => [item['v8:lang'], item['v8:content']]), [
+        ['ru', value],
+      ]);
+      assert.ok(updatedXml.includes('A &amp; &lt;B&gt;'), 'String content must be escaped as XML text');
+      assert.ok(!updatedXml.includes('<v8:content>A & <B>'), 'Raw markup must not leak into XML content');
+      const updatedProperties = await XMLWriter.readProperties(tempXmlPath);
+      assert.strictEqual(updatedProperties.Synonym, value);
+      assert.strictEqual(updatedProperties.Comment, 'Keep this neighboring field');
+    });
+
+    test('preserves explicit object and array LocalString payloads', () => {
+      const xml = buildLocalStringDocument('<Synonym/>');
+      const objectPayload = {
+        '@_origin': 'explicit',
+        'v8:item': {
+          '@_marker': 'explicit-object',
+          'v8:lang': 'en',
+          'v8:content': 'Object payload',
+        },
+      };
+      const objectUpdatedXml = XMLWriter.buildUpdatedPropertiesXml(xml, { Synonym: objectPayload });
+      const objectSynonym = getPropertyNode(objectUpdatedXml, 'Synonym');
+      assert.strictEqual(objectSynonym['@_origin'], 'explicit');
+      assert.deepStrictEqual(
+        getLocalStringItems(objectUpdatedXml, 'Synonym').map((item) => [item['@_marker'], item['v8:lang'], item['v8:content']]),
+        [['explicit-object', 'en', 'Object payload']]
+      );
+
+      const arrayPayload = {
+        'v8:item': [
+          { '@_marker': 'explicit-ru', 'v8:lang': 'ru', 'v8:content': 'Array Russian' },
+          { '@_marker': 'explicit-en', 'v8:lang': 'en', 'v8:content': 'Array English' },
+        ],
+      };
+      const arrayUpdatedXml = XMLWriter.buildUpdatedPropertiesXml(xml, { Synonym: arrayPayload });
+      assert.deepStrictEqual(
+        getLocalStringItems(arrayUpdatedXml, 'Synonym').map((item) => [item['@_marker'], item['v8:lang'], item['v8:content']]),
+        [
+          ['explicit-ru', 'ru', 'Array Russian'],
+          ['explicit-en', 'en', 'Array English'],
+        ]
+      );
+    });
+
+    test('updates LocalString in parsed array-shaped Properties while preserving other items and attributes', () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Root xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Properties>
+    <Synonym origin="legacy">
+      <v8:item marker="english"><v8:lang>en</v8:lang><v8:content>Original English</v8:content></v8:item>
+      <v8:item marker="russian"><v8:lang>ru</v8:lang><v8:content format="plain">Исходный русский</v8:content></v8:item>
+    </Synonym>
+    <Comment>Keep neighboring property</Comment>
+  </Properties>
+</Root>`;
+      const parser = new XMLParser({ ...XML_WRITER_OPTIONS, preserveOrder: true });
+      const parsed = parser.parse(xml);
+      const updated = updatePropertiesInStructure(parsed, { Synonym: 'Новый русский' }) as Array<Record<string, unknown>>;
+      const rootNode = updated.find((item) => 'Root' in item) as Record<string, unknown>;
+      const root = rootNode.Root as Array<Record<string, unknown>>;
+      const properties = root[0].Properties as Array<Record<string, unknown>>;
+      const synonymNode = properties.find((item) => 'Synonym' in item) as Record<string, unknown>;
+      const synonymItems = synonymNode.Synonym as Array<Record<string, unknown>>;
+      const localizedValues = synonymItems.map((item) => {
+        const localStringNodes = item['v8:item'] as Array<Record<string, unknown>>;
+        const langNode = localStringNodes.find((child) => 'v8:lang' in child) as Record<string, unknown>;
+        const contentNode = localStringNodes.find((child) => 'v8:content' in child) as Record<string, unknown>;
+        const langContent = langNode['v8:lang'] as Array<Record<string, unknown>>;
+        const textContent = contentNode['v8:content'] as Array<Record<string, unknown>>;
+        return {
+          language: langContent[0]['#text'],
+          content: textContent[0]['#text'],
+          itemAttributes: item[':@'] as Record<string, unknown>,
+          contentAttributes: contentNode[':@'] as Record<string, unknown> | undefined,
+        };
+      });
+
+      assert.deepStrictEqual(localizedValues.map((item) => [item.language, item.content]), [
+        ['en', 'Original English'],
+        ['ru', 'Новый русский'],
+      ]);
+      assert.deepStrictEqual(localizedValues.map((item) => item.itemAttributes['@_marker']), ['english', 'russian']);
+      assert.strictEqual(localizedValues[1].contentAttributes?.['@_format'], 'plain');
+      assert.deepStrictEqual(synonymNode[':@'], { '@_origin': 'legacy' });
+      const commentNode = properties.find((item) => 'Comment' in item) as Record<string, unknown>;
+      assert.deepStrictEqual(commentNode.Comment, [{ '#text': 'Keep neighboring property' }]);
+    });
+
+    test('reads an empty localized item as an empty property value', async () => {
+      fs.writeFileSync(
+        tempXmlPath,
+        buildLocalStringDocument('<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content/></v8:item></Synonym>'),
+        'utf-8'
+      );
+
+      const properties = await XMLWriter.readProperties(tempXmlPath);
+      assert.strictEqual(properties.Synonym, '');
     });
 
     test('should preserve LocalStringType (v8:item) and complex properties when updating Comment on Designer Catalog', async () => {

@@ -26,6 +26,7 @@ import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGene
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import { XmlParser } from '../parsers/xmlParser';
 import { getValueByLocalName } from '../parsers/xmlNavHelpers';
+import { createMetadataDesignerTemplateContent } from './metadataTemplateOverrides';
 
 /** Minimal root-path context for this foundation step; resolved configuration targets remain a follow-up. */
 export interface MetadataCrudContext {
@@ -213,15 +214,15 @@ export async function planCreateMetadataObject(
     }
     content = metadataConverter.irToXml(intermediate, rules);
   } else {
-    content = substituteDesignerTemplate(templateXml!, {
+    content = createMetadataDesignerTemplateContent({
+      type: request.type,
+      rootTag,
+      templateXml: templateXml!,
+      name,
       uuid,
-      Name: name,
-      Synonym_ru: request.synonym ?? name,
-      uuidDim: generateSimpleUuid(),
-      uuidResource: generateSimpleUuid(),
-      ...(request.type === MetadataType.DocumentJournal && recorderDocument
-        ? { RecorderDocumentRef: `Document.${recorderDocument}` }
-        : {}),
+      synonym: request.synonym,
+      properties: request.properties,
+      recorderDocument,
     });
   }
   content = normalizeMetaDataObjectRoot(

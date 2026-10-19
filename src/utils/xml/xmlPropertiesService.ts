@@ -212,6 +212,211 @@ function buildV8LocalStringValue(text: string): Record<string, unknown> | string
   };
 }
 
+function getLocalStringLanguage(item: unknown): string {
+  if (!item || typeof item !== 'object') {
+    return '';
+  }
+
+  const itemObject = item as Record<string, unknown>;
+  const getText = (value: unknown): string => {
+    if (typeof value === 'string') {
+      return value;
+    }
+    const values = Array.isArray(value) ? value : [value];
+    for (const entry of values) {
+      if (entry && typeof entry === 'object') {
+        const text = (entry as Record<string, unknown>)['#text'];
+        if (typeof text === 'string') {
+          return text;
+        }
+      }
+    }
+    return '';
+  };
+
+  const directLanguage = itemObject['v8:lang'] ?? itemObject.lang;
+  if (directLanguage !== undefined) {
+    return getText(directLanguage).toLowerCase();
+  }
+
+  const itemKey = itemObject['v8:item'] !== undefined ? 'v8:item' : 'item';
+  const itemFields = itemObject[itemKey];
+  const fields = Array.isArray(itemFields) ? itemFields : [itemFields];
+  const languageNode = fields.find((field) =>
+    field && typeof field === 'object' && ('v8:lang' in field || 'lang' in field)
+  ) as Record<string, unknown> | undefined;
+  if (!languageNode) {
+    return '';
+  }
+  return getText(languageNode['v8:lang'] ?? languageNode.lang).toLowerCase();
+}
+
+function isPreserveOrderLocalStringItem(item: unknown): boolean {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    return false;
+  }
+
+  const itemObject = item as Record<string, unknown>;
+  const itemFields = itemObject['v8:item'] ?? itemObject.item;
+  return Array.isArray(itemFields) && itemFields.some((field) =>
+    field && typeof field === 'object' && ('v8:lang' in field || 'lang' in field)
+  );
+}
+
+function updatePreserveOrderText(value: unknown, text: string): unknown {
+  if (Array.isArray(value)) {
+    const textIndex = value.findIndex((entry) =>
+      entry && typeof entry === 'object' && '#text' in entry
+    );
+    if (textIndex < 0) {
+      return [...value, { '#text': text }];
+    }
+    return value.map((entry, index) => index === textIndex
+      ? { ...(entry as Record<string, unknown>), '#text': text }
+      : entry);
+  }
+  if (value && typeof value === 'object' && '#text' in value) {
+    return { ...(value as Record<string, unknown>), '#text': text };
+  }
+  return text;
+}
+
+function updateLocalStringItem(item: unknown, text: string): unknown {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    return text;
+  }
+
+  const itemObject = item as Record<string, unknown>;
+  const nestedItemKey = itemObject['v8:item'] !== undefined ? 'v8:item' : 'item';
+  const nestedItems = itemObject[nestedItemKey];
+  if (Array.isArray(nestedItems) && nestedItems.some((entry) =>
+    entry && typeof entry === 'object' && ('v8:content' in entry || 'content' in entry)
+  )) {
+    const updatedNestedItems = nestedItems.map((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return entry;
+      }
+      const child = entry as Record<string, unknown>;
+      const contentKey = 'v8:content' in child ? 'v8:content' : 'content';
+      if (!(contentKey in child)) {
+        return entry;
+      }
+      return {
+        ...child,
+        [contentKey]: updatePreserveOrderText(child[contentKey], text),
+      };
+    });
+    return {
+      ...itemObject,
+      [nestedItemKey]: updatedNestedItems,
+    };
+  }
+
+  const contentKey = 'v8:content' in itemObject
+    ? 'v8:content'
+    : 'content' in itemObject
+      ? 'content'
+      : '#text' in itemObject
+        ? '#text'
+        : 'v8:content';
+  const currentContent = itemObject[contentKey];
+  const updatedContent = currentContent && typeof currentContent === 'object' && !Array.isArray(currentContent)
+    ? { ...(currentContent as Record<string, unknown>), '#text': text }
+    : text;
+
+  return {
+    ...itemObject,
+    [contentKey]: updatedContent,
+  };
+}
+
+/**
+ * Update the language selected by the LocalString read policy while retaining
+ * the other language entries and metadata attached to the property/items.
+ */
+function updateV8LocalStringValue(existing: unknown, text: string): unknown {
+  if (Array.isArray(existing)) {
+    if (existing.some((item) => isPreserveOrderLocalStringItem(item))) {
+      const russianItemIndex = existing.findIndex((item) => getLocalStringLanguage(item) === 'ru');
+      const selectedItemIndex = russianItemIndex >= 0 ? russianItemIndex : 0;
+      if (!text) {
+        return existing.length === 1
+          ? []
+          : existing.filter((_item, index) => index !== selectedItemIndex);
+      }
+      return existing.map((item, index) => index === selectedItemIndex
+        ? updateLocalStringItem(item, text)
+        : item);
+    }
+
+    const localStringIndex = existing.findIndex((entry) => isV8LocalStringObject(entry));
+    if (localStringIndex < 0) {
+      return text ? buildV8LocalStringValue(text) : existing ?? '';
+    }
+    return existing.map((entry, index) => index === localStringIndex
+      ? updateV8LocalStringValue(entry, text)
+      : entry);
+  }
+
+  if (!existing || typeof existing !== 'object') {
+    return text ? buildV8LocalStringValue(text) : existing ?? '';
+  }
+
+  const existingObject = existing as Record<string, unknown>;
+  const itemKey = Object.prototype.hasOwnProperty.call(existingObject, 'v8:item')
+    ? 'v8:item'
+    : Object.prototype.hasOwnProperty.call(existingObject, 'item')
+      ? 'item'
+      : undefined;
+  if (!itemKey) {
+    if (!text) {
+      return existing;
+    }
+    return {
+      ...existingObject,
+      ...(buildV8LocalStringValue(text) as Record<string, unknown>),
+    };
+  }
+
+  const rawItems = existingObject[itemKey];
+  const items = Array.isArray(rawItems) ? rawItems : rawItems === undefined ? [] : [rawItems];
+  if (items.length === 0) {
+    if (!text) {
+      return existing;
+    }
+    const newLocalString = buildV8LocalStringValue(text) as Record<string, unknown>;
+    return {
+      ...existingObject,
+      [itemKey]: newLocalString['v8:item'],
+    };
+  }
+
+  const russianItemIndex = items.findIndex((item) => getLocalStringLanguage(item) === 'ru');
+  const selectedItemIndex = russianItemIndex >= 0 ? russianItemIndex : 0;
+
+  if (!text) {
+    if (items.length === 1) {
+      const clearedObject = { ...existingObject };
+      delete clearedObject[itemKey];
+      return Object.keys(clearedObject).length > 0 ? clearedObject : '';
+    }
+
+    const remainingItems = items.filter((_item, index) => index !== selectedItemIndex);
+    return {
+      ...existingObject,
+      [itemKey]: Array.isArray(rawItems) ? remainingItems : remainingItems[0],
+    };
+  }
+
+  const updatedItems = items.map((item, index) => index === selectedItemIndex
+    ? updateLocalStringItem(item, text)
+    : item);
+  return {
+    ...existingObject,
+    [itemKey]: Array.isArray(rawItems) ? updatedItems : updatedItems[0],
+  };
+}
+
 function flattenProperties(properties: Record<string, unknown>): Record<string, unknown> {
   const flattened: Record<string, unknown> = {};
 
@@ -467,7 +672,7 @@ function updatePropertiesObject(
       (isV8LocalStringObject(existing) ||
         (LOCAL_STRING_PROPERTY_NAMES.has(key) && (existing === '' || existing === undefined || existing === null)))
     ) {
-      result[key] = buildV8LocalStringValue(newVal);
+      result[key] = updateV8LocalStringValue(existing, newVal);
       continue;
     }
     const textVal =
@@ -547,7 +752,7 @@ function updatePropertiesArray(
           (isV8LocalStringObject(value) ||
             (LOCAL_STRING_PROPERTY_NAMES.has(key) && (value === '' || value === undefined || value === null)))
         ) {
-          result[key] = buildV8LocalStringValue(newValue);
+          result[key] = updateV8LocalStringValue(value, newValue);
           continue;
         }
 

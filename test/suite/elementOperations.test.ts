@@ -29,6 +29,10 @@ import {
 import { ensureR6PlaceholdersForInstanceNode, NormalizeContext } from '../../src/utils/treeNormalization';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { addRootObjectToConfiguration } from '../../src/services/configurationXmlUpdater';
+import {
+  clearDesignerTemplateRepositoryForTests,
+  initDesignerTemplateRepository,
+} from '../../src/services/designerTemplateRepository';
 
 interface FixtureDirectoryCopier {
   copyRegularDirectory(sourcePath: string, destinationPath: string): void;
@@ -274,6 +278,40 @@ suite('elementOperations', () => {
       const updatedCfg = await readFileContent(configXmlPath);
       assert.ok(updatedCfg.includes('EdtRole'));
     } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('createElement uses rich Designer templates for EDT AccountingRegister and CalculationRegister', async () => {
+    const dir = await createTempDir('1cviewer-register-edt-');
+    try {
+      await writeConfigurationWithFormat(dir);
+      initDesignerTemplateRepository(path.resolve(__dirname, '../../..'));
+      const edtConfigNode = createConfigNode({ filePath: path.join(dir, 'Configuration.xml') });
+
+      for (const { type, folder, name, rootTag } of [
+        { type: MetadataType.AccountingRegister, folder: 'AccountingRegisters', name: 'EdtAccounting', rootTag: 'AccountingRegister' },
+        { type: MetadataType.CalculationRegister, folder: 'CalculationRegisters', name: 'EdtCalculation', rootTag: 'CalculationRegister' },
+      ]) {
+        const typeFolder = path.join(dir, 'src', folder);
+        await fs.promises.mkdir(typeFolder, { recursive: true });
+        const typeNode: TreeNode = {
+          id: folder,
+          name: folder,
+          type,
+          properties: {},
+          filePath: typeFolder,
+          parent: edtConfigNode,
+        };
+        await createElement(typeNode, name);
+
+        const xml = await readFileContent(path.join(typeFolder, `${name}.xml`));
+        assert.ok(xml.includes(`<${rootTag} uuid=`), `${rootTag} root expected`);
+        assert.ok(xml.includes('<Dimension uuid='), `${rootTag} rich template Dimension expected`);
+        assert.ok(xml.includes('<Resource uuid='), `${rootTag} rich template Resource expected`);
+      }
+    } finally {
+      clearDesignerTemplateRepositoryForTests();
       await cleanupTempDir(dir);
     }
   });
