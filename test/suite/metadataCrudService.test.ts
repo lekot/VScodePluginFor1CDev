@@ -14,7 +14,12 @@ import {
   planDeleteMetadataObject,
 } from '../../src/services/metadataCrudService';
 import { MutationPlanExecutor, type MutationPlan } from '../../src/services/configurationSession/mutationPlan';
+import {
+  clearDesignerTemplateRepositoryForTests,
+  initDesignerTemplateRepository,
+} from '../../src/services/designerTemplateRepository';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
+import { XmlParser } from '../../src/parsers/xmlParser';
 
 interface DuplicateMetadataPlan {
   readonly plan: MutationPlan<void>;
@@ -53,10 +58,12 @@ suite('MetadataCrudService', () => {
 
   setup(async () => {
     tempRoot = await createTempDir('1cviewer-metadata-crud-');
+    initDesignerTemplateRepository(path.resolve(__dirname, '../../..'));
     await fs.promises.writeFile(path.join(tempRoot, 'Configuration.xml'), MINIMAL_CONFIG_XML, 'utf8');
   });
 
   teardown(async () => {
+    clearDesignerTemplateRepositoryForTests();
     await cleanupTempDir(tempRoot);
   });
 
@@ -116,6 +123,179 @@ suite('MetadataCrudService', () => {
     assert.strictEqual(fs.existsSync(sequenceFile), false);
     assert.strictEqual(fs.existsSync(sequenceDirectory), false);
     assert.doesNotMatch(await fs.promises.readFile(configurationFile, 'utf8'), /<Sequence>PostingOrder<\/Sequence>/);
+  });
+
+  test('Sequence create with recorderDocument populates Documents MDObjectRef and validates registration', async () => {
+    const context = { configurationRootPath: tempRoot };
+    const configWithDoc = MINIMAL_CONFIG_XML.replace(
+      '<ChildObjects/>',
+      '<ChildObjects><Document>DocRecorder</Document></ChildObjects>',
+    );
+    await fs.promises.writeFile(path.join(tempRoot, 'Configuration.xml'), configWithDoc, 'utf8');
+    await fs.promises.mkdir(path.join(tempRoot, 'Documents'), { recursive: true });
+    await fs.promises.writeFile(
+      path.join(tempRoot, 'Documents', 'DocRecorder.xml'),
+      recorderDocumentXml('DocRecorder', ''),
+      'utf8',
+    );
+
+    await assert.rejects(
+      () =>
+        planCreateMetadataObject(context, {
+          type: MetadataType.Sequence,
+          name: 'SeqMissingDoc',
+          recorderDocument: 'NonExistentDoc',
+        }),
+      /NonExistentDoc/,
+    );
+
+    const create = await planCreateMetadataObject(context, {
+      type: MetadataType.Sequence,
+      name: 'SeqWithDoc',
+      recorderDocument: 'DocRecorder',
+    });
+    await new MutationPlanExecutor(tempRoot).execute(create.plan);
+
+    const seqXml = await fs.promises.readFile(path.join(tempRoot, 'Sequences', 'SeqWithDoc.xml'), 'utf8');
+    assert.match(
+      seqXml,
+      /<Documents>\s*<xr:Item\s+xsi:type="xr:MDObjectRef">Document\.DocRecorder<\/xr:Item>\s*<\/Documents>/,
+      'Sequence XML must contain participating Document in <Documents>',
+    );
+    assert.match(seqXml, /<InternalInfo>[\s\S]*?<xr:GeneratedType\s+name="SequenceRecord\.SeqWithDoc"/);
+  });
+
+  test('AccountingRegister create applies rules-backed overrides to its Designer template and links valid references', async () => {
+    const context = { configurationRootPath: tempRoot };
+    await createRootMetadataObject(context, MetadataType.ChartOfAccounts, 'Main');
+    await createRootMetadataObject(context, MetadataType.Document, 'Recorder');
+
+    const create = await planCreateMetadataObject(context, {
+      type: MetadataType.AccountingRegister,
+      name: 'ReviewAccounting',
+      synonym: 'Синоним <&',
+      recorderDocument: 'Recorder',
+      properties: {
+        chartOfAccounts: 'ChartOfAccounts.Main',
+        comment: 'SENTINEL <& " \'',
+        correspondence: false,
+        periodAdjustmentLength: 0,
+        useStandardCommands: false,
+      },
+    });
+    await new MutationPlanExecutor(tempRoot).execute(create.plan);
+
+    const registerXml = await fs.promises.readFile(
+      path.join(tempRoot, 'AccountingRegisters', 'ReviewAccounting.xml'),
+      'utf8',
+    );
+    assert.match(registerXml, /<ChartOfAccounts>ChartOfAccounts\.Main<\/ChartOfAccounts>/);
+    assert.match(registerXml, /<Comment>SENTINEL &lt;&amp;/);
+    assert.match(registerXml, /<Correspondence>false<\/Correspondence>/);
+    assert.match(registerXml, /<PeriodAdjustmentLength>0<\/PeriodAdjustmentLength>/);
+    assert.match(registerXml, /<UseStandardCommands>false<\/UseStandardCommands>/);
+    assert.match(registerXml, /<v8:content>Синоним &lt;&amp;<\/v8:content>/);
+    assert.match(registerXml, /<ListPresentation\s*\/>/, 'unoverridden ListPresentation must retain its template default');
+    assert.match(registerXml, /<ExtendedListPresentation\s*\/>/, 'unoverridden ExtendedListPresentation must retain its template default');
+    assert.match(registerXml, /<Dimension\s+uuid=/, 'the rich Designer template Dimension must be retained');
+    assert.match(registerXml, /<Resource\s+uuid=/, 'the rich Designer template Resource must be retained');
+    assert.strictEqual(readRootProperties(registerXml, 'AccountingRegister')['Comment'], 'SENTINEL <& " \'');
+
+    const documentXml = await fs.promises.readFile(path.join(tempRoot, 'Documents', 'Recorder.xml'), 'utf8');
+    assert.match(documentXml, /<RegisterRecords>[\s\S]*?AccountingRegister\.ReviewAccounting[\s\S]*?<\/RegisterRecords>/);
+
+    await assert.rejects(
+      () => planCreateMetadataObject(context, {
+        type: MetadataType.AccountingRegister,
+        name: 'ReviewAccountingMissingRecorder',
+        properties: { chartOfAccounts: 'ChartOfAccounts.Main', comment: 'must not be planned' },
+        recorderDocument: 'MissingRecorder',
+      }),
+      /MissingRecorder/,
+    );
+    assert.strictEqual(
+      fs.existsSync(path.join(tempRoot, 'AccountingRegisters', 'ReviewAccountingMissingRecorder.xml')),
+      false,
+      'invalid recorder references must fail before a mutation plan can be executed',
+    );
+  });
+
+  test('CalculationRegister create applies rules-backed overrides to its Designer template and links valid references', async () => {
+    const context = { configurationRootPath: tempRoot };
+    await createRootMetadataObject(context, MetadataType.ChartOfCalculationTypes, 'Main');
+    await createRootMetadataObject(context, MetadataType.Document, 'Recorder');
+
+    const create = await planCreateMetadataObject(context, {
+      type: MetadataType.CalculationRegister,
+      name: 'ReviewCalculation',
+      synonym: 'Расчёт <&',
+      recorderDocument: 'Recorder',
+      properties: {
+        chartOfCalculationTypes: 'ChartOfCalculationTypes.Main',
+        comment: 'CALC <&',
+        basePeriod: true,
+        actionPeriod: false,
+        useStandardCommands: false,
+      },
+    });
+    await new MutationPlanExecutor(tempRoot).execute(create.plan);
+
+    const registerXml = await fs.promises.readFile(
+      path.join(tempRoot, 'CalculationRegisters', 'ReviewCalculation.xml'),
+      'utf8',
+    );
+    assert.match(registerXml, /<ChartOfCalculationTypes>ChartOfCalculationTypes\.Main<\/ChartOfCalculationTypes>/);
+    assert.match(registerXml, /<Comment>CALC &lt;&amp;<\/Comment>/);
+    assert.match(registerXml, /<BasePeriod>true<\/BasePeriod>/);
+    assert.match(registerXml, /<ActionPeriod>false<\/ActionPeriod>/);
+    assert.match(registerXml, /<UseStandardCommands>false<\/UseStandardCommands>/);
+    assert.match(registerXml, /<v8:content>Расчёт &lt;&amp;<\/v8:content>/);
+    assert.match(registerXml, /<ListPresentation\s*\/>/, 'unoverridden ListPresentation must retain its template default');
+    assert.match(registerXml, /<ExtendedListPresentation\s*\/>/, 'unoverridden ExtendedListPresentation must retain its template default');
+    assert.match(registerXml, /<Dimension\s+uuid=/, 'the rich Designer template Dimension must be retained');
+    assert.match(registerXml, /<Resource\s+uuid=/, 'the rich Designer template Resource must be retained');
+    assert.strictEqual(readRootProperties(registerXml, 'CalculationRegister')['Comment'], 'CALC <&');
+
+    const documentXml = await fs.promises.readFile(path.join(tempRoot, 'Documents', 'Recorder.xml'), 'utf8');
+    assert.match(documentXml, /<RegisterRecords>[\s\S]*?CalculationRegister\.ReviewCalculation[\s\S]*?<\/RegisterRecords>/);
+
+    await assert.rejects(
+      () => planCreateMetadataObject(context, {
+        type: MetadataType.CalculationRegister,
+        name: 'ReviewCalculationMissingRecorder',
+        properties: { chartOfCalculationTypes: 'ChartOfCalculationTypes.Main', comment: 'must not be planned' },
+        recorderDocument: 'MissingRecorder',
+      }),
+      /MissingRecorder/,
+    );
+    assert.strictEqual(
+      fs.existsSync(path.join(tempRoot, 'CalculationRegisters', 'ReviewCalculationMissingRecorder.xml')),
+      false,
+      'invalid recorder references must fail before a mutation plan can be executed',
+    );
+  });
+
+  test('register create preserves template defaults when no property overrides are requested', async () => {
+    const context = { configurationRootPath: tempRoot };
+    for (const { type, name, rootTag } of [
+      { type: MetadataType.AccountingRegister, name: 'TemplateAccounting', rootTag: 'AccountingRegister' },
+      { type: MetadataType.CalculationRegister, name: 'TemplateCalculation', rootTag: 'CalculationRegister' },
+    ]) {
+      const create = await planCreateMetadataObject(context, { type, name });
+      await new MutationPlanExecutor(tempRoot).execute(create.plan);
+      const registerPath = path.join(
+        tempRoot,
+        type === MetadataType.AccountingRegister ? 'AccountingRegisters' : 'CalculationRegisters',
+        `${name}.xml`,
+      );
+      const registerXml = await fs.promises.readFile(registerPath, 'utf8');
+      assert.match(registerXml, /<ListPresentation\s*\/>/, `${rootTag} ListPresentation should retain its template default`);
+      assert.match(registerXml, /<ExtendedListPresentation\s*\/>/, `${rootTag} ExtendedListPresentation should retain its template default`);
+      if (type === MetadataType.AccountingRegister) {
+        assert.match(registerXml, /<PeriodAdjustmentLength>3<\/PeriodAdjustmentLength>/,
+          'AccountingRegister PeriodAdjustmentLength should retain its Designer template default');
+      }
+    }
   });
 
   test('AccumulationRegister deletion cleans exact RegisterRecords items in every registered Document', async () => {
@@ -787,6 +967,21 @@ async function assertDuplicateDirectoryConflict(
 interface RegisterDeleteFixture {
   readonly registerPath: string;
   readonly documents: ReadonlyMap<string, string>;
+}
+
+async function createRootMetadataObject(
+  context: { readonly configurationRootPath: string },
+  type: MetadataType,
+  name: string,
+): Promise<void> {
+  const create = await planCreateMetadataObject(context, { type, name });
+  await new MutationPlanExecutor(context.configurationRootPath).execute(create.plan);
+}
+
+function readRootProperties(xml: string, rootTag: string): Record<string, unknown> {
+  const document = XmlParser.parseString(xml)['MetaDataObject'] as Record<string, unknown>;
+  const root = document[rootTag] as Record<string, unknown>;
+  return root['Properties'] as Record<string, unknown>;
 }
 
 async function createRegisterDeleteFixture(

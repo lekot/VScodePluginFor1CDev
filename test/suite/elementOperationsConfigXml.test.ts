@@ -101,6 +101,35 @@ ${childObjects}
       'Configuration.xml must contain the new Document entry');
   });
 
+  test('createElement adds EDT Sequence recorder participation only when a document is selected', async () => {
+    const previousRecorder = process.env.IBCMD_RECORDER_DOCUMENT;
+    const sourceDocuments = path.join(tmpDir, 'src', 'Documents');
+    const sourceSequences = path.join(tmpDir, 'src', 'Sequences');
+    const recorderPath = path.join(sourceDocuments, 'Recorder.xml');
+    await fs.promises.mkdir(sourceDocuments, { recursive: true });
+    await fs.promises.mkdir(sourceSequences, { recursive: true });
+    await XMLWriter.createMinimalElementFile(recorderPath, 'Document', 'Recorder', '2.20');
+    fs.writeFileSync(configXmlPath(), BASE_CONFIG_XML('      <Document>Recorder</Document>'), 'utf-8');
+
+    try {
+      process.env.IBCMD_RECORDER_DOCUMENT = 'Recorder';
+      await createElement(createTypeNode(MetadataType.Sequence, configNode, sourceSequences), 'WithRecorder');
+      const withRecorder = fs.readFileSync(path.join(sourceSequences, 'WithRecorder.xml'), 'utf-8');
+      assert.match(withRecorder, /<Documents>\s*<xr:Item\s+xsi:type="xr:MDObjectRef">Document\.Recorder<\/xr:Item>\s*<\/Documents>/);
+
+      delete process.env.IBCMD_RECORDER_DOCUMENT;
+      await createElement(createTypeNode(MetadataType.Sequence, configNode, sourceSequences), 'WithoutRecorder');
+      const withoutRecorder = fs.readFileSync(path.join(sourceSequences, 'WithoutRecorder.xml'), 'utf-8');
+      assert.ok(!withoutRecorder.includes('Document.Recorder'), 'an unselected recorder must not be injected');
+    } finally {
+      if (previousRecorder === undefined) {
+        delete process.env.IBCMD_RECORDER_DOCUMENT;
+      } else {
+        process.env.IBCMD_RECORDER_DOCUMENT = previousRecorder;
+      }
+    }
+  });
+
   test('createElement preserves existing entries in Configuration.xml', async () => {
     const catalogsPath = path.join(tmpDir, 'Catalogs');
     await fs.promises.mkdir(catalogsPath, { recursive: true });

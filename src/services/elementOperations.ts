@@ -233,6 +233,9 @@ async function handleCreateRootObject(parentNode: TreeNode, name: string): Promi
   }
   const recorderDocument = parentNode.type === MetadataType.DocumentJournal
       || parentNode.type === MetadataType.AccumulationRegister
+      || parentNode.type === MetadataType.Sequence
+      || parentNode.type === MetadataType.AccountingRegister
+      || parentNode.type === MetadataType.CalculationRegister
     ? process.env.IBCMD_RECORDER_DOCUMENT?.trim() || undefined
     : undefined;
   const planned = await planCreateMetadataObject(
@@ -272,13 +275,32 @@ async function handleCreateEdtRootObject(
   const steps: MutationStep[] = [];
   steps.push({ type: 'ensureDirectory', targetPath: typeFolderPath });
 
-  const templateOnlyTypes = new Set([MetadataType.InformationRegister, MetadataType.AccumulationRegister]);
+  const templateOnlyTypes = new Set([
+    MetadataType.InformationRegister,
+    MetadataType.AccumulationRegister,
+    MetadataType.AccountingRegister,
+    MetadataType.CalculationRegister,
+  ]);
   const rules = templateOnlyTypes.has(parentNode.type) ? undefined : rulesRegistry.get(rootTag);
   const templateXml = rules ? null : await getDesignerTemplateXml(rootTag);
   let content: string;
   if (rules) {
     const uuid = XMLWriter.generateSimpleUuid();
-    content = metadataConverter.irToXml(metadataConverter.createDefaultIR(rules, { name, uuid }), rules);
+    let ir = metadataConverter.createDefaultIR(rules, { name, uuid });
+    if (parentNode.type === MetadataType.Sequence) {
+      const recorderDocument = process.env.IBCMD_RECORDER_DOCUMENT?.trim();
+      if (recorderDocument) {
+        ir = metadataConverter.mergeProperties(ir, {
+          documents: {
+            'xr:Item': {
+              '@_xsi:type': 'xr:MDObjectRef',
+              '#text': `Document.${recorderDocument}`,
+            },
+          },
+        });
+      }
+    }
+    content = metadataConverter.irToXml(ir, rules);
     content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
     content = normalizeMetaDataObjectRoot(content, targetVersion);
   } else if (templateXml !== null) {

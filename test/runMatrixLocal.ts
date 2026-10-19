@@ -46,6 +46,8 @@ async function main(): Promise<void> {
         stepSummary: report.stepSummary,
         ibcmd: report.ibcmd,
         ibcmdCheck: report.ibcmdCheck,
+        ibcmdApply: report.ibcmdApply,
+        ibcmdStartup: report.ibcmdStartup,
         stepsTotal: report.steps.length,
       },
       null,
@@ -53,7 +55,11 @@ async function main(): Promise<void> {
     )
   );
 
-  const ibcmdFailed = report.ibcmd.status === 'failed' || report.ibcmdCheck.status === 'failed';
+  const ibcmdFailed =
+    report.ibcmd.status === 'failed' ||
+    report.ibcmdCheck.status === 'failed' ||
+    (report.ibcmdApply && report.ibcmdApply.status === 'failed') ||
+    (report.ibcmdStartup && report.ibcmdStartup.status === 'failed');
   const stepsFailed = report.stepSummary.failed > 0;
   if (stepsFailed || ibcmdFailed) {
     process.exit(1);

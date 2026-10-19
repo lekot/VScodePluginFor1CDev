@@ -11,9 +11,9 @@ export const calculationRegisterRules: MetadataObjectRules = {
         'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
     },
     properties: {
-        actionPeriod: { type: 'boolean', order: 1, xml: 'ActionPeriod', yaml: 'ПериодДействия', defaultValueXML: true },
+        actionPeriod: { type: 'boolean', order: 1, xml: 'ActionPeriod', yaml: 'ПериодДействия', defaultValueXML: false },
         auxiliaryListForm: { type: 'string', order: 2, xml: 'AuxiliaryListForm', defaultValueXML: '' },
-        basePeriod: { type: 'boolean', order: 3, xml: 'BasePeriod', yaml: 'БазовыйПериод', defaultValueXML: true },
+        basePeriod: { type: 'boolean', order: 3, xml: 'BasePeriod', yaml: 'БазовыйПериод', defaultValueXML: false },
         chartOfCalculationTypes: { type: 'string', order: 4, xml: 'ChartOfCalculationTypes', yaml: 'ПланВидовРасчета', defaultValueXML: '' },
         comment: { type: 'string', order: 5, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },
         dataLockControlMode: { type: 'SystemEnumeration', order: 6, xml: 'DataLockControlMode', defaultValueXML: 'Managed', typeSE: 'DataLockControlMode' },

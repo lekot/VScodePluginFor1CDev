@@ -1,6 +1,7 @@
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { isRootObjectCreateInTypeFolder, TOP_LEVEL_TYPES } from '../../src/services/elementOperations';
 import { MetadataTypeMapper } from '../../src/utils/metadataTypeMapper';
+import { supportsMetadataGenericRootChildObject } from '../../src/constants/metadataTypeDescriptors';
 import { ROOT_TAGS_WITHOUT_CHILDOBJECTS } from '../../src/utils/XMLWriter';
 
 /**
@@ -18,14 +19,18 @@ function isFormInstanceNode(node: TreeNode): boolean {
 }
 
 /**
- * Экземпляр корневого типа без ChildObjects в XML (см. ROOT_TAGS_WITHOUT_CHILDOBJECTS): не цель матрицы create×2.
- * Папки типов (`id` совпадает с каталогом Designer, напр. `CommonModules`, `Constants`) остаются целями.
+ * Экземпляр корневого типа без поддержки прямого создания Attribute (см. supportsMetadataGenericRootChildObject):
+ * не цель матрицы для прямого createElement на экземпляре.
+ * Папки типов (`id` совпадает с каталогом Designer, напр. `CommonModules`, `Constants`, `Subsystems`) остаются целями.
  */
-function isExcludedRootInstanceWithoutChildObjects(node: TreeNode): boolean {
+function isExcludedRootInstanceWithoutGenericAttributeSupport(node: TreeNode): boolean {
   if (!TOP_LEVEL_TYPES.has(node.type)) {
     return false;
   }
-  if (!ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(node.type))) {
+  if (
+    !ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(node.type)) &&
+    supportsMetadataGenericRootChildObject(node.type, 'Attribute')
+  ) {
     return false;
   }
   const folderId = MetadataTypeMapper.getDesignerFolderIdForMetadataType(node.type);
@@ -64,6 +69,12 @@ const IBMATRIX_SKIP_TYPE_FOLDER_IDS = new Set([
 ]);
 
 function isIbcmdFragileTypeFolder(node: TreeNode): boolean {
+  if (
+    (node.id === 'DocumentJournals' || node.id === 'AccumulationRegisters') &&
+    process.env.IBCMD_RECORDER_DOCUMENT?.trim()
+  ) {
+    return false;
+  }
   return IBMATRIX_SKIP_TYPE_FOLDER_IDS.has(node.id);
 }
 
@@ -72,31 +83,22 @@ function isAttributeOrTabularContainerUnderObject(node: TreeNode): boolean {
   if (!p || !TOP_LEVEL_TYPES.has(p.type)) {
     return false;
   }
-  // Синхронно с ROOT_TAGS_WITHOUT_CHILDOBJECTS и docs/1c-config-objects-spec.md §6: у этих типов
-  // в выгрузке Designer нет ChildObjects — не гоняем матрицу на вложенные Attribute/TabularSection
-  // (иначе createElement пишет ChildObjects и ломает ibcmd, см. историю с ролью).
   if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(p.type))) {
     return false;
   }
-  // Подсистемы в 1С не имеют реквизитов и табличных частей — только состав и порядок.
-  if (p.type === MetadataType.Subsystem) {
-    return false;
-  }
   if (node.id === 'Attributes' && node.type === MetadataType.Attribute) {
-    return true;
+    return supportsMetadataGenericRootChildObject(p.type, 'Attribute');
   }
   if (node.id === 'TabularSections' && node.type === MetadataType.TabularSection) {
-    return true;
+    return supportsMetadataGenericRootChildObject(p.type, 'TabularSection');
   }
   return false;
 }
 
-/** Register types that own Dimensions/Resources in Designer XML (keep in sync with elementOperations REGISTER_TYPES_FOR_DIM_RES). */
+/** Register types that own Dimensions/Resources in Designer XML with standalone ibcmd-supported templates. */
 const NESTED_MATRIX_REGISTER_PARENT_TYPES = new Set<MetadataType>([
   MetadataType.InformationRegister,
   MetadataType.AccumulationRegister,
-  MetadataType.AccountingRegister,
-  MetadataType.CalculationRegister,
 ]);
 
 /**
@@ -127,14 +129,11 @@ export function isNestedMatrixTargetUnderMatrixObject(node: TreeNode): boolean {
   if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(p.type))) {
     return false;
   }
-  if (p.type === MetadataType.Subsystem) {
-    return false;
-  }
   if (node.id === 'Attributes' && node.type === MetadataType.Attribute) {
-    return true;
+    return supportsMetadataGenericRootChildObject(p.type, 'Attribute');
   }
   if (node.id === 'TabularSections' && node.type === MetadataType.TabularSection) {
-    return true;
+    return supportsMetadataGenericRootChildObject(p.type, 'TabularSection');
   }
   if (isFormsFolderTarget(node)) {
     return true;
@@ -162,6 +161,9 @@ function isTopLevelObjectCreateTarget(node: TreeNode): boolean {
   if (!TOP_LEVEL_TYPES.has(node.type)) {
     return false;
   }
+  if (!supportsMetadataGenericRootChildObject(node.type, 'Attribute')) {
+    return false;
+  }
   const p = node.parent;
   if (!p) {
     return false;
@@ -176,7 +178,7 @@ export function isMatrixTarget(node: TreeNode): boolean {
   if (node.type === MetadataType.Configuration) {
     return false;
   }
-  if (isExcludedRootInstanceWithoutChildObjects(node)) {
+  if (isExcludedRootInstanceWithoutGenericAttributeSupport(node)) {
     return false;
   }
   if (isFormInstanceNode(node)) {

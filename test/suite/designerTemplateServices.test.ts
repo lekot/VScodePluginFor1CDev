@@ -59,6 +59,35 @@ suite('Designer template services', () => {
     assert.ok(out.includes('r="res&lt;2"'));
   });
 
+  test('substituteDesignerTemplate replaces chart references and escapes XML entities', () => {
+    const template = '<ChartOfAccounts>{ChartOfAccounts}</ChartOfAccounts><ChartOfCalculationTypes>{ChartOfCalculationTypes}</ChartOfCalculationTypes>';
+    const out = substituteDesignerTemplate(template, {
+      uuid: 'u',
+      Name: 'N',
+      Synonym_ru: 'S',
+      ChartOfAccounts: 'ChartOfAccounts.Main<&>',
+      ChartOfCalculationTypes: 'ChartOfCalculationTypes.Main<&>',
+    });
+
+    assert.strictEqual(
+      out,
+      '<ChartOfAccounts>ChartOfAccounts.Main&lt;&amp;&gt;</ChartOfAccounts><ChartOfCalculationTypes>ChartOfCalculationTypes.Main&lt;&amp;&gt;</ChartOfCalculationTypes>',
+    );
+  });
+
+  test('substituteDesignerTemplate clears optional chart references when omitted', () => {
+    const template = '<ChartOfAccounts>{ChartOfAccounts}</ChartOfAccounts><ChartOfCalculationTypes>{ChartOfCalculationTypes}</ChartOfCalculationTypes>';
+    const out = substituteDesignerTemplate(template, {
+      uuid: 'u',
+      Name: 'N',
+      Synonym_ru: 'S',
+    });
+
+    assert.strictEqual(out, '<ChartOfAccounts /><ChartOfCalculationTypes />');
+    assert.ok(!out.includes('{ChartOfAccounts}'));
+    assert.ok(!out.includes('{ChartOfCalculationTypes}'));
+  });
+
   test('substituteDesignerTemplate replaces RecorderDocumentRef when provided', () => {
     const template = '<Ref>{RecorderDocumentRef}</Ref>';
     const out = substituteDesignerTemplate(template, {

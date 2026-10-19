@@ -21,6 +21,8 @@ export type DesignerTemplateParams = {
   uuidResource?: string;
   /** e.g. Document.ИмяДокумента — для регистраторов, журналов документов */
   RecorderDocumentRef?: string;
+  ChartOfAccounts?: string;
+  ChartOfCalculationTypes?: string;
 };
 /* eslint-enable @typescript-eslint/naming-convention */
 
@@ -52,6 +54,21 @@ export function substituteDesignerTemplate(
     out = out.replace(
       /<RegisteredDocuments>\s*<xr:Item[^>]*>\{RecorderDocumentRef\}<\/xr:Item>\s*<\/RegisteredDocuments>/,
       '<RegisteredDocuments/>'
+    );
+  }
+  const chartOfAccountsRef = params.ChartOfAccounts?.trim();
+  if (chartOfAccountsRef) {
+    out = out.replace(/\{ChartOfAccounts\}/g, escapeXml(chartOfAccountsRef));
+  } else if (out.includes('{ChartOfAccounts}')) {
+    out = out.replace(/<ChartOfAccounts>\{ChartOfAccounts\}<\/ChartOfAccounts>/g, '<ChartOfAccounts />');
+  }
+  const chartOfCalcRef = params.ChartOfCalculationTypes?.trim();
+  if (chartOfCalcRef) {
+    out = out.replace(/\{ChartOfCalculationTypes\}/g, escapeXml(chartOfCalcRef));
+  } else if (out.includes('{ChartOfCalculationTypes}')) {
+    out = out.replace(
+      /<ChartOfCalculationTypes>\{ChartOfCalculationTypes\}<\/ChartOfCalculationTypes>/g,
+      '<ChartOfCalculationTypes />'
     );
   }
   return out;

@@ -610,9 +610,8 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
     propertyName: string,
     value: unknown
   ): Promise<void> {
-    const properties = await this.readProperties(filePath);
-    properties[propertyName] = value;
-    await this.writeProperties(filePath, properties);
+    await this.readProperties(filePath);
+    await this.writeProperties(filePath, { [propertyName]: value });
     Logger.info(`Successfully updated property '${propertyName}' in ${filePath}`);
   }
 

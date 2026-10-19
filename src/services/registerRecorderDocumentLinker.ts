@@ -7,10 +7,16 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+export type RecorderRegisterKind =
+  | 'AccumulationRegister'
+  | 'InformationRegister'
+  | 'AccountingRegister'
+  | 'CalculationRegister';
+
 /** Pure mutation contributor used by root-create planners before engine execution. */
 export function appendRegisterReferenceToRecorderDocumentXml(
   xml: string,
-  registerKind: 'AccumulationRegister' | 'InformationRegister',
+  registerKind: RecorderRegisterKind,
   registerName: string,
 ): string {
   const ref = `${registerKind}.${registerName}`;
@@ -34,7 +40,7 @@ export function appendRegisterReferenceToRecorderDocumentXml(
 /** Pure removal of one exact direct recorder reference, without changing other XML identities. */
 export function removeRegisterReferenceFromRecorderDocumentXml(
   xml: string,
-  registerKind: 'AccumulationRegister' | 'InformationRegister',
+  registerKind: RecorderRegisterKind,
   registerName: string,
 ): string {
   const validation = XMLValidator.validate(xml, { allowBooleanAttributes: false });
