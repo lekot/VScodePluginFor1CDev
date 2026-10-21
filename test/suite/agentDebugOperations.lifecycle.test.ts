@@ -219,7 +219,7 @@ suite('AgentDebugOperations — debugStop', () => {
 
         // Активируем реестр для ручного добавления сессий
         const ctx = { subscriptions: [] as Array<{ dispose: () => void }> };
-        registry.activate(ctx as never);
+        registry.activate();
     });
 
     teardown(() => {

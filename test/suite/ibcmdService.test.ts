@@ -5,9 +5,35 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { PassThrough } from 'stream';
+import '../helpers/vscodeStubRegister';
+import * as vscode from 'vscode';
 import { IbcmdService } from '../../src/services/ibcmd/IbcmdService';
 import { resetIbcmdServiceSingletonForTests } from '../../src/services/ibcmd/ibcmdServiceSingleton';
+import { registerIbcmdInfobaseHooks } from '../../src/services/ibcmd/registerIbcmdInfobaseHooks';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
+
+suite('registerIbcmdInfobaseHooks ownership', () => {
+  test('command registration failure rolls back the configuration listener', () => {
+    const originalConfigurationRegistration = vscode.workspace.onDidChangeConfiguration;
+    const originalCommandRegistration = vscode.commands.registerCommand;
+    let listenerDisposeCalls = 0;
+    Reflect.set(vscode.workspace, 'onDidChangeConfiguration', () => ({
+      dispose: () => { listenerDisposeCalls += 1; },
+    }));
+    Reflect.set(vscode.commands, 'registerCommand', () => {
+      throw new Error('injected ibcmd command registration failure');
+    });
+
+    try {
+      assert.throws(registerIbcmdInfobaseHooks, /injected ibcmd command registration failure/u);
+      assert.strictEqual(listenerDisposeCalls, 1);
+    } finally {
+      Reflect.set(vscode.workspace, 'onDidChangeConfiguration', originalConfigurationRegistration);
+      Reflect.set(vscode.commands, 'registerCommand', originalCommandRegistration);
+      resetIbcmdServiceSingletonForTests();
+    }
+  });
+});
 
 function fakeSpawn(
   stdoutText: string,

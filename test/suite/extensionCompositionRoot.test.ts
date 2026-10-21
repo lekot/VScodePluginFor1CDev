@@ -13,6 +13,12 @@ import * as os from 'os';
 import * as path from 'path';
 import { Logger } from '../../src/utils/logger';
 import { createActivationSubscriptionScope } from '../../src/extension/activationSubscriptionScope';
+import { registerAllCommands } from '../../src/commands';
+import {
+  RepositoryBindingStore,
+  RepositoryStateStore,
+  repositoryTargetKey,
+} from '../../src/services/configurationRepository/repositoryStores';
 
 suite('ExtensionCompositionRoot (#261)', () => {
   let context: vscode.ExtensionContext;
@@ -66,6 +72,221 @@ suite('ExtensionCompositionRoot (#261)', () => {
     assert.strictEqual(state.reloadCoordinator, null, 'reloadCoordinator must be cleared');
   });
 
+  test('composition root owns the shared state graph disposal and clears facade references', async () => {
+    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+    await root.compose();
+    const storage = state.infobaseStorage;
+    assert.ok(storage);
+    const treeDataProvider = state.treeDataProvider;
+    assert.ok(treeDataProvider);
+    const originalDispose = storage.dispose.bind(storage);
+    const originalTreeDispose = treeDataProvider.dispose.bind(treeDataProvider);
+    let disposeCalls = 0;
+    let treeDisposeCalls = 0;
+    storage.dispose = () => {
+      disposeCalls += 1;
+      originalDispose();
+    };
+    treeDataProvider.dispose = () => {
+      treeDisposeCalls += 1;
+      originalTreeDispose();
+    };
+
+    await root.dispose();
+    await state.dispose();
+
+    assert.strictEqual(disposeCalls, 1, 'state facade must not dispose a root-owned service twice');
+    assert.strictEqual(treeDisposeCalls, 1, 'the composition root must dispose its provider instance');
+    assert.strictEqual(state.infobaseStorage, null);
+    assert.strictEqual(state.infobaseManager, null);
+    assert.strictEqual(state.configurationRepositoryService, null);
+    assert.strictEqual(state.supportComposition, null);
+  });
+
+  test('registerAllCommands rejects missing infrastructure before registering any commands', async () => {
+    const initialSubscriptions = context.subscriptions.length;
+    const initialCommandCount = vscodeTestState.registeredCommandHandlers.size;
+
+    try {
+      await assert.rejects(
+        registerAllCommands({
+          context,
+          state,
+          lifecycle,
+          requestConfigurationReload: async () => undefined,
+        } as never),
+        /configuration infrastructure is required/iu,
+      );
+      assert.strictEqual(context.subscriptions.length, initialSubscriptions);
+      assert.strictEqual(vscodeTestState.registeredCommandHandlers.size, initialCommandCount);
+    } finally {
+      for (const disposable of context.subscriptions.splice(initialSubscriptions)) {
+        disposable.dispose();
+      }
+    }
+  });
+
+  test('composition rolls back command registrations when the final command registrar throws', async () => {
+    const commandApi = (vscode as any).commands;
+    const originalRegisterCommand = commandApi.registerCommand;
+    const registrationError = new Error('late repository command registration failed');
+    const created: vscode.Disposable[] = [];
+    let disposed = 0;
+    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+    commandApi.registerCommand = (id: string, callback: unknown): vscode.Disposable => {
+      if (id === '1c-metadata-tree.repository.updateConfiguration') {
+        throw registrationError;
+      }
+      const registration = originalRegisterCommand(id, callback) as vscode.Disposable;
+      created.push(registration);
+      return {
+        dispose: () => {
+          disposed += 1;
+          registration.dispose();
+        },
+      };
+    };
+
+    try {
+      await assert.rejects(root.compose(), (error: unknown) => error === registrationError);
+      await root.dispose();
+    } finally {
+      commandApi.registerCommand = originalRegisterCommand;
+    }
+
+    assert.ok(created.length > 10, 'the injected failure must occur after earlier command registrations');
+    assert.strictEqual(disposed, created.length, 'every acquired command registration must be disposed after rollback');
+  });
+
+  test('repository bindings and observed state route to the owning workspace after reorder, including nested roots', async () => {
+    const workspaceA = await fs.mkdtemp(path.join(os.tmpdir(), 'pr354-workspace-a-'));
+    const workspaceB = await fs.mkdtemp(path.join(os.tmpdir(), 'pr354-workspace-b-'));
+    const nestedWorkspace = path.join(workspaceA, 'nested');
+    await fs.mkdir(nestedWorkspace, { recursive: true });
+    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+
+    const createTarget = (configRoot: string, configKind: 'cf' | 'cfe', extensionName?: string) => ({
+      configRoot,
+      configKind,
+      ...(extensionName ? { extensionName } : {}),
+      key: repositoryTargetKey({ configRoot, configKind, extensionName }),
+    });
+    const targets = [
+      createTarget(path.join(workspaceA, 'ConfigurationA'), 'cf'),
+      createTarget(path.join(workspaceB, 'ExtensionB'), 'cfe', 'ExtB'),
+      createTarget(path.join(nestedWorkspace, 'ConfigurationNested'), 'cf'),
+    ];
+    const roots = [workspaceA, workspaceB, nestedWorkspace];
+
+    try {
+      for (let index = 0; index < roots.length; index += 1) {
+        const storageRoot = path.join(roots[index], '.vscode');
+        const bindingStore = new RepositoryBindingStore(
+          path.join(storageRoot, 'configuration-repository-bindings.json'),
+        );
+        const stateStore = new RepositoryStateStore(
+          path.join(storageRoot, 'configuration-repository-state.json'),
+        );
+        await bindingStore.set(targets[index], {
+          repositoryPath: `repo-${index}`,
+          repositoryUser: 'user',
+          executionInfobaseId: `ib-${index}`,
+        });
+        await stateStore.set(targets[index], {
+          connection: 'connected',
+          locks: {},
+          source: 'configuratorAcknowledgement',
+        });
+      }
+
+      vscodeTestState.mockWorkspaceFolders = roots.map((workspaceRoot, index) => ({
+        name: `workspace-${index}`,
+        index,
+        uri: vscode.Uri.file(workspaceRoot),
+      }));
+      await root.compose();
+
+      const service = state.configurationRepositoryService;
+      assert.ok(service);
+      for (let index = 0; index < targets.length; index += 1) {
+        assert.strictEqual(
+          (await service!.getBinding(targets[index]))?.repositoryPath,
+          `repo-${index}`,
+          `target ${index} must read from its owning workspace store`,
+        );
+        assert.strictEqual(
+          (await service!.getObservedState(targets[index])).connection,
+          'connected',
+          `target ${index} must load state from its owning workspace store`,
+        );
+      }
+
+      vscodeTestState.mockWorkspaceFolders = [...vscodeTestState.mockWorkspaceFolders].reverse();
+      assert.strictEqual(
+        (await service!.getBinding(targets[1]))?.repositoryPath,
+        'repo-1',
+        'changing workspace order must not redirect a repository binding',
+      );
+    } finally {
+      await root.dispose();
+      await fs.rm(workspaceA, { recursive: true, force: true });
+      await fs.rm(workspaceB, { recursive: true, force: true });
+    }
+  });
+
+  test('legacy records are migrated before their former first workspace is removed', async () => {
+    const formerFirstRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pr354-legacy-first-'));
+    const ownerRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pr354-legacy-owner-'));
+    const target = {
+      configRoot: path.join(ownerRoot, 'Configuration'),
+      configKind: 'cf' as const,
+      key: repositoryTargetKey({ configRoot: path.join(ownerRoot, 'Configuration'), configKind: 'cf' }),
+    };
+    const legacyBindingStore = new RepositoryBindingStore(
+      path.join(formerFirstRoot, '.vscode', 'configuration-repository-bindings.json'),
+    );
+    const legacyStateStore = new RepositoryStateStore(
+      path.join(formerFirstRoot, '.vscode', 'configuration-repository-state.json'),
+    );
+    await legacyBindingStore.set(target, {
+      repositoryPath: 'legacy-repository',
+      repositoryUser: 'legacy-user',
+      executionInfobaseId: 'legacy-infobase',
+    });
+    await legacyStateStore.set(target, {
+      connection: 'connected',
+      locks: { 'Справочник.Products': 'heldByCurrentCredentials' },
+      source: 'configuratorAcknowledgement',
+    });
+    vscodeTestState.mockWorkspaceFolders = [formerFirstRoot, ownerRoot].map((workspaceRoot, index) => ({
+      name: `workspace-${index}`,
+      index,
+      uri: vscode.Uri.file(workspaceRoot),
+    }));
+    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+
+    try {
+      await root.compose();
+      vscodeTestState.mockWorkspaceFolders = [{ name: 'owner', index: 0, uri: vscode.Uri.file(ownerRoot) }];
+      await fs.rm(formerFirstRoot, { recursive: true, force: true });
+
+      const service = state.configurationRepositoryService;
+      assert.ok(service);
+      assert.strictEqual(
+        (await service!.getBinding(target))?.repositoryPath,
+        'legacy-repository',
+        'removing the former storage root must not orphan the migrated binding',
+      );
+      const observed = await service!.getObservedState(target);
+      assert.strictEqual(observed.connection, 'connected');
+      assert.strictEqual(observed.locks['Справочник.Products'], 'heldByCurrentCredentials');
+    } finally {
+      await root.dispose();
+      await fs.rm(formerFirstRoot, { recursive: true, force: true });
+      await fs.rm(ownerRoot, { recursive: true, force: true });
+    }
+  });
+
   test('composition root adopts the initialized infobase graph and observes its single recovery run', async () => {
     const originalRecover = InfobaseCatalogMutationService.prototype.recoverPendingMutations;
     const recoveryPromises: Promise<unknown>[] = [];
@@ -117,6 +338,33 @@ suite('ExtensionCompositionRoot (#261)', () => {
       await firstDispose;
     }
     assert.strictEqual(drained, true, 'a concurrent dispose caller must not return before teardown drain');
+  });
+
+  test('root disposal waits for an in-flight initialization stage and drains its late registrations', async () => {
+    let releaseInitialization!: () => void;
+    const initializationGate = new Promise<void>((resolve) => { releaseInitialization = resolve; });
+    let lateDisposableDisposed = false;
+    let disposeFinished = false;
+    const root = new ExtensionCompositionRoot(context, state, lifecycle, {
+      initInfobaseServices: async (compositionRoot) => {
+        await initializationGate;
+        compositionRoot.registerDisposable('late initialization resource', {
+          dispose: () => { lateDisposableDisposed = true; },
+        });
+        state.infobaseStorage = { dispose: () => undefined } as any;
+      },
+    });
+
+    const composition = root.compose();
+    const disposal = root.dispose().then(() => { disposeFinished = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.strictEqual(disposeFinished, false, 'root disposal must wait for the active initialization stage');
+
+    releaseInitialization();
+    await disposal;
+    await assert.rejects(composition, /disposed during initialization/u);
+    assert.strictEqual(lateDisposableDisposed, true, 'late registered resources must be drained');
+    assert.strictEqual(state.infobaseStorage, null, 'late state references must be released');
   });
 
   test('late asynchronous registrations are drained and async disposal failures do not stop cleanup', async () => {

@@ -23,20 +23,7 @@ import { registerConfigurationProjectCommands } from '../configurationProject/co
 import { registerAgentCommands } from '../agent/agentCommands';
 import { DebugSessionRegistry } from '../agent/debugSessionRegistry';
 import { activateAgentBridge } from '../agent/agentBridgeActivation';
-import {
-  ConfigurationContextResolver,
-  ConfigurationMutationEngine,
-  setConfigurationMutationEngine,
-  WorkspaceRegistry,
-  WorkspaceRegistryCoordinator,
-} from '../services/configurationSession';
-import { configureConfigurationMutationGateway } from '../services/configurationSession/configurationMutationGateway';
-import type {
-  MutationOutcomeRunner,
-  PlanOutcomeRunner,
-} from '../services/configurationSession/configurationMutationGateway';
-import { ConfigurationSession } from '../services/configurationSession/ConfigurationSession';
-import type { MutationExecutionOptions, MutationOutcome } from '../services/configurationSession/ConfigurationSession';
+import type { WorkspaceRegistry } from '../services/configurationSession';
 import { DeployService } from '../bindings/deployService';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import { sharedInfobaseConfigurationOperationQueue } from '../infobases/infobaseConfigurationOperationQueue';
@@ -67,7 +54,6 @@ import { Logger } from '../utils/logger';
 import { registerConfigurationRepositoryCommands } from './configurationRepositoryCommands';
 import { registerSyntaxHelpCommands } from '../providers/syntaxHelpProvider';
 import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
-import { reconcileAfterCommit } from '../reload/reconciliation';
 
 import type { ConfigurationInfrastructure } from '../extension/extensionCompositionRoot';
 
@@ -76,7 +62,7 @@ export type RegisterAllCommandsArgs = {
   state: ExtensionState;
   lifecycle: MetadataTreeFeatureLifecycle;
   requestConfigurationReload: RequestConfigurationReload;
-  infrastructure?: ConfigurationInfrastructure;
+  infrastructure: ConfigurationInfrastructure;
 };
 
 
@@ -88,6 +74,23 @@ export async function registerAllCommands({
   requestConfigurationReload,
   infrastructure,
 }: RegisterAllCommandsArgs): Promise<vscode.Disposable[]> {
+  if (!infrastructure) {
+    throw new Error('Configuration infrastructure is required by registerAllCommands.');
+  }
+  const {
+    runConfigurationMutation,
+    runConfigurationPlan,
+    getConfigurationRegistry,
+  } = infrastructure;
+  const returnOnlyDisposables = new Set<vscode.Disposable>();
+  const collectReturned = (disposables: vscode.Disposable[]): vscode.Disposable[] => {
+    for (const disposable of disposables) {
+      if (!context.subscriptions.includes(disposable)) {
+        returnOnlyDisposables.add(disposable);
+      }
+    }
+    return disposables;
+  };
   const utilityDeps = {
     state,
     loadMetadataTree: lifecycle.loadMetadataTree,
@@ -95,132 +98,6 @@ export async function registerAllCommands({
   };
   registerExternalProcessorCommands(context);
   registerPictureCommands(context);
-
-  let runConfigurationMutation: <T>(
-    configPath: string,
-    kind: string,
-    operation: () => Promise<T>,
-    options?: MutationExecutionOptions<T>,
-  ) => Promise<T>;
-  let runConfigurationPlan: <T>(
-    configPath: string,
-    plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
-    options?: MutationExecutionOptions<T>,
-  ) => Promise<T>;
-  let runConfigurationMutationOutcome: MutationOutcomeRunner;
-  let runConfigurationPlanOutcome: PlanOutcomeRunner;
-  let getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
-
-  if (infrastructure) {
-    runConfigurationMutation = infrastructure.runConfigurationMutation;
-    runConfigurationPlan = infrastructure.runConfigurationPlan;
-    runConfigurationMutationOutcome = infrastructure.runConfigurationMutationOutcome ?? (async <T>(
-      configPath: string,
-      kind: string,
-      operation: () => Promise<T>,
-      options?: MutationExecutionOptions<T>,
-    ): Promise<MutationOutcome<T>> => {
-      const registry = await infrastructure.getConfigurationRegistry();
-      const session = await registry.resolveResource(configPath);
-      return session.enqueue({ kind, ...options, execute: operation });
-    });
-    runConfigurationPlanOutcome = infrastructure.runConfigurationPlanOutcome ?? (async <T>(
-      configPath: string,
-      plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
-      options?: MutationExecutionOptions<T>,
-    ): Promise<MutationOutcome<T>> => {
-      const registry = await infrastructure.getConfigurationRegistry();
-      const session = await registry.resolveResource(configPath);
-      return session.enqueuePlan(plan, options);
-    });
-    getConfigurationRegistry = infrastructure.getConfigurationRegistry;
-  } else {
-    const configurationRegistry = new WorkspaceRegistry(
-      path.join(context.globalStorageUri.fsPath, 'configuration-identities.v1.json'),
-      (identity) => new ConfigurationSession(identity, (commit) =>
-        reconcileAfterCommit(
-          commit.rootPath,
-          commit.kind === 'agent.pullSelectedObjects' ? 'pull-objects' : 'agent-mutation',
-          requestConfigurationReload,
-        )),
-    );
-    state.workspaceRegistry = configurationRegistry;
-    const registryCoordinator = new WorkspaceRegistryCoordinator(configurationRegistry, {
-      getWorkspaceFolders: () => (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
-      getWorkspaceFolderForPath: (filePath) =>
-        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
-    });
-    const contextResolver = new ConfigurationContextResolver(registryCoordinator, {
-      getWorkspaceFolderForPath: (filePath) =>
-        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
-    });
-    state.configurationContextResolver = contextResolver;
-    getConfigurationRegistry = async (): Promise<WorkspaceRegistry> => {
-      return registryCoordinator.getRegistry();
-    };
-    context.subscriptions.push(
-      vscode.workspace.onDidChangeWorkspaceFolders(() => {
-        void registryCoordinator.refreshWorkspace().catch((error) => {
-          Logger.error('Workspace registry refresh after folder change failed', error);
-        });
-      }),
-    );
-    runConfigurationMutation = async <T>(
-      configPath: string,
-      kind: string,
-      operation: () => Promise<T>,
-      options?: MutationExecutionOptions<T>,
-    ): Promise<T> => {
-      const session = await registryCoordinator.resolveResource(configPath);
-      return session.runMutationValue({ kind, ...options, execute: operation }, {
-        failureMessage: 'Операция конфигурации не выполнена.',
-        cancelledMessage: 'Операция конфигурации отменена.',
-      });
-    };
-    runConfigurationPlan = async <T>(
-      configPath: string,
-      plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
-      options?: MutationExecutionOptions<T>,
-    ): Promise<T> => {
-      const session = await registryCoordinator.resolveResource(configPath);
-      return session.runPlanValue(plan, options);
-    };
-    runConfigurationMutationOutcome = async <T>(
-      configPath: string,
-      kind: string,
-      operation: () => Promise<T>,
-      options?: MutationExecutionOptions<T>,
-    ): Promise<MutationOutcome<T>> => {
-      const session = await registryCoordinator.resolveResource(configPath);
-      return session.enqueue({ kind, ...options, execute: operation });
-    };
-    runConfigurationPlanOutcome = async <T>(
-      configPath: string,
-      plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
-      options?: MutationExecutionOptions<T>,
-    ): Promise<MutationOutcome<T>> => {
-      const session = await registryCoordinator.resolveResource(configPath);
-      return session.enqueuePlan(plan, options);
-    };
-    context.subscriptions.push(
-      configureConfigurationMutationGateway(
-        runConfigurationMutation,
-        runConfigurationPlan,
-        runConfigurationMutationOutcome,
-        runConfigurationPlanOutcome,
-      ),
-    );
-    const mutationEngine = new ConfigurationMutationEngine({
-      contextResolver,
-      runMutation: runConfigurationMutation,
-      runPlan: runConfigurationPlan,
-      runMutationWithOutcome: runConfigurationMutationOutcome,
-      runPlanWithOutcome: runConfigurationPlanOutcome,
-    });
-    state.configurationMutationEngine = mutationEngine;
-    setConfigurationMutationEngine(mutationEngine);
-    context.subscriptions.push({ dispose: () => registryCoordinator.dispose() });
-  }
 
   registerFilterCriterionCommands(context, state, runConfigurationPlan, requestConfigurationReload);
   registerCfeProjectCommands({
@@ -239,7 +116,7 @@ export async function registerAllCommands({
     getConfigurationRegistry,
     refreshTree: lifecycle.loadMetadataTree,
   });
-  configureSupportServices({
+  const supportDisposables = configureSupportServices({
     context,
     state,
     getConfigurationRegistry,
@@ -248,7 +125,7 @@ export async function registerAllCommands({
 
   // Agent API — регистрируем отдельно (не возвращают Disposable[] — управляют подписками сами)
   const debugRegistry = new DebugSessionRegistry();
-  debugRegistry.activate(context);
+  context.subscriptions.push(debugRegistry.activate());
   const { taskManager } = registerAgentCommands(
     context,
     () => state.treeDataProvider,
@@ -304,29 +181,45 @@ export async function registerAllCommands({
     requestConfigurationReload
   );
 
-  return [
-    ...registerUtilityCommandsLeading(utilityDeps),
-    ...registerConfigurationCompareCommands({ context, state }),
-    ...registerCfCommands({ state }),
-    ...registerEditorCommands({ state, context }),
-    ...registerSyntaxHelpCommands(),
-    ...registerElementCommands({
-      state,
-      loadMetadataTree: lifecycle.loadMetadataTree,
-      requestConfigurationReload,
-      scheduleDeleteReconcile: lifecycle.reloadOrchestratorHandlers.scheduleDeleteReconcile,
-      runConfigurationMutation,
-      runConfigurationPlan,
-    }),
-    ...registerNavigationCommands({ state }),
-    ...registerUtilityCommandsTrailing(utilityDeps),
-    ...registerFilterCommands({
-      state,
-      loadMetadataTree: lifecycle.loadMetadataTree,
-      invalidateTreeCacheOnly: lifecycle.invalidateTreeCacheOnly,
-    }),
-    ...registerConfigurationRepositoryCommands(state),
-  ];
+  try {
+    return [
+      ...collectReturned(supportDisposables),
+      ...collectReturned(registerUtilityCommandsLeading(utilityDeps)),
+      ...collectReturned(registerConfigurationCompareCommands({ context, state })),
+      ...collectReturned(registerCfCommands({ state })),
+      ...collectReturned(registerEditorCommands({ state, context })),
+      ...collectReturned(registerSyntaxHelpCommands()),
+      ...collectReturned(registerElementCommands({
+        state,
+        loadMetadataTree: lifecycle.loadMetadataTree,
+        requestConfigurationReload,
+        scheduleDeleteReconcile: lifecycle.reloadOrchestratorHandlers.scheduleDeleteReconcile,
+        runConfigurationMutation,
+        runConfigurationPlan,
+      })),
+      ...collectReturned(registerNavigationCommands({ state })),
+      ...collectReturned(registerUtilityCommandsTrailing(utilityDeps)),
+      ...collectReturned(registerFilterCommands({
+        state,
+        loadMetadataTree: lifecycle.loadMetadataTree,
+        invalidateTreeCacheOnly: lifecycle.invalidateTreeCacheOnly,
+      })),
+      ...collectReturned(registerConfigurationRepositoryCommands(state)),
+    ];
+  } catch (error) {
+    for (const disposable of [...returnOnlyDisposables].reverse()) {
+      try {
+        disposable.dispose();
+      } catch (disposeError) {
+        try {
+          Logger.warn('Command registration rollback failed', disposeError);
+        } catch {
+          // Rollback must preserve the registration error and continue cleanup.
+        }
+      }
+    }
+    throw error;
+  }
 }
 
 interface ConfigureSupportServicesArgs {
@@ -345,7 +238,7 @@ function configureSupportServices({
   state,
   getConfigurationRegistry,
   runConfigurationMutation,
-}: ConfigureSupportServicesArgs): void {
+}: ConfigureSupportServicesArgs): vscode.Disposable[] {
   const bindingManager = state.bindingManager;
   const infobaseStorage = state.infobaseStorage;
   const provider = state.treeDataProvider;
@@ -414,11 +307,18 @@ function configureSupportServices({
   provider.setSupportRootRegistrationCallback((configRoots) => {
     rootLifecycle.accept(configRoots);
   });
+  const supportOwnedDisposables: vscode.Disposable[] = [
+    { dispose: () => rootLifecycle.dispose() },
+    watcher,
+    { dispose: () => cache.clear() },
+    { dispose: () => composition.dispose() },
+  ];
+  context.subscriptions.push(...supportOwnedDisposables);
   const commandTargetResolver = new SupportBindingResolver({
     bindingManager,
     infobaseStorage,
   });
-  context.subscriptions.push(...registerSupportCommands({
+  const commandDisposables = registerSupportCommands({
     facade: composition.facade,
     resolveContext: (argument) =>
       resolveSupportCommandContext(argument, provider, cache, composition.registry),
@@ -435,7 +335,13 @@ function configureSupportServices({
         (error) => Logger.error('Support status refresh after command failed', error),
       );
     },
-  }));
+  });
+  context.subscriptions.push(...commandDisposables);
+
+  return [
+    ...commandDisposables,
+    ...supportOwnedDisposables,
+  ];
 }
 
 function createSupportWatcherFactory(): SupportFileSystemWatcherFactory {

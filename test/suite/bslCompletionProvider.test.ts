@@ -1404,15 +1404,12 @@ suite('BSL platform completion', function () {
   });
 
   test('registers and disposes the dot-triggered BSL provider without activating the extension for standalone BSL files', () => {
-    const context = { subscriptions: [] as vscode.Disposable[] };
-    const disposable = registerBslCompletionProvider(context as never, extensionRoot());
+    const disposable = registerBslCompletionProvider(extensionRoot());
     const registration = vscodeTestState.registeredCompletionProviders[0];
 
     assert.strictEqual(vscodeTestState.registeredCompletionProviders.length, 1);
     assert.deepStrictEqual(registration.selector, { language: 'bsl' });
     assert.deepStrictEqual(registration.triggerCharacters, ['.']);
-    assert.strictEqual(context.subscriptions[0], disposable);
-
     disposable.dispose();
     assert.strictEqual(registration.disposed, true);
 

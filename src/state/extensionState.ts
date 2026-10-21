@@ -85,6 +85,7 @@ export class ExtensionState {
   private _infobaseRecoveryOutcome: RecoveryOutcome | null = null;
   private _isDisposed = false;
   private _disposePromise: Promise<void> | null = null;
+  private _compositionManaged = false;
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
@@ -173,6 +174,7 @@ export class ExtensionState {
   init(context: vscode.ExtensionContext, options: ExtensionStateInitOptions = {}): void {
     this._isDisposed = false;
     this._disposePromise = null;
+    this._compositionManaged = false;
     this._extensionContext = context;
     this._infobaseMutationRecovery = null;
     this._infobaseRecoveryOutcome = null;
@@ -195,6 +197,11 @@ export class ExtensionState {
     });
   }
 
+  /** Marks this state as a reference facade whose graph is disposed by the composition root. */
+  enableCompositionManagedMode(): void {
+    this._compositionManaged = true;
+  }
+
   dispose(): Promise<void> {
     if (this._disposePromise) {
       return this._disposePromise;
@@ -203,7 +210,13 @@ export class ExtensionState {
       return Promise.resolve();
     }
     this._isDisposed = true;
-    this._disposePromise = Promise.resolve().then(() => this.disposeOwnedState());
+    this._disposePromise = Promise.resolve().then(() => {
+      if (this._compositionManaged) {
+        this.releaseCompositionRootReferences();
+        return;
+      }
+      return this.disposeOwnedState();
+    });
     return this._disposePromise;
   }
 
@@ -228,10 +241,26 @@ export class ExtensionState {
     this._subsystemCommandInterfaceProvider = null;
     this._xdtoPackageEditorProvider = null;
     this._reloadCoordinator = null;
+    this._formEditorProvider = null;
+    this._mxlPreviewProvider = null;
+    this._extensionContext = undefined;
+    this._metadataWatchers = [];
     this._infobaseTreeView = null;
     this._refreshBindingTreeDecorations = null;
+    this._infobaseStorage = null;
+    this._bindingManager = null;
+    this._infobaseManager = null;
+    this._infobaseTreeProvider = null;
+    this._infobaseMutationRecovery = null;
+    this._infobaseRecoveryOutcome = null;
     this._agentBridge = null;
     this._agentTaskManager = null;
+    this._supportComposition = null;
+    this._supportStateCache = null;
+    this._supportStateWatcher = null;
+    this._supportRootRegistrationLifecycle = null;
+    this._configurationRepositoryService = null;
+    this._configurationRepositoryProjection = null;
   }
 
   private async disposeOwnedState(): Promise<void> {

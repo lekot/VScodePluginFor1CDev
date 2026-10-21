@@ -4,6 +4,7 @@
  */
 
 import * as assert from 'assert';
+import * as vscode from 'vscode';
 import '../helpers/vscodeStubRegister';
 import {
     debugTestState,
@@ -20,10 +21,6 @@ import type { LastStop } from '../../src/agent/debugSessionRegistry';
 
 function makeSession(id: string, type: string): unknown {
     return { id, type, name: `session-${id}`, workspaceFolder: undefined, configuration: {} };
-}
-
-function makeContext(): { subscriptions: Array<{ dispose: () => void }> } {
-    return { subscriptions: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -44,8 +41,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('после activate созданы 3 подписки', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         // onDidStartDebugSession, onDidTerminateDebugSession, registerDebugAdapterTrackerFactory
         assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 1, 'start listener');
@@ -55,8 +51,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('сессия типа bsl попадает в реестр', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const session = makeSession('sess-1', 'bsl');
         fireDidStartDebugSession(session);
@@ -68,8 +63,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('сессия другого типа игнорируется', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const session = makeSession('sess-2', 'node');
         fireDidStartDebugSession(session);
@@ -78,8 +72,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('onDidTerminateDebugSession удаляет запись', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const session = makeSession('sess-3', 'bsl');
         fireDidStartDebugSession(session);
@@ -90,8 +83,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('onDidTerminateDebugSession резолвит waiters с reason terminated', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const session = makeSession('sess-4', 'bsl');
         fireDidStartDebugSession(session);
@@ -110,8 +102,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('DebugAdapterTracker сохраняет lastStop при stopped event', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const session = makeSession('sess-5', 'bsl');
         fireDidStartDebugSession(session);
@@ -139,8 +130,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('DebugAdapterTracker игнорирует non-stopped events', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const session = makeSession('sess-5b', 'bsl');
         fireDidStartDebugSession(session);
@@ -158,27 +148,81 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('activate идемпотентен — повторный вызов не создаёт двойных подписок', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
-        registry.activate(ctx as never); // вызов второй раз
+        registry.activate();
+        registry.activate(); // вызов второй раз
 
         assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 1, 'только 1 start listener');
         assert.strictEqual(debugTestState.onDidTerminateDebugSessionListeners.length, 1, 'только 1 terminate listener');
         assert.strictEqual(debugTestState.registeredTrackerFactories.length, 1, 'только 1 factory');
     });
 
-    test('dispose очищает _disposables', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+    test('dispose releases subscriptions owned by the returned activation disposable', () => {
+        const activation = registry.activate();
 
         // Убеждаемся что подписки есть
         assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 1);
 
         registry.dispose();
+        activation.dispose();
 
         // После dispose слушатели убраны
         assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 0, 'start listeners очищены');
         assert.strictEqual(debugTestState.onDidTerminateDebugSessionListeners.length, 0, 'terminate listeners очищены');
+    });
+
+    test('failed partial activation rolls back every listener, preserves the registration error, and can retry', () => {
+        const debugApi = (vscode as any).debug;
+        const originalOnDidStart = debugApi.onDidStartDebugSession;
+        const originalOnDidTerminate = debugApi.onDidTerminateDebugSession;
+        const originalRegisterTracker = debugApi.registerDebugAdapterTrackerFactory;
+        const registrationError = new Error('tracker registration failed');
+        let startDisposals = 0;
+        let terminateDisposals = 0;
+
+        debugApi.onDidStartDebugSession = (listener: (session: unknown) => void) => {
+            const subscription = originalOnDidStart(listener);
+            return {
+                dispose: () => {
+                    startDisposals += 1;
+                    subscription.dispose();
+                    throw new Error('start listener cleanup failed');
+                },
+            };
+        };
+        debugApi.onDidTerminateDebugSession = (listener: (session: unknown) => void) => {
+            const subscription = originalOnDidTerminate(listener);
+            return {
+                dispose: () => {
+                    terminateDisposals += 1;
+                    subscription.dispose();
+                },
+            };
+        };
+        debugApi.registerDebugAdapterTrackerFactory = () => {
+            throw registrationError;
+        };
+
+        try {
+            assert.throws(() => registry.activate(), (error: unknown) => error === registrationError);
+            assert.strictEqual(startDisposals, 1, 'rollback must attempt to dispose the first listener');
+            assert.strictEqual(terminateDisposals, 1, 'rollback must continue after a listener disposal throws');
+            assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 0);
+            assert.strictEqual(debugTestState.onDidTerminateDebugSessionListeners.length, 0);
+            assert.strictEqual(debugTestState.registeredTrackerFactories.length, 0);
+        } finally {
+            debugApi.onDidStartDebugSession = originalOnDidStart;
+            debugApi.onDidTerminateDebugSession = originalOnDidTerminate;
+            debugApi.registerDebugAdapterTrackerFactory = originalRegisterTracker;
+        }
+
+        const activation = registry.activate();
+        assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 1);
+        assert.strictEqual(debugTestState.onDidTerminateDebugSessionListeners.length, 1);
+        assert.strictEqual(debugTestState.registeredTrackerFactories.length, 1);
+        activation.dispose();
+        activation.dispose();
+        assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 0);
+        assert.strictEqual(debugTestState.onDidTerminateDebugSessionListeners.length, 0);
     });
 });
 
@@ -196,8 +240,7 @@ suite('DebugSessionRegistry — list', () => {
     });
 
     test('list возвращает все активные bsl-сессии', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const s1 = makeSession('s-1', 'bsl');
         const s2 = makeSession('s-2', 'bsl');

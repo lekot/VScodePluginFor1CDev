@@ -154,6 +154,36 @@ suite('templateDiff readGitHead', () => {
     resetVscodeTestState();
   });
 
+  test('registration failure disposes every earlier template diff registration', () => {
+    const originalProviderRegistration = vscode.workspace.registerTextDocumentContentProvider;
+    const originalCommandRegistration = vscode.commands.registerCommand;
+    let providerDisposeCalls = 0;
+    let commandDisposeCalls = 0;
+    let commandRegistrationCalls = 0;
+    Reflect.set(vscode.workspace, 'registerTextDocumentContentProvider', () => ({
+      dispose: () => { providerDisposeCalls += 1; },
+    }));
+    Reflect.set(vscode.commands, 'registerCommand', () => {
+      commandRegistrationCalls += 1;
+      if (commandRegistrationCalls === 2) {
+        throw new Error('injected template command registration failure');
+      }
+      return { dispose: () => { commandDisposeCalls += 1; } };
+    });
+
+    try {
+      assert.throws(
+        () => registerTemplateDiffCommands(vscode.Uri.file(path.join(os.tmpdir(), 'extension'))),
+        /injected template command registration failure/u,
+      );
+      assert.strictEqual(providerDisposeCalls, 1);
+      assert.strictEqual(commandDisposeCalls, 1);
+    } finally {
+      Reflect.set(vscode.workspace, 'registerTextDocumentContentProvider', originalProviderRegistration);
+      Reflect.set(vscode.commands, 'registerCommand', originalCommandRegistration);
+    }
+  });
+
   test('uses vscode.git absolute path and preserves the full UTF-8 stdout for a Unicode path with spaces', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), '1cviewer макет с пробелом '));
     const file = path.join(directory, 'Макет формы.xml');
@@ -454,7 +484,7 @@ suite('templateDiff readGitHead', () => {
     } as unknown as vscode.ExtensionContext;
 
     try {
-      registerTemplateDiffCommands(context);
+      registerTemplateDiffCommands(context.extensionUri);
       const handler = vscodeTestState.registeredCommandHandlers.get(
         '1c-template-editor.compareWithHead'
       );
@@ -505,7 +535,7 @@ suite('templateDiff readGitHead', () => {
     } as unknown as vscode.ExtensionContext;
 
     try {
-      registerTemplateDiffCommands(context);
+      registerTemplateDiffCommands(context.extensionUri);
       const handler = vscodeTestState.registeredCommandHandlers.get(
         '1c-template-editor.compareWithHead'
       );

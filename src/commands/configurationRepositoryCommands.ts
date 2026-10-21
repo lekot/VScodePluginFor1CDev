@@ -14,19 +14,35 @@ const COMMAND_PREFIX = '1c-metadata-tree.repository.';
 export function registerConfigurationRepositoryCommands(
   state: ExtensionState,
 ): vscode.Disposable[] {
+  const disposables: vscode.Disposable[] = [];
   const register = (suffix: string, handler: (node?: TreeNode) => Promise<void>): vscode.Disposable => {
     const disposable = vscode.commands.registerCommand(`${COMMAND_PREFIX}${suffix}`, handler);
+    disposables.push(disposable);
     return disposable;
   };
-  return [
-    register('connect', (node) => runConnect(state, getSelectedNode(state, node))),
-    register('disconnect', (node) => runOperation(state, getSelectedNode(state, node), 'disconnect')),
-    register('lock', (node) => runOperation(state, getSelectedNode(state, node), 'lock')),
-    register('unlock', (node) => runOperation(state, getSelectedNode(state, node), 'unlock')),
-    register('commit', (node) => runOperation(state, getSelectedNode(state, node), 'commit')),
-    register('updateObject', (node) => runOperation(state, getSelectedNode(state, node), 'updateObject')),
-    register('updateConfiguration', (node) => runOperation(state, getSelectedNode(state, node), 'updateConfiguration')),
-  ];
+  try {
+    register('connect', (node) => runConnect(state, getSelectedNode(state, node)));
+    register('disconnect', (node) => runOperation(state, getSelectedNode(state, node), 'disconnect'));
+    register('lock', (node) => runOperation(state, getSelectedNode(state, node), 'lock'));
+    register('unlock', (node) => runOperation(state, getSelectedNode(state, node), 'unlock'));
+    register('commit', (node) => runOperation(state, getSelectedNode(state, node), 'commit'));
+    register('updateObject', (node) => runOperation(state, getSelectedNode(state, node), 'updateObject'));
+    register('updateConfiguration', (node) => runOperation(state, getSelectedNode(state, node), 'updateConfiguration'));
+    return disposables;
+  } catch (error) {
+    for (const disposable of [...disposables].reverse()) {
+      try {
+        disposable.dispose();
+      } catch (disposeError) {
+        try {
+          Logger.warn('Repository command registration rollback failed', disposeError);
+        } catch {
+          // Rollback must preserve the registration error and continue cleanup.
+        }
+      }
+    }
+    throw error;
+  }
 }
 
 type RepositoryCommand = 'disconnect' | 'lock' | 'unlock' | 'commit' | 'updateObject' | 'updateConfiguration';
