@@ -10,6 +10,8 @@ export const ROOT_LEASE_QUARANTINE_PREFIX = `${ROOT_LEASE_FILE}.claim-`;
 export const LEASE_TTL_MS = 15000;
 export const LEASE_HEARTBEAT_INTERVAL_MS = 2000;
 
+const ROOT_LEASE_HEARTBEAT_NAME_PATTERN = /^\.root-lease\.json\.([0-9a-f]{64})\.heartbeat(?:\.([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.tmp)?$/;
+
 export interface RootLeaseRecord {
   leaseId: string;
   pid: number;
@@ -38,6 +40,11 @@ export class RootLeaseOwnershipError extends MutationPlanError {
     super('PLAN_CONFLICT', message);
     this.name = 'RootLeaseOwnershipError';
   }
+}
+
+export interface RootLeaseHeartbeatTempCleanupIssue {
+  readonly targetPath: string;
+  readonly error: unknown;
 }
 
 export function rootLeaseHeartbeatPath(journalRoot: string, leaseId: string): string {
@@ -356,8 +363,7 @@ export async function cleanupStaleRootLeaseHeartbeats(
     if (!normalizedName.startsWith(heartbeatPrefix.toLowerCase()) || !normalizedName.includes('heartbeat')) {
       continue;
     }
-    const pathPattern = /^\.root-lease\.json\.([0-9a-f]{64})\.heartbeat$/;
-    const match = pathPattern.exec(entry.name);
+    const match = ROOT_LEASE_HEARTBEAT_NAME_PATTERN.exec(entry.name);
     const heartbeatPath = path.join(journalRoot, entry.name);
     if (!match) {
       return await failStaleHeartbeatCleanup(
@@ -397,11 +403,80 @@ export async function cleanupStaleRootLeaseHeartbeats(
       }
       await assertOwned();
       await fs.promises.rm(canonicalPath, { force: true });
-      Logger.info('Removed validated stale root lease heartbeat', entry.name);
+      Logger.info(
+        match[2] ? 'Removed validated stale root lease heartbeat temp artifact' : 'Removed validated stale root lease heartbeat',
+        entry.name,
+      );
     } catch (error) {
       await failStaleHeartbeatCleanup(rootPath, journalRoot, heartbeatPath, error);
     }
   }
+}
+
+export async function cleanupCurrentRootLeaseHeartbeatTemps(
+  rootPath: string,
+  journalRoot: string,
+  currentLeaseId: string,
+  assertOwned: () => Promise<void>,
+): Promise<RootLeaseHeartbeatTempCleanupIssue[]> {
+  const expectedHash = createHash('sha256').update(currentLeaseId, 'utf8').digest('hex');
+  const currentTempPrefix = `${ROOT_LEASE_FILE}.${expectedHash}.heartbeat.`;
+  let canonicalJournalRoot: string;
+  try {
+    canonicalJournalRoot = (await assertJournalNamespace(rootPath)).canonicalJournalRoot;
+  } catch (error) {
+    return [{ targetPath: journalRoot, error }];
+  }
+
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(journalRoot, { withFileTypes: true });
+  } catch (error) {
+    return [{ targetPath: journalRoot, error }];
+  }
+
+  const failures: RootLeaseHeartbeatTempCleanupIssue[] = [];
+  for (const entry of entries) {
+    const normalizedName = entry.name.toLowerCase();
+    if (!normalizedName.startsWith(currentTempPrefix.toLowerCase()) || !normalizedName.endsWith('.tmp')) {
+      continue;
+    }
+    const tempPath = path.join(journalRoot, entry.name);
+    try {
+      const match = ROOT_LEASE_HEARTBEAT_NAME_PATTERN.exec(entry.name);
+      if (!match || match[1] !== expectedHash || !match[2]) {
+        throw new Error('Current root lease heartbeat temp name is malformed.');
+      }
+      if (entry.isSymbolicLink() || !entry.isFile()) {
+        throw new Error('Current root lease heartbeat temp is not a regular file.');
+      }
+      const expectedPath = path.join(canonicalJournalRoot, entry.name);
+      const canonicalPath = await fs.promises.realpath(tempPath);
+      if (!isPathInside(canonicalJournalRoot, canonicalPath)
+        || !isSamePath(canonicalPath, expectedPath)) {
+        throw new Error('Current root lease heartbeat temp path is not canonical within the journal root.');
+      }
+      const raw = await fs.promises.readFile(canonicalPath, 'utf8');
+      const parsed = JSON.parse(raw) as { leaseId?: unknown };
+      if (typeof parsed.leaseId !== 'string') {
+        throw new Error('Current root lease heartbeat temp has no lease identifier.');
+      }
+      const heartbeat = parseRootLeaseHeartbeat(raw, parsed.leaseId);
+      const recordHash = createHash('sha256').update(heartbeat.leaseId, 'utf8').digest('hex');
+      if (heartbeat.leaseId !== currentLeaseId || recordHash !== expectedHash) {
+        throw new Error('Current root lease heartbeat temp does not match the owned lease.');
+      }
+      await assertOwned();
+      await fs.promises.rm(canonicalPath, { force: true });
+      Logger.info('Removed validated current root lease heartbeat temp artifact', entry.name);
+    } catch (error) {
+      failures.push({ targetPath: tempPath, error });
+      if (error instanceof RootLeaseOwnershipError) {
+        break;
+      }
+    }
+  }
+  return failures;
 }
 
 async function failStaleHeartbeatCleanup(

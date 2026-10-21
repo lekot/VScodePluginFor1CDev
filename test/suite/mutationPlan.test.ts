@@ -6,6 +6,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { hashContent } from '../../src/services/configurationSession/atomicFileStorage';
 import { MutationPlanExecutor, MutationPlanError, calculateDirectoryFingerprint } from '../../src/services/configurationSession/mutationPlan';
+import { isProcessAlive, rootLeaseHeartbeatPath, writeRootLeaseHeartbeat } from '../../src/services/configurationSession/rootLease';
 import { Logger } from '../../src/utils/logger';
 import {
   assertJournalNamespace,
@@ -1214,6 +1215,318 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(fs.existsSync(orphanOp), false);
     assert.strictEqual(fs.existsSync(pendingOp), false);
     assert.strictEqual(fs.existsSync(journalRoot), false);
+  });
+
+  test('#349: malformed lease claims and heartbeat records fail closed', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    const malformedClaimPath = path.join(journalRoot, '.root-lease.json.claim-v2-invalid');
+    const now = Date.now() - 60_000;
+    await fs.promises.writeFile(malformedClaimPath, JSON.stringify({
+      leaseId: 'malformed-claim',
+      pid: 2147483647,
+      createdAt: now,
+      heartbeatAt: now,
+      operationId: 'malformed-claim-test',
+    }), 'utf8');
+
+    await assert.rejects(
+      new MutationPlanExecutor(tempDir).recover(),
+      (error: unknown) => error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT',
+    );
+    assert.strictEqual(fs.existsSync(malformedClaimPath), true, 'malformed claim markers must remain untouched');
+    await fs.promises.rm(malformedClaimPath, { force: true });
+
+    const executor = new MutationPlanExecutor(tempDir);
+    const malformedRecords = [
+      { leaseId: 'missing-record-id', record: JSON.stringify({ heartbeatAt: Date.now() }) },
+      { leaseId: 'invalid-heartbeat-time', record: JSON.stringify({ leaseId: 'invalid-heartbeat-time', heartbeatAt: 'invalid' }) },
+      { leaseId: 'non-object-heartbeat', record: '[]' },
+    ];
+    for (const malformed of malformedRecords) {
+      const heartbeatHash = createHash('sha256').update(malformed.leaseId, 'utf8').digest('hex');
+      const heartbeatPath = path.join(journalRoot, `.root-lease.json.${heartbeatHash}.heartbeat`);
+      await fs.promises.writeFile(heartbeatPath, malformed.record, 'utf8');
+      await assert.rejects(
+        executor.recover(),
+        (error: unknown) => error instanceof MutationPlanError
+          && error.code === 'RECOVERY_REQUIRED'
+          && error.message.includes('heartbeat'),
+      );
+      assert.strictEqual(fs.existsSync(heartbeatPath), true, 'malformed sidecars must remain untouched');
+      await fs.promises.rm(heartbeatPath, { force: true });
+    }
+  });
+
+  test('#349: recover removes a valid heartbeat temp left by failed rename and cleanup', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    const leaseId = 'heartbeat-temp-rename-cleanup';
+    const heartbeatPath = rootLeaseHeartbeatPath(journalRoot, leaseId);
+    const originalRename = fs.promises.rename;
+    const originalRm = fs.promises.rm;
+    let renameFailed = false;
+    let cleanupFailed = false;
+    (fs.promises as any).rename = async (sourcePath: fs.PathLike, targetPath: fs.PathLike) => {
+      if (!renameFailed && path.resolve(String(targetPath)) === path.resolve(heartbeatPath)) {
+        renameFailed = true;
+        const error = new Error('controlled EBUSY during heartbeat rename') as NodeJS.ErrnoException;
+        error.code = 'EBUSY';
+        throw error;
+      }
+      return originalRename.call(fs.promises, sourcePath, targetPath);
+    };
+    (fs.promises as any).rm = async (targetPath: fs.PathLike, options?: fs.RmDirOptions) => {
+      const name = path.basename(String(targetPath));
+      if (renameFailed && !cleanupFailed && name.startsWith(path.basename(heartbeatPath)) && name.endsWith('.tmp')) {
+        cleanupFailed = true;
+        const error = new Error('controlled EPERM during heartbeat temp cleanup') as NodeJS.ErrnoException;
+        error.code = 'EPERM';
+        throw error;
+      }
+      return originalRm.call(fs.promises, targetPath, options);
+    };
+
+    Logger.clearBuffer();
+    try {
+      await assert.rejects(
+        writeRootLeaseHeartbeat(heartbeatPath, leaseId, Date.now()),
+        (error: unknown) => error instanceof Error
+          && 'code' in error
+          && error.code === 'EBUSY',
+      );
+    } finally {
+      (fs.promises as any).rename = originalRename;
+      (fs.promises as any).rm = originalRm;
+    }
+
+    assert.strictEqual(renameFailed, true);
+    assert.strictEqual(cleanupFailed, true);
+    assert.ok(Logger.getBufferedContent().includes('"stage":"root-lease-heartbeat-temp-remove"'));
+    assert.ok(Logger.getBufferedContent().includes('"fsCode":"EPERM"'));
+    const tempEntries = (await fs.promises.readdir(journalRoot)).filter((name) => name.startsWith(`${path.basename(heartbeatPath)}.`));
+    assert.strictEqual(tempEntries.length, 1, 'the actual write must leave one recoverable temp artifact');
+    const tempPath = path.join(journalRoot, tempEntries[0]!);
+    const writtenHeartbeat = JSON.parse(await fs.promises.readFile(tempPath, 'utf8')) as { leaseId?: unknown; heartbeatAt?: unknown };
+    assert.strictEqual(writtenHeartbeat.leaseId, leaseId, 'temp content must be the completed heartbeat record');
+    assert.strictEqual(typeof writtenHeartbeat.heartbeatAt, 'number');
+
+    await new MutationPlanExecutor(tempDir).recover();
+    assert.strictEqual(fs.existsSync(tempPath), false, 'recovery must remove a validated stale heartbeat temp');
+    assert.strictEqual(fs.existsSync(journalRoot), false);
+  });
+
+  test('#349: malformed and hash-mismatched heartbeat temp files remain fail-closed', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    const malformedLeaseId = 'partial-heartbeat-temp';
+    const malformedPath = `${rootLeaseHeartbeatPath(journalRoot, malformedLeaseId)}.${randomUUID()}.tmp`;
+    const malformedNamePath = `${rootLeaseHeartbeatPath(journalRoot, 'malformed-heartbeat-temp-name')}.not-a-uuid.tmp`;
+    const mismatchLeaseId = 'heartbeat-temp-name-owner';
+    const mismatchPath = `${rootLeaseHeartbeatPath(journalRoot, mismatchLeaseId)}.${randomUUID()}.tmp`;
+    await fs.promises.writeFile(malformedPath, '{"leaseId":', 'utf8');
+    await fs.promises.writeFile(malformedNamePath, JSON.stringify({ leaseId: 'malformed-heartbeat-temp-name', heartbeatAt: Date.now() }), 'utf8');
+    await fs.promises.writeFile(mismatchPath, JSON.stringify({ leaseId: 'heartbeat-temp-record-owner', heartbeatAt: Date.now() }), 'utf8');
+
+    for (const tempPath of [malformedPath, malformedNamePath, mismatchPath]) {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).recover(),
+        (error: unknown) => error instanceof MutationPlanError
+          && error.code === 'RECOVERY_REQUIRED'
+          && error.message.includes('heartbeat'),
+      );
+      assert.strictEqual(fs.existsSync(tempPath), true, 'unverifiable heartbeat temp records must remain');
+      await fs.promises.rm(tempPath, { force: true });
+    }
+  });
+
+  test('#349: heartbeat temp protected by a foreign active claim remains untouched', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    const leaseId = 'foreign-claim-heartbeat-temp';
+    const now = Date.now();
+    const claimPath = path.join(journalRoot, `.root-lease.json.claim-v2-${now}-${process.pid}-${randomUUID()}`);
+    const tempPath = `${rootLeaseHeartbeatPath(journalRoot, leaseId)}.${randomUUID()}.tmp`;
+    await fs.promises.writeFile(claimPath, JSON.stringify({
+      leaseId,
+      pid: process.pid,
+      createdAt: now,
+      heartbeatAt: now,
+      operationId: 'foreign-claim-temp-test',
+    }), 'utf8');
+    await fs.promises.writeFile(tempPath, JSON.stringify({ leaseId, heartbeatAt: now }), 'utf8');
+
+    await assert.rejects(
+      new MutationPlanExecutor(tempDir).recover(),
+      (error: unknown) => error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT',
+    );
+    assert.strictEqual(fs.existsSync(claimPath), true);
+    assert.strictEqual(fs.existsSync(tempPath), true);
+  });
+
+  test('#349: heartbeat temp symlink remains fail-closed and preserves its target', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    const leaseId = 'symlink-heartbeat-temp';
+    const tempPath = `${rootLeaseHeartbeatPath(journalRoot, leaseId)}.${randomUUID()}.tmp`;
+    const targetDir = path.join(tempDir, 'heartbeat-temp-symlink-target');
+    await fs.promises.mkdir(targetDir);
+    const targetFile = path.join(targetDir, 'payload.txt');
+    await fs.promises.writeFile(targetFile, 'keep this target', 'utf8');
+    await createDirectorySymlink(targetDir, tempPath);
+
+    await assert.rejects(
+      new MutationPlanExecutor(tempDir).recover(),
+      (error: unknown) => error instanceof MutationPlanError
+        && error.code === 'RECOVERY_REQUIRED'
+        && error.message.includes('heartbeat'),
+    );
+    assert.strictEqual(fs.lstatSync(tempPath).isSymbolicLink(), true);
+    assert.strictEqual(await fs.promises.readFile(targetFile, 'utf8'), 'keep this target');
+  });
+
+  test('#349: release removes its current lease heartbeat temp while ownership is still fenced', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const originalWriteFile = fs.promises.writeFile;
+    const originalRm = fs.promises.rm;
+    let currentTempPath: string | undefined;
+    let tempRemoveSawOwnedLease = false;
+    (fs.promises as any).writeFile = async (
+      targetPath: fs.PathLike,
+      data: string | NodeJS.ArrayBufferView,
+      options?: fs.WriteFileOptions,
+    ) => {
+      const result = await originalWriteFile.call(fs.promises, targetPath, data, options);
+      if (!currentTempPath && path.basename(String(targetPath)) === '.root-lease.json') {
+        const { leaseId } = JSON.parse(String(data)) as { leaseId: string };
+        currentTempPath = `${rootLeaseHeartbeatPath(journalRoot, leaseId)}.${randomUUID()}.tmp`;
+        await originalWriteFile.call(fs.promises, currentTempPath, JSON.stringify({ leaseId, heartbeatAt: Date.now() }), 'utf8');
+      }
+      return result;
+    };
+    (fs.promises as any).rm = async (targetPath: fs.PathLike, options?: fs.RmDirOptions) => {
+      if (currentTempPath && path.basename(String(targetPath)) === path.basename(currentTempPath)) {
+        tempRemoveSawOwnedLease = fs.existsSync(path.join(journalRoot, '.root-lease.json'));
+      }
+      return originalRm.call(fs.promises, targetPath, options);
+    };
+
+    try {
+      await new MutationPlanExecutor(tempDir).recover();
+    } finally {
+      (fs.promises as any).writeFile = originalWriteFile;
+      (fs.promises as any).rm = originalRm;
+    }
+
+    assert.ok(currentTempPath);
+    assert.strictEqual(fs.existsSync(currentTempPath), false, 'recover reported success while its current lease temp remained');
+    assert.strictEqual(tempRemoveSawOwnedLease, true, 'the current temp must be removed before the owned lease is released');
+    assert.strictEqual(fs.existsSync(journalRoot), false);
+  });
+
+  test('#349: terminal current heartbeat temp cleanup failure makes recover report incomplete cleanup', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const originalWriteFile = fs.promises.writeFile;
+    const originalRm = fs.promises.rm;
+    let currentTempPath: string | undefined;
+    let tempCleanupAttempts = 0;
+    (fs.promises as any).writeFile = async (
+      targetPath: fs.PathLike,
+      data: string | NodeJS.ArrayBufferView,
+      options?: fs.WriteFileOptions,
+    ) => {
+      const result = await originalWriteFile.call(fs.promises, targetPath, data, options);
+      if (!currentTempPath && path.basename(String(targetPath)) === '.root-lease.json') {
+        const { leaseId } = JSON.parse(String(data)) as { leaseId: string };
+        currentTempPath = `${rootLeaseHeartbeatPath(journalRoot, leaseId)}.${randomUUID()}.tmp`;
+        await originalWriteFile.call(fs.promises, currentTempPath, JSON.stringify({ leaseId, heartbeatAt: Date.now() }), 'utf8');
+      }
+      return result;
+    };
+    (fs.promises as any).rm = async (targetPath: fs.PathLike, options?: fs.RmDirOptions) => {
+      if (currentTempPath && path.basename(String(targetPath)) === path.basename(currentTempPath)) {
+        tempCleanupAttempts++;
+        const error = new Error('controlled EPERM during current heartbeat temp cleanup') as NodeJS.ErrnoException;
+        error.code = 'EPERM';
+        throw error;
+      }
+      return originalRm.call(fs.promises, targetPath, options);
+    };
+
+    Logger.clearBuffer();
+    try {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).recover(),
+        (error: unknown) => error instanceof MutationPlanError
+          && error.code === 'RECOVERY_REQUIRED'
+          && error.message.includes('root-lease-heartbeat-temp'),
+      );
+    } finally {
+      (fs.promises as any).writeFile = originalWriteFile;
+      (fs.promises as any).rm = originalRm;
+    }
+
+    assert.ok(currentTempPath);
+    assert.strictEqual(tempCleanupAttempts, 1);
+    assert.strictEqual(fs.existsSync(currentTempPath), true);
+    const diagnostic = Logger.getBufferedContent();
+    assert.ok(diagnostic.includes('"stage":"root-lease-heartbeat-temp-cleanup"'), diagnostic);
+    assert.ok(diagnostic.includes('"fsCode":"EPERM"'), diagnostic);
+    assert.ok(diagnostic.includes(`"targetName":"${path.basename(currentTempPath)}"`), diagnostic);
+
+    await new MutationPlanExecutor(tempDir).recover();
+    assert.strictEqual(fs.existsSync(currentTempPath), false, 'later recovery must remove the now-stale validated temp');
+    assert.strictEqual(fs.existsSync(journalRoot), false);
+  });
+
+  test('#349: root lease process liveness rejects invalid process identifiers', () => {
+    assert.strictEqual(isProcessAlive(0), false);
+    assert.strictEqual(isProcessAlive(-1), false);
+    assert.strictEqual(isProcessAlive(Number.NaN), false);
+  });
+
+  test('#349: recover preserves unknown malformed heartbeat sidecar names', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    const malformedPath = path.join(journalRoot, '.root-lease.json.foreign-heartbeat');
+    await fs.promises.writeFile(malformedPath, '{}', 'utf8');
+
+    await assert.rejects(
+      new MutationPlanExecutor(tempDir).recover(),
+      (error: unknown) => error instanceof MutationPlanError
+        && error.code === 'RECOVERY_REQUIRED'
+        && error.message.includes('heartbeat'),
+    );
+    assert.strictEqual(fs.existsSync(malformedPath), true);
+  });
+
+  test('#349: recover rejects a heartbeat whose canonical path changes during inspection', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    const leaseId = 'heartbeat-canonical-path-race';
+    const heartbeatPath = rootLeaseHeartbeatPath(journalRoot, leaseId);
+    await fs.promises.writeFile(heartbeatPath, JSON.stringify({ leaseId, heartbeatAt: Date.now() - 60_000 }), 'utf8');
+
+    const originalRealpath = fs.promises.realpath;
+    (fs.promises as any).realpath = async (targetPath: unknown, ...options: unknown[]) => {
+      if (path.resolve(String(targetPath)) === path.resolve(heartbeatPath)) {
+        return path.join(tempDir, 'outside-heartbeat-target');
+      }
+      return (originalRealpath as any).call(fs.promises, targetPath, ...options);
+    };
+
+    try {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).recover(),
+        (error: unknown) => error instanceof MutationPlanError
+          && error.code === 'RECOVERY_REQUIRED'
+          && error.message.includes('canonical'),
+      );
+    } finally {
+      (fs.promises as any).realpath = originalRealpath;
+    }
+
+    assert.strictEqual(fs.existsSync(heartbeatPath), true, 'a sidecar that fails canonical inspection must remain');
   });
 
   test('#349: recover() reports its own heartbeat cleanup failure and a later recovery removes the stale sidecar', async () => {

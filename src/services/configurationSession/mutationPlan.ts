@@ -16,6 +16,7 @@ import { filesystemErrorCode, logCleanupFailure } from './journalCleanupDiagnost
 import type { RootLeaseCleanupFailure } from './journalCleanupDiagnostics';
 import {
   assertRootLeaseOwned,
+  cleanupCurrentRootLeaseHeartbeatTemps,
   cleanupStaleRootLeaseHeartbeats,
   ensureRootLeaseQuarantineClear,
   isProcessAlive,
@@ -380,20 +381,42 @@ export class MutationPlanExecutor {
       try {
         await assertRootLeaseOwned(leasePath, this.journalRoot, leaseId);
         ownershipVerified = true;
-        const removed = await removeRootLeaseIfUnchanged(leasePath, leaseId);
-        if (!removed) {
-          ownershipLost = true;
-          ownershipVerified = false;
-          await report(
-            'root-lease-release',
-            new Error('Root lease was replaced or removed before release completed.'),
-            leasePath,
-          );
+        const heartbeatTempIssues = await cleanupCurrentRootLeaseHeartbeatTemps(
+          this.rootPath,
+          this.journalRoot,
+          leaseId,
+          async () => assertRootLeaseOwned(leasePath, this.journalRoot, leaseId),
+        );
+        let ownershipCheckFailed = false;
+        for (const issue of heartbeatTempIssues) {
+          const failure = await report('root-lease-heartbeat-temp-cleanup', issue.error, issue.targetPath);
+          const issueIsOwnershipError = issue.error instanceof RootLeaseOwnershipError;
+          if (!issueIsOwnershipError || issue.error.reason !== 'lost') {
+            cleanupFailures.push(failure);
+          }
+          if (issueIsOwnershipError) {
+            ownershipLost = issue.error.reason === 'lost';
+            ownershipVerified = false;
+            ownershipCheckFailed = true;
+            break;
+          }
+        }
+        if (!ownershipCheckFailed) {
+          const removed = await removeRootLeaseIfUnchanged(leasePath, leaseId);
+          if (!removed) {
+            ownershipLost = true;
+            ownershipVerified = false;
+            await report(
+              'root-lease-release',
+              new Error('Root lease was replaced or removed before release completed.'),
+              leasePath,
+            );
+          }
         }
       } catch (error) {
         const failure = await report('root-lease-release', error, leasePath);
         ownershipLost = error instanceof RootLeaseOwnershipError && error.reason === 'lost';
-        if (ownershipLost) { ownershipVerified = false; }
+        if (error instanceof RootLeaseOwnershipError) { ownershipVerified = false; }
         if (!ownershipLost) {
           cleanupFailures.push(failure);
         }
