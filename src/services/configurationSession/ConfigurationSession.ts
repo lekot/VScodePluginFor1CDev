@@ -509,7 +509,7 @@ export class ConfigurationSession {
     try {
       lease.reconciliationRequested = this.shouldReconcile(request, outcome) || lease.reconciliationRequested;
     } catch (error) {
-      Logger.warn('Nested configuration mutation reconciliation predicate failed', error);
+      warnSafely('Nested configuration mutation reconciliation predicate failed', error);
     }
     return outcome;
   }

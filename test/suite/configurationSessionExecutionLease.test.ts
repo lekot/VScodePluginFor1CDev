@@ -242,6 +242,52 @@ suite('ConfigurationSession scoped execution lease', () => {
     }
   });
 
+  test('preserves an outer committed receipt when a nested predicate and diagnostic logger both throw', async () => {
+    const fixture = await createConfigurationFixture('configuration-session-nested-predicate-log-failure-');
+    let observerCalls = 0;
+    const ObserverAwareSession = ConfigurationSession as unknown as new (
+      identity: ConfigurationSession['identity'],
+      observer: () => Promise<ReconciliationOutcome>,
+    ) => ConfigurationSession;
+    const session = new ObserverAwareSession(fixture.session.identity, async () => {
+      observerCalls++;
+      return { status: 'succeeded' };
+    });
+    const originalWarn = Logger.warn;
+    Logger.warn = () => { throw new Error('diagnostic output channel failed'); };
+
+    try {
+      const savedPath = path.join(fixture.root, 'nested-committed-before-reload.txt');
+      const outer = await mustSettle(session.enqueue({
+        kind: 'test.outer-write',
+        execute: async () => {
+          const nested = await session.enqueue({
+            kind: 'test.nested-write',
+            shouldReconcile: () => { throw new Error('nested reconciliation predicate failed'); },
+            execute: async () => {
+              await fs.promises.writeFile(savedPath, 'saved', 'utf8');
+              return 'saved';
+            },
+          });
+          assert.strictEqual(nested.status, 'committed');
+          assert.strictEqual(nested.value, 'saved');
+          return 'outer-completed';
+        },
+      }), 'The outer committed receipt must settle when nested predicate diagnostics fail.');
+
+      assert.strictEqual(outer.status, 'committed');
+      assert.strictEqual(outer.value, 'outer-completed');
+      assert.deepStrictEqual(outer.reconciliation, { status: 'succeeded' });
+      assert.strictEqual(await fs.promises.readFile(savedPath, 'utf8'), 'saved');
+      assert.strictEqual(observerCalls, 1);
+      assert.strictEqual(session.snapshotVersion, 1);
+    } finally {
+      Logger.warn = originalWarn;
+      await mustSettle(session.dispose(), 'Disposing the session must release the post-commit observer count.');
+      await fixture.dispose();
+    }
+  });
+
   test('an outer write notifies once when a nested plan reuses its writer lease', async () => {
     const fixture = await createConfigurationFixture('configuration-session-nested-reconcile-');
     const commits: Array<{ operationId: string; snapshotVersion: number; kind: string }> = [];

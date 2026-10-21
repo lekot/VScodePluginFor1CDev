@@ -6,6 +6,9 @@ import * as path from 'path';
 import '../helpers/vscodeStubRegister';
 import { registerAgentCommands } from '../../src/agent/agentCommands';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
+import { createDeployAgentOperationRunner } from '../../src/agent/deployAgentOperationRunner';
+import type { AgentResolutionContext, ConfigurationScopedParams } from '../../src/agent/types';
+import type { ConfigurationId, ConfigurationIdentity } from '../../src/services/configurationSession/types';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
 import {
   ConfigurationSession,
@@ -203,6 +206,49 @@ suite('Agent configuration routing', () => {
     } finally {
       setConfigurationMutationEngine(previousMutationEngine);
     }
+  });
+
+  test('does not reconcile a failed pull result with no possible-effect details', async () => {
+    const reconciliationDecisions: boolean[] = [];
+    const runForConfiguration = async <T>(
+      _params: ConfigurationScopedParams,
+      _capability: keyof ConfigurationIdentity['capabilities'],
+      _kind: string | undefined,
+      operation: (configRoot: string, context: AgentResolutionContext) => Promise<AgentResult<T>>,
+      _cancellation?: import('vscode').CancellationToken,
+      executionOptions?: MutationExecutionOptions<AgentResult<T>>,
+    ): Promise<AgentResult<T>> => {
+      const value = await operation(tempDir, {} as AgentResolutionContext);
+      const outcome: MutationOutcome<AgentResult<T>> = {
+        configurationId: 'agent-pull-test' as ConfigurationId,
+        operationId: 'agent-pull-operation',
+        snapshotVersion: 0,
+        status: 'failed',
+        value,
+      };
+      reconciliationDecisions.push(executionOptions?.shouldReconcile?.(outcome) ?? false);
+      return {
+        ...value,
+        configurationId: outcome.configurationId,
+        operationId: outcome.operationId,
+        snapshotVersion: outcome.snapshotVersion,
+      };
+    };
+    const runDeployAgentOperation = createDeployAgentOperationRunner(
+      runForConfiguration,
+      {} as never,
+    );
+
+    const result = await runDeployAgentOperation(
+      {},
+      'agent.pullSelectedObjects',
+      'agent.pullSelectedObjects',
+      async () => ({ success: false, error: 'export failed before effects were known' }),
+    );
+
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result.error, 'export failed before effects were known');
+    assert.deepStrictEqual(reconciliationDecisions, [false]);
   });
 
   test('rejects 4/6-segment rename paths before effects or journaling', async () => {
