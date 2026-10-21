@@ -12,6 +12,7 @@ import type {
 import type { AgentResult, ConfigurationScopedParams, AgentResolutionContext } from './types';
 import type { AgentTaskManager } from './agentTaskManager';
 import type { ConfigurationIdentity } from '../services/configurationSession/types';
+import type { MutationExecutionOptions, MutationOutcome } from '../services/configurationSession/ConfigurationSession';
 import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 import type { SkdOperationsDeps } from './agentSkdOperations';
 import type { SkdConfigurationSelector } from './agentSkdTypes';
@@ -25,13 +26,15 @@ export interface AgentSkdCommandsDeps {
         mutationKind: string | undefined,
         operation: (configRoot: string, context: AgentResolutionContext) => Promise<AgentResult<T>>,
         cancellation?: vscode.CancellationToken,
+        executionOptions?: MutationExecutionOptions<AgentResult<T>>,
     ) => Promise<AgentResult<T>>;
+    /** Retained for source compatibility; post-commit reload is owned by the session observer. */
     readonly requestConfigurationReload?: RequestConfigurationReload;
     readonly runPowerShellScript?: SkdOperationsDeps['runPowerShellScript'];
 }
 
 export function registerAgentSkdCommands(deps: AgentSkdCommandsDeps): vscode.Disposable[] {
-    const { extensionPath, taskManager, runForConfiguration, requestConfigurationReload, runPowerShellScript } = deps;
+    const { extensionPath, taskManager, runForConfiguration, runPowerShellScript } = deps;
 
     const runSkdAgentOperation = async <T>(
         params: ConfigurationScopedParams & SkdConfigurationSelector & { readonly background?: boolean },
@@ -43,28 +46,16 @@ export function registerAgentSkdCommands(deps: AgentSkdCommandsDeps): vscode.Dis
         requestToken?: vscode.CancellationToken,
     ): Promise<AgentResult<unknown>> => {
         const run = async (token?: vscode.CancellationToken, reportStage?: (message: string) => void) => {
-            let configRoot: string | undefined;
-            const result = await runForConfiguration(params, capability, mutationKind, async (resolvedRoot) => {
-                configRoot = resolvedRoot;
-                return operation(resolvedRoot, token, reportStage);
-            }, token);
-            if (result.success && reloadAfterCommit && configRoot && requestConfigurationReload) {
-                try {
-                    await requestConfigurationReload(configRoot, 'agent-mutation');
-                    return { ...result, reconciliation: { status: 'succeeded' as const } };
-                } catch (error) {
-                    const reconciliation: NonNullable<AgentResult['reconciliation']> = {
-                        status: 'failed',
-                        code: errorCode(error),
-                        message: error instanceof Error ? error.message : String(error),
-                    };
-                    return {
-                        ...result,
-                        reconciliation,
-                    };
-                }
-            }
-            return result;
+            return runForConfiguration(params, capability, mutationKind, (resolvedRoot) =>
+                operation(resolvedRoot, token, reportStage), token, {
+                reconcile: reloadAfterCommit,
+                ...(reloadAfterCommit ? {} : { commitWhen: () => false }),
+                ...(reloadAfterCommit ? {
+                    shouldReconcile: (outcome: MutationOutcome<AgentResult<T>>) =>
+                        outcome.status === 'committed'
+                        || (outcome.status === 'failed' && isSkdInDoubt(outcome.value)),
+                } : {}),
+            });
         };
         if (params.background === true) {
             return taskManager.start(name, async (token, reportStage) => {
@@ -171,8 +162,9 @@ export function registerAgentSkdCommands(deps: AgentSkdCommandsDeps): vscode.Dis
     ];
 }
 
-function errorCode(error: unknown): string {
-    return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
-        ? error.code
-        : 'CONFIGURATION_RELOAD_FAILED';
+function isSkdInDoubt(result: AgentResult<unknown> | undefined): boolean {
+    if (result?.code !== 'SKD_OPERATION_IN_DOUBT' || !result.data || typeof result.data !== 'object') {
+        return false;
+    }
+    return 'status' in result.data && result.data.status === 'inDoubt';
 }

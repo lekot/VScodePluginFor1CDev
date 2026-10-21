@@ -29,6 +29,8 @@ export interface DiscoveredConfiguration {
   readonly format?: ConfigFormat;
 }
 
+export type ConfigurationSessionFactory = (identity: ConfigurationIdentity) => ConfigurationSession;
+
 interface PersistedIdentityEntry {
   readonly configurationId: ConfigurationId;
   rootUri: string;
@@ -66,7 +68,10 @@ export class WorkspaceRegistry {
   private identityStoreLoaded = false;
   private identityStore: PersistedIdentityStore = { version: 1, entries: [], tombstones: [] };
 
-  constructor(private readonly identityStorePath?: string) {}
+  constructor(
+    private readonly identityStorePath?: string,
+    private readonly createSession: ConfigurationSessionFactory = (identity) => new ConfigurationSession(identity),
+  ) {}
 
   async refresh(discovered: readonly DiscoveredConfiguration[]): Promise<void> {
     this.ensureActive();
@@ -96,7 +101,7 @@ export class WorkspaceRegistry {
     const nextSessions = new Map<ConfigurationId, ConfigurationSession>();
     const nextDescriptors = new Map<ConfigurationId, ConfigurationDescriptor>();
     for (const [id, identity] of nextIdentities) {
-      const session = this.sessions.get(id) ?? new ConfigurationSession(identity);
+      const session = this.sessions.get(id) ?? this.createSession(identity);
       session.updateIdentity(identity);
       nextSessions.set(id, session);
       nextDescriptors.set(id, {
@@ -151,7 +156,7 @@ export class WorkspaceRegistry {
     const facts = await discoverIdentityFacts(candidate);
     const identity = this.resolveIdentity(facts);
     const existing = this.sessions.get(identity.configurationId);
-    const session = existing ?? new ConfigurationSession(identity);
+    const session = existing ?? this.createSession(identity);
     session.updateIdentity(identity);
 
     // Clean up any stale session that previously owned this rootPath under a different configurationId

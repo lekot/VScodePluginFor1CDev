@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import type { ConfigurationIdentity } from '../services/configurationSession/types';
+import type { MutationExecutionOptions, MutationOutcome } from '../services/configurationSession/ConfigurationSession';
 import type { AgentResolutionContext, AgentResult, ConfigurationScopedParams } from './types';
 import type { AgentTaskManager } from './agentTaskManager';
+import { hasSuccessfulAgentPullWrite } from './pullReconciliation';
 
 type RunForConfiguration = <T>(
   params: ConfigurationScopedParams,
@@ -9,17 +11,13 @@ type RunForConfiguration = <T>(
   mutationKind: string | undefined,
   operation: (configRoot: string, context: AgentResolutionContext) => Promise<AgentResult<T>>,
   cancellation?: vscode.CancellationToken,
+  executionOptions?: MutationExecutionOptions<AgentResult<T>>,
 ) => Promise<AgentResult<T>>;
 
 type DeployOperation<T> = (
   configRoot: string,
   token?: vscode.CancellationToken,
   reportStage?: (message: string) => void,
-) => Promise<AgentResult<T>>;
-
-type PostCommitHook<T> = (
-  result: AgentResult<T>,
-  configRoot: string,
 ) => Promise<AgentResult<T>>;
 
 export function createDeployAgentOperationRunner(
@@ -32,31 +30,21 @@ export function createDeployAgentOperationRunner(
     mutationKind: string | undefined,
     operation: DeployOperation<T>,
     requestToken?: vscode.CancellationToken,
-    postCommit?: PostCommitHook<T>,
   ): Promise<AgentResult<unknown>> {
     const run = async (token?: vscode.CancellationToken, reportStage?: (message: string) => void): Promise<AgentResult<T>> => {
-      let resolvedConfigRoot: string | undefined;
-      const result = await runForConfiguration(
+      return runForConfiguration(
         params,
         'process',
         mutationKind,
-        (configRoot) => {
-          resolvedConfigRoot = configRoot;
-          return operation(configRoot, token, reportStage);
-        },
+        (configRoot) => operation(configRoot, token, reportStage),
         token,
+        {
+          reconcile: mutationKind === 'agent.pullSelectedObjects',
+          commitWhen: (result) => mutationKind === 'agent.pullSelectedObjects' && hasSuccessfulAgentPullWrite(result),
+          shouldReconcile: (outcome) => mutationKind === 'agent.pullSelectedObjects'
+            && (outcome.status === 'committed' || isUncertainPullOutcome(outcome)),
+        },
       );
-      if (
-        postCommit
-        && result.success
-        && result.configurationId
-        && result.operationId
-        && typeof result.snapshotVersion === 'number'
-        && resolvedConfigRoot
-      ) {
-        return postCommit(result, resolvedConfigRoot);
-      }
-      return result;
     };
 
     if (params.background === true) {
@@ -67,4 +55,12 @@ export function createDeployAgentOperationRunner(
     }
     return run(requestToken);
   };
+}
+
+function isUncertainPullOutcome<T>(outcome: MutationOutcome<AgentResult<T>>): boolean {
+  if (outcome.status !== 'failed' || !outcome.value?.data || typeof outcome.value.data !== 'object') {
+    return false;
+  }
+  const data = outcome.value.data as { summary?: { inDoubt?: unknown } };
+  return typeof data.summary?.inDoubt === 'number' && data.summary.inDoubt > 0;
 }

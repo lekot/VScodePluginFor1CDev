@@ -6,10 +6,16 @@ import {
   configureConfigurationMutationGateway,
   resetConfigurationMutationGateway,
   runConfigurationMutation,
+  runConfigurationMutationOutcome,
   runConfigurationPlan,
+  runConfigurationPlanOutcome,
   runExclusiveConfigurationOperation,
 } from '../../src/services/configurationSession/configurationMutationGateway';
-import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
+import {
+  ConfigurationSession,
+  type MutationExecutionOptions,
+  type MutationOutcome,
+} from '../../src/services/configurationSession/ConfigurationSession';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { hashContent } from '../../src/services/configurationSession/atomicFileStorage';
 import { MutationPlan, MutationPlanExecutor } from '../../src/services/configurationSession/mutationPlan';
@@ -145,6 +151,94 @@ suite('configurationMutationGateway', () => {
       assert.strictEqual(called, true);
     } finally {
       gateway.dispose();
+    }
+  });
+
+  test('routes typed mutation and plan outcomes with execution metadata and fails closed without outcome runners', async () => {
+    const sentinel = configureConfigurationMutationGateway(
+      async (_path, _kind, operation) => operation(),
+      async (_path, plan) => plan.result,
+    );
+    resetConfigurationMutationGateway();
+
+    try {
+      await assert.rejects(
+        runConfigurationMutationOutcome('/workspace/project/Configuration.xml', 'test.outcome', async () => 'unused'),
+        (error: any) => error?.code === 'RUNNER_NOT_CONFIGURED',
+      );
+      await assert.rejects(
+        runConfigurationPlanOutcome('/workspace/project/Configuration.xml', {
+          kind: 'test.outcome-plan', steps: [], result: 'unused',
+        }),
+        (error: any) => error?.code === 'RUNNER_NOT_CONFIGURED',
+      );
+
+      const mutationOptions: MutationExecutionOptions<string> = {
+        reconcile: false,
+        commitWhen: (value) => value === 'mutation-result',
+      };
+      const planOptions: MutationExecutionOptions<string> = {
+        shouldReconcile: (outcome) => outcome.status === 'committed',
+      };
+      let observedMutationOptions: MutationExecutionOptions<string> | undefined;
+      let observedPlanOptions: MutationExecutionOptions<string> | undefined;
+      const configured = configureConfigurationMutationGateway(
+        async (_path, _kind, operation) => operation(),
+        async (_path, plan) => plan.result,
+        async <T>(
+          _path: string,
+          _kind: string,
+          operation: () => Promise<T>,
+          options?: MutationExecutionOptions<T>,
+        ): Promise<MutationOutcome<T>> => {
+          observedMutationOptions = options as MutationExecutionOptions<string> | undefined;
+          return {
+            configurationId: 'gateway-outcome-cfg' as never,
+            operationId: 'gateway-mutation-operation',
+            snapshotVersion: 4,
+            status: 'committed',
+            value: await operation(),
+          };
+        },
+        async <T>(
+          _path: string,
+          plan: MutationPlan<T>,
+          options?: MutationExecutionOptions<T>,
+        ): Promise<MutationOutcome<T>> => {
+          observedPlanOptions = options as MutationExecutionOptions<string> | undefined;
+          return {
+            configurationId: 'gateway-outcome-cfg' as never,
+            operationId: 'gateway-plan-operation',
+            snapshotVersion: 5,
+            status: 'committed',
+            value: plan.result,
+          };
+        },
+      );
+      try {
+        const mutation = await runConfigurationMutationOutcome(
+          '/workspace/project/Configuration.xml',
+          'test.outcome',
+          async () => 'mutation-result',
+          mutationOptions,
+        );
+        const plan = await runConfigurationPlanOutcome('/workspace/project/Configuration.xml', {
+          kind: 'test.outcome-plan', steps: [], result: 'plan-result',
+        }, planOptions);
+
+        assert.strictEqual(mutation.status, 'committed');
+        assert.strictEqual(mutation.value, 'mutation-result');
+        assert.strictEqual(mutation.operationId, 'gateway-mutation-operation');
+        assert.strictEqual(plan.status, 'committed');
+        assert.strictEqual(plan.value, 'plan-result');
+        assert.strictEqual(plan.operationId, 'gateway-plan-operation');
+        assert.strictEqual(observedMutationOptions, mutationOptions);
+        assert.strictEqual(observedPlanOptions, planOptions);
+      } finally {
+        configured.dispose();
+      }
+    } finally {
+      sentinel.dispose();
     }
   });
 

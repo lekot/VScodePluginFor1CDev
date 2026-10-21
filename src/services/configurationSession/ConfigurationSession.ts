@@ -1,17 +1,39 @@
 import { randomUUID } from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import { AtomicFileStorage } from './atomicFileStorage';
-import { MutationPlan, MutationPlanExecutor } from './mutationPlan';
+import { isReadOnlyAssertionStep, MutationPlan, MutationPlanExecutor } from './mutationPlan';
 import { MutationPlanError } from './mutationPlan';
 import { PathBoundaryError } from './pathBoundary';
 import type { ConfigurationIdentity } from './types';
 import { WorkspaceRegistryError } from './WorkspaceRegistry';
+import type { ReconciliationOutcome } from '../../types/reloadContracts';
+import { Logger } from '../../utils/logger';
+
+export interface ConfigurationCommitContext {
+  readonly configurationId: ConfigurationIdentity['configurationId'];
+  readonly rootPath: string;
+  readonly operationId: string;
+  readonly snapshotVersion: number;
+  readonly kind: string;
+}
+
+export type ConfigurationCommitObserver = (
+  commit: ConfigurationCommitContext,
+) => Promise<ReconciliationOutcome | undefined>;
 
 export interface CancellationLike {
   readonly isCancellationRequested: boolean;
 }
 
-export interface MutationRequest<T> {
+export interface MutationExecutionOptions<T> {
+  readonly commitWhen?: (value: T) => boolean;
+  /** Defaults to reconciliation for accepted commits. */
+  readonly reconcile?: boolean;
+  /** Explicitly selects committed, failed-with-value, or uncertain outcomes that require reconciliation. */
+  readonly shouldReconcile?: (outcome: MutationOutcome<T>) => boolean;
+}
+
+export interface MutationRequest<T> extends MutationExecutionOptions<T> {
   readonly kind: string;
   readonly operationId?: string;
   readonly clientSnapshotVersion?: number;
@@ -21,7 +43,6 @@ export interface MutationRequest<T> {
     baseSnapshotVersion: number;
     storage: AtomicFileStorage;
   }) => Promise<T>;
-  readonly commitWhen?: (value: T) => boolean;
 }
 
 export interface ExclusiveConfigurationOperation<T> {
@@ -29,6 +50,8 @@ export interface ExclusiveConfigurationOperation<T> {
   readonly operationId?: string;
   readonly clientSnapshotVersion?: number;
   readonly cancellation?: CancellationLike;
+  readonly reconcile?: boolean;
+  readonly shouldReconcile?: (outcome: MutationOutcome<T>) => boolean;
   readonly execute: () => Promise<T>;
 }
 
@@ -59,6 +82,7 @@ interface MutationEnvelope<T> {
   readonly configurationId: ConfigurationIdentity['configurationId'];
   readonly operationId: string;
   readonly snapshotVersion: number;
+  readonly reconciliation?: ReconciliationOutcome;
   readonly _valueType?: T;
 }
 
@@ -71,6 +95,9 @@ interface SessionExecutionLease {
   readonly session: ConfigurationSession;
   readonly mode: 'read' | 'write';
   readonly baseSnapshotVersion: number;
+  readonly operationId?: string;
+  readonly identity?: ConfigurationIdentity;
+  reconciliationRequested: boolean;
   active: boolean;
 }
 
@@ -97,6 +124,7 @@ type QueueEntry =
   | {
       type: 'write';
       run: () => Promise<void>;
+      afterRelease: () => Promise<void>;
     }
   | {
       type: 'read';
@@ -109,13 +137,17 @@ export class ConfigurationSession {
   private _snapshotVersion = 0;
   private runningWriters = 0;
   private runningReaders = 0;
+  private runningPostCommitObservers = 0;
   private queue: QueueEntry[] = [];
   private drainResolvers: Array<() => void> = [];
   private readonly executionContext = new AsyncLocalStorage<SessionExecutionLease>();
   readonly storage: AtomicFileStorage;
   readonly mutations: MutationPlanExecutor;
 
-  constructor(private _identity: ConfigurationIdentity) {
+  constructor(
+    private _identity: ConfigurationIdentity,
+    private readonly commitObserver?: ConfigurationCommitObserver,
+  ) {
     this._identity = snapshotIdentity(this._identity);
     this.storage = new AtomicFileStorage(_identity.rootPath);
     this.mutations = new MutationPlanExecutor(_identity.rootPath);
@@ -141,7 +173,7 @@ export class ConfigurationSession {
       return;
     }
     if (this.queue.length === 0) {
-      if (this.runningReaders === 0 && !this.accepting) {
+      if (this.runningReaders === 0 && this.runningPostCommitObservers === 0 && !this.accepting) {
         const resolvers = this.drainResolvers;
         this.drainResolvers = [];
         resolvers.forEach((resolve) => resolve());
@@ -155,9 +187,19 @@ export class ConfigurationSession {
       }
       this.queue.shift();
       this.runningWriters = 1;
-      void next.run().finally(() => {
+      void next.run().catch((error) => {
+        warnSafely('Configuration mutation queue entry failed unexpectedly', error);
+      }).finally(() => {
         this.runningWriters = 0;
+        this.runningPostCommitObservers++;
+        const afterRelease = Promise.resolve().then(() => next.afterRelease());
         this.processQueue();
+        void afterRelease.catch((error) => {
+          warnSafely('Configuration commit observer failed after the writer was released', error);
+        }).finally(() => {
+          this.runningPostCommitObservers--;
+          this.processQueue();
+        });
       });
       return;
     }
@@ -179,13 +221,85 @@ export class ConfigurationSession {
   }
 
   enqueue<T>(request: MutationRequest<T>): Promise<MutationOutcome<T>> {
+    const lease = this.executionContext.getStore();
+    if (lease?.active && lease.session === this) {
+      return this.runOutcomeWithinWriterLease(request, lease);
+    }
+
     const operationId = request.operationId ?? randomUUID();
     return new Promise<MutationOutcome<T>>((resolve) => {
+      let outcome: MutationOutcome<T> | undefined;
+      let commitContext: ConfigurationCommitContext | undefined;
+      let executionLease: SessionExecutionLease | undefined;
       const envelope = (): MutationEnvelope<T> => ({
         configurationId: this.identity.configurationId,
         operationId,
         snapshotVersion: this._snapshotVersion,
       });
+      const finish = async (): Promise<void> => {
+        try {
+          if (!outcome) {
+            outcome = { ...envelope(), status: 'failed', error: new Error('Configuration mutation ended without an outcome.') };
+          }
+          let shouldObserve = executionLease?.reconciliationRequested === true;
+          try {
+            shouldObserve = this.shouldReconcile(request, outcome) || shouldObserve;
+          } catch (error) {
+            warnSafely('Configuration mutation reconciliation predicate failed', error);
+          }
+          if (commitContext && this.commitObserver && shouldObserve) {
+            try {
+              const reconciliation = await this.commitObserver(commitContext);
+              if (reconciliation) {
+                outcome = { ...outcome, reconciliation };
+                if (reconciliation.status === 'failed') {
+                  warnSafely('Configuration mutation committed but reconciliation failed', {
+                    configurationId: commitContext.configurationId,
+                    rootPath: commitContext.rootPath,
+                    operationId: commitContext.operationId,
+                    snapshotVersion: commitContext.snapshotVersion,
+                    kind: commitContext.kind,
+                    reconciliation,
+                  });
+                }
+              }
+            } catch (error) {
+              const reconciliation: ReconciliationOutcome = {
+                status: 'failed',
+                code: errorCode(error),
+                message: errorMessage(error),
+              };
+              outcome = { ...outcome, reconciliation };
+              warnSafely('Configuration mutation committed but reconciliation failed', {
+                configurationId: commitContext.configurationId,
+                rootPath: commitContext.rootPath,
+                operationId: commitContext.operationId,
+                snapshotVersion: commitContext.snapshotVersion,
+                kind: commitContext.kind,
+                reconciliation,
+              });
+            }
+          }
+        } catch (error) {
+          if (outcome && commitContext) {
+            outcome = {
+              ...outcome,
+              reconciliation: {
+                status: 'failed',
+                code: errorCode(error),
+                message: errorMessage(error),
+              },
+            };
+          }
+          warnSafely('Configuration mutation post-commit finalizer failed', error);
+        } finally {
+          resolve(outcome ?? {
+            ...envelope(),
+            status: 'failed',
+            error: new Error('Configuration mutation ended without an outcome.'),
+          });
+        }
+      };
 
       if (!this.accepting || request.cancellation?.isCancellationRequested) {
         resolve({ ...envelope(), status: 'cancelled' });
@@ -208,64 +322,196 @@ export class ConfigurationSession {
         type: 'write',
         run: async () => {
           if (!this.accepting || request.cancellation?.isCancellationRequested) {
-            resolve({ ...envelope(), status: 'cancelled' });
+            outcome = { ...envelope(), status: 'cancelled' };
             return;
           }
           if (
             request.clientSnapshotVersion !== undefined
             && request.clientSnapshotVersion !== this._snapshotVersion
           ) {
-            resolve({
+            outcome = {
               ...envelope(),
               status: 'conflict',
               code: 'STALE_SNAPSHOT',
               error: new Error('Версия конфигурации изменилась до начала операции.'),
-            });
+            };
             return;
           }
 
           const baseSnapshotVersion = this._snapshotVersion;
+          const operationIdentity = snapshotIdentity(this.identity);
+          let lease: SessionExecutionLease | undefined;
           try {
-            const lease: SessionExecutionLease = {
+            lease = {
               session: this,
               mode: 'write',
               baseSnapshotVersion,
+              operationId,
+              identity: operationIdentity,
+              reconciliationRequested: false,
               active: true,
             };
+            executionLease = lease;
             const value = await this.withExecutionLease(lease, () =>
               request.execute({ operationId, baseSnapshotVersion, storage: this.storage }),
             );
             if (request.commitWhen && !request.commitWhen(value)) {
-              resolve({ ...envelope(), status: 'failed', value });
+              outcome = {
+                configurationId: operationIdentity.configurationId,
+                operationId,
+                snapshotVersion: this._snapshotVersion,
+                status: 'failed',
+                value,
+              };
+              if (this.shouldReconcile(request, outcome) || lease.reconciliationRequested) {
+                commitContext = {
+                  configurationId: operationIdentity.configurationId,
+                  rootPath: operationIdentity.rootPath,
+                  operationId,
+                  snapshotVersion: this._snapshotVersion,
+                  kind: request.kind,
+                };
+              }
               return;
             }
             this._snapshotVersion += 1;
-            resolve({ ...envelope(), snapshotVersion: this._snapshotVersion, status: 'committed', value });
+            outcome = {
+              configurationId: operationIdentity.configurationId,
+              operationId,
+              snapshotVersion: this._snapshotVersion,
+              status: 'committed',
+              value,
+            };
+            commitContext = {
+              configurationId: operationIdentity.configurationId,
+              rootPath: operationIdentity.rootPath,
+              operationId,
+              snapshotVersion: this._snapshotVersion,
+              kind: request.kind,
+            };
           } catch (error) {
+            if (lease?.reconciliationRequested) {
+              commitContext = {
+                configurationId: operationIdentity.configurationId,
+                rootPath: operationIdentity.rootPath,
+                operationId,
+                snapshotVersion: this._snapshotVersion,
+                kind: request.kind,
+              };
+            }
             if (error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT') {
-              resolve({ ...envelope(), status: 'conflict', code: 'PLAN_CONFLICT', error });
+              outcome = {
+                configurationId: operationIdentity.configurationId,
+                operationId,
+                snapshotVersion: this._snapshotVersion,
+                status: 'conflict',
+                code: 'PLAN_CONFLICT',
+                error,
+              };
               return;
             }
             if (error instanceof PathBoundaryError) {
-              resolve({
-                ...envelope(),
+              outcome = {
+                configurationId: operationIdentity.configurationId,
+                operationId,
+                snapshotVersion: this._snapshotVersion,
                 status: 'conflict',
                 code: error.code === 'PATH_UNAVAILABLE' ? 'PATH_UNAVAILABLE' : 'TARGET_OUTSIDE_ROOT',
                 error,
-              });
+              };
               return;
             }
-            resolve({
+            outcome = {
               ...envelope(),
               status: 'failed',
               error: error instanceof Error ? error : new Error(String(error)),
-            });
+            };
+            if (error instanceof MutationPlanError && error.code === 'RECOVERY_REQUIRED') {
+              commitContext = {
+                configurationId: operationIdentity.configurationId,
+                rootPath: operationIdentity.rootPath,
+                operationId,
+                snapshotVersion: this._snapshotVersion,
+                kind: request.kind,
+              };
+            }
           }
         },
+        afterRelease: finish,
       });
 
       this.processQueue();
     });
+  }
+
+  /** Runs an outcome-aware nested mutation inline when this session already owns the writer lease. */
+  private async runOutcomeWithinWriterLease<T>(
+    request: MutationRequest<T>,
+    lease: SessionExecutionLease,
+  ): Promise<MutationOutcome<T>> {
+    const identity = lease.identity ?? snapshotIdentity(this.identity);
+    const operationId = lease.operationId ?? request.operationId ?? randomUUID();
+    const envelope = (): MutationEnvelope<T> => ({
+      configurationId: identity.configurationId,
+      operationId,
+      snapshotVersion: this._snapshotVersion,
+    });
+
+    let outcome: MutationOutcome<T>;
+    if (lease.mode === 'read') {
+      outcome = {
+        ...envelope(),
+        status: 'failed',
+        error: new ConfigurationSessionWriteFromReadError(),
+      };
+    } else if (request.cancellation?.isCancellationRequested) {
+      outcome = { ...envelope(), status: 'cancelled' };
+    } else if (
+      request.clientSnapshotVersion !== undefined
+      && request.clientSnapshotVersion !== lease.baseSnapshotVersion
+    ) {
+      outcome = {
+        ...envelope(),
+        status: 'conflict',
+        code: 'STALE_SNAPSHOT',
+        error: new Error('Версия конфигурации изменилась до начала операции.'),
+      };
+    } else {
+      try {
+        const value = await request.execute({
+          operationId,
+          baseSnapshotVersion: lease.baseSnapshotVersion,
+          storage: this.storage,
+        });
+        outcome = request.commitWhen && !request.commitWhen(value)
+          ? { ...envelope(), status: 'failed', value }
+          : { ...envelope(), status: 'committed', value };
+      } catch (error) {
+        if (error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT') {
+          outcome = { ...envelope(), status: 'conflict', code: 'PLAN_CONFLICT', error };
+        } else if (error instanceof PathBoundaryError) {
+          outcome = {
+            ...envelope(),
+            status: 'conflict',
+            code: error.code === 'PATH_UNAVAILABLE' ? 'PATH_UNAVAILABLE' : 'TARGET_OUTSIDE_ROOT',
+            error,
+          };
+        } else {
+          outcome = {
+            ...envelope(),
+            status: 'failed',
+            error: error instanceof Error ? error : new Error(String(error)),
+          };
+        }
+      }
+    }
+
+    try {
+      lease.reconciliationRequested = this.shouldReconcile(request, outcome) || lease.reconciliationRequested;
+    } catch (error) {
+      warnSafely('Nested configuration mutation reconciliation predicate failed', error);
+    }
+    return outcome;
   }
 
   runRead<T>(
@@ -302,6 +548,8 @@ export class ConfigurationSession {
               session: this,
               mode: 'read',
               baseSnapshotVersion: snapshotVersion,
+              identity: snapshotIdentity(this.identity),
+              reconciliationRequested: false,
               active: true,
             };
             const value = await this.withExecutionLease(lease, () => request.execute({
@@ -330,14 +578,23 @@ export class ConfigurationSession {
 
   enqueuePlan<T>(
     plan: MutationPlan<T>,
-    options: Omit<MutationRequest<T>, 'kind' | 'execute' | 'commitWhen'> = {},
+    options: Omit<MutationRequest<T>, 'kind' | 'execute'> = {},
   ): Promise<MutationOutcome<T>> {
     const operationId = options.operationId ?? randomUUID();
+    const mayWriteConfiguration = plan.steps.some((step) => !isReadOnlyAssertionStep(step));
     return this.enqueue({
       kind: plan.kind,
       ...options,
       operationId,
-      execute: () => this.mutations.execute(plan, operationId),
+      reconcile: options.reconcile ?? mayWriteConfiguration,
+      shouldReconcile: options.shouldReconcile ?? ((outcome) => {
+        if (options.reconcile === false || !mayWriteConfiguration) {
+          return false;
+        }
+        return outcome.status === 'committed'
+          || (outcome.status === 'failed' && outcome.error instanceof MutationPlanError && outcome.error.code === 'RECOVERY_REQUIRED');
+      }),
+      execute: ({ operationId: executionOperationId }) => this.mutations.execute(plan, executionOperationId),
     });
   }
 
@@ -352,7 +609,13 @@ export class ConfigurationSession {
       if (lease.mode === 'read') {
         return Promise.reject(new ConfigurationSessionWriteFromReadError());
       }
-      return this.executeWithinWriterLease({ ...request, operationId }, lease, errorMessages);
+      // The nested call shares the outer operation's commit boundary. Keep its typed
+      // outcome long enough to mark the outer lease for reconciliation, then preserve
+      // the value-runner's existing throw-on-failure behavior for its caller.
+      return this.runOutcomeWithinWriterLease({
+        ...request,
+        operationId: lease.operationId ?? operationId,
+      }, lease).then((outcome) => unwrapMutationOutcome(outcome, errorMessages));
     }
     return this.enqueue({ ...request, operationId }).then((outcome) =>
       unwrapMutationOutcome(outcome, errorMessages),
@@ -362,15 +625,24 @@ export class ConfigurationSession {
   /** Runs a plan through this session, reusing an active writer lease without another FIFO entry. */
   runPlanValue<T>(
     plan: MutationPlan<T>,
-    options: Omit<MutationRequest<T>, 'kind' | 'execute' | 'commitWhen'> = {},
+    options: Omit<MutationRequest<T>, 'kind' | 'execute'> = {},
     errorMessages: ValueMutationErrorMessages = PLAN_VALUE_ERROR_MESSAGES,
   ): Promise<T> {
     const operationId = options.operationId ?? randomUUID();
+    const mayWriteConfiguration = plan.steps.some((step) => !isReadOnlyAssertionStep(step));
     return this.runMutationValue({
       ...options,
       kind: plan.kind,
       operationId,
-      execute: () => this.mutations.execute(plan, operationId),
+      reconcile: options.reconcile ?? mayWriteConfiguration,
+      shouldReconcile: options.shouldReconcile ?? ((outcome) => {
+        if (options.reconcile === false || !mayWriteConfiguration) {
+          return false;
+        }
+        return outcome.status === 'committed'
+          || (outcome.status === 'failed' && outcome.error instanceof MutationPlanError && outcome.error.code === 'RECOVERY_REQUIRED');
+      }),
+      execute: ({ operationId: executionOperationId }) => this.mutations.execute(plan, executionOperationId),
     }, errorMessages);
   }
 
@@ -381,48 +653,21 @@ export class ConfigurationSession {
       operationId: operation.operationId,
       clientSnapshotVersion: operation.clientSnapshotVersion,
       cancellation: operation.cancellation,
+      reconcile: operation.reconcile ?? false,
+      shouldReconcile: operation.shouldReconcile,
       execute: operation.execute,
     });
   }
 
   async dispose(): Promise<void> {
     this.accepting = false;
-    if (this.runningWriters === 0 && this.runningReaders === 0 && this.queue.length === 0) {
+    if (this.runningWriters === 0 && this.runningReaders === 0 && this.runningPostCommitObservers === 0 && this.queue.length === 0) {
       return;
     }
     await new Promise<void>((resolve) => {
       this.drainResolvers.push(resolve);
       this.processQueue();
     });
-  }
-
-  private async executeWithinWriterLease<T>(
-    request: MutationRequest<T>,
-    lease: SessionExecutionLease,
-    errorMessages: ValueMutationErrorMessages,
-  ): Promise<T> {
-    if (request.cancellation?.isCancellationRequested) {
-      throw new Error(errorMessages.cancelledMessage);
-    }
-    if (
-      request.clientSnapshotVersion !== undefined
-      && request.clientSnapshotVersion !== lease.baseSnapshotVersion
-    ) {
-      throw new Error('Версия конфигурации изменилась до начала операции.');
-    }
-    try {
-      const value = await request.execute({
-        operationId: request.operationId ?? randomUUID(),
-        baseSnapshotVersion: lease.baseSnapshotVersion,
-        storage: this.storage,
-      });
-      if (request.commitWhen && !request.commitWhen(value)) {
-        throw new Error(errorMessages.failureMessage);
-      }
-      return value;
-    } catch (error) {
-      throw error instanceof Error ? error : new Error(String(error));
-    }
   }
 
   private withExecutionLease<T>(lease: SessionExecutionLease, operation: () => Promise<T>): Promise<T> {
@@ -433,6 +678,17 @@ export class ConfigurationSession {
         lease.active = false;
       }
     });
+  }
+
+  private shouldReconcile<T>(request: MutationRequest<T>, outcome: MutationOutcome<T>): boolean {
+    if (request.reconcile === false) {
+      return false;
+    }
+    if (request.shouldReconcile) {
+      return request.shouldReconcile(outcome);
+    }
+    return outcome.status === 'committed'
+      || (outcome.status === 'failed' && outcome.error instanceof MutationPlanError && outcome.error.code === 'RECOVERY_REQUIRED');
   }
 }
 
@@ -454,4 +710,22 @@ function snapshotIdentity(identity: ConfigurationIdentity): ConfigurationIdentit
     ...identity,
     capabilities: Object.freeze({ ...identity.capabilities }),
   };
+}
+
+function errorCode(error: unknown): string {
+  return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : 'UNKNOWN_RELOAD_FAILURE';
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function warnSafely(message: string, ...args: unknown[]): void {
+  try {
+    Logger.warn(message, ...args);
+  } catch {
+    // Diagnostic output must never strand an already-executed configuration write.
+  }
 }

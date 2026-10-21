@@ -5,7 +5,9 @@ import * as path from 'path';
 import '../helpers/vscodeStubRegister';
 import { registerAgentCommands } from '../../src/agent/agentCommands';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
+import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
+import { reconcileAfterCommit } from '../../src/reload/reconciliation';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 import type { AgentResult } from '../../src/agent/types';
 import type { RequestConfigurationReload } from '../../src/reload/requestConfigurationReload';
@@ -22,12 +24,14 @@ suite('Agent SKD Operations Integrity (#352)', () => {
   setup(async () => {
     resetVscodeTestState();
     tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'agent-skd-integrity-'));
-    registry = new WorkspaceRegistry();
     reloadsRequested = [];
     runnerCalls = [];
     reloadCoordinatorStub = async (configPath: string, reason: ReloadReason) => {
       reloadsRequested.push({ configPath, reason });
     };
+    registry = new WorkspaceRegistry(undefined, (identity) => new ConfigurationSession(identity, (commit) =>
+      reconcileAfterCommit(commit.rootPath, 'agent-mutation', (configPath, reason) =>
+        reloadCoordinatorStub(configPath, reason))));
   });
 
   teardown(async () => {
@@ -62,6 +66,9 @@ suite('Agent SKD Operations Integrity (#352)', () => {
     requestReload?: RequestConfigurationReload,
     runner?: SkdOperationsDeps['runPowerShellScript'],
   ) {
+    if (requestReload) {
+      reloadCoordinatorStub = requestReload;
+    }
     const context = {
       extensionPath: path.resolve(__dirname, '..', '..'),
       subscriptions: [] as Array<{ dispose(): void }>,
@@ -227,7 +234,7 @@ suite('Agent SKD Operations Integrity (#352)', () => {
   test('skd.compile triggers ReloadCoordinator on successful mutation', async () => {
     const root = await createConfigRoot('conf-reload-compile', '77777777-7777-7777-7777-777777777777');
     await registry.refresh([{ configPath: root }]);
-    setupCommands();
+    setupCommands(undefined, createRunner());
 
     const compileHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.skd.compile')!;
     const outputPath = path.join(root, 'Reports', 'TestReport', 'Templates', 'MainScheme', 'Ext', 'Template.xml');
@@ -239,11 +246,38 @@ suite('Agent SKD Operations Integrity (#352)', () => {
       value: JSON.stringify({ dataSets: [] }),
     }) as AgentResult;
 
-    if (res.success) {
-      assert.strictEqual(reloadsRequested.length, 1);
-      assert.strictEqual(reloadsRequested[0].configPath, root);
-      assert.strictEqual(reloadsRequested[0].reason, 'agent-mutation');
-    }
+    assert.strictEqual(res.success, true, res.error);
+    assert.strictEqual(reloadsRequested.length, 1);
+    assert.strictEqual(reloadsRequested[0].configPath, root);
+    assert.strictEqual(reloadsRequested[0].reason, 'agent-mutation');
+  });
+
+  test('SKD timeout with possible file effects reconciles while preserving inDoubt failure status', async () => {
+    const root = await createConfigRoot('conf-in-doubt-reload', '12121212-3434-5656-7878-909090909090');
+    await registry.refresh([{ configPath: root }]);
+    const runner: NonNullable<SkdOperationsDeps['runPowerShellScript']> = async () => ({
+      stdout: '',
+      stderr: 'process timed out',
+      exitCode: -1,
+      timedOut: true,
+      effectPossible: true,
+      cancellationRequested: true,
+    });
+    setupCommands(async (configPath, reason) => {
+      reloadsRequested.push({ configPath, reason });
+    }, runner);
+
+    const edit = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.skd.edit')!;
+    const templatePath = path.join(root, 'Reports', 'TestReport', 'Templates', 'MainScheme', 'Ext', 'Template.xml');
+    const result = await edit({ templatePath, operation: 'set-query', value: 'SELECT 1' }) as AgentResult;
+
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result.code, 'SKD_OPERATION_IN_DOUBT');
+    assert.deepStrictEqual(result.data, { status: 'inDoubt', effectPossible: true });
+    assert.deepStrictEqual(result.reconciliation, { status: 'succeeded' });
+    assert.deepStrictEqual(reloadsRequested, [{ configPath: root, reason: 'agent-mutation' }]);
+    assert.strictEqual(registry.list()[0]!.rootPath, root);
+    assert.strictEqual(registry.require(registry.list()[0]!.configurationId).snapshotVersion, 0);
   });
 
   test('skd.validate rejects templatePath escaping configuration root with TARGET_OUTSIDE_ROOT', async () => {
@@ -360,7 +394,7 @@ suite('Agent SKD Operations Integrity (#352)', () => {
     assert.strictEqual(report.success, true, report.error);
     assert.ok(report.configurationId);
     assert.ok(report.operationId, 'writing OutFile must be committed through the configuration session');
-    assert.ok((report.snapshotVersion ?? 0) > (readValidate.snapshotVersion ?? 0));
+    assert.strictEqual(report.snapshotVersion, readValidate.snapshotVersion, 'report output does not advance the configuration mutation version');
     assert.strictEqual(await fs.promises.readFile(reportPath, 'utf8'), 'SKD info report');
     assert.strictEqual(reloadsRequested.length, 0, 'report writes do not trigger metadata-tree reload');
 

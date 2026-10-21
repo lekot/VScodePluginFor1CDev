@@ -17,6 +17,7 @@ import type { InfobaseStorageService } from '../../src/infobases/infobaseStorage
 import { MetadataType } from '../../src/models/treeNode';
 import type { ReloadReason } from '../../src/types/reloadContracts';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
+import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
 import { WorkspaceRegistryCoordinator } from '../../src/services/configurationSession/WorkspaceRegistryCoordinator';
 import {
   configureConfigurationMutationGateway,
@@ -27,6 +28,7 @@ import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
 import type { AgentResult } from '../../src/agent/types';
 import { BindingManager } from '../../src/bindings/bindingManager';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
+import { reconcileAfterCommit } from '../../src/reload/reconciliation';
 
 function baseBinding(overrides: Partial<ConfigurationBinding> = {}): ConfigurationBinding {
   return {
@@ -658,7 +660,13 @@ suite('infobasePullSelectedObjects #350', () => {
         'utf8',
       );
 
-      const registry = new WorkspaceRegistry();
+      let mockReload: (configPath: string, reason: ReloadReason) => Promise<void> = async () => undefined;
+      const registry = new WorkspaceRegistry(undefined, (identity) => new ConfigurationSession(identity, (commit) =>
+        reconcileAfterCommit(
+          commit.rootPath,
+          commit.kind === 'agent.pullSelectedObjects' ? 'pull-objects' : 'agent-mutation',
+          (configPath, reason) => mockReload(configPath, reason),
+        )));
       const session = await registry.registerTargetedRoot({ configPath: configRoot, format: ConfigFormat.Designer });
       const coordinator = new WorkspaceRegistryCoordinator(registry, {
         getWorkspaceFolders: () => [tempRoot],
@@ -749,7 +757,14 @@ suite('infobasePullSelectedObjects #350', () => {
         { name: 'ws', index: 0, uri: { fsPath: tempRoot, scheme: 'file' } },
       ];
 
-      const registry = new WorkspaceRegistry();
+      let mockReload: (configPath: string, reason: ReloadReason) => Promise<void> = async () => undefined;
+      const registry = new WorkspaceRegistry(undefined, (identity) => new ConfigurationSession(identity, async (commit) => {
+        return reconcileAfterCommit(
+          commit.rootPath,
+          commit.kind === 'agent.pullSelectedObjects' ? 'pull-objects' : 'agent-mutation',
+          (configPath, reason) => mockReload(configPath, reason),
+        );
+      }));
       const session = await registry.registerTargetedRoot({ configPath: configRoot, format: ConfigFormat.Designer });
       const configurationId = session.identity.configurationId;
 
@@ -780,8 +795,13 @@ suite('infobasePullSelectedObjects #350', () => {
       const reloadStarted = new Promise<void>((resolve) => { reloadStartedResolve = resolve; });
       let finishReloadResolve!: () => void;
       const finishReload = new Promise<void>((resolve) => { finishReloadResolve = resolve; });
-      const mockReload = async (p: string, reason: ReloadReason): Promise<void> => {
+      let reloadExecutionActive = false;
+      mockReload = async (p: string, reason: ReloadReason): Promise<void> => {
         reloadCalls.push({ configPath: p, reason });
+        if (reloadExecutionActive) {
+          return;
+        }
+        reloadExecutionActive = true;
         const observation: typeof reloadObservations[number] = {
           snapshotVersion: session.snapshotVersion,
           writerCount: (session as unknown as { runningWriters: number }).runningWriters,
@@ -805,6 +825,7 @@ suite('infobasePullSelectedObjects #350', () => {
         observation.nestedWriterCompleted = true;
         reloadStartedResolve();
         await finishReload;
+        reloadExecutionActive = false;
         throw Object.assign(new Error('injected reconciliation failure'), { code: 'AUDIT_RELOAD_FAILURE' });
       };
 
@@ -889,7 +910,7 @@ suite('infobasePullSelectedObjects #350', () => {
         const lateCancel = await cancelHandler({ taskId }) as AgentResult<{ status: string; cancellationRequested: boolean }>;
         assert.strictEqual(lateCancel.data?.status, 'running');
         assert.strictEqual(lateCancel.data?.cancellationRequested, true, 'a late cancellation request must not erase the committed pull');
-        assert.strictEqual(reloadCalls.length, 1, 'a late cancellation after commit must not suppress reconciliation');
+        assert.strictEqual(reloadCalls.length, 2, 'the pull and the callback writer both cross the common post-commit boundary');
         finishReloadResolve();
 
         let completed: AgentResult<{ status: string; result?: AgentResult<unknown> }> | undefined;
@@ -901,8 +922,7 @@ suite('infobasePullSelectedObjects #350', () => {
         assert.strictEqual(completed?.data?.status, 'completed', 'successfully committed pull remains completed after a late cancel');
         const agentResult = completed?.data?.result;
         assert.ok(agentResult?.success, `agent.pullSelectedObjects must succeed: ${agentResult?.error}`);
-        assert.strictEqual(reloadCalls.length, 1);
-        assert.strictEqual(reloadCalls[0]!.reason, 'pull-objects');
+        assert.deepStrictEqual(reloadCalls.map((call) => call.reason), ['pull-objects', 'agent-mutation']);
         assert.deepStrictEqual(reloadObservations, [{
           snapshotVersion: 1,
           writerCount: 0,
@@ -920,6 +940,7 @@ suite('infobasePullSelectedObjects #350', () => {
         });
         assert.strictEqual(session.snapshotVersion, 2, 'reload callback writer should finish after the pull commit');
 
+        const reloadCallsBeforeNoOp = reloadCalls.length;
         const noOpSummary = {
           successCount: 0,
           errorCount: 0,
@@ -930,10 +951,7 @@ suite('infobasePullSelectedObjects #350', () => {
           results: [{ infobaseId: 'base1', name: 'Base 1', status: 'skipped' as const, message: 'No exported files' }],
         };
         const noOpService = {
-          pullSelectedObjects: async (params: PullSelectedObjectsParams) =>
-            params.runConfigurationMutation
-              ? params.runConfigurationMutation(configRoot, 'infobase.pullSelectedObjects', async () => noOpSummary)
-              : noOpSummary,
+          pullSelectedObjects: async (_params: PullSelectedObjectsParams) => noOpSummary,
         } as unknown as DeployService;
         registerAgentCommands(
           context as never,
@@ -961,8 +979,8 @@ suite('infobasePullSelectedObjects #350', () => {
         }>;
         assert.strictEqual(noOpResult.success, true, 'a confirmed no-op remains an Agent success result');
         assert.strictEqual(noOpResult.data?.summary.success, 0);
-        assert.strictEqual(noOpResult.snapshotVersion, 3, 'the no-op still receives its authoritative session receipt');
-        assert.strictEqual(reloadCalls.length, 1, 'a receipt without an exported success must not trigger reconciliation');
+        assert.strictEqual(noOpResult.snapshotVersion, 2, 'a confirmed pull no-op does not advance the configuration snapshot');
+        assert.strictEqual(reloadCalls.length, reloadCallsBeforeNoOp, 'a receipt without an exported success must not trigger reconciliation');
       } finally {
         gateway.dispose();
         await registry.dispose();
@@ -980,7 +998,14 @@ suite('infobasePullSelectedObjects #350', () => {
         { name: 'ws', index: 0, uri: { fsPath: tempRoot, scheme: 'file' } },
       ];
 
-      const registry = new WorkspaceRegistry();
+      const reloadReasons: ReloadReason[] = [];
+      const mockReload = async (_configPath: string, reason: ReloadReason): Promise<void> => { reloadReasons.push(reason); };
+      const registry = new WorkspaceRegistry(undefined, (identity) => new ConfigurationSession(identity, (commit) =>
+        reconcileAfterCommit(
+          commit.rootPath,
+          commit.kind === 'agent.pullSelectedObjects' ? 'pull-objects' : 'agent-mutation',
+          (configPath, reason) => mockReload(configPath, reason),
+        )));
       const session = await registry.registerTargetedRoot({ configPath: configRoot, format: ConfigFormat.Designer });
       const configurationId = session.identity.configurationId;
       const coordinator = new WorkspaceRegistryCoordinator(registry, {
@@ -1001,8 +1026,6 @@ suite('infobasePullSelectedObjects #350', () => {
       const exportStarted = new Promise<void>((resolve) => { exportStartedResolve = resolve; });
       let finishExportResolve!: () => void;
       const finishExport = new Promise<void>((resolve) => { finishExportResolve = resolve; });
-      let reloadCount = 0;
-      const mockReload = async (): Promise<void> => { reloadCount += 1; };
       const binding = baseBinding({ workspaceFolder: 'ws', configRelativePath: 'Configuration.xml', infobaseIds: ['base1'] });
       const targetEntry = fileEntry('base1', 'Base 1', 'C:\\ib');
       const bindingManager = {
@@ -1068,7 +1091,7 @@ suite('infobasePullSelectedObjects #350', () => {
         const writerOutcome = await concurrentWriter;
         assert.strictEqual(writerOutcome.status, 'committed');
         assert.strictEqual(concurrentWriterRan, true);
-        assert.strictEqual(reloadCount, 1);
+        assert.deepStrictEqual(reloadReasons.sort(), ['agent-mutation', 'pull-objects']);
       } finally {
         for (const disposable of context.subscriptions) {
           disposable.dispose();

@@ -8,7 +8,11 @@ import {
   type SingleFileTransform,
 } from '../../src/services/configurationSession/ConfigurationMutationEngine';
 import { hashContent, type AtomicFileSystem } from '../../src/services/configurationSession/atomicFileStorage';
-import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
+import {
+  ConfigurationSession,
+  type MutationOutcome,
+  type ConfigurationCommitObserver,
+} from '../../src/services/configurationSession/ConfigurationSession';
 import { MutationPlanError } from '../../src/services/configurationSession/mutationPlan';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import type {
@@ -48,6 +52,7 @@ function createConfigurationContext(
   configPath: string,
   configurationId: string,
   capabilities: ConfigurationCapabilities,
+  commitObserver?: ConfigurationCommitObserver,
 ): ConfigurationContext {
   const rootUri = `file:///${rootPath.replace(/\\/g, '/')}`;
   const session = new ConfigurationSession({
@@ -58,7 +63,7 @@ function createConfigurationContext(
     workspaceFolderUris: [rootUri],
     format: ConfigFormat.Designer,
     capabilities,
-  });
+  }, commitObserver);
   return {
     configurationId: session.identity.configurationId,
     rootPath: session.identity.rootPath,
@@ -153,6 +158,213 @@ suite('ConfigurationMutationEngine (#242)', () => {
       assert.strictEqual(receipt.result, 'noop');
       assert.strictEqual(receipt.oldRevision, hash);
       assert.strictEqual(receipt.newRevision, hash);
+    });
+
+    test('does not notify reconciliation for a known unchanged-content transform', async () => {
+      const targetFile = path.join(tmpDir, 'Subsystem-known-noop.xml');
+      const xml = '<Subsystem><Name>Same</Name></Subsystem>';
+      await fsp.writeFile(targetFile, xml, 'utf-8');
+      let observerCalls = 0;
+      const context = createConfigurationContext(
+        tmpDir,
+        configPath,
+        'engine-noop-configuration',
+        { read: true, write: true, process: true },
+        async () => {
+          observerCalls++;
+          return { status: 'succeeded' };
+        },
+      );
+      const session = context.session;
+      const engine = new ConfigurationMutationEngine({
+        runMutationWithOutcome: async (_resourcePath, kind, operation, options) =>
+          session.enqueue({ kind, ...options, execute: operation }),
+      });
+
+      try {
+        const receipt = await engine.transformFile(
+          context,
+          { kind: 'ui.subsystem.save', resourcePath: targetFile },
+          async ({ content }) => ({ content, result: 'noop' }),
+        );
+
+        assert.strictEqual(receipt.status, 'committed');
+        assert.strictEqual(receipt.oldRevision, receipt.newRevision);
+        assert.strictEqual(observerCalls, 0, 'the engine has explicit knowledge that no file bytes changed');
+        assert.strictEqual(session.snapshotVersion, 1);
+      } finally {
+        await session.dispose();
+      }
+    });
+
+    test('preserves an engine conflict receipt without notifying reconciliation', async () => {
+      const targetFile = path.join(tmpDir, 'Subsystem-conflict.xml');
+      const originalXml = '<Subsystem><Name>Original</Name></Subsystem>';
+      await fsp.writeFile(targetFile, originalXml, 'utf-8');
+      const canonicalTarget = await fsp.realpath(targetFile);
+      let observerCalls = 0;
+      const context = createConfigurationContext(
+        tmpDir,
+        configPath,
+        'engine-conflict-configuration',
+        { read: true, write: true, process: true },
+        async () => {
+          observerCalls++;
+          return { status: 'succeeded' };
+        },
+      );
+      const session = context.session;
+      const engine = new ConfigurationMutationEngine({
+        fileSystem: createAtomicFileSystem({
+          readFile: async (filePath) => {
+            let canonicalPath: string;
+            try {
+              canonicalPath = await fsp.realpath(filePath);
+            } catch {
+              canonicalPath = path.resolve(filePath);
+            }
+            const comparablePath = process.platform === 'win32' ? canonicalPath.toLowerCase() : canonicalPath;
+            const comparableTarget = process.platform === 'win32' ? canonicalTarget.toLowerCase() : canonicalTarget;
+            return comparablePath === comparableTarget
+              ? Buffer.from('<Subsystem><Name>Parallel</Name></Subsystem>', 'utf8')
+              : fsp.readFile(filePath);
+          },
+        }),
+        runMutationWithOutcome: async (_resourcePath, kind, operation, options) =>
+          session.enqueue({ kind, ...options, execute: operation }),
+      });
+
+      const receipt = await engine.transformFile(
+        context,
+        { kind: 'ui.subsystem.save', resourcePath: targetFile },
+        async () => ({ content: '<Subsystem><Name>Ours</Name></Subsystem>', result: 'updated' }),
+      );
+
+      assert.strictEqual(receipt.status, 'conflict');
+      assert.strictEqual(receipt.code, 'STALE_TARGET_HASH');
+      assert.strictEqual(receipt.operationId !== undefined, true);
+      assert.strictEqual(receipt.snapshotVersion, 0);
+      assert.strictEqual(session.snapshotVersion, 0);
+      assert.strictEqual(observerCalls, 0, 'a CAS conflict receipt returned as a value is not a commit');
+      assert.strictEqual(await fsp.readFile(targetFile, 'utf-8'), originalXml);
+      await session.dispose();
+    });
+
+    test('maps typed session outcomes to engine receipts without losing status metadata', async () => {
+      const targetFile = path.join(tmpDir, 'Typed-outcome.xml');
+      await fsp.writeFile(targetFile, '<Typed/>', 'utf-8');
+      const context = createConfigurationContext(
+        tmpDir,
+        configPath,
+        'engine-typed-mutation-outcomes',
+        { read: true, write: true, process: true },
+      );
+      const reconciliation = { status: 'failed' as const, code: 'RELOAD_FAILED', message: 'reload failed' };
+      const common = {
+        configurationId: context.configurationId,
+        operationId: 'typed-mutation-operation',
+        snapshotVersion: 7,
+      };
+      const cases: Array<{
+        name: string;
+        outcome: MutationOutcome<MutationReceipt<string>>;
+        status: MutationReceipt['status'];
+        code?: string;
+        message?: string;
+      }> = [
+        {
+          name: 'conflict',
+          outcome: {
+            ...common,
+            status: 'conflict',
+            code: 'STALE_SNAPSHOT',
+            error: new Error('snapshot changed'),
+            reconciliation,
+          },
+          status: 'conflict',
+          code: 'STALE_SNAPSHOT',
+          message: 'snapshot changed',
+        },
+        {
+          name: 'cancelled',
+          outcome: { ...common, status: 'cancelled' },
+          status: 'rolledBack',
+          code: 'CANCELLED',
+          message: 'Configuration mutation was cancelled.',
+        },
+        {
+          name: 'recovery required',
+          outcome: {
+            ...common,
+            status: 'failed',
+            error: new MutationPlanError('RECOVERY_REQUIRED', 'recovery needed'),
+          },
+          status: 'recoveryRequired',
+          code: 'RECOVERY_REQUIRED',
+          message: 'recovery needed',
+        },
+        {
+          name: 'failed with plan error',
+          outcome: {
+            ...common,
+            status: 'failed',
+            error: new MutationPlanError('PLAN_FAILED', 'plan rolled back'),
+          },
+          status: 'rolledBack',
+          code: 'MUTATION_FAILED',
+          message: 'plan rolled back',
+        },
+        {
+          name: 'failed without error details',
+          outcome: { ...common, status: 'failed' },
+          status: 'rolledBack',
+          code: 'MUTATION_FAILED',
+          message: 'Configuration mutation failed.',
+        },
+        {
+          name: 'failed with an in-doubt value',
+          outcome: {
+            ...common,
+            status: 'failed',
+            value: {
+              status: 'inDoubt',
+              kind: 'ui.typed-mutation',
+              resourcePath: targetFile,
+              code: 'POSSIBLE_WRITE',
+              message: 'write may have reached disk',
+            },
+            reconciliation,
+          },
+          status: 'inDoubt',
+          code: 'POSSIBLE_WRITE',
+          message: 'write may have reached disk',
+        },
+      ];
+
+      try {
+        for (const entry of cases) {
+          const engine = new ConfigurationMutationEngine({
+            runMutationWithOutcome: async <T>() => entry.outcome as unknown as MutationOutcome<T>,
+          });
+          const receipt = await engine.transformFile(
+            context,
+            { kind: 'ui.typed-mutation', resourcePath: targetFile },
+            async ({ content }) => ({ content: `${content}changed`, result: 'updated' }),
+          );
+
+          assert.strictEqual(receipt.status, entry.status, entry.name);
+          assert.strictEqual(receipt.code, entry.code, entry.name);
+          assert.strictEqual(receipt.message, entry.message, entry.name);
+          assert.strictEqual(receipt.configurationId, context.configurationId, entry.name);
+          assert.strictEqual(receipt.operationId, common.operationId, entry.name);
+          assert.strictEqual(receipt.snapshotVersion, common.snapshotVersion, entry.name);
+          if (entry.outcome.reconciliation) {
+            assert.deepStrictEqual(receipt.reconciliation, reconciliation, entry.name);
+          }
+        }
+      } finally {
+        await context.session.dispose();
+      }
     });
 
     test('creates missing file and parent directories atomically (create-if-absent)', async () => {
@@ -765,6 +977,101 @@ suite('ConfigurationMutationEngine (#242)', () => {
         assert.strictEqual(receipt.status, failure.status);
         assert.strictEqual(receipt.code, failure.code);
         assert.strictEqual(receipt.message, failure.message);
+      }
+    });
+
+    test('maps typed plan session outcomes to committed, conflict, cancel, and failure receipts', async () => {
+      const context = createConfigurationContext(
+        tmpDir,
+        configPath,
+        'engine-typed-plan-outcomes',
+        { read: true, write: true, process: true },
+      );
+      const common = {
+        configurationId: context.configurationId,
+        operationId: 'typed-plan-operation',
+        snapshotVersion: 11,
+      };
+      const reconciliation = { status: 'failed' as const, code: 'RELOAD_FAILED', message: 'reload failed' };
+      const cases: Array<{
+        name: string;
+        outcome: MutationOutcome<string>;
+        status: MutationReceipt['status'];
+        code?: string;
+        message?: string;
+      }> = [
+        {
+          name: 'committed',
+          outcome: { ...common, status: 'committed', value: 'plan-result', reconciliation },
+          status: 'committed',
+        },
+        {
+          name: 'conflict',
+          outcome: { ...common, status: 'conflict', code: 'STALE_SNAPSHOT', error: new Error('snapshot stale') },
+          status: 'conflict',
+          code: 'STALE_SNAPSHOT',
+          message: 'snapshot stale',
+        },
+        {
+          name: 'cancelled',
+          outcome: { ...common, status: 'cancelled' },
+          status: 'rolledBack',
+          code: 'CANCELLED',
+          message: 'Configuration mutation was cancelled.',
+        },
+        {
+          name: 'plan conflict',
+          outcome: { ...common, status: 'failed', error: new MutationPlanError('PLAN_CONFLICT', 'plan conflict') },
+          status: 'conflict',
+          code: 'PLAN_CONFLICT',
+          message: 'plan conflict',
+        },
+        {
+          name: 'recovery required',
+          outcome: { ...common, status: 'failed', error: new MutationPlanError('RECOVERY_REQUIRED', 'recovery required') },
+          status: 'recoveryRequired',
+          code: 'RECOVERY_REQUIRED',
+          message: 'recovery required',
+        },
+        {
+          name: 'rolled back',
+          outcome: { ...common, status: 'failed', error: new MutationPlanError('PLAN_FAILED', 'plan failed') },
+          status: 'rolledBack',
+          code: 'PLAN_FAILED',
+          message: 'plan failed',
+        },
+        {
+          name: 'failed without error details',
+          outcome: { ...common, status: 'failed' },
+          status: 'rolledBack',
+          code: 'PLAN_FAILED',
+          message: 'Configuration mutation failed.',
+        },
+      ];
+
+      try {
+        for (const entry of cases) {
+          const engine = new ConfigurationMutationEngine({
+            runPlanWithOutcome: async <T>() => entry.outcome as unknown as MutationOutcome<T>,
+          });
+          const receipt = await engine.executePlan(
+            context,
+            { kind: 'ui.typed-plan' },
+            () => ({ kind: 'ui.typed-plan', steps: [], result: 'unused' }),
+          );
+
+          assert.strictEqual(receipt.status, entry.status, entry.name);
+          assert.strictEqual(receipt.code, entry.code, entry.name);
+          assert.strictEqual(receipt.message, entry.message, entry.name);
+          assert.strictEqual(receipt.configurationId, common.configurationId, entry.name);
+          assert.strictEqual(receipt.operationId, common.operationId, entry.name);
+          assert.strictEqual(receipt.snapshotVersion, common.snapshotVersion, entry.name);
+          if (entry.outcome.reconciliation) {
+            assert.deepStrictEqual(receipt.reconciliation, reconciliation, entry.name);
+          }
+        }
+      } finally {
+        await context.session.dispose();
       }
     });
 

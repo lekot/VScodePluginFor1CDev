@@ -1,11 +1,25 @@
 import * as assert from 'assert';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import '../helpers/vscodeStubRegister';
 import { registerAgentCommands } from '../../src/agent/agentCommands';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
+import { createDeployAgentOperationRunner } from '../../src/agent/deployAgentOperationRunner';
+import type { AgentResolutionContext, ConfigurationScopedParams } from '../../src/agent/types';
+import type { ConfigurationId, ConfigurationIdentity } from '../../src/services/configurationSession/types';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
+import {
+  ConfigurationSession,
+  type MutationExecutionOptions,
+  type MutationOutcome,
+} from '../../src/services/configurationSession/ConfigurationSession';
+import {
+  ConfigurationMutationEngine,
+  getConfigurationMutationEngine,
+  setConfigurationMutationEngine,
+} from '../../src/services/configurationSession/ConfigurationMutationEngine';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 import type { AgentResult } from '../../src/agent/types';
 
@@ -101,9 +115,140 @@ suite('Agent configuration routing', () => {
 
     assert.strictEqual(exported.success, true, exported.error);
     assert.ok(exported.operationId, 'file export must pass through the configuration mutation session');
-    assert.strictEqual(exported.snapshotVersion, 1);
+    assert.strictEqual(exported.snapshotVersion, 0, 'writing an external XSD file does not advance the configuration mutation version');
+    assert.strictEqual(exported.reconciliation, undefined, 'an absent observer must not claim reconciliation succeeded');
     assert.ok((await fs.promises.readFile(outputPath, 'utf8')).includes('<xs:schema'));
     assert.strictEqual(fs.existsSync(path.join(root, '.cdt-journal')), false);
+  });
+
+  test('notifies once for XDTO, subsystem, predefined-characteristic, and static-form Agent writes', async () => {
+    const commits: Array<{ configurationId: string; rootPath: string; operationId: string; snapshotVersion: number; kind: string }> = [];
+    await registry.dispose();
+    registry = new WorkspaceRegistry(undefined, (identity) => new ConfigurationSession(identity, async (commit) => {
+      commits.push(commit);
+      return { status: 'succeeded' };
+    }));
+    const root = await createRoot('agent-post-commit', '12121212-1212-1212-1212-121212121212');
+    const subsystemCommandInterface = path.join(root, 'Subsystems', 'TestSubsystem', 'Ext', 'CommandInterface.xml');
+    const predefinedPath = path.join(root, 'ChartsOfCharacteristicTypes', 'Shared', 'Ext', 'Predefined.xml');
+    const formPath = path.join(root, 'CommonForms', 'Editor', 'Ext', 'Form.xml');
+    const catalogPath = path.join(root, 'Catalogs', 'Products.xml');
+    await fs.promises.mkdir(path.dirname(subsystemCommandInterface), { recursive: true });
+    await fs.promises.writeFile(subsystemCommandInterface,
+      '<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.17"><CommandsVisibility/></CommandInterface>',
+      'utf8');
+    await fs.promises.mkdir(path.dirname(predefinedPath), { recursive: true });
+    await fs.promises.writeFile(predefinedPath,
+      '<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Item><Name>Choice</Name><Type><v8:Type>cfg:CatalogRef.Products</v8:Type></Type></Item></PredefinedData>',
+      'utf8');
+    await fs.promises.mkdir(path.dirname(formPath), { recursive: true });
+    const formXml = '<Form version="2.20"><Attributes/><Commands/><AutoCommandBar name="FormCommandBar" id="-1"><ChildItems/></AutoCommandBar><ChildItems><Button name="Submit" id="1"><ExtendedTooltip/></Button></ChildItems></Form>';
+    await fs.promises.writeFile(formPath, formXml, 'utf8');
+    await fs.promises.mkdir(path.dirname(catalogPath), { recursive: true });
+    await fs.promises.writeFile(catalogPath,
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Products</Name><Synonym>Products</Synonym></Properties><ChildObjects/></Catalog></MetaDataObject>',
+      'utf8');
+    await fs.promises.writeFile(path.join(root, 'NewPackage.xsd'),
+      '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:agent"><xs:element name="Root" type="xs:string"/></xs:schema>',
+      'utf8');
+    await registry.refresh([{ configPath: root }]);
+    const session = registry.require(registry.list()[0]!.configurationId);
+    const previousMutationEngine = getConfigurationMutationEngine();
+    setConfigurationMutationEngine(new ConfigurationMutationEngine({
+      runMutationWithOutcome: async <T>(
+        _resourcePath: string,
+        kind: string,
+        operation: () => Promise<T>,
+        options?: MutationExecutionOptions<T>,
+      ): Promise<MutationOutcome<T>> => session.enqueue({ kind, ...options, execute: operation }),
+    }));
+    try {
+    const context = { subscriptions: [] as Array<{ dispose(): void }> };
+    registerAgentCommands(context as never, () => null, async () => registry, new DebugSessionRegistry());
+
+    const createXdto = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.xdto.createFromXsd')!;
+    const setSubsystemVisibility = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.setSubsystemCommandVisibility')!;
+    const setPredefinedType = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.setPredefinedCharacteristicType')!;
+    const editForm = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.forms.edit')!;
+    const setProperties = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.setProperties')!;
+    const xdtoResult = await createXdto({ packageName: 'Created', source: '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:agent"><xs:element name="Root" type="xs:string"/></xs:schema>' }) as AgentResult;
+    const propertiesResult = await setProperties({ path: 'Catalog.Products', properties: { Synonym: 'Updated products' } }) as AgentResult;
+    const subsystemResult = await setSubsystemVisibility({
+      subsystemPath: 'Subsystems/TestSubsystem', commandName: 'Catalog.Products.OpenList', common: 'hidden',
+    }) as AgentResult;
+    const predefinedResult = await setPredefinedType({
+      path: 'ChartOfCharacteristicTypes.Shared', predefinedName: 'Choice', types: ['xs:string'],
+    }) as AgentResult;
+    const formResult = await editForm({
+      formPath: 'CommonForms/Editor/Ext/Form.xml',
+      ifRev: crypto.createHash('sha256').update(formXml).digest('hex'),
+      operations: [{ type: 'setElementIdentity', element: { id: '1', name: 'Submit' }, name: 'Confirm', id: '2' }],
+    }) as AgentResult;
+
+    for (const result of [xdtoResult, propertiesResult, subsystemResult, predefinedResult, formResult]) {
+      assert.strictEqual(result.success, true, result.error);
+      assert.ok(result.operationId);
+      assert.deepStrictEqual(result.reconciliation, { status: 'succeeded' }, 'registered session observers report their reconciliation result');
+    }
+    assert.deepStrictEqual(commits.map((commit) => commit.kind), [
+      'agent.xdto.createFromXsd',
+      'agent.setProperties',
+      'agent.setSubsystemCommandVisibility',
+      'agent.setPredefinedCharacteristicType',
+      'agent.forms.edit',
+    ]);
+    assert.deepStrictEqual(commits.map((commit) => commit.rootPath), [root, root, root, root, root]);
+    assert.deepStrictEqual(commits.map((commit) => commit.snapshotVersion), [1, 2, 3, 4, 5]);
+    assert.strictEqual(commits.length, 5, 'each top-level Agent write notifies once, including nested XMLWriter mutation');
+    assert.ok((await fs.promises.readFile(path.join(root, 'Configuration.xml'), 'utf8')).includes('<XDTOPackage>Created</XDTOPackage>'));
+    assert.ok((await fs.promises.readFile(catalogPath, 'utf8')).includes('Updated products'));
+    assert.ok((await fs.promises.readFile(formPath, 'utf8')).includes('name="Confirm" id="2"'));
+    } finally {
+      setConfigurationMutationEngine(previousMutationEngine);
+    }
+  });
+
+  test('does not reconcile a failed pull result with no possible-effect details', async () => {
+    const reconciliationDecisions: boolean[] = [];
+    const runForConfiguration = async <T>(
+      _params: ConfigurationScopedParams,
+      _capability: keyof ConfigurationIdentity['capabilities'],
+      _kind: string | undefined,
+      operation: (configRoot: string, context: AgentResolutionContext) => Promise<AgentResult<T>>,
+      _cancellation?: import('vscode').CancellationToken,
+      executionOptions?: MutationExecutionOptions<AgentResult<T>>,
+    ): Promise<AgentResult<T>> => {
+      const value = await operation(tempDir, {} as AgentResolutionContext);
+      const outcome: MutationOutcome<AgentResult<T>> = {
+        configurationId: 'agent-pull-test' as ConfigurationId,
+        operationId: 'agent-pull-operation',
+        snapshotVersion: 0,
+        status: 'failed',
+        value,
+      };
+      reconciliationDecisions.push(executionOptions?.shouldReconcile?.(outcome) ?? false);
+      return {
+        ...value,
+        configurationId: outcome.configurationId,
+        operationId: outcome.operationId,
+        snapshotVersion: outcome.snapshotVersion,
+      };
+    };
+    const runDeployAgentOperation = createDeployAgentOperationRunner(
+      runForConfiguration,
+      {} as never,
+    );
+
+    const result = await runDeployAgentOperation(
+      {},
+      'agent.pullSelectedObjects',
+      'agent.pullSelectedObjects',
+      async () => ({ success: false, error: 'export failed before effects were known' }),
+    );
+
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result.error, 'export failed before effects were known');
+    assert.deepStrictEqual(reconciliationDecisions, [false]);
   });
 
   test('rejects 4/6-segment rename paths before effects or journaling', async () => {
