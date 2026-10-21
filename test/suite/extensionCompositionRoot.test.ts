@@ -126,6 +126,38 @@ suite('ExtensionCompositionRoot (#261)', () => {
     }
   });
 
+  test('composition rolls back command registrations when the final command registrar throws', async () => {
+    const commandApi = (vscode as any).commands;
+    const originalRegisterCommand = commandApi.registerCommand;
+    const registrationError = new Error('late repository command registration failed');
+    const created: vscode.Disposable[] = [];
+    let disposed = 0;
+    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+    commandApi.registerCommand = (id: string, callback: unknown): vscode.Disposable => {
+      if (id === '1c-metadata-tree.repository.updateConfiguration') {
+        throw registrationError;
+      }
+      const registration = originalRegisterCommand(id, callback) as vscode.Disposable;
+      created.push(registration);
+      return {
+        dispose: () => {
+          disposed += 1;
+          registration.dispose();
+        },
+      };
+    };
+
+    try {
+      await assert.rejects(root.compose(), (error: unknown) => error === registrationError);
+      await root.dispose();
+    } finally {
+      commandApi.registerCommand = originalRegisterCommand;
+    }
+
+    assert.ok(created.length > 10, 'the injected failure must occur after earlier command registrations');
+    assert.strictEqual(disposed, created.length, 'every acquired command registration must be disposed after rollback');
+  });
+
   test('repository bindings and observed state route to the owning workspace after reorder, including nested roots', async () => {
     const workspaceA = await fs.mkdtemp(path.join(os.tmpdir(), 'pr354-workspace-a-'));
     const workspaceB = await fs.mkdtemp(path.join(os.tmpdir(), 'pr354-workspace-b-'));

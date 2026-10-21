@@ -4,6 +4,7 @@
  */
 
 import * as assert from 'assert';
+import * as vscode from 'vscode';
 import '../helpers/vscodeStubRegister';
 import {
     debugTestState,
@@ -167,6 +168,61 @@ suite('DebugSessionRegistry — activate', () => {
         // После dispose слушатели убраны
         assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 0, 'start listeners очищены');
         assert.strictEqual(debugTestState.onDidTerminateDebugSessionListeners.length, 0, 'terminate listeners очищены');
+    });
+
+    test('failed partial activation rolls back every listener, preserves the registration error, and can retry', () => {
+        const debugApi = (vscode as any).debug;
+        const originalOnDidStart = debugApi.onDidStartDebugSession;
+        const originalOnDidTerminate = debugApi.onDidTerminateDebugSession;
+        const originalRegisterTracker = debugApi.registerDebugAdapterTrackerFactory;
+        const registrationError = new Error('tracker registration failed');
+        let startDisposals = 0;
+        let terminateDisposals = 0;
+
+        debugApi.onDidStartDebugSession = (listener: (session: unknown) => void) => {
+            const subscription = originalOnDidStart(listener);
+            return {
+                dispose: () => {
+                    startDisposals += 1;
+                    subscription.dispose();
+                    throw new Error('start listener cleanup failed');
+                },
+            };
+        };
+        debugApi.onDidTerminateDebugSession = (listener: (session: unknown) => void) => {
+            const subscription = originalOnDidTerminate(listener);
+            return {
+                dispose: () => {
+                    terminateDisposals += 1;
+                    subscription.dispose();
+                },
+            };
+        };
+        debugApi.registerDebugAdapterTrackerFactory = () => {
+            throw registrationError;
+        };
+
+        try {
+            assert.throws(() => registry.activate(), (error: unknown) => error === registrationError);
+            assert.strictEqual(startDisposals, 1, 'rollback must attempt to dispose the first listener');
+            assert.strictEqual(terminateDisposals, 1, 'rollback must continue after a listener disposal throws');
+            assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 0);
+            assert.strictEqual(debugTestState.onDidTerminateDebugSessionListeners.length, 0);
+            assert.strictEqual(debugTestState.registeredTrackerFactories.length, 0);
+        } finally {
+            debugApi.onDidStartDebugSession = originalOnDidStart;
+            debugApi.onDidTerminateDebugSession = originalOnDidTerminate;
+            debugApi.registerDebugAdapterTrackerFactory = originalRegisterTracker;
+        }
+
+        const activation = registry.activate();
+        assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 1);
+        assert.strictEqual(debugTestState.onDidTerminateDebugSessionListeners.length, 1);
+        assert.strictEqual(debugTestState.registeredTrackerFactories.length, 1);
+        activation.dispose();
+        activation.dispose();
+        assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 0);
+        assert.strictEqual(debugTestState.onDidTerminateDebugSessionListeners.length, 0);
     });
 });
 

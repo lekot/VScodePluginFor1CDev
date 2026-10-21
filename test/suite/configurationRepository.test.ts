@@ -36,6 +36,7 @@ import {
 import {
   WorkspaceRepositoryBindingStore,
   WorkspaceRepositoryStateStore,
+  createWorkspaceRepositoryStoreWorkspaceLifecycle,
   migrateWorkspaceRepositoryStores,
 } from '../../src/services/configurationRepository/workspaceRepositoryStores';
 import { XmlParser } from '../../src/parsers/xmlParser';
@@ -427,6 +428,435 @@ suite('Configuration Repository phase 1', () => {
     }
   });
 
+  test('binding and state writes serialize across nested owner removal and re-add', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-owner-race-'));
+    const nestedOwner = path.join(workspaceRoot, 'NestedOwner');
+    const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-owner-race-global-'));
+    await fs.mkdir(nestedOwner, { recursive: true });
+    const configRoot = path.join(nestedOwner, 'Configuration');
+    const target = {
+      configRoot,
+      configKind: 'cf' as const,
+      key: repositoryTargetKey({ configRoot, configKind: 'cf' }),
+    };
+    let workspaceFolders = [workspaceRoot, nestedOwner];
+    const options = { getWorkspaceFolders: () => workspaceFolders, globalStorageRoot: globalRoot };
+    const bindingStore = new WorkspaceRepositoryBindingStore(options);
+    const stateStore = new WorkspaceRepositoryStateStore(options);
+    const parentBindingPath = path.join(workspaceRoot, '.vscode', 'configuration-repository-bindings.json');
+    const parentStatePath = path.join(workspaceRoot, '.vscode', 'configuration-repository-state.json');
+    const originalDelete = RepositoryBindingStore.prototype.delete;
+    const originalClear = RepositoryStateStore.prototype.clear;
+    let releaseCleanup!: () => void;
+    let cleanupStarted!: () => void;
+    let cleanupCount = 0;
+    const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    const cleanupStartedPromise = new Promise<void>((resolve) => { cleanupStarted = resolve; });
+    const waitForCleanup = async (): Promise<void> => {
+      cleanupCount += 1;
+      if (cleanupCount === 1) {
+        cleanupStarted();
+      }
+      await cleanupGate;
+    };
+
+    RepositoryBindingStore.prototype.delete = async function (deleteTarget) {
+      if (path.resolve((this as unknown as { filePath: string }).filePath) === path.resolve(parentBindingPath)) {
+        await waitForCleanup();
+      }
+      return originalDelete.call(this, deleteTarget);
+    };
+    RepositoryStateStore.prototype.clear = async function (clearTarget) {
+      if (path.resolve((this as unknown as { filePath: string }).filePath) === path.resolve(parentStatePath)) {
+        await waitForCleanup();
+      }
+      return originalClear.call(this, clearTarget);
+    };
+
+    try {
+      const firstWrite = Promise.all([
+        bindingStore.set(target, {
+          repositoryPath: 'repo-first', repositoryUser: 'user', executionInfobaseId: 'ib-first',
+        }),
+        stateStore.set(target, {
+          connection: 'connected', locks: { 'Catalog.First': 'heldByCurrentCredentials' },
+          source: 'configuratorAcknowledgement',
+        }),
+      ]);
+      await cleanupStartedPromise;
+
+      workspaceFolders = [workspaceRoot];
+      const secondWrite = Promise.all([
+        bindingStore.set(target, {
+          repositoryPath: 'repo-second', repositoryUser: 'user', executionInfobaseId: 'ib-second',
+        }),
+        stateStore.set(target, {
+          connection: 'disconnected', locks: { 'Catalog.Second': 'unlocked' }, source: 'unknown',
+        }),
+      ]);
+      workspaceFolders = [workspaceRoot, nestedOwner];
+      let secondWriteFinished = false;
+      void secondWrite.then(() => { secondWriteFinished = true; });
+      await Promise.race([
+        secondWrite,
+        new Promise<void>((resolve) => setTimeout(resolve, 100)),
+      ]);
+      const secondWriteFinishedBeforeRelease = secondWriteFinished;
+      releaseCleanup();
+      await Promise.all([firstWrite, secondWrite]);
+
+      assert.strictEqual(secondWriteFinishedBeforeRelease, false, 'the second target transaction must wait behind first-owner cleanup');
+      assert.strictEqual((await bindingStore.get(target))?.repositoryPath, 'repo-second');
+      assert.strictEqual((await stateStore.get(target)).connection, 'disconnected');
+      assert.deepStrictEqual((await stateStore.get(target)).locks, { 'Catalog.Second': 'unlocked' });
+    } finally {
+      releaseCleanup();
+      RepositoryBindingStore.prototype.delete = originalDelete;
+      RepositoryStateStore.prototype.clear = originalClear;
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.rm(globalRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('first access reconciles binding and state to a re-added nested owner before the old root is removed', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-owner-readd-'));
+    const nestedOwner = path.join(workspaceRoot, 'NestedOwner');
+    const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-owner-readd-global-'));
+    await fs.mkdir(nestedOwner, { recursive: true });
+    const configRoot = path.join(nestedOwner, 'Configuration');
+    const target = {
+      configRoot,
+      configKind: 'cf' as const,
+      key: repositoryTargetKey({ configRoot, configKind: 'cf' }),
+    };
+    let workspaceFolders = [workspaceRoot, nestedOwner];
+    const options = { getWorkspaceFolders: () => workspaceFolders, globalStorageRoot: globalRoot };
+    const bindingStore = new WorkspaceRepositoryBindingStore(options);
+    const stateStore = new WorkspaceRepositoryStateStore(options);
+    const parentBindingStore = new RepositoryBindingStore(
+      path.join(workspaceRoot, '.vscode', 'configuration-repository-bindings.json'),
+    );
+    const parentStateStore = new RepositoryStateStore(
+      path.join(workspaceRoot, '.vscode', 'configuration-repository-state.json'),
+    );
+    const nestedBindingStore = new RepositoryBindingStore(
+      path.join(nestedOwner, '.vscode', 'configuration-repository-bindings.json'),
+    );
+    const nestedStateStore = new RepositoryStateStore(
+      path.join(nestedOwner, '.vscode', 'configuration-repository-state.json'),
+    );
+
+    try {
+      await bindingStore.set(target, {
+        repositoryPath: 'repo-in-nested-owner', repositoryUser: 'user', executionInfobaseId: 'ib-nested',
+      });
+      await stateStore.set(target, {
+        connection: 'connected', locks: { 'Catalog.Before': 'heldByCurrentCredentials' },
+        source: 'configuratorAcknowledgement',
+      });
+
+      workspaceFolders = [workspaceRoot];
+      await bindingStore.set(target, {
+        repositoryPath: 'repo-second', repositoryUser: 'user', executionInfobaseId: 'ib-second',
+      });
+      await stateStore.set(target, {
+        connection: 'disconnected', locks: { 'Catalog.Second': 'unlocked' }, source: 'unknown',
+      });
+      workspaceFolders = [workspaceRoot, nestedOwner];
+
+      assert.strictEqual((await bindingStore.get(target))?.repositoryPath, 'repo-second');
+      assert.strictEqual((await stateStore.getStored(target))?.connection, 'disconnected');
+      assert.strictEqual((await nestedBindingStore.get(target))?.repositoryPath, 'repo-second');
+      assert.deepStrictEqual((await nestedStateStore.getStored(target))?.locks, { 'Catalog.Second': 'unlocked' });
+      assert.strictEqual(await parentBindingStore.get(target), undefined);
+      assert.strictEqual(await parentStateStore.getStored(target), undefined);
+
+      workspaceFolders = [nestedOwner];
+      assert.strictEqual((await bindingStore.get(target))?.repositoryPath, 'repo-second');
+      assert.strictEqual((await stateStore.getStored(target))?.connection, 'disconnected');
+      assert.strictEqual((await bindingStore.list()).some((entry) => entry.targetKey === target.key), true);
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.rm(globalRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('binding list reconciles foreign records before their former owner leaves the workspace', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-owner-list-readd-'));
+    const nestedOwner = path.join(workspaceRoot, 'NestedOwner');
+    const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-owner-list-readd-global-'));
+    await fs.mkdir(nestedOwner, { recursive: true });
+    const configRoot = path.join(nestedOwner, 'Configuration');
+    const target = {
+      configRoot,
+      configKind: 'cfe' as const,
+      extensionName: 'Sales',
+      key: repositoryTargetKey({ configRoot, configKind: 'cfe', extensionName: 'Sales' }),
+    };
+    let workspaceFolders = [workspaceRoot, nestedOwner];
+    const options = { getWorkspaceFolders: () => workspaceFolders, globalStorageRoot: globalRoot };
+    const bindingStore = new WorkspaceRepositoryBindingStore(options);
+    const stateStore = new WorkspaceRepositoryStateStore(options);
+    const parentBindingStore = new RepositoryBindingStore(
+      path.join(workspaceRoot, '.vscode', 'configuration-repository-bindings.json'),
+    );
+    const nestedBindingStore = new RepositoryBindingStore(
+      path.join(nestedOwner, '.vscode', 'configuration-repository-bindings.json'),
+    );
+    const nestedStateStore = new RepositoryStateStore(
+      path.join(nestedOwner, '.vscode', 'configuration-repository-state.json'),
+    );
+
+    try {
+      workspaceFolders = [workspaceRoot];
+      await bindingStore.set(target, {
+        repositoryPath: 'repo-relisted', repositoryUser: 'user', executionInfobaseId: 'ib-relisted',
+      });
+      await stateStore.set(target, {
+        connection: 'connected', locks: { 'Catalog.Relisted': 'heldByCurrentCredentials' },
+        source: 'configuratorAcknowledgement',
+      });
+      workspaceFolders = [workspaceRoot, nestedOwner];
+
+      assert.strictEqual((await bindingStore.list()).length, 1);
+      assert.strictEqual((await nestedBindingStore.get(target))?.repositoryPath, 'repo-relisted');
+      assert.deepStrictEqual((await nestedStateStore.getStored(target))?.locks, {
+        'Catalog.Relisted': 'heldByCurrentCredentials',
+      });
+      assert.strictEqual(await parentBindingStore.get(target), undefined);
+
+      workspaceFolders = [nestedOwner];
+      assert.strictEqual((await bindingStore.get(target))?.repositoryPath, 'repo-relisted');
+      assert.strictEqual((await stateStore.getStored(target))?.connection, 'connected');
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.rm(globalRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('workspace root changes migrate the binding and state pair before the former owner is removed', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-owner-events-'));
+    const nestedOwner = path.join(workspaceRoot, 'NestedOwner');
+    const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-owner-events-global-'));
+    await fs.mkdir(nestedOwner, { recursive: true });
+    const configRoot = path.join(nestedOwner, 'Configuration');
+    const target = {
+      configRoot,
+      configKind: 'cf' as const,
+      key: repositoryTargetKey({ configRoot, configKind: 'cf' }),
+    };
+    let workspaceFolders = [workspaceRoot];
+    const options = { getWorkspaceFolders: () => workspaceFolders, globalStorageRoot: globalRoot };
+    const bindingStore = new WorkspaceRepositoryBindingStore(options);
+    const stateStore = new WorkspaceRepositoryStateStore(options);
+    const workspaceLifecycle = createWorkspaceRepositoryStoreWorkspaceLifecycle(options);
+    const parentBindingStore = new RepositoryBindingStore(
+      path.join(workspaceRoot, '.vscode', 'configuration-repository-bindings.json'),
+    );
+    const parentStateStore = new RepositoryStateStore(
+      path.join(workspaceRoot, '.vscode', 'configuration-repository-state.json'),
+    );
+    const nestedBindingStore = new RepositoryBindingStore(
+      path.join(nestedOwner, '.vscode', 'configuration-repository-bindings.json'),
+    );
+    const nestedStateStore = new RepositoryStateStore(
+      path.join(nestedOwner, '.vscode', 'configuration-repository-state.json'),
+    );
+
+    try {
+      await bindingStore.set(target, {
+        repositoryPath: 'repo-before-folder-change', repositoryUser: 'user', executionInfobaseId: 'ib-before-change',
+      });
+      await stateStore.set(target, {
+        connection: 'connected', locks: { 'Catalog.BeforeChange': 'heldByCurrentCredentials' },
+        source: 'configuratorAcknowledgement',
+      });
+
+      workspaceFolders = [workspaceRoot, nestedOwner];
+      await workspaceLifecycle.handleWorkspaceFoldersChanged();
+      workspaceFolders = [nestedOwner];
+      await workspaceLifecycle.handleWorkspaceFoldersChanged();
+
+      assert.strictEqual((await bindingStore.get(target))?.repositoryPath, 'repo-before-folder-change');
+      assert.strictEqual((await stateStore.getStored(target))?.connection, 'connected');
+      assert.strictEqual((await nestedBindingStore.get(target))?.repositoryPath, 'repo-before-folder-change');
+      assert.deepStrictEqual((await nestedStateStore.getStored(target))?.locks, {
+        'Catalog.BeforeChange': 'heldByCurrentCredentials',
+      });
+      assert.strictEqual(await parentBindingStore.get(target), undefined);
+      assert.strictEqual(await parentStateStore.getStored(target), undefined);
+    } finally {
+      await workspaceLifecycle.dispose();
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.rm(globalRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('rapid workspace changes serialize pair migration and disposal drains queued work', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-owner-events-fast-'));
+    const nestedOwner = path.join(workspaceRoot, 'NestedOwner');
+    const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-owner-events-fast-global-'));
+    await fs.mkdir(nestedOwner, { recursive: true });
+    const configRoot = path.join(nestedOwner, 'Configuration');
+    const target = {
+      configRoot,
+      configKind: 'cf' as const,
+      key: repositoryTargetKey({ configRoot, configKind: 'cf' }),
+    };
+    let workspaceFolders = [workspaceRoot];
+    const options = { getWorkspaceFolders: () => workspaceFolders, globalStorageRoot: globalRoot };
+    const bindingStore = new WorkspaceRepositoryBindingStore(options);
+    const stateStore = new WorkspaceRepositoryStateStore(options);
+    const lifecycle = createWorkspaceRepositoryStoreWorkspaceLifecycle(options);
+    const parentBindingPath = path.join(workspaceRoot, '.vscode', 'configuration-repository-bindings.json');
+    const parentStatePath = path.join(workspaceRoot, '.vscode', 'configuration-repository-state.json');
+    const nestedBindingStore = new RepositoryBindingStore(
+      path.join(nestedOwner, '.vscode', 'configuration-repository-bindings.json'),
+    );
+    const nestedStateStore = new RepositoryStateStore(
+      path.join(nestedOwner, '.vscode', 'configuration-repository-state.json'),
+    );
+    const originalDelete = RepositoryBindingStore.prototype.delete;
+    let releaseCleanup!: () => void;
+    let cleanupStarted!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    const cleanupStartedPromise = new Promise<void>((resolve) => { cleanupStarted = resolve; });
+    RepositoryBindingStore.prototype.delete = async function (deleteTarget) {
+      if (path.resolve((this as unknown as { filePath: string }).filePath) === path.resolve(parentBindingPath)) {
+        cleanupStarted();
+        await cleanupGate;
+      }
+      return originalDelete.call(this, deleteTarget);
+    };
+
+    try {
+      await bindingStore.set(target, {
+        repositoryPath: 'repo-fast-events', repositoryUser: 'user', executionInfobaseId: 'ib-fast-events',
+      });
+      await stateStore.set(target, {
+        connection: 'connected', locks: { 'Catalog.FastEvents': 'heldByCurrentCredentials' },
+        source: 'configuratorAcknowledgement',
+      });
+
+      workspaceFolders = [workspaceRoot, nestedOwner];
+      const addNestedOwner = lifecycle.handleWorkspaceFoldersChanged();
+      await cleanupStartedPromise;
+      workspaceFolders = [nestedOwner];
+      const removeFormerOwner = lifecycle.handleWorkspaceFoldersChanged();
+      let disposed = false;
+      const dispose = lifecycle.dispose().then(() => { disposed = true; });
+      await Promise.race([dispose, new Promise<void>((resolve) => setTimeout(resolve, 50))]);
+      assert.strictEqual(disposed, false, 'lifecycle disposal must wait for pending root-change migration');
+
+      releaseCleanup();
+      await Promise.all([addNestedOwner, removeFormerOwner, dispose]);
+      assert.strictEqual((await nestedBindingStore.get(target))?.repositoryPath, 'repo-fast-events');
+      assert.deepStrictEqual((await nestedStateStore.getStored(target))?.locks, {
+        'Catalog.FastEvents': 'heldByCurrentCredentials',
+      });
+      assert.strictEqual(await new RepositoryBindingStore(parentBindingPath).get(target), undefined);
+      assert.strictEqual(await new RepositoryStateStore(parentStatePath).getStored(target), undefined);
+      assert.strictEqual((await bindingStore.get(target))?.repositoryPath, 'repo-fast-events');
+      assert.strictEqual((await stateStore.getStored(target))?.connection, 'connected');
+    } finally {
+      releaseCleanup();
+      await lifecycle.dispose();
+      RepositoryBindingStore.prototype.delete = originalDelete;
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.rm(globalRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('legacy migration serializes with binding and state updates across owner removal and re-add', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-migration-race-'));
+    const nestedOwner = path.join(workspaceRoot, 'NestedOwner');
+    const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-migration-race-global-'));
+    await fs.mkdir(nestedOwner, { recursive: true });
+    const configRoot = path.join(nestedOwner, 'Configuration');
+    const target = {
+      configRoot,
+      configKind: 'cf' as const,
+      key: repositoryTargetKey({ configRoot, configKind: 'cf' }),
+    };
+    let workspaceFolders = [workspaceRoot, nestedOwner];
+    const options = { getWorkspaceFolders: () => workspaceFolders, globalStorageRoot: globalRoot };
+    const bindingStore = new WorkspaceRepositoryBindingStore(options);
+    const stateStore = new WorkspaceRepositoryStateStore(options);
+    const parentBindingPath = path.join(workspaceRoot, '.vscode', 'configuration-repository-bindings.json');
+    const parentStatePath = path.join(workspaceRoot, '.vscode', 'configuration-repository-state.json');
+    await new RepositoryBindingStore(parentBindingPath).set(target, {
+      repositoryPath: 'legacy-repo', repositoryUser: 'user', executionInfobaseId: 'legacy-ib',
+    });
+    await new RepositoryStateStore(parentStatePath).set(target, {
+      connection: 'connected', locks: { 'Catalog.Legacy': 'heldByCurrentCredentials' },
+      source: 'configuratorAcknowledgement',
+    });
+
+    const originalDelete = RepositoryBindingStore.prototype.delete;
+    const originalClear = RepositoryStateStore.prototype.clear;
+    let releaseCleanup!: () => void;
+    let cleanupStarted!: () => void;
+    let cleanupCount = 0;
+    const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    const cleanupStartedPromise = new Promise<void>((resolve) => { cleanupStarted = resolve; });
+    const waitForCleanup = async (): Promise<void> => {
+      cleanupCount += 1;
+      if (cleanupCount === 1) {
+        cleanupStarted();
+      }
+      await cleanupGate;
+    };
+    RepositoryBindingStore.prototype.delete = async function (deleteTarget) {
+      if (path.resolve((this as unknown as { filePath: string }).filePath) === path.resolve(parentBindingPath)) {
+        await waitForCleanup();
+      }
+      return originalDelete.call(this, deleteTarget);
+    };
+    RepositoryStateStore.prototype.clear = async function (clearTarget) {
+      if (path.resolve((this as unknown as { filePath: string }).filePath) === path.resolve(parentStatePath)) {
+        await waitForCleanup();
+      }
+      return originalClear.call(this, clearTarget);
+    };
+
+    try {
+      const migration = migrateWorkspaceRepositoryStores(options);
+      await cleanupStartedPromise;
+      workspaceFolders = [workspaceRoot];
+      const secondWrite = Promise.all([
+        bindingStore.set(target, {
+          repositoryPath: 'repo-second', repositoryUser: 'user', executionInfobaseId: 'ib-second',
+        }),
+        stateStore.set(target, {
+          connection: 'disconnected', locks: { 'Catalog.Second': 'unlocked' }, source: 'unknown',
+        }),
+      ]);
+      workspaceFolders = [workspaceRoot, nestedOwner];
+      let secondWriteFinished = false;
+      void secondWrite.then(() => { secondWriteFinished = true; });
+      await Promise.race([
+        secondWrite,
+        new Promise<void>((resolve) => setTimeout(resolve, 100)),
+      ]);
+      const secondWriteFinishedBeforeRelease = secondWriteFinished;
+      releaseCleanup();
+      await Promise.all([migration, secondWrite]);
+
+      assert.strictEqual(secondWriteFinishedBeforeRelease, false, 'migration cleanup must hold the target transaction until its source is safe');
+      assert.strictEqual((await bindingStore.get(target))?.repositoryPath, 'repo-second');
+      assert.strictEqual((await stateStore.get(target)).connection, 'disconnected');
+      assert.deepStrictEqual((await stateStore.get(target)).locks, { 'Catalog.Second': 'unlocked' });
+      assert.strictEqual((await new RepositoryBindingStore(parentBindingPath).get(target)), undefined);
+      assert.strictEqual((await new RepositoryStateStore(parentStatePath).getStored(target)), undefined);
+    } finally {
+      releaseCleanup();
+      RepositoryBindingStore.prototype.delete = originalDelete;
+      RepositoryStateStore.prototype.clear = originalClear;
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.rm(globalRoot, { recursive: true, force: true });
+    }
+  });
+
   test('owner-store deletion failures remain visible after Designer acknowledged disconnect', async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-owner-failure-'));
     const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-global-failure-'));
@@ -517,6 +947,8 @@ suite('Configuration Repository phase 1', () => {
       source: 'configuratorAcknowledgement',
     });
     const ownerBindingPath = path.join(ownerRoot, '.vscode', 'configuration-repository-bindings.json');
+    const options = { getWorkspaceFolders: () => [formerFirstRoot, ownerRoot], globalStorageRoot: globalRoot };
+    const routedBindingStore = new WorkspaceRepositoryBindingStore(options);
     const originalSet = RepositoryBindingStore.prototype.set;
     RepositoryBindingStore.prototype.set = async function (setTarget, binding) {
       if (path.resolve((this as unknown as { filePath: string }).filePath) === path.resolve(ownerBindingPath)) {
@@ -526,10 +958,8 @@ suite('Configuration Repository phase 1', () => {
     };
 
     try {
-      await assert.rejects(migrateWorkspaceRepositoryStores({
-        getWorkspaceFolders: () => [formerFirstRoot, ownerRoot],
-        globalStorageRoot: globalRoot,
-      }), /destination store denied migration/u);
+      await assert.rejects(routedBindingStore.list(), /destination store denied migration/u);
+      await assert.rejects(migrateWorkspaceRepositoryStores(options), /destination store denied migration/u);
       assert.strictEqual((await legacyBindingStore.get(target))?.repositoryPath, 'legacy-repo');
       assert.strictEqual((await legacyStateStore.get(target)).connection, 'connected');
       assert.strictEqual(await new RepositoryBindingStore(ownerBindingPath).get(target), undefined);
@@ -541,7 +971,7 @@ suite('Configuration Repository phase 1', () => {
     }
   });
 
-  test('binding list excludes foreign-root records until they are durably migrated', async () => {
+  test('binding reads and lists durably migrate foreign-root records to their owner', async () => {
     const legacyRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-list-legacy-'));
     const ownerRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-list-owner-'));
     const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-list-global-'));
@@ -568,12 +998,12 @@ suite('Configuration Repository phase 1', () => {
       });
 
       assert.strictEqual((await routedStore.get(target))?.repositoryPath, 'legacy-repository');
-      assert.deepStrictEqual(await routedStore.list(), [], 'foreign legacy records must not appear as owner entries');
-
-      await migrateWorkspaceRepositoryStores(options);
       assert.strictEqual((await routedStore.list()).length, 1);
       assert.strictEqual((await routedStore.get(target))?.repositoryPath, 'legacy-repository');
       assert.strictEqual((await legacyStore.list()).length, 0);
+
+      await migrateWorkspaceRepositoryStores(options);
+      assert.strictEqual((await routedStore.list()).length, 1, 'repeated migration must keep owner data intact');
     } finally {
       await fs.rm(legacyRoot, { recursive: true, force: true });
       await fs.rm(ownerRoot, { recursive: true, force: true });

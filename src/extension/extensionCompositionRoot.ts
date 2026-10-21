@@ -72,6 +72,7 @@ import {
 import {
   WorkspaceRepositoryBindingStore,
   WorkspaceRepositoryStateStore,
+  createWorkspaceRepositoryStoreWorkspaceLifecycle,
   migrateWorkspaceRepositoryStores,
 } from '../services/configurationRepository/workspaceRepositoryStores';
 import {
@@ -781,6 +782,16 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     const projection = new RepositoryStateProjection();
     const bindingStore = new WorkspaceRepositoryBindingStore(storeOptions);
     const stateStore = new WorkspaceRepositoryStateStore(storeOptions);
+    const workspaceStoreLifecycle = createWorkspaceRepositoryStoreWorkspaceLifecycle(storeOptions);
+    const workspaceStoreChangeSubscription = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      void workspaceStoreLifecycle.handleWorkspaceFoldersChanged().catch((error) => {
+        Logger.warn('Configuration Repository store migration after workspace folder change failed.', error);
+      });
+    });
+    this.registerDisposable('configurationRepositoryWorkspaceLifecycle', async () => {
+      workspaceStoreChangeSubscription.dispose();
+      await workspaceStoreLifecycle.dispose();
+    });
     try {
       await migrateWorkspaceRepositoryStores(storeOptions);
     } catch (error) {

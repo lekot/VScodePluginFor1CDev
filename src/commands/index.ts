@@ -82,6 +82,15 @@ export async function registerAllCommands({
     runConfigurationPlan,
     getConfigurationRegistry,
   } = infrastructure;
+  const returnOnlyDisposables = new Set<vscode.Disposable>();
+  const collectReturned = (disposables: vscode.Disposable[]): vscode.Disposable[] => {
+    for (const disposable of disposables) {
+      if (!context.subscriptions.includes(disposable)) {
+        returnOnlyDisposables.add(disposable);
+      }
+    }
+    return disposables;
+  };
   const utilityDeps = {
     state,
     loadMetadataTree: lifecycle.loadMetadataTree,
@@ -172,30 +181,45 @@ export async function registerAllCommands({
     requestConfigurationReload
   );
 
-  return [
-    ...supportDisposables,
-    ...registerUtilityCommandsLeading(utilityDeps),
-    ...registerConfigurationCompareCommands({ context, state }),
-    ...registerCfCommands({ state }),
-    ...registerEditorCommands({ state, context }),
-    ...registerSyntaxHelpCommands(),
-    ...registerElementCommands({
-      state,
-      loadMetadataTree: lifecycle.loadMetadataTree,
-      requestConfigurationReload,
-      scheduleDeleteReconcile: lifecycle.reloadOrchestratorHandlers.scheduleDeleteReconcile,
-      runConfigurationMutation,
-      runConfigurationPlan,
-    }),
-    ...registerNavigationCommands({ state }),
-    ...registerUtilityCommandsTrailing(utilityDeps),
-    ...registerFilterCommands({
-      state,
-      loadMetadataTree: lifecycle.loadMetadataTree,
-      invalidateTreeCacheOnly: lifecycle.invalidateTreeCacheOnly,
-    }),
-    ...registerConfigurationRepositoryCommands(state),
-  ];
+  try {
+    return [
+      ...collectReturned(supportDisposables),
+      ...collectReturned(registerUtilityCommandsLeading(utilityDeps)),
+      ...collectReturned(registerConfigurationCompareCommands({ context, state })),
+      ...collectReturned(registerCfCommands({ state })),
+      ...collectReturned(registerEditorCommands({ state, context })),
+      ...collectReturned(registerSyntaxHelpCommands()),
+      ...collectReturned(registerElementCommands({
+        state,
+        loadMetadataTree: lifecycle.loadMetadataTree,
+        requestConfigurationReload,
+        scheduleDeleteReconcile: lifecycle.reloadOrchestratorHandlers.scheduleDeleteReconcile,
+        runConfigurationMutation,
+        runConfigurationPlan,
+      })),
+      ...collectReturned(registerNavigationCommands({ state })),
+      ...collectReturned(registerUtilityCommandsTrailing(utilityDeps)),
+      ...collectReturned(registerFilterCommands({
+        state,
+        loadMetadataTree: lifecycle.loadMetadataTree,
+        invalidateTreeCacheOnly: lifecycle.invalidateTreeCacheOnly,
+      })),
+      ...collectReturned(registerConfigurationRepositoryCommands(state)),
+    ];
+  } catch (error) {
+    for (const disposable of [...returnOnlyDisposables].reverse()) {
+      try {
+        disposable.dispose();
+      } catch (disposeError) {
+        try {
+          Logger.warn('Command registration rollback failed', disposeError);
+        } catch {
+          // Rollback must preserve the registration error and continue cleanup.
+        }
+      }
+    }
+    throw error;
+  }
 }
 
 interface ConfigureSupportServicesArgs {

@@ -18,6 +18,36 @@ const DEFAULT_STATE: RepositoryObservedState = Object.freeze({
 });
 
 const mutationTails = new Map<string, Promise<void>>();
+const repositoryTargetMutationTails = new Map<string, Promise<void>>();
+
+export function repositoryTargetMutationKey(target: RepositoryTarget): string {
+  return JSON.stringify([
+    filesystemPathKey(target.configRoot),
+    target.configKind,
+    (target.extensionName ?? '').trim().toLocaleLowerCase(),
+  ]);
+}
+
+/** Serializes cross-store mutations for one canonical repository target. */
+export async function withRepositoryTargetMutationLock<T>(
+  target: RepositoryTarget,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const key = repositoryTargetMutationKey(target);
+  const previous = repositoryTargetMutationTails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  repositoryTargetMutationTails.set(key, gate);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (repositoryTargetMutationTails.get(key) === gate) {
+      repositoryTargetMutationTails.delete(key);
+    }
+  }
+}
 
 export function getRepositoryStateMutationLockKey(filePath: string, platform?: NodeJS.Platform): string {
   return filesystemPathKey(filePath, platform);
