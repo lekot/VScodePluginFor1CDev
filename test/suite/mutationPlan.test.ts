@@ -6,7 +6,14 @@ import * as os from 'os';
 import * as path from 'path';
 import { hashContent } from '../../src/services/configurationSession/atomicFileStorage';
 import { MutationPlanExecutor, MutationPlanError, calculateDirectoryFingerprint } from '../../src/services/configurationSession/mutationPlan';
-import { isProcessAlive, rootLeaseHeartbeatPath, writeRootLeaseHeartbeat } from '../../src/services/configurationSession/rootLease';
+import {
+  cleanupCurrentRootLeaseHeartbeatTemps,
+  isProcessAlive,
+  RootLeaseOwnershipError,
+  rootLeaseHeartbeatPath,
+  writeRootLeaseHeartbeat,
+} from '../../src/services/configurationSession/rootLease';
+import { logCleanupFailure } from '../../src/services/configurationSession/journalCleanupDiagnostics';
 import { Logger } from '../../src/utils/logger';
 import {
   assertJournalNamespace,
@@ -1477,6 +1484,310 @@ suite('MutationPlanExecutor', () => {
     await new MutationPlanExecutor(tempDir).recover();
     assert.strictEqual(fs.existsSync(currentTempPath), false, 'later recovery must remove the now-stale validated temp');
     assert.strictEqual(fs.existsSync(journalRoot), false);
+  });
+
+  test('#349: current heartbeat temp cleanup validates names, records, paths, and ownership', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    const leaseId = 'current-heartbeat-temp-validation';
+    const heartbeatPath = rootLeaseHeartbeatPath(journalRoot, leaseId);
+    const expectedHash = path.basename(heartbeatPath).split('.')[3]!;
+    const tempPath = (uuid: string) => `${heartbeatPath}.${uuid}.tmp`;
+    const validRecord = JSON.stringify({ leaseId, heartbeatAt: Date.now() });
+
+    const malformedName = `${heartbeatPath}.not-a-uuid.tmp`;
+    await fs.promises.writeFile(malformedName, validRecord, 'utf8');
+    const malformedNameIssue = await cleanupCurrentRootLeaseHeartbeatTemps(tempDir, journalRoot, leaseId, async () => undefined);
+    assert.strictEqual(malformedNameIssue.length, 1);
+    assert.strictEqual(fs.existsSync(malformedName), true);
+    await fs.promises.rm(malformedName, { force: true });
+
+    const uppercaseHashPath = path.join(
+      journalRoot,
+      path.basename(heartbeatPath).replace(expectedHash, expectedHash.toUpperCase()) + `.${randomUUID()}.tmp`,
+    );
+    await fs.promises.writeFile(uppercaseHashPath, validRecord, 'utf8');
+    const uppercaseHashIssue = await cleanupCurrentRootLeaseHeartbeatTemps(tempDir, journalRoot, leaseId, async () => undefined);
+    assert.strictEqual(uppercaseHashIssue.length, 1, 'a case-insensitive prefix match must still pass the strict filename check');
+    assert.strictEqual(fs.existsSync(uppercaseHashPath), true);
+    await fs.promises.rm(uppercaseHashPath, { force: true });
+
+    const missingRecordIdPath = tempPath(randomUUID());
+    await fs.promises.writeFile(missingRecordIdPath, JSON.stringify({ heartbeatAt: Date.now() }), 'utf8');
+    const missingRecordIdIssue = await cleanupCurrentRootLeaseHeartbeatTemps(tempDir, journalRoot, leaseId, async () => undefined);
+    assert.strictEqual(missingRecordIdIssue.length, 1);
+    assert.strictEqual(fs.existsSync(missingRecordIdPath), true);
+    await fs.promises.rm(missingRecordIdPath, { force: true });
+
+    const mismatchedRecordPath = tempPath(randomUUID());
+    await fs.promises.writeFile(mismatchedRecordPath, JSON.stringify({ leaseId: 'foreign-current-temp', heartbeatAt: Date.now() }), 'utf8');
+    const mismatchedRecordIssue = await cleanupCurrentRootLeaseHeartbeatTemps(tempDir, journalRoot, leaseId, async () => undefined);
+    assert.strictEqual(mismatchedRecordIssue.length, 1);
+    assert.strictEqual(fs.existsSync(mismatchedRecordPath), true);
+    await fs.promises.rm(mismatchedRecordPath, { force: true });
+
+    const symlinkPath = tempPath(randomUUID());
+    const symlinkTarget = path.join(tempDir, 'current-temp-symlink-target');
+    await fs.promises.mkdir(symlinkTarget);
+    await createDirectorySymlink(symlinkTarget, symlinkPath);
+    const symlinkIssue = await cleanupCurrentRootLeaseHeartbeatTemps(tempDir, journalRoot, leaseId, async () => undefined);
+    assert.strictEqual(symlinkIssue.length, 1);
+    assert.strictEqual(fs.lstatSync(symlinkPath).isSymbolicLink(), true);
+    await fs.promises.rm(symlinkPath, { recursive: true, force: true });
+
+    const validTempPath = tempPath(randomUUID());
+    await fs.promises.writeFile(validTempPath, validRecord, 'utf8');
+    const ownershipIssue = await cleanupCurrentRootLeaseHeartbeatTemps(
+      tempDir,
+      journalRoot,
+      leaseId,
+      async () => { throw new RootLeaseOwnershipError('Controlled ownership verification failure.', 'unverified'); },
+    );
+    assert.strictEqual(ownershipIssue.length, 1);
+    assert.ok(ownershipIssue[0]!.error instanceof RootLeaseOwnershipError);
+    assert.strictEqual(fs.existsSync(validTempPath), true, 'an unverifiable lease must preserve its temp artifact');
+    await fs.promises.rm(validTempPath, { force: true });
+
+    const canonicalPathTemp = tempPath(randomUUID());
+    await fs.promises.writeFile(canonicalPathTemp, validRecord, 'utf8');
+    const originalRealpath = fs.promises.realpath;
+    (fs.promises as any).realpath = async (targetPath: fs.PathLike, ...options: unknown[]) => {
+      if (path.resolve(String(targetPath)) === path.resolve(canonicalPathTemp)) {
+        return path.join(tempDir, 'outside-current-temp');
+      }
+      return (originalRealpath as any).call(fs.promises, targetPath, ...options);
+    };
+    try {
+      const canonicalIssue = await cleanupCurrentRootLeaseHeartbeatTemps(tempDir, journalRoot, leaseId, async () => undefined);
+      assert.strictEqual(canonicalIssue.length, 1);
+      assert.strictEqual(fs.existsSync(canonicalPathTemp), true);
+    } finally {
+      (fs.promises as any).realpath = originalRealpath;
+      await fs.promises.rm(canonicalPathTemp, { force: true });
+    }
+  });
+
+  test('#349: acquisition cleanup logs a failed lease removal without replacing the claim conflict', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    const originalWriteFile = fs.promises.writeFile;
+    const originalRename = fs.promises.rename;
+    let claimPath: string | undefined;
+    let renameFailed = false;
+    (fs.promises as any).writeFile = async (targetPath: fs.PathLike, data: string | NodeJS.ArrayBufferView, options?: fs.WriteFileOptions) => {
+      const result = await originalWriteFile.call(fs.promises, targetPath, data, options);
+      if (!claimPath && path.resolve(String(targetPath)) === path.resolve(leasePath)) {
+        const now = Date.now();
+        claimPath = path.join(journalRoot, `.root-lease.json.claim-v2-${now}-${process.pid}-${randomUUID()}`);
+        await originalWriteFile.call(fs.promises, claimPath, JSON.stringify({
+          leaseId: 'active-acquisition-claim',
+          pid: process.pid,
+          createdAt: now,
+          heartbeatAt: now,
+          operationId: 'do-not-log-claim-content',
+        }), 'utf8');
+      }
+      return result;
+    };
+    (fs.promises as any).rename = async (sourcePath: fs.PathLike, targetPath: fs.PathLike) => {
+      if (!renameFailed && path.resolve(String(sourcePath)) === path.resolve(leasePath)) {
+        renameFailed = true;
+        const error = new Error('controlled EBUSY while aborting lease acquisition') as NodeJS.ErrnoException;
+        error.code = 'EBUSY';
+        throw error;
+      }
+      return originalRename.call(fs.promises, sourcePath, targetPath);
+    };
+
+    Logger.clearBuffer();
+    try {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).recover(),
+        (error: unknown) => error instanceof MutationPlanError
+          && error.code === 'PLAN_CONFLICT'
+          && error.message.includes('being fenced by an active process'),
+      );
+    } finally {
+      (fs.promises as any).writeFile = originalWriteFile;
+      (fs.promises as any).rename = originalRename;
+    }
+
+    assert.ok(claimPath);
+    assert.strictEqual(renameFailed, true);
+    assert.strictEqual(fs.existsSync(leasePath), true);
+    const diagnostic = Logger.getBufferedContent();
+    assert.ok(diagnostic.includes('"stage":"root-lease-acquisition-cleanup"'), diagnostic);
+    assert.ok(diagnostic.includes('"fsCode":"EBUSY"'), diagnostic);
+    assert.ok(diagnostic.includes('"state":"acquisition-aborted"'), diagnostic);
+    assert.ok(diagnostic.includes('"type":"file"'), diagnostic);
+    assert.ok(!diagnostic.includes('do-not-log-claim-content'), 'diagnostics must not expose claim contents');
+  });
+
+  test('#349: acquisition cleanup reports an already-removed lease while preserving the claim conflict', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    const originalWriteFile = fs.promises.writeFile;
+    const originalReaddir = fs.promises.readdir;
+    const originalRm = fs.promises.rm;
+    let claimPath: string | undefined;
+    let leaseRemoved = false;
+    (fs.promises as any).writeFile = async (targetPath: fs.PathLike, data: string | NodeJS.ArrayBufferView, options?: fs.WriteFileOptions) => {
+      const result = await originalWriteFile.call(fs.promises, targetPath, data, options);
+      if (!claimPath && path.resolve(String(targetPath)) === path.resolve(leasePath)) {
+        const now = Date.now();
+        claimPath = path.join(journalRoot, `.root-lease.json.claim-v2-${now}-${process.pid}-${randomUUID()}`);
+        await originalWriteFile.call(fs.promises, claimPath, JSON.stringify({
+          leaseId: 'active-acquisition-claim-removed-lease',
+          pid: process.pid,
+          createdAt: now,
+          heartbeatAt: now,
+          operationId: 'do-not-log-claim-content',
+        }), 'utf8');
+      }
+      return result;
+    };
+    (fs.promises as any).readdir = async (directoryPath: fs.PathLike, options?: any) => {
+      if (!leaseRemoved && claimPath && path.resolve(String(directoryPath)) === path.resolve(journalRoot)) {
+        leaseRemoved = true;
+        await originalRm.call(fs.promises, leasePath, { force: true });
+      }
+      return originalReaddir.call(fs.promises, directoryPath, options);
+    };
+
+    Logger.clearBuffer();
+    try {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).recover(),
+        (error: unknown) => error instanceof MutationPlanError
+          && error.code === 'PLAN_CONFLICT'
+          && error.message.includes('being fenced by an active process'),
+      );
+    } finally {
+      (fs.promises as any).writeFile = originalWriteFile;
+      (fs.promises as any).readdir = originalReaddir;
+    }
+
+    assert.ok(claimPath);
+    assert.strictEqual(leaseRemoved, true);
+    assert.strictEqual(fs.existsSync(leasePath), false);
+    const diagnostic = Logger.getBufferedContent();
+    assert.ok(diagnostic.includes('"stage":"root-lease-acquisition-cleanup"'), diagnostic);
+    assert.ok(diagnostic.includes('"state":"acquisition-aborted"'), diagnostic);
+    assert.ok(diagnostic.includes(path.basename(claimPath)), diagnostic);
+    assert.ok(!diagnostic.includes('do-not-log-claim-content'), 'diagnostics must contain names and types only');
+  });
+
+  test('#349: stale takeover logs heartbeat removal failure but recovery still cleans the sidecar', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    const leasePath = path.join(journalRoot, '.root-lease.json');
+    const leaseId = 'stale-heartbeat-removal-failure';
+    const staleAt = Date.now() - 60_000;
+    const heartbeatPath = rootLeaseHeartbeatPath(journalRoot, leaseId);
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    await fs.promises.writeFile(leasePath, JSON.stringify({
+      leaseId,
+      pid: 2147483647,
+      createdAt: staleAt,
+      heartbeatAt: staleAt,
+      operationId: 'stale-heartbeat-removal-failure',
+    }), 'utf8');
+    await fs.promises.writeFile(heartbeatPath, JSON.stringify({ leaseId, heartbeatAt: staleAt }), 'utf8');
+
+    const originalRm = fs.promises.rm;
+    let removeFailed = false;
+    (fs.promises as any).rm = async (targetPath: fs.PathLike, options?: fs.RmDirOptions) => {
+      if (!removeFailed && path.resolve(String(targetPath)) === path.resolve(heartbeatPath)) {
+        removeFailed = true;
+        const error = new Error('controlled EBUSY during stale heartbeat cleanup') as NodeJS.ErrnoException;
+        error.code = 'EBUSY';
+        throw error;
+      }
+      return originalRm.call(fs.promises, targetPath, options);
+    };
+
+    Logger.clearBuffer();
+    try {
+      await new MutationPlanExecutor(tempDir).recover();
+    } finally {
+      (fs.promises as any).rm = originalRm;
+    }
+
+    assert.strictEqual(removeFailed, true);
+    assert.strictEqual(fs.existsSync(heartbeatPath), false, 'the later owned recovery pass must clean the stale sidecar');
+    const diagnostic = Logger.getBufferedContent();
+    assert.ok(diagnostic.includes('"stage":"stale-root-lease-heartbeat-remove"'), diagnostic);
+    assert.ok(diagnostic.includes('"fsCode":"EBUSY"'), diagnostic);
+    assert.ok(diagnostic.includes('"state":"stale-takeover"'), diagnostic);
+    assert.strictEqual(fs.existsSync(journalRoot), false);
+  });
+
+  test('#349: cleanup diagnostics retain the cleanup outcome when journal inspection fails', async () => {
+    const journalRoot = path.join(tempDir, '.cdt-journal');
+    await fs.promises.mkdir(journalRoot, { recursive: true });
+    const originalReaddir = fs.promises.readdir;
+    const cleanupError = new Error('controlled EBUSY during operation cleanup') as NodeJS.ErrnoException;
+    cleanupError.code = 'EBUSY';
+    let inspectionFailed = false;
+    (fs.promises as any).readdir = async (directoryPath: fs.PathLike, options?: any) => {
+      if (!inspectionFailed
+        && path.basename(String(directoryPath)) === path.basename(journalRoot)
+        && options
+        && typeof options === 'object'
+        && options.withFileTypes) {
+        inspectionFailed = true;
+        const error = new Error('controlled EACCES while inspecting journal entries') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        throw error;
+      }
+      return originalReaddir.call(fs.promises, directoryPath, options);
+    };
+
+    Logger.clearBuffer();
+    try {
+      const failure = await logCleanupFailure(
+        tempDir,
+        journalRoot,
+        'orphan-operation-directory',
+        cleanupError,
+        path.join(journalRoot, 'orphan-operation'),
+        { leaseId: 'diagnostics-lifecycle', state: 'recovering' },
+      );
+      assert.strictEqual(failure.stage, 'orphan-operation-directory');
+      assert.strictEqual(failure.fsCode, 'EBUSY');
+      assert.strictEqual(failure.remainingRootEntryCount, undefined);
+    } finally {
+      (fs.promises as any).readdir = originalReaddir;
+    }
+
+    assert.strictEqual(inspectionFailed, true);
+    const diagnostic = Logger.getBufferedContent();
+    assert.ok(diagnostic.includes('"stage":"orphan-operation-directory"'), diagnostic);
+    assert.ok(diagnostic.includes('"fsCode":"EBUSY"'), diagnostic);
+    assert.ok(diagnostic.includes('"journalRootInspectionError":{"fsCode":"EACCES"'), diagnostic);
+  });
+
+  test('#349: logger failure does not replace a structured cleanup outcome', async () => {
+    const originalWarn = Logger.warn;
+    const cleanupError = new Error('controlled cleanup failure') as NodeJS.ErrnoException;
+    cleanupError.code = 'EPERM';
+    (Logger as any).warn = () => { throw new Error('controlled logger failure'); };
+
+    try {
+      const failure = await logCleanupFailure(
+        tempDir,
+        path.join(tempDir, '.cdt-journal'),
+        'root-lease-release',
+        cleanupError,
+        path.join(tempDir, '.cdt-journal', '.root-lease.json'),
+      );
+      assert.deepStrictEqual(failure, {
+        stage: 'root-lease-release',
+        fsCode: 'EPERM',
+        remainingRootEntryCount: 0,
+      });
+    } finally {
+      (Logger as any).warn = originalWarn;
+    }
   });
 
   test('#349: root lease process liveness rejects invalid process identifiers', () => {
