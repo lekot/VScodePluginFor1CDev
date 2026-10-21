@@ -5,6 +5,11 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { registerEditorCommands } from '../../src/commands/editorCommands';
 import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
+import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
+import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
+import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
+import { createRequestConfigurationReload } from '../../src/reload/requestConfigurationReload';
+import { reconcileAfterCommit } from '../../src/reload/reconciliation';
 import { MetadataType } from '../../src/models/treeNode';
 
 suite('editorCommands', () => {
@@ -144,6 +149,69 @@ suite('editorCommands', () => {
       gateway.dispose();
       await fs.rm(tmpRoot, { recursive: true, force: true });
       (vscode.window as any).showTextDocument = undefined;
+    }
+  });
+
+  test('#355: XDTO package creation reconciles the committed configuration through its targeted reload coordinator', async () => {
+    const handlers: Record<string, (...args: any[]) => Promise<void> | void> = {};
+    (vscode.commands as any).registerCommand = (id: string, handler: (...args: any[]) => Promise<void> | void) => {
+      handlers[id] = handler;
+      return { dispose: () => undefined };
+    };
+
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), '1cv-xdto-post-commit-'));
+    const root = await fs.realpath(tempRoot);
+    const configurationPath = path.join(root, 'Configuration.xml');
+    const inputPath = path.join(root, 'NewPackage.xsd');
+    await fs.writeFile(configurationPath,
+      '<MetaDataObject version="2.20"><Configuration uuid="11111111-2222-3333-4444-555555555555"><ChildObjects/></Configuration></MetaDataObject>',
+      'utf8');
+    await fs.writeFile(inputPath,
+      '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:test"><xs:element name="Root" type="xs:string"/></xs:schema>',
+      'utf8');
+
+    let cachedPackagePresent = false;
+    const loadedRoots: string[] = [];
+    const coordinator = new ReloadCoordinatorService(async ({ configPath: requestedRoot }) => {
+      loadedRoots.push(requestedRoot);
+      const diskDescriptor = await fs.readFile(path.join(requestedRoot, 'Configuration.xml'), 'utf8');
+      cachedPackagePresent = diskDescriptor.includes('<XDTOPackage>NewPackage</XDTOPackage>');
+    }, { defaultDebounceMs: 0 });
+    const reloadState = { reloadCoordinator: coordinator } as any;
+    const requestConfigurationReload = createRequestConfigurationReload(reloadState);
+    const registry = new WorkspaceRegistry(undefined, (identity) => new ConfigurationSession(
+      identity,
+      (commit) => reconcileAfterCommit(commit.rootPath, 'agent-mutation', requestConfigurationReload),
+    ));
+    const session = await registry.registerTargetedRoot({ configPath: root });
+    const gateway = configureConfigurationMutationGateway(
+      async (_resourcePath, _kind, operation) => operation(),
+      async (_resourcePath, plan, options) => session.runPlanValue(plan, options),
+    );
+
+    const originalShowOpenDialog = vscode.window.showOpenDialog;
+    const originalShowInputBox = vscode.window.showInputBox;
+    (vscode.window as any).showOpenDialog = async () => [vscode.Uri.file(inputPath)];
+    (vscode.window as any).showInputBox = async () => 'NewPackage';
+
+    try {
+      registerEditorCommands({
+        state: { treeDataProvider: { getConfigPath: () => root } } as any,
+      });
+
+      await handlers['1c-metadata-tree.importXsdAsNewXdtoPackage']();
+
+      assert.strictEqual(cachedPackagePresent, true, 'the stale in-memory view must be refreshed from committed disk state');
+      assert.deepStrictEqual(loadedRoots, [root], 'reload must target the configuration root that accepted the plan');
+      assert.strictEqual(session.snapshotVersion, 1, 'the UI plan is one top-level configuration commit');
+      assert.ok((await fs.readFile(configurationPath, 'utf8')).includes('<XDTOPackage>NewPackage</XDTOPackage>'));
+    } finally {
+      vscode.window.showOpenDialog = originalShowOpenDialog;
+      vscode.window.showInputBox = originalShowInputBox;
+      gateway.dispose();
+      await coordinator.dispose();
+      await registry.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true });
     }
   });
 

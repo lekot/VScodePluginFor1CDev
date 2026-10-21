@@ -3,27 +3,58 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { MutationPlanExecutor } from './mutationPlan';
 import { assertPathWithinRoot, isSamePath, PathBoundaryError } from './pathBoundary';
+import type { MutationExecutionOptions, MutationOutcome } from './ConfigurationSession';
 
-export type MutationRunner = <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
-export type PlanRunner = <T>(resourcePath: string, plan: MutationPlan<T>) => Promise<T>;
+export type MutationRunner = <T>(
+  resourcePath: string,
+  kind: string,
+  operation: () => Promise<T>,
+  options?: MutationExecutionOptions<T>,
+) => Promise<T>;
+export type PlanRunner = <T>(
+  resourcePath: string,
+  plan: MutationPlan<T>,
+  options?: MutationExecutionOptions<T>,
+) => Promise<T>;
+export type MutationOutcomeRunner = <T>(
+  resourcePath: string,
+  kind: string,
+  operation: () => Promise<T>,
+  options?: MutationExecutionOptions<T>,
+) => Promise<MutationOutcome<T>>;
+export type PlanOutcomeRunner = <T>(
+  resourcePath: string,
+  plan: MutationPlan<T>,
+  options?: MutationExecutionOptions<T>,
+) => Promise<MutationOutcome<T>>;
 export type ExclusiveConfigurationCallback<T> = () => Promise<T>;
 
 let mutationRunner: MutationRunner | undefined;
 let planRunner: PlanRunner | undefined;
+let mutationOutcomeRunner: MutationOutcomeRunner | undefined;
+let planOutcomeRunner: PlanOutcomeRunner | undefined;
 
 /** Installs the extension-scoped adapter while keeping unit-test consumers independent of VS Code. */
 export function configureConfigurationMutationGateway(
   runMutation: MutationRunner,
   runPlan?: PlanRunner,
+  runMutationOutcome?: MutationOutcomeRunner,
+  runPlanOutcome?: PlanOutcomeRunner,
 ): { dispose(): void } {
   const previousMutation = mutationRunner;
   const previousPlan = planRunner;
+  const previousMutationOutcome = mutationOutcomeRunner;
+  const previousPlanOutcome = planOutcomeRunner;
   mutationRunner = runMutation;
   planRunner = runPlan;
+  mutationOutcomeRunner = runMutationOutcome;
+  planOutcomeRunner = runPlanOutcome;
   return {
     dispose: () => {
       mutationRunner = previousMutation;
       planRunner = previousPlan;
+      mutationOutcomeRunner = previousMutationOutcome;
+      planOutcomeRunner = previousPlanOutcome;
     },
   };
 }
@@ -31,6 +62,8 @@ export function configureConfigurationMutationGateway(
 export function resetConfigurationMutationGateway(): void {
   mutationRunner = undefined;
   planRunner = undefined;
+  mutationOutcomeRunner = undefined;
+  planOutcomeRunner = undefined;
 }
 
 export function isConfigurationMutationGatewayConfigured(): boolean {
@@ -48,6 +81,7 @@ export async function runConfigurationMutation<T>(
   resourcePath: string,
   kind: string,
   operation: () => Promise<T>,
+  options?: MutationExecutionOptions<T>,
 ): Promise<T> {
   if (!mutationRunner) {
     throw new ConfigurationMutationGatewayError(
@@ -55,7 +89,23 @@ export async function runConfigurationMutation<T>(
       `Cannot run mutation '${kind}' on ${resourcePath}: Configuration mutation runner is not configured.`,
     );
   }
-  return mutationRunner(resourcePath, kind, operation);
+  return mutationRunner(resourcePath, kind, operation, options);
+}
+
+/** Runs a mutation through the configured session and returns its typed outcome envelope. */
+export async function runConfigurationMutationOutcome<T>(
+  resourcePath: string,
+  kind: string,
+  operation: () => Promise<T>,
+  options?: MutationExecutionOptions<T>,
+): Promise<MutationOutcome<T>> {
+  if (!mutationOutcomeRunner) {
+    throw new ConfigurationMutationGatewayError(
+      'RUNNER_NOT_CONFIGURED',
+      `Cannot run mutation '${kind}' on ${resourcePath}: Configuration mutation outcome runner is not configured.`,
+    );
+  }
+  return mutationOutcomeRunner(resourcePath, kind, operation, options);
 }
 
 /**
@@ -67,11 +117,30 @@ export function runExclusiveConfigurationOperation<T>(
   kind: string,
   operation: ExclusiveConfigurationCallback<T>,
 ): Promise<T> {
-  return runConfigurationMutation(resourcePath, kind, operation);
+  return runConfigurationMutation(resourcePath, kind, operation, { reconcile: false });
 }
 
-export function runConfigurationPlan<T>(resourcePath: string, plan: MutationPlan<T>): Promise<T> {
-  return planRunner ? planRunner(resourcePath, plan) : executeStandalone(resourcePath, plan);
+export function runConfigurationPlan<T>(
+  resourcePath: string,
+  plan: MutationPlan<T>,
+  options?: MutationExecutionOptions<T>,
+): Promise<T> {
+  return planRunner ? planRunner(resourcePath, plan, options) : executeStandalone(resourcePath, plan);
+}
+
+/** Runs a plan through the configured session and returns its typed outcome envelope. */
+export async function runConfigurationPlanOutcome<T>(
+  resourcePath: string,
+  plan: MutationPlan<T>,
+  options?: MutationExecutionOptions<T>,
+): Promise<MutationOutcome<T>> {
+  if (!planOutcomeRunner) {
+    throw new ConfigurationMutationGatewayError(
+      'RUNNER_NOT_CONFIGURED',
+      `Cannot run mutation plan on ${resourcePath}: Configuration plan outcome runner is not configured.`,
+    );
+  }
+  return planOutcomeRunner(resourcePath, plan, options);
 }
 
 async function executeStandalone<T>(resourcePath: string, plan: MutationPlan<T>): Promise<T> {

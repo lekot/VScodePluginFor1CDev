@@ -7,10 +7,14 @@ import {
   runConfigurationPlan,
   runExclusiveConfigurationOperation,
   type MutationRunner,
+  type MutationOutcomeRunner,
   type PlanRunner,
+  type PlanOutcomeRunner,
 } from './configurationMutationGateway';
+import type { MutationOutcome } from './ConfigurationSession';
 import { MutationPlan, MutationPlanError } from './mutationPlan';
 import type { ConfigurationCapabilities, ConfigurationContext, ConfigurationId } from './types';
+import type { ReconciliationOutcome } from '../../types/reloadContracts';
 import {
   ConfigurationContextResolver,
   type ResourceLike,
@@ -33,6 +37,9 @@ export interface MutationReceipt<T = unknown> {
   readonly result?: T;
   readonly code?: string;
   readonly message?: string;
+  readonly operationId?: string;
+  readonly snapshotVersion?: number;
+  readonly reconciliation?: ReconciliationOutcome;
   readonly session?: { readonly id: string; readonly generation: number };
 }
 
@@ -80,6 +87,8 @@ export interface ConfigurationMutationEngineDeps {
   readonly contextResolver?: ConfigurationContextResolver;
   readonly runMutation?: MutationRunner;
   readonly runPlan?: PlanRunner;
+  readonly runMutationWithOutcome?: MutationOutcomeRunner;
+  readonly runPlanWithOutcome?: PlanOutcomeRunner;
   readonly fileSystem?: AtomicFileSystem;
 }
 
@@ -88,6 +97,68 @@ const fileMutationTails = new Map<string, Promise<void>>();
 function getFileMutationKey(filePath: string): string {
   const canonical = path.resolve(filePath);
   return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+}
+
+function hasCommittedFileChange(receipt: MutationReceipt<unknown>): boolean {
+  return receipt.status === 'committed' && receipt.oldRevision !== receipt.newRevision;
+}
+
+function isUncertainMutationReceipt(receipt: MutationReceipt<unknown> | undefined): boolean {
+  return receipt?.status === 'inDoubt' || receipt?.status === 'recoveryRequired';
+}
+
+function isRecoveryRequiredError(error: unknown): error is MutationPlanError {
+  return error instanceof MutationPlanError && error.code === 'RECOVERY_REQUIRED';
+}
+
+function mutationReceiptFromOutcome<T>(
+  outcome: MutationOutcome<MutationReceipt<T>>,
+  kind: string,
+  resourcePath: string,
+  configurationId?: ConfigurationId,
+  session?: MutationSessionInfo,
+): MutationReceipt<T> {
+  const metadata = {
+    configurationId: outcome.configurationId ?? configurationId,
+    operationId: outcome.operationId,
+    snapshotVersion: outcome.snapshotVersion,
+    ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+  };
+  if ('value' in outcome && outcome.value !== undefined) {
+    return { ...outcome.value, ...metadata };
+  }
+  if (outcome.status === 'conflict') {
+    return {
+      status: 'conflict',
+      code: outcome.code,
+      message: outcome.error.message,
+      kind,
+      resourcePath,
+      ...metadata,
+      session,
+    };
+  }
+  if (outcome.status === 'cancelled') {
+    return {
+      status: 'rolledBack',
+      code: 'CANCELLED',
+      message: 'Configuration mutation was cancelled.',
+      kind,
+      resourcePath,
+      ...metadata,
+      session,
+    };
+  }
+  const error = 'error' in outcome ? outcome.error : undefined;
+  return {
+    status: isRecoveryRequiredError(error) ? 'recoveryRequired' : 'rolledBack',
+    code: isRecoveryRequiredError(error) ? 'RECOVERY_REQUIRED' : 'MUTATION_FAILED',
+    message: error?.message ?? 'Configuration mutation failed.',
+    kind,
+    resourcePath,
+    ...metadata,
+    session,
+  };
 }
 
 async function acquireFileLock(canonicalPath: string): Promise<() => void> {
@@ -316,8 +387,7 @@ export class ConfigurationMutationEngine {
       throw err;
     }
 
-    const runMut = this.deps.runMutation ?? runConfigurationMutation;
-    return await runMut(canonicalTarget, intent.kind, async () => {
+    const execute = async (): Promise<MutationReceipt<T>> => {
       const releaseLock = await acquireFileLock(canonicalTarget);
       try {
         return await this.executeFileTransform(
@@ -330,7 +400,22 @@ export class ConfigurationMutationEngine {
       } finally {
         releaseLock();
       }
-    });
+    };
+
+    if (this.deps.runMutationWithOutcome) {
+      const outcome = await this.deps.runMutationWithOutcome(canonicalTarget, intent.kind, execute, {
+        commitWhen: (receipt) => receipt.status === 'committed',
+        shouldReconcile: (result) => result.status === 'committed'
+          ? hasCommittedFileChange(result.value)
+          : result.status === 'failed'
+            ? isUncertainMutationReceipt(result.value) || isRecoveryRequiredError(result.error)
+            : false,
+      });
+      return mutationReceiptFromOutcome(outcome, intent.kind, canonicalTarget, resolved.configurationId, intent.session);
+    }
+
+    const runMut = this.deps.runMutation ?? runConfigurationMutation;
+    return runMut(canonicalTarget, intent.kind, execute);
   }
 
   private async executeFileTransform<T>(
@@ -607,6 +692,91 @@ export class ConfigurationMutationEngine {
 
     try {
       const plan = await builder({ rootPath: resolved.rootPath, configurationId: resolved.configurationId });
+      if (this.deps.runPlanWithOutcome) {
+        const outcome = await this.deps.runPlanWithOutcome(resolved.rootPath, plan);
+        if (outcome.status === 'committed') {
+          return {
+            status: 'committed',
+            result: outcome.value,
+            kind: intent.kind,
+            resourcePath: resolved.rootPath,
+            configurationId: resolved.configurationId,
+            operationId: outcome.operationId,
+            snapshotVersion: outcome.snapshotVersion,
+            ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+            session: intent.session,
+          };
+        }
+        const error = 'error' in outcome ? outcome.error : undefined;
+        if (outcome.status === 'conflict') {
+          return {
+            status: 'conflict',
+            code: outcome.code,
+            message: error?.message ?? 'Configuration mutation conflicted.',
+            kind: intent.kind,
+            resourcePath: resolved.rootPath,
+            configurationId: resolved.configurationId,
+            operationId: outcome.operationId,
+            snapshotVersion: outcome.snapshotVersion,
+            ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+            session: intent.session,
+          };
+        }
+        if (outcome.status === 'cancelled') {
+          return {
+            status: 'rolledBack',
+            code: 'CANCELLED',
+            message: 'Configuration mutation was cancelled.',
+            kind: intent.kind,
+            resourcePath: resolved.rootPath,
+            configurationId: resolved.configurationId,
+            operationId: outcome.operationId,
+            snapshotVersion: outcome.snapshotVersion,
+            ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+            session: intent.session,
+          };
+        }
+        if (error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT') {
+          return {
+            status: 'conflict',
+            code: 'PLAN_CONFLICT',
+            message: error.message,
+            kind: intent.kind,
+            resourcePath: resolved.rootPath,
+            configurationId: resolved.configurationId,
+            operationId: outcome.operationId,
+            snapshotVersion: outcome.snapshotVersion,
+            ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+            session: intent.session,
+          };
+        }
+        if (isRecoveryRequiredError(error)) {
+          return {
+            status: 'recoveryRequired',
+            code: 'RECOVERY_REQUIRED',
+            message: error!.message,
+            kind: intent.kind,
+            resourcePath: resolved.rootPath,
+            configurationId: resolved.configurationId,
+            operationId: outcome.operationId,
+            snapshotVersion: outcome.snapshotVersion,
+            ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+            session: intent.session,
+          };
+        }
+        return {
+          status: 'rolledBack',
+          code: error instanceof MutationPlanError ? error.code : 'PLAN_FAILED',
+          message: error?.message ?? 'Configuration mutation failed.',
+          kind: intent.kind,
+          resourcePath: resolved.rootPath,
+          configurationId: resolved.configurationId,
+          operationId: outcome.operationId,
+          snapshotVersion: outcome.snapshotVersion,
+          ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+          session: intent.session,
+        };
+      }
       const runPl = this.deps.runPlan ?? runConfigurationPlan;
       const result = await runPl(resolved.rootPath, plan);
       return {

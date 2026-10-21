@@ -130,8 +130,7 @@ import type {
 } from './types';
 import type { ConfigurationRepositoryService } from '../services/configurationRepository/configurationRepositoryService';
 import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
-import { reconcileAfterCommit } from '../reload/reconciliation';
-import { hasSuccessfulAgentPullWrite } from './pullReconciliation';
+import type { MutationExecutionOptions } from '../services/configurationSession/ConfigurationSession';
 import {
     AGENT_SUPPORT_COMMAND_IDS,
     AgentSupportOperations,
@@ -173,7 +172,7 @@ export function registerAgentCommands(
     /** Optional lifecycle hook used by CFE creation after registry discovery succeeds. */
     refreshCfeLifecycle?: () => Promise<void>,
     getRepositoryService?: () => ConfigurationRepositoryService | null,
-    requestConfigurationReload?: RequestConfigurationReload,
+    _requestConfigurationReload?: RequestConfigurationReload,
     getSkdOperationsDeps?: () => Pick<SkdOperationsDeps, 'runPowerShellScript'> | undefined,
 ): { readonly taskManager: AgentTaskManager } {
     const resolveSession = async (
@@ -238,13 +237,15 @@ export function registerAgentCommands(
         mutationKind: string | undefined,
         operation: (configRoot: string, context: AgentResolutionContext) => Promise<AgentResult<T>>,
         cancellation?: vscode.CancellationToken,
+        executionOptions?: MutationExecutionOptions<AgentResult<T>>,
     ): Promise<AgentResult<T>> => {
         try {
             const context = await resolveSession(params, capability);
             const session = context.session;
+            const operationIdentity = session.identity;
             if (!mutationKind) {
                 const readOutcome = await session.runRead(
-                    () => operation(session.identity.rootPath, context),
+                    () => operation(operationIdentity.rootPath, context),
                     cancellation,
                 );
                 if (readOutcome.status === 'cancelled') {
@@ -267,7 +268,7 @@ export function registerAgentCommands(
                 const result = readOutcome.value;
                 return {
                     ...result,
-                    configurationId: session.identity.configurationId,
+                    configurationId: operationIdentity.configurationId,
                     snapshotVersion: readOutcome.snapshotVersion,
                 };
             }
@@ -275,16 +276,29 @@ export function registerAgentCommands(
             const outcome = await session.enqueue({
                 kind: mutationKind,
                 cancellation,
-                execute: () => operation(session.identity.rootPath, context),
-                commitWhen: (result: AgentResult<T>) => result.success,
+                execute: () => operation(operationIdentity.rootPath, context),
+                commitWhen: executionOptions?.commitWhen ?? ((result: AgentResult<T>) => result.success),
+                reconcile: executionOptions?.reconcile,
+                shouldReconcile: executionOptions?.shouldReconcile,
             });
-            if (outcome.status === 'committed' || (outcome.status === 'failed' && outcome.value)) {
+            if (outcome.status === 'committed') {
                 const value = outcome.value!;
                 return {
                     ...value,
                     configurationId: outcome.configurationId,
                     operationId: outcome.operationId,
                     snapshotVersion: outcome.snapshotVersion,
+                    ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+                };
+            }
+            if (outcome.status === 'failed' && outcome.value !== undefined) {
+                const value = outcome.value;
+                return {
+                    ...value,
+                    configurationId: outcome.configurationId,
+                    operationId: outcome.operationId,
+                    snapshotVersion: outcome.snapshotVersion,
+                    ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
                 };
             }
             const outcomeError = 'error' in outcome ? outcome.error : undefined;
@@ -303,6 +317,7 @@ export function registerAgentCommands(
                 configurationId: outcome.configurationId,
                 operationId: outcome.operationId,
                 snapshotVersion: outcome.snapshotVersion,
+                ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
             };
         } catch (error) {
             return {
@@ -345,7 +360,6 @@ export function registerAgentCommands(
         const dryRun = params?.dryRun === true;
         return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : `agent.${action}`, async (configRoot) => {
             const result = await execute(new AgentOperations(configRoot), params);
-            if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
             return result;
         });
     });
@@ -356,18 +370,33 @@ export function registerAgentCommands(
             configRoot: string,
             format: ConfigurationIdentity['format'],
         ) => Promise<MutationPlan<AgentResult<T>>>,
+        executionOptions?: MutationExecutionOptions<AgentResult<T>>,
     ): Promise<AgentResult<T>> => {
         try {
             const context = await resolveSession(params, 'write');
             const session = context.session;
-            const plan = await buildPlan(session.identity.rootPath, session.identity.format);
-            const outcome = await session.enqueuePlan(plan);
+            const operationIdentity = session.identity;
+            const plan = await buildPlan(operationIdentity.rootPath, operationIdentity.format);
+            const outcome = await session.enqueuePlan(plan, {
+                ...executionOptions,
+                commitWhen: executionOptions?.commitWhen ?? ((result) => result.success),
+            });
             if (outcome.status === 'committed') {
                 return {
                     ...outcome.value,
                     configurationId: outcome.configurationId,
                     operationId: outcome.operationId,
                     snapshotVersion: outcome.snapshotVersion,
+                    ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+                };
+            }
+            if (outcome.status === 'failed' && outcome.value !== undefined) {
+                return {
+                    ...outcome.value,
+                    configurationId: outcome.configurationId,
+                    operationId: outcome.operationId,
+                    snapshotVersion: outcome.snapshotVersion,
+                    ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
                 };
             }
             return {
@@ -379,6 +408,7 @@ export function registerAgentCommands(
                 configurationId: outcome.configurationId,
                 operationId: outcome.operationId,
                 snapshotVersion: outcome.snapshotVersion,
+                ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
             };
         } catch (error) {
             if (error instanceof AgentRoleRightsError) {
@@ -534,7 +564,6 @@ export function registerAgentCommands(
             }
             const result = await runPlanForConfiguration(params, (configRoot, format) =>
                 planSetRoleRights(configRoot, format, normalizedParams));
-            if (result.success) { getTreeDataProvider()?.refresh(); }
             return result;
         },
     );
@@ -606,7 +635,6 @@ export function registerAgentCommands(
             const dryRun = params?.dryRun === true;
             return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.createObject', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).createObject(normalizedParams);
-                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -723,7 +751,6 @@ export function registerAgentCommands(
             const dryRun = params?.dryRun === true;
             return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.addAttribute', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).addAttribute(params);
-                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -737,7 +764,6 @@ export function registerAgentCommands(
             const dryRun = params?.dryRun === true;
             return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.addTabularSection', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).addTabularSection(params);
-                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -751,7 +777,6 @@ export function registerAgentCommands(
             const dryRun = params?.dryRun === true;
             return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.addTabularSectionColumn', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).addTabularSectionColumn(params);
-                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -765,7 +790,6 @@ export function registerAgentCommands(
             const dryRun = params?.dryRun === true;
             return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.deleteAttribute', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).deleteAttribute(params);
-                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -779,7 +803,6 @@ export function registerAgentCommands(
             const dryRun = params?.dryRun === true;
             return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.deleteTabularSection', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).deleteTabularSection(params);
-                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -814,7 +837,6 @@ export function registerAgentCommands(
             const dryRun = params?.dryRun === true;
             return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.setProperties', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).setProperties(params);
-                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -1053,26 +1075,11 @@ export function registerAgentCommands(
                 return { success: false, error: 'Выгрузка недоступна: хранилище или привязки не инициализированы.' };
             }
             return runDeployAgentOperation(params, 'agent.pullSelectedObjects', 'agent.pullSelectedObjects', (configRoot, token, reportStage) =>
-                new AgentDeployOperations({
-                    ...deps,
-                    requestConfigurationReload: deps.requestConfigurationReload ?? requestConfigurationReload,
-                }).pullSelectedObjects({ ...params, configPath: configRoot }, {
+                new AgentDeployOperations(deps).pullSelectedObjects({ ...params, configPath: configRoot }, {
                     token,
                     reportStage,
                     reconciliationMode: 'defer-to-caller',
-                }), requestToken, async (result, configRoot) => {
-                    if (!hasSuccessfulAgentPullWrite(result)) {
-                        return result;
-                    }
-                    const reloadRequester = deps.requestConfigurationReload ?? requestConfigurationReload;
-                    if (!reloadRequester) {
-                        return result;
-                    }
-                    return {
-                        ...result,
-                        reconciliation: await reconcileAfterCommit(configRoot, 'pull-objects', reloadRequester),
-                    };
-                });
+                }), requestToken);
         }
     );
 
@@ -1110,7 +1117,6 @@ export function registerAgentCommands(
             const dryRun = params?.dryRun === true;
             return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.setType', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).setType(params);
-                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         }
@@ -1132,7 +1138,6 @@ export function registerAgentCommands(
             const dryRun = params?.dryRun === true;
             return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.setSource', async (configRoot) => {
                 const result = await new AgentOperations(configRoot).setSource(params);
-                if (result.success && !dryRun) { getTreeDataProvider()?.refresh(); }
                 return result;
             });
         },
@@ -1341,7 +1346,6 @@ export function registerAgentCommands(
         extensionPath: context.extensionPath,
         taskManager,
         runForConfiguration,
-        requestConfigurationReload,
         runPowerShellScript: getSkdOperationsDeps?.()?.runPowerShellScript,
     });
 
@@ -1366,7 +1370,10 @@ export function registerAgentCommands(
         async (params: XdtoExportXsdParams) => {
             if (params.outputPath !== undefined) {
                 return runPlanForConfiguration(params, (configRoot) =>
-                    new XdtoAgentOperations(configRoot).planExportXsd(params));
+                    new XdtoAgentOperations(configRoot).planExportXsd(params), {
+                        commitWhen: () => false,
+                        reconcile: false,
+                    });
             }
             return runForConfiguration(params, 'read', undefined, (configRoot) =>
                 new XdtoAgentOperations(configRoot).exportXsd(params));
@@ -1378,7 +1385,6 @@ export function registerAgentCommands(
         async (params: XdtoImportXsdParams) => {
             const result = await runPlanForConfiguration(params, (configRoot) =>
                 new XdtoAgentOperations(configRoot).planImportXsd(params));
-            if (result.success) { getTreeDataProvider()?.refresh(); }
             return result;
         }
     );
@@ -1388,7 +1394,6 @@ export function registerAgentCommands(
         async (params: XdtoCreateFromXsdParams) => {
             const result = await runPlanForConfiguration(params, (configRoot) =>
                 new XdtoAgentOperations(configRoot).planCreateFromXsd(params));
-            if (result.success) { getTreeDataProvider()?.refresh(); }
             return result;
         }
     );
@@ -1406,7 +1411,6 @@ export function registerAgentCommands(
         async (params: XdtoMergeParams) => {
             const result = await runPlanForConfiguration(params, (configRoot) =>
                 new XdtoAgentOperations(configRoot).planMerge(params));
-            if (result.success) { getTreeDataProvider()?.refresh(); }
             return result;
         }
     );

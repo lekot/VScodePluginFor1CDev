@@ -12,13 +12,20 @@ import type {
   MetadataTreeFeatureLifecycle,
 } from './metadataTreeLifecycle';
 import { WorkspaceRegistry } from '../services/configurationSession/WorkspaceRegistry';
+import type { ConfigurationSessionFactory } from '../services/configurationSession/WorkspaceRegistry';
+import { ConfigurationSession } from '../services/configurationSession/ConfigurationSession';
+import type { ConfigurationCommitContext, MutationExecutionOptions, MutationOutcome } from '../services/configurationSession/ConfigurationSession';
 import { WorkspaceRegistryCoordinator } from '../services/configurationSession/WorkspaceRegistryCoordinator';
 import { ConfigurationContextResolver } from '../services/configurationSession/ConfigurationContextResolver';
 import {
   ConfigurationMutationEngine,
   setConfigurationMutationEngine,
 } from '../services/configurationSession/ConfigurationMutationEngine';
-import { configureConfigurationMutationGateway } from '../services/configurationSession/configurationMutationGateway';
+import {
+  configureConfigurationMutationGateway,
+  type MutationOutcomeRunner,
+  type PlanOutcomeRunner,
+} from '../services/configurationSession/configurationMutationGateway';
 import { InfobaseStorageService } from '../infobases/infobaseStorageService';
 import { BindingManager } from '../bindings/bindingManager';
 import { InfobaseCatalogMutationService } from '../infobases/infobaseCatalogMutationService';
@@ -28,6 +35,7 @@ import {
   createRequestConfigurationReload,
   type RequestConfigurationReload,
 } from '../reload/requestConfigurationReload';
+import { reconcileAfterCommit } from '../reload/reconciliation';
 import { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { PropertiesProvider } from '../providers/propertiesProvider';
 import { TypeEditorProvider } from '../providers/typeEditorProvider';
@@ -87,11 +95,15 @@ export interface ConfigurationInfrastructure {
     configPath: string,
     kind: string,
     operation: () => Promise<T>,
+    options?: MutationExecutionOptions<T>,
   ) => Promise<T>;
   readonly runConfigurationPlan: <T>(
     configPath: string,
     plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
+    options?: MutationExecutionOptions<T>,
   ) => Promise<T>;
+  readonly runConfigurationMutationOutcome?: MutationOutcomeRunner;
+  readonly runConfigurationPlanOutcome?: PlanOutcomeRunner;
   readonly getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
 }
 
@@ -374,8 +386,26 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
   }
 
   private async defaultInitConfigurationInfrastructure(): Promise<ConfigurationInfrastructure> {
+    const requestReloadAfterCommit: RequestConfigurationReload = async (configPath, reason) => {
+      const requester = this._requestConfigurationReload;
+      if (!requester) {
+        throw Object.assign(new Error('Координатор перезагрузки конфигурации недоступен.'), {
+          code: 'RELOAD_COORDINATOR_UNAVAILABLE',
+        });
+      }
+      await requester(configPath, reason);
+    };
+    const observeConfigurationCommit = (commit: ConfigurationCommitContext) =>
+      reconcileAfterCommit(
+        commit.rootPath,
+        commit.kind === 'agent.pullSelectedObjects' ? 'pull-objects' : 'agent-mutation',
+        requestReloadAfterCommit,
+      );
+    const createSession: ConfigurationSessionFactory = (identity) =>
+      new ConfigurationSession(identity, observeConfigurationCommit);
     const configurationRegistry = new WorkspaceRegistry(
       path.join(this.context.globalStorageUri.fsPath, 'configuration-identities.v1.json'),
+      createSession,
     );
     this.state.workspaceRegistry = configurationRegistry;
     const registryCoordinator = new WorkspaceRegistryCoordinator(configurationRegistry, {
@@ -409,9 +439,10 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       configPath: string,
       kind: string,
       operation: () => Promise<T>,
+      options?: MutationExecutionOptions<T>,
     ): Promise<T> => {
       const session = await registryCoordinator.resolveResource(configPath);
-      return session.runMutationValue({ kind, execute: operation }, {
+      return session.runMutationValue({ kind, ...options, execute: operation }, {
         failureMessage: 'Операция конфигурации не выполнена.',
         cancelledMessage: 'Операция конфигурации отменена.',
       });
@@ -420,14 +451,35 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     const runConfigurationPlan = async <T>(
       configPath: string,
       plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
+      options?: MutationExecutionOptions<T>,
     ): Promise<T> => {
       const session = await registryCoordinator.resolveResource(configPath);
-      return session.runPlanValue(plan);
+      return session.runPlanValue(plan, options);
+    };
+
+    const runConfigurationMutationOutcome: MutationOutcomeRunner = async <T>(
+      configPath: string,
+      kind: string,
+      operation: () => Promise<T>,
+      options?: MutationExecutionOptions<T>,
+    ): Promise<MutationOutcome<T>> => {
+      const session = await registryCoordinator.resolveResource(configPath);
+      return session.enqueue({ kind, ...options, execute: operation });
+    };
+    const runConfigurationPlanOutcome: PlanOutcomeRunner = async <T>(
+      configPath: string,
+      plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
+      options?: MutationExecutionOptions<T>,
+    ): Promise<MutationOutcome<T>> => {
+      const session = await registryCoordinator.resolveResource(configPath);
+      return session.enqueuePlan(plan, options);
     };
 
     const gatewayDisposable = configureConfigurationMutationGateway(
       runConfigurationMutation,
       runConfigurationPlan,
+      runConfigurationMutationOutcome,
+      runConfigurationPlanOutcome,
     );
     this.registerDisposable('configurationMutationGateway', gatewayDisposable);
 
@@ -435,6 +487,8 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       contextResolver,
       runMutation: runConfigurationMutation,
       runPlan: runConfigurationPlan,
+      runMutationWithOutcome: runConfigurationMutationOutcome,
+      runPlanWithOutcome: runConfigurationPlanOutcome,
     });
     this.state.configurationMutationEngine = mutationEngine;
     setConfigurationMutationEngine(mutationEngine);
@@ -446,6 +500,8 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       mutationEngine,
       runConfigurationMutation,
       runConfigurationPlan,
+      runConfigurationMutationOutcome,
+      runConfigurationPlanOutcome,
       getConfigurationRegistry,
     };
   }

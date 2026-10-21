@@ -8,7 +8,10 @@ import {
   type SingleFileTransform,
 } from '../../src/services/configurationSession/ConfigurationMutationEngine';
 import { hashContent, type AtomicFileSystem } from '../../src/services/configurationSession/atomicFileStorage';
-import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
+import {
+  ConfigurationSession,
+  type ConfigurationCommitObserver,
+} from '../../src/services/configurationSession/ConfigurationSession';
 import { MutationPlanError } from '../../src/services/configurationSession/mutationPlan';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import type {
@@ -48,6 +51,7 @@ function createConfigurationContext(
   configPath: string,
   configurationId: string,
   capabilities: ConfigurationCapabilities,
+  commitObserver?: ConfigurationCommitObserver,
 ): ConfigurationContext {
   const rootUri = `file:///${rootPath.replace(/\\/g, '/')}`;
   const session = new ConfigurationSession({
@@ -58,7 +62,7 @@ function createConfigurationContext(
     workspaceFolderUris: [rootUri],
     format: ConfigFormat.Designer,
     capabilities,
-  });
+  }, commitObserver);
   return {
     configurationId: session.identity.configurationId,
     rootPath: session.identity.rootPath,
@@ -153,6 +157,96 @@ suite('ConfigurationMutationEngine (#242)', () => {
       assert.strictEqual(receipt.result, 'noop');
       assert.strictEqual(receipt.oldRevision, hash);
       assert.strictEqual(receipt.newRevision, hash);
+    });
+
+    test('does not notify reconciliation for a known unchanged-content transform', async () => {
+      const targetFile = path.join(tmpDir, 'Subsystem-known-noop.xml');
+      const xml = '<Subsystem><Name>Same</Name></Subsystem>';
+      await fsp.writeFile(targetFile, xml, 'utf-8');
+      let observerCalls = 0;
+      const context = createConfigurationContext(
+        tmpDir,
+        configPath,
+        'engine-noop-configuration',
+        { read: true, write: true, process: true },
+        async () => {
+          observerCalls++;
+          return { status: 'succeeded' };
+        },
+      );
+      const session = context.session;
+      const engine = new ConfigurationMutationEngine({
+        runMutationWithOutcome: async (_resourcePath, kind, operation, options) =>
+          session.enqueue({ kind, ...options, execute: operation }),
+      });
+
+      try {
+        const receipt = await engine.transformFile(
+          context,
+          { kind: 'ui.subsystem.save', resourcePath: targetFile },
+          async ({ content }) => ({ content, result: 'noop' }),
+        );
+
+        assert.strictEqual(receipt.status, 'committed');
+        assert.strictEqual(receipt.oldRevision, receipt.newRevision);
+        assert.strictEqual(observerCalls, 0, 'the engine has explicit knowledge that no file bytes changed');
+        assert.strictEqual(session.snapshotVersion, 1);
+      } finally {
+        await session.dispose();
+      }
+    });
+
+    test('preserves an engine conflict receipt without notifying reconciliation', async () => {
+      const targetFile = path.join(tmpDir, 'Subsystem-conflict.xml');
+      const originalXml = '<Subsystem><Name>Original</Name></Subsystem>';
+      await fsp.writeFile(targetFile, originalXml, 'utf-8');
+      const canonicalTarget = await fsp.realpath(targetFile);
+      let observerCalls = 0;
+      const context = createConfigurationContext(
+        tmpDir,
+        configPath,
+        'engine-conflict-configuration',
+        { read: true, write: true, process: true },
+        async () => {
+          observerCalls++;
+          return { status: 'succeeded' };
+        },
+      );
+      const session = context.session;
+      const engine = new ConfigurationMutationEngine({
+        fileSystem: createAtomicFileSystem({
+          readFile: async (filePath) => {
+            let canonicalPath: string;
+            try {
+              canonicalPath = await fsp.realpath(filePath);
+            } catch {
+              canonicalPath = path.resolve(filePath);
+            }
+            const comparablePath = process.platform === 'win32' ? canonicalPath.toLowerCase() : canonicalPath;
+            const comparableTarget = process.platform === 'win32' ? canonicalTarget.toLowerCase() : canonicalTarget;
+            return comparablePath === comparableTarget
+              ? Buffer.from('<Subsystem><Name>Parallel</Name></Subsystem>', 'utf8')
+              : fsp.readFile(filePath);
+          },
+        }),
+        runMutationWithOutcome: async (_resourcePath, kind, operation, options) =>
+          session.enqueue({ kind, ...options, execute: operation }),
+      });
+
+      const receipt = await engine.transformFile(
+        context,
+        { kind: 'ui.subsystem.save', resourcePath: targetFile },
+        async () => ({ content: '<Subsystem><Name>Ours</Name></Subsystem>', result: 'updated' }),
+      );
+
+      assert.strictEqual(receipt.status, 'conflict');
+      assert.strictEqual(receipt.code, 'STALE_TARGET_HASH');
+      assert.strictEqual(receipt.operationId !== undefined, true);
+      assert.strictEqual(receipt.snapshotVersion, 0);
+      assert.strictEqual(session.snapshotVersion, 0);
+      assert.strictEqual(observerCalls, 0, 'a CAS conflict receipt returned as a value is not a commit');
+      assert.strictEqual(await fsp.readFile(targetFile, 'utf-8'), originalXml);
+      await session.dispose();
     });
 
     test('creates missing file and parent directories atomically (create-if-absent)', async () => {

@@ -31,6 +31,12 @@ import {
   WorkspaceRegistryCoordinator,
 } from '../services/configurationSession';
 import { configureConfigurationMutationGateway } from '../services/configurationSession/configurationMutationGateway';
+import type {
+  MutationOutcomeRunner,
+  PlanOutcomeRunner,
+} from '../services/configurationSession/configurationMutationGateway';
+import { ConfigurationSession } from '../services/configurationSession/ConfigurationSession';
+import type { MutationExecutionOptions, MutationOutcome } from '../services/configurationSession/ConfigurationSession';
 import { DeployService } from '../bindings/deployService';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import { sharedInfobaseConfigurationOperationQueue } from '../infobases/infobaseConfigurationOperationQueue';
@@ -61,6 +67,7 @@ import { Logger } from '../utils/logger';
 import { registerConfigurationRepositoryCommands } from './configurationRepositoryCommands';
 import { registerSyntaxHelpCommands } from '../providers/syntaxHelpProvider';
 import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
+import { reconcileAfterCommit } from '../reload/reconciliation';
 
 import type { ConfigurationInfrastructure } from '../extension/extensionCompositionRoot';
 
@@ -93,20 +100,49 @@ export async function registerAllCommands({
     configPath: string,
     kind: string,
     operation: () => Promise<T>,
+    options?: MutationExecutionOptions<T>,
   ) => Promise<T>;
   let runConfigurationPlan: <T>(
     configPath: string,
     plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
+    options?: MutationExecutionOptions<T>,
   ) => Promise<T>;
+  let runConfigurationMutationOutcome: MutationOutcomeRunner;
+  let runConfigurationPlanOutcome: PlanOutcomeRunner;
   let getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
 
   if (infrastructure) {
     runConfigurationMutation = infrastructure.runConfigurationMutation;
     runConfigurationPlan = infrastructure.runConfigurationPlan;
+    runConfigurationMutationOutcome = infrastructure.runConfigurationMutationOutcome ?? (async <T>(
+      configPath: string,
+      kind: string,
+      operation: () => Promise<T>,
+      options?: MutationExecutionOptions<T>,
+    ): Promise<MutationOutcome<T>> => {
+      const registry = await infrastructure.getConfigurationRegistry();
+      const session = await registry.resolveResource(configPath);
+      return session.enqueue({ kind, ...options, execute: operation });
+    });
+    runConfigurationPlanOutcome = infrastructure.runConfigurationPlanOutcome ?? (async <T>(
+      configPath: string,
+      plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
+      options?: MutationExecutionOptions<T>,
+    ): Promise<MutationOutcome<T>> => {
+      const registry = await infrastructure.getConfigurationRegistry();
+      const session = await registry.resolveResource(configPath);
+      return session.enqueuePlan(plan, options);
+    });
     getConfigurationRegistry = infrastructure.getConfigurationRegistry;
   } else {
     const configurationRegistry = new WorkspaceRegistry(
       path.join(context.globalStorageUri.fsPath, 'configuration-identities.v1.json'),
+      (identity) => new ConfigurationSession(identity, (commit) =>
+        reconcileAfterCommit(
+          commit.rootPath,
+          commit.kind === 'agent.pullSelectedObjects' ? 'pull-objects' : 'agent-mutation',
+          requestConfigurationReload,
+        )),
     );
     state.workspaceRegistry = configurationRegistry;
     const registryCoordinator = new WorkspaceRegistryCoordinator(configurationRegistry, {
@@ -133,9 +169,10 @@ export async function registerAllCommands({
       configPath: string,
       kind: string,
       operation: () => Promise<T>,
+      options?: MutationExecutionOptions<T>,
     ): Promise<T> => {
       const session = await registryCoordinator.resolveResource(configPath);
-      return session.runMutationValue({ kind, execute: operation }, {
+      return session.runMutationValue({ kind, ...options, execute: operation }, {
         failureMessage: 'Операция конфигурации не выполнена.',
         cancelledMessage: 'Операция конфигурации отменена.',
       });
@@ -143,17 +180,42 @@ export async function registerAllCommands({
     runConfigurationPlan = async <T>(
       configPath: string,
       plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
+      options?: MutationExecutionOptions<T>,
     ): Promise<T> => {
       const session = await registryCoordinator.resolveResource(configPath);
-      return session.runPlanValue(plan);
+      return session.runPlanValue(plan, options);
+    };
+    runConfigurationMutationOutcome = async <T>(
+      configPath: string,
+      kind: string,
+      operation: () => Promise<T>,
+      options?: MutationExecutionOptions<T>,
+    ): Promise<MutationOutcome<T>> => {
+      const session = await registryCoordinator.resolveResource(configPath);
+      return session.enqueue({ kind, ...options, execute: operation });
+    };
+    runConfigurationPlanOutcome = async <T>(
+      configPath: string,
+      plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
+      options?: MutationExecutionOptions<T>,
+    ): Promise<MutationOutcome<T>> => {
+      const session = await registryCoordinator.resolveResource(configPath);
+      return session.enqueuePlan(plan, options);
     };
     context.subscriptions.push(
-      configureConfigurationMutationGateway(runConfigurationMutation, runConfigurationPlan),
+      configureConfigurationMutationGateway(
+        runConfigurationMutation,
+        runConfigurationPlan,
+        runConfigurationMutationOutcome,
+        runConfigurationPlanOutcome,
+      ),
     );
     const mutationEngine = new ConfigurationMutationEngine({
       contextResolver,
       runMutation: runConfigurationMutation,
       runPlan: runConfigurationPlan,
+      runMutationWithOutcome: runConfigurationMutationOutcome,
+      runPlanWithOutcome: runConfigurationPlanOutcome,
     });
     state.configurationMutationEngine = mutationEngine;
     setConfigurationMutationEngine(mutationEngine);
