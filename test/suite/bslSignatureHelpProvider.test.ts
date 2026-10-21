@@ -53,14 +53,12 @@ suite('BSL Signature Help', () => {
   teardown(() => resetVscodeTestState());
 
   test('registers the BSL provider for opening parentheses and commas', () => {
-    const context = { subscriptions: [] as vscode.Disposable[] };
-    const disposable = registerBslSignatureHelpProvider(context as never);
+    const disposable = registerBslSignatureHelpProvider();
     const registration = vscodeTestState.registeredSignatureHelpProviders[0];
 
     assert.strictEqual(vscodeTestState.registeredSignatureHelpProviders.length, 1);
     assert.deepStrictEqual(registration.selector, { language: 'bsl' });
     assert.deepStrictEqual(registration.triggerCharacters, ['(', ',']);
-    assert.strictEqual(context.subscriptions[0], disposable);
     disposable.dispose();
     assert.strictEqual(registration.disposed, true);
   });

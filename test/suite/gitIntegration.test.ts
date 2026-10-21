@@ -9,14 +9,11 @@ suite('gitIntegration registerGitPhase4HeadChangeHandlers', () => {
     resetVscodeTestState();
   });
 
-  test('when vscode.git is absent, returns disposable noop without context subscription', async () => {
+  test('when vscode.git is absent, returns a disposable without requiring a context registry', async () => {
     vscodeExtensionsTestState.getExtensionImpl = () => undefined;
-    const subs: { dispose(): void }[] = [];
-    const ctx = { subscriptions: subs } as unknown as vscode.ExtensionContext;
-    const d = registerGitPhase4HeadChangeHandlers(ctx, {
+    const d = registerGitPhase4HeadChangeHandlers({
       onRefreshInfobaseManager: () => undefined,
     });
-    assert.strictEqual(subs.length, 0);
     d.dispose();
     assert.ok(true);
   });
@@ -42,9 +39,7 @@ suite('gitIntegration registerGitPhase4HeadChangeHandlers', () => {
       activate: async () => gitExports,
     });
 
-    const subs: { dispose(): void }[] = [];
-    const ctx = { subscriptions: subs } as unknown as vscode.ExtensionContext;
-    const d = registerGitPhase4HeadChangeHandlers(ctx, {
+    const d = registerGitPhase4HeadChangeHandlers({
       onRefreshInfobaseManager: () => {
         refreshCalls += 1;
       },
@@ -63,5 +58,45 @@ suite('gitIntegration registerGitPhase4HeadChangeHandlers', () => {
 
     assert.strictEqual(refreshCalls, 1);
     d.dispose();
+  });
+
+  test('disposal before Git activation resolves prevents late repository subscriptions', async () => {
+    let finishActivation!: (value: { getAPI: (_version: 1) => unknown }) => void;
+    let stateSubscriptions = 0;
+    let repositorySubscriptions = 0;
+    let stateDisposals = 0;
+    let repositoryDisposals = 0;
+    vscodeExtensionsTestState.getExtensionImpl = () => ({
+      activate: () => new Promise((resolve) => { finishActivation = resolve; }),
+    });
+
+    const disposable = registerGitPhase4HeadChangeHandlers({
+      onRefreshInfobaseManager: () => undefined,
+    });
+    disposable.dispose();
+    finishActivation({
+      getAPI: () => ({
+        repositories: [{
+          rootUri: vscode.Uri.file('C:\\repo'),
+          state: {
+            HEAD: { commit: 'commit-a' },
+            onDidChange: () => {
+              stateSubscriptions += 1;
+              return { dispose: () => { stateDisposals += 1; } };
+            },
+          },
+        }],
+        onDidOpenRepository: () => {
+          repositorySubscriptions += 1;
+          return { dispose: () => { repositoryDisposals += 1; } };
+        },
+      }),
+    });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.strictEqual(stateSubscriptions, 0);
+    assert.strictEqual(repositorySubscriptions, 0);
+    assert.strictEqual(stateDisposals, 0);
+    assert.strictEqual(repositoryDisposals, 0);
   });
 });

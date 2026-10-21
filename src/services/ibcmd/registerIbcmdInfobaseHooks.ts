@@ -7,20 +7,28 @@ export const IBCMD_SETUP_COMMAND = '1c-metadata-tree.infobaseManager.showIbcmdSe
 /**
  * Configuration-driven cache invalidation + palette command for ibcmd setup.
  */
-export function registerIbcmdInfobaseHooks(context: vscode.ExtensionContext): void {
+export function registerIbcmdInfobaseHooks(): vscode.Disposable[] {
   const svc = getIbcmdService();
+  const disposables: vscode.Disposable[] = [];
 
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration((e) => {
+  try {
+    disposables.push(vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('1cMetadataTree')) {
         svc.invalidatePathCache();
       }
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand(IBCMD_SETUP_COMMAND, async () => {
+    }));
+    disposables.push(vscode.commands.registerCommand(IBCMD_SETUP_COMMAND, async () => {
       await showIbcmdNotFoundDialog();
-    })
-  );
+    }));
+    return disposables;
+  } catch (error) {
+    for (const disposable of disposables.splice(0).reverse()) {
+      try {
+        disposable.dispose();
+      } catch {
+        // Preserve the registration failure while releasing earlier subscriptions.
+      }
+    }
+    throw error;
+  }
 }

@@ -32,58 +32,74 @@ export interface SessionEntry {
 /** Реестр активных отладочных сессий. Инстанциируется в extension.ts. */
 export class DebugSessionRegistry {
     private _sessions = new Map<string, SessionEntry>();
-    private _disposables: vscode.Disposable[] = [];
+    private _activationDisposable: vscode.Disposable | null = null;
 
     /**
      * Активирует реестр — подписывается на события VS Code Debug API.
      * Идемпотентен: повторный вызов ничего не делает.
      */
-    activate(context: vscode.ExtensionContext): void {
-        if (this._disposables.length > 0) {
-            return;
+    activate(): vscode.Disposable {
+        if (this._activationDisposable) {
+            return this._activationDisposable;
         }
 
         Logger.info('DebugSessionRegistry.activate() — subscribing');
-        const startSub = vscode.debug.onDidStartDebugSession((session) => {
-            Logger.info('Registry: onDidStartDebugSession', { id: session.id, type: session.type, name: session.name });
-            if (session.type === 'bsl') {
-                this._sessions.set(session.id, { session, waiters: [] });
-                Logger.info('Registry: bsl session added', { id: session.id, total: this._sessions.size });
-            }
-        });
+        const subscriptions: vscode.Disposable[] = [];
+        try {
+            subscriptions.push(vscode.debug.onDidStartDebugSession((session) => {
+                Logger.info('Registry: onDidStartDebugSession', { id: session.id, type: session.type, name: session.name });
+                if (session.type === 'bsl') {
+                    this._sessions.set(session.id, { session, waiters: [] });
+                    Logger.info('Registry: bsl session added', { id: session.id, total: this._sessions.size });
+                }
+            }));
 
-        const terminateSub = vscode.debug.onDidTerminateDebugSession((session) => {
-            const entry = this._sessions.get(session.id);
-            if (entry) {
-                const waiters = entry.waiters.splice(0);
-                waiters.forEach(w => w({ reason: 'terminated', threadId: -1, receivedAt: Date.now() }));
-            }
-            this._sessions.delete(session.id);
-        });
+            subscriptions.push(vscode.debug.onDidTerminateDebugSession((session) => {
+                const entry = this._sessions.get(session.id);
+                if (entry) {
+                    const waiters = entry.waiters.splice(0);
+                    waiters.forEach(w => w({ reason: 'terminated', threadId: -1, receivedAt: Date.now() }));
+                }
+                this._sessions.delete(session.id);
+            }));
 
-        const trackerSub = vscode.debug.registerDebugAdapterTrackerFactory('bsl', {
-            createDebugAdapterTracker: (session) => ({
-                onDidSendMessage: (msg: unknown) => {
-                    const m = msg as Record<string, unknown> | null | undefined;
-                    if (m?.type === 'event' && m?.event === 'stopped') {
-                        const entry = this._sessions.get(session.id);
-                        if (!entry) { return; }
-                        const body = m.body as Record<string, unknown> | undefined;
-                        const stop: LastStop = {
-                            reason: (body?.reason as string | undefined) ?? 'unknown',
-                            threadId: (body?.threadId as number | undefined) ?? 1,
-                            receivedAt: Date.now(),
-                        };
-                        entry.lastStop = stop;
-                        const waiters = entry.waiters.splice(0);
-                        waiters.forEach(w => w(stop));
-                    }
-                },
-            }),
-        });
+            subscriptions.push(vscode.debug.registerDebugAdapterTrackerFactory('bsl', {
+                createDebugAdapterTracker: (session) => ({
+                    onDidSendMessage: (msg: unknown) => {
+                        const m = msg as Record<string, unknown> | null | undefined;
+                        if (m?.type === 'event' && m?.event === 'stopped') {
+                            const entry = this._sessions.get(session.id);
+                            if (!entry) { return; }
+                            const body = m.body as Record<string, unknown> | undefined;
+                            const stop: LastStop = {
+                                reason: (body?.reason as string | undefined) ?? 'unknown',
+                                threadId: (body?.threadId as number | undefined) ?? 1,
+                                receivedAt: Date.now(),
+                            };
+                            entry.lastStop = stop;
+                            const waiters = entry.waiters.splice(0);
+                            waiters.forEach(w => w(stop));
+                        }
+                    },
+                }),
+            }));
+        } catch (error) {
+            disposeDebugSubscriptions(subscriptions, 'activation rollback');
+            throw error;
+        }
 
-        this._disposables.push(startSub, terminateSub, trackerSub);
-        context.subscriptions.push(startSub, terminateSub, trackerSub);
+        let disposed = false;
+        this._activationDisposable = {
+            dispose: () => {
+                if (disposed) {
+                    return;
+                }
+                disposed = true;
+                disposeDebugSubscriptions(subscriptions, 'disposal');
+                this._activationDisposable = null;
+            },
+        };
+        return this._activationDisposable;
     }
 
     /**
@@ -104,7 +120,21 @@ export class DebugSessionRegistry {
      * Освобождает все подписки реестра.
      */
     dispose(): void {
-        this._disposables.forEach(d => d.dispose());
-        this._disposables = [];
+        this._activationDisposable?.dispose();
+        this._activationDisposable = null;
+    }
+}
+
+function disposeDebugSubscriptions(subscriptions: readonly vscode.Disposable[], phase: string): void {
+    for (const disposable of [...subscriptions].reverse()) {
+        try {
+            disposable.dispose();
+        } catch (error) {
+            try {
+                Logger.warn(`DebugSessionRegistry subscription ${phase} failed`, error);
+            } catch {
+                // Cleanup must continue even if diagnostics fail.
+            }
+        }
     }
 }

@@ -21,9 +21,9 @@ import {
   type ConfigurationRepositoryTransportDeps,
 } from './configurationRepositoryTransport';
 import {
-  RepositoryBindingStore,
   RepositorySecretStore,
-  RepositoryStateStore,
+  type RepositoryBindingStorage,
+  type RepositoryStateStorage,
 } from './repositoryStores';
 import {
   resolveRepositoryObject,
@@ -46,9 +46,9 @@ import type { RepositoryStateProjection } from './repositoryTreeDecorations';
 import type { RequestConfigurationReload } from '../../reload/requestConfigurationReload';
 
 export interface ConfigurationRepositoryServiceDeps {
-  readonly bindingStore: RepositoryBindingStore;
+  readonly bindingStore: RepositoryBindingStorage;
   readonly secretStore: RepositorySecretStore;
-  readonly stateStore: RepositoryStateStore;
+  readonly stateStore: RepositoryStateStorage;
   readonly infobaseStorage: InfobaseStorageService;
   readonly transport?: ConfigurationRepositoryTransport;
   readonly transportDeps?: ConfigurationRepositoryTransportDeps;

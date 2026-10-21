@@ -25,7 +25,7 @@ import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
 function makeRegistryWithSession(sessionId: string) {
     const registry = new DebugSessionRegistry();
     const ctx = { subscriptions: [] as Array<{ dispose: () => void }> };
-    registry.activate(ctx as never);
+    registry.activate();
 
     const session = makeMockSession(sessionId);
     for (const l of [...debugTestState.onDidStartDebugSessionListeners]) {
