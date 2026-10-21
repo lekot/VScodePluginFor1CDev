@@ -961,15 +961,12 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
 
 /** Registers and tracks the BSL completion provider for extension deactivation. */
 export function registerBslCompletionProvider(
-  context: Pick<vscode.ExtensionContext, 'subscriptions'>,
   extensionPath: string,
   getMetadataCompletionReader?: MetadataCompletionReaderProvider,
 ): vscode.Disposable {
-  const disposable = vscode.languages.registerCompletionItemProvider(
+  return vscode.languages.registerCompletionItemProvider(
     { language: 'bsl' },
     new BslCompletionProvider(extensionPath, getMetadataCompletionReader),
     '.',
   );
-  context.subscriptions.push(disposable);
-  return disposable;
 }

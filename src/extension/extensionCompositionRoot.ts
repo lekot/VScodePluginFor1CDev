@@ -49,6 +49,8 @@ import {
 import { registerTemplateDiffCommands } from '../templateEditor/templateDiffPanel';
 import { INFOBASE_TREE_VIEW_ID, InfobaseTreeDataProvider } from '../infobases/infobaseTreeProvider';
 import { registerIbcmdInfobaseHooks } from '../services/ibcmdService';
+import { resetIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
+import { FormsContext } from '../services/forms/FormsContext';
 import { registerInfobaseTreeCommands } from '../infobases/registerInfobaseTreeCommands';
 import { registerBindingDialogCommands } from '../bindings/bindingDialog';
 import {
@@ -65,10 +67,13 @@ import { registerLazyWorkspaceOrchestrator } from './lazyWorkspaceOrchestrator';
 import { registerGitPhase4HeadChangeHandlers } from '../services/gitIntegration';
 import { ConfigurationRepositoryService } from '../services/configurationRepository/configurationRepositoryService';
 import {
-  RepositoryBindingStore,
   RepositorySecretStore,
-  RepositoryStateStore,
 } from '../services/configurationRepository/repositoryStores';
+import {
+  WorkspaceRepositoryBindingStore,
+  WorkspaceRepositoryStateStore,
+  migrateWorkspaceRepositoryStores,
+} from '../services/configurationRepository/workspaceRepositoryStores';
 import {
   RepositoryStateProjection,
   resolveRepositoryTreeDecoration,
@@ -116,6 +121,60 @@ export interface CompositionPipelineStages {
   ) => Promise<void> | void;
 }
 
+class CompositionRootSubscriptions extends Array<vscode.Disposable> {
+  static get [Symbol.species](): ArrayConstructor {
+    return Array;
+  }
+
+  constructor(private readonly adopt: (disposable: vscode.Disposable) => void) {
+    super();
+  }
+
+  override push(...items: vscode.Disposable[]): number {
+    const length = super.push(...items);
+    for (const disposable of items) {
+      this.adopt(disposable);
+    }
+    return length;
+  }
+}
+
+function createCompositionContext(
+  source: vscode.ExtensionContext,
+  subscriptions: vscode.Disposable[],
+): vscode.ExtensionContext {
+  const target = Object.create(Object.getPrototypeOf(source)) as object;
+  const boundMethods = new WeakMap<object, unknown>();
+  return new Proxy(target, {
+    get: (_target, property) => {
+      if (property === 'subscriptions') {
+        return subscriptions;
+      }
+      const value = Reflect.get(source, property, source) as unknown;
+      if (typeof value !== 'function') {
+        return value;
+      }
+      const existing = boundMethods.get(value);
+      if (existing) {
+        return existing;
+      }
+      const bound = value.bind(source);
+      boundMethods.set(value, bound);
+      return bound;
+    },
+    set: (_target, property, value) => Reflect.set(source, property, value, source),
+    has: (_target, property) => property === 'subscriptions' || Reflect.has(source, property),
+    ownKeys: () => Reflect.ownKeys(source),
+    getOwnPropertyDescriptor: (_target, property) => {
+      if (property === 'subscriptions') {
+        return { configurable: true, enumerable: true, value: subscriptions, writable: true };
+      }
+      const descriptor = Reflect.getOwnPropertyDescriptor(source, property);
+      return descriptor ? { ...descriptor, configurable: true } : undefined;
+    },
+  }) as vscode.ExtensionContext;
+}
+
 async function syncInfobaseTreeViewMessage(state: ExtensionState): Promise<void> {
   const storage = state.infobaseStorage;
   const view = state.infobaseTreeView;
@@ -142,15 +201,23 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
   private _isDisposing = false;
   private _rollbackPromise: Promise<void> | null = null;
   private _disposePromise: Promise<void> | null = null;
+  private _compositionPromise: Promise<void> | null = null;
   private _infra: ConfigurationInfrastructure | null = null;
   private _requestConfigurationReload: RequestConfigurationReload | null = null;
+  private readonly context: vscode.ExtensionContext;
+  private readonly _ownedContextSubscriptions: CompositionRootSubscriptions;
 
   constructor(
-    private readonly context: vscode.ExtensionContext,
+    context: vscode.ExtensionContext,
     private readonly state: ExtensionState,
     private readonly lifecycle: MetadataTreeLifecycle,
     private readonly stages?: CompositionPipelineStages,
   ) {
+    this.state.enableCompositionManagedMode();
+    this._ownedContextSubscriptions = new CompositionRootSubscriptions((disposable) => {
+      this.registerDisposable('extension context subscription', disposable);
+    });
+    this.context = createCompositionContext(context, this._ownedContextSubscriptions);
     const subscriptionScope = getActivationSubscriptionScope(context);
     if (subscriptionScope) {
       subscriptionScope.bind(this);
@@ -201,7 +268,18 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     return this._requestConfigurationReload;
   }
 
-  async compose(): Promise<void> {
+  compose(): Promise<void> {
+    if (this._compositionPromise) {
+      return this._compositionPromise;
+    }
+    if (this._isDisposing) {
+      return Promise.reject(new Error('Extension composition root is disposed.'));
+    }
+    this._compositionPromise = this.performComposition();
+    return this._compositionPromise;
+  }
+
+  private async performComposition(): Promise<void> {
     try {
       // 1. Infobase core services
       if (this.stages?.initInfobaseServices) {
@@ -209,6 +287,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       } else {
         await this.defaultInitInfobaseServices();
       }
+      this.throwIfDisposing();
 
       // 2. Configuration Infrastructure & Mutation Engine
       let infra: ConfigurationInfrastructure;
@@ -217,6 +296,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       } else {
         infra = await this.defaultInitConfigurationInfrastructure();
       }
+      this.throwIfDisposing();
       this._infra = infra;
 
       // 3. Tree Model, Lifecycle & Reload Coordinator
@@ -225,6 +305,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       } else {
         await this.defaultInitTreeAndReload();
       }
+      this.throwIfDisposing();
 
       // 4. Editor Providers & Webviews
       if (this.stages?.initEditors) {
@@ -232,6 +313,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       } else {
         await this.defaultInitEditors();
       }
+      this.throwIfDisposing();
 
       // 5. Infobase UI & Bindings Features
       if (this.stages?.initInfobaseFeatures) {
@@ -239,6 +321,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       } else {
         await this.defaultInitInfobaseFeatures();
       }
+      this.throwIfDisposing();
 
       // 6. Configuration Repository Services
       if (this.stages?.initRepositoryServices) {
@@ -246,6 +329,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       } else if (this._requestConfigurationReload) {
         await this.defaultInitRepositoryServices(this._requestConfigurationReload);
       }
+      this.throwIfDisposing();
 
       // 7. Commands & Integration
       if (this.stages?.initCommands) {
@@ -253,10 +337,25 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       } else {
         await this.defaultInitCommands(infra);
       }
+      this.throwIfDisposing();
     } catch (err) {
-      Logger.error('ExtensionCompositionRoot: composition failed, rolling back partial state', err);
-      await this.dispose();
+      if (!this._isDisposing) {
+        Logger.error('ExtensionCompositionRoot: composition failed, rolling back partial state', err);
+        await this.rollback();
+        try {
+          await this.state.dispose();
+        } catch (error) {
+          Logger.error('ExtensionCompositionRoot state fallback disposal failed', error);
+        }
+        await this.drainLateDisposals();
+      }
       throw err;
+    }
+  }
+
+  private throwIfDisposing(): void {
+    if (this._isDisposing) {
+      throw new Error('Extension composition root was disposed during initialization.');
     }
   }
 
@@ -301,6 +400,9 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     }
     this._isDisposing = true;
     this._disposePromise = Promise.resolve().then(async () => {
+      if (this._compositionPromise) {
+        await this._compositionPromise.catch(() => undefined);
+      }
       await this.rollback();
       try {
         await this.state.dispose();
@@ -349,6 +451,10 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     });
     infobaseManager ??= new InfobaseManager(storage, bindingManager, mutationService);
 
+    this.registerDisposable('infobaseStorage', storage);
+    this.registerDisposable('ibcmdService', () => resetIbcmdService());
+    this.registerDisposable('formsContext', () => FormsContext.get().dispose());
+
     this.state.infobaseStorage = storage;
     this.state.bindingManager = bindingManager;
     this.state.infobaseManager = infobaseManager;
@@ -358,6 +464,9 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       recovery = mutationService.recoverPendingMutations();
       this.state.infobaseMutationRecovery = recovery;
     }
+    this.registerDisposable('infobaseMutationRecovery', async () => {
+      await recovery;
+    });
 
     let outcome: RecoveryOutcome;
     try {
@@ -451,8 +560,11 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
   }
 
   private async defaultInitTreeAndReload(): Promise<void> {
-    registerBslCompletionProvider(this.context, this.context.extensionPath, () => this.state.treeDataProvider);
-    registerBslSignatureHelpProvider(this.context);
+    this.registerDisposable(
+      'bslCompletionProvider',
+      registerBslCompletionProvider(this.context.extensionPath, () => this.state.treeDataProvider),
+    );
+    this.registerDisposable('bslSignatureHelpProvider', registerBslSignatureHelpProvider());
 
     this.registerDisposable('lifecycle', { dispose: this.lifecycle.dispose });
 
@@ -577,6 +689,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       }
     });
     this.state.formEditorProvider = formEditor;
+    this.registerDisposable('formEditorProviderInstance', formEditor);
     this.registerDisposable(
       'formEditorProvider',
       vscode.window.registerCustomEditorProvider('1c-form-editor', formEditor, {
@@ -602,11 +715,15 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
         { webviewOptions: { retainContextWhenHidden: true } },
       ),
     );
-    registerTemplateDiffCommands(this.context);
+    for (const disposable of registerTemplateDiffCommands(this.context.extensionUri)) {
+      this.registerDisposable('templateDiffCommand', disposable);
+    }
   }
 
   private async defaultInitInfobaseFeatures(): Promise<void> {
-    registerIbcmdInfobaseHooks(this.context);
+    for (const disposable of registerIbcmdInfobaseHooks()) {
+      this.registerDisposable('ibcmdInfobaseHook', disposable);
+    }
 
     if (this.state.infobaseStorage) {
       const storage = this.state.infobaseStorage;
@@ -656,17 +773,19 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     if (!storage || !provider) {
       return;
     }
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const repositoryStorageRoot = workspaceRoot
-      ? path.join(workspaceRoot, '.vscode')
-      : this.context.globalStorageUri.fsPath;
+    const storeOptions = {
+      getWorkspaceFolders: () =>
+        (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
+      globalStorageRoot: this.context.globalStorageUri.fsPath,
+    };
     const projection = new RepositoryStateProjection();
-    const bindingStore = new RepositoryBindingStore(
-      path.join(repositoryStorageRoot, 'configuration-repository-bindings.json'),
-    );
-    const stateStore = new RepositoryStateStore(
-      path.join(repositoryStorageRoot, 'configuration-repository-state.json'),
-    );
+    const bindingStore = new WorkspaceRepositoryBindingStore(storeOptions);
+    const stateStore = new WorkspaceRepositoryStateStore(storeOptions);
+    try {
+      await migrateWorkspaceRepositoryStores(storeOptions);
+    } catch (error) {
+      Logger.warn('Configuration Repository workspace store migration was incomplete; legacy records were retained.', error);
+    }
     const service = new ConfigurationRepositoryService({
       bindingStore,
       secretStore: new RepositorySecretStore(this.context.secrets),
@@ -678,6 +797,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     });
     this.state.configurationRepositoryProjection = projection;
     this.state.configurationRepositoryService = service;
+    this.registerDisposable('configurationRepositoryProjection', () => projection.clear());
     provider.setRepositoryStateReader(projection);
     provider.setRepositoryDecorationResolver(resolveRepositoryTreeDecoration);
 
@@ -697,20 +817,6 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
   }
 
   private async defaultInitCommands(infra: ConfigurationInfrastructure): Promise<void> {
-    this.registerDisposable('supportRootRegistrationLifecycle', async () => {
-      const supportRootLifecycle = this.state.supportRootRegistrationLifecycle;
-      if (!supportRootLifecycle) {
-        return;
-      }
-      try {
-        await supportRootLifecycle.dispose();
-      } finally {
-        if (this.state.supportRootRegistrationLifecycle === supportRootLifecycle) {
-          this.state.supportRootRegistrationLifecycle = null;
-        }
-      }
-    });
-
     const trackedLifecycle: MetadataTreeFeatureLifecycle = {
       ...this._featureLifecycle,
     };
@@ -734,7 +840,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
         infobaseView: this.state.infobaseTreeView ?? undefined,
         loadMetadataTree: () => trackedLifecycle.loadMetadataTree(),
         registerGitHeadChangeHandlers: () => {
-          registerGitPhase4HeadChangeHandlers(this.context, {
+          const gitDisposables = registerGitPhase4HeadChangeHandlers({
             onReloadMetadataTree: () => trackedLifecycle.loadMetadataTree(),
             onRefreshInfobaseManager: infobaseTreeForGitRefresh
               ? () => {
@@ -744,6 +850,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
                 }
               : undefined,
           });
+          this.registerDisposable('gitPhase4HeadChangeHandlers', gitDisposables);
         },
         onAutoLoadError: (error) => Logger.error('Error during auto-load', error),
       });

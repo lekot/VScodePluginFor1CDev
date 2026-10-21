@@ -22,10 +22,6 @@ function makeSession(id: string, type: string): unknown {
     return { id, type, name: `session-${id}`, workspaceFolder: undefined, configuration: {} };
 }
 
-function makeContext(): { subscriptions: Array<{ dispose: () => void }> } {
-    return { subscriptions: [] };
-}
-
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
@@ -44,8 +40,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('после activate созданы 3 подписки', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         // onDidStartDebugSession, onDidTerminateDebugSession, registerDebugAdapterTrackerFactory
         assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 1, 'start listener');
@@ -55,8 +50,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('сессия типа bsl попадает в реестр', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const session = makeSession('sess-1', 'bsl');
         fireDidStartDebugSession(session);
@@ -68,8 +62,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('сессия другого типа игнорируется', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const session = makeSession('sess-2', 'node');
         fireDidStartDebugSession(session);
@@ -78,8 +71,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('onDidTerminateDebugSession удаляет запись', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const session = makeSession('sess-3', 'bsl');
         fireDidStartDebugSession(session);
@@ -90,8 +82,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('onDidTerminateDebugSession резолвит waiters с reason terminated', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const session = makeSession('sess-4', 'bsl');
         fireDidStartDebugSession(session);
@@ -110,8 +101,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('DebugAdapterTracker сохраняет lastStop при stopped event', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const session = makeSession('sess-5', 'bsl');
         fireDidStartDebugSession(session);
@@ -139,8 +129,7 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('DebugAdapterTracker игнорирует non-stopped events', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const session = makeSession('sess-5b', 'bsl');
         fireDidStartDebugSession(session);
@@ -158,23 +147,22 @@ suite('DebugSessionRegistry — activate', () => {
     });
 
     test('activate идемпотентен — повторный вызов не создаёт двойных подписок', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
-        registry.activate(ctx as never); // вызов второй раз
+        registry.activate();
+        registry.activate(); // вызов второй раз
 
         assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 1, 'только 1 start listener');
         assert.strictEqual(debugTestState.onDidTerminateDebugSessionListeners.length, 1, 'только 1 terminate listener');
         assert.strictEqual(debugTestState.registeredTrackerFactories.length, 1, 'только 1 factory');
     });
 
-    test('dispose очищает _disposables', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+    test('dispose releases subscriptions owned by the returned activation disposable', () => {
+        const activation = registry.activate();
 
         // Убеждаемся что подписки есть
         assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 1);
 
         registry.dispose();
+        activation.dispose();
 
         // После dispose слушатели убраны
         assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 0, 'start listeners очищены');
@@ -196,8 +184,7 @@ suite('DebugSessionRegistry — list', () => {
     });
 
     test('list возвращает все активные bsl-сессии', () => {
-        const ctx = makeContext();
-        registry.activate(ctx as never);
+        registry.activate();
 
         const s1 = makeSession('s-1', 'bsl');
         const s2 = makeSession('s-2', 'bsl');

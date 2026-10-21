@@ -40,7 +40,7 @@ async function withMutationLock<T>(filePath: string, operation: () => Promise<T>
   }
 }
 
-interface StoredBinding {
+export interface RepositoryStoredBinding {
   readonly targetKey: string;
   readonly configRoot: string;
   readonly configKind: RepositoryTarget['configKind'];
@@ -52,7 +52,7 @@ interface StoredBinding {
 
 interface BindingsFile {
   readonly schemaVersion: 1;
-  readonly bindings: readonly StoredBinding[];
+  readonly bindings: readonly RepositoryStoredBinding[];
 }
 
 interface StateFile {
@@ -69,7 +69,21 @@ export function repositoryTargetKey(target: Pick<RepositoryTarget, 'configRoot' 
   return `${target.configKind}:${normalizePath(target.configRoot)}:${(target.extensionName ?? '').trim().toLocaleLowerCase()}`;
 }
 
-export class RepositoryBindingStore {
+export interface RepositoryBindingStorage {
+  get(target: RepositoryTarget): Promise<RepositoryBinding | undefined>;
+  list(): Promise<readonly RepositoryStoredBinding[]>;
+  set(target: RepositoryTarget, binding: RepositoryBinding): Promise<void>;
+  delete(target: RepositoryTarget): Promise<boolean>;
+}
+
+export interface RepositoryStateStorage {
+  get(target: RepositoryTarget): Promise<RepositoryObservedState>;
+  getStored(target: RepositoryTarget): Promise<RepositoryObservedState | undefined>;
+  set(target: RepositoryTarget, state: RepositoryObservedState): Promise<void>;
+  clear(target: RepositoryTarget): Promise<void>;
+}
+
+export class RepositoryBindingStore implements RepositoryBindingStorage {
   constructor(private readonly filePath: string) {}
 
   async get(target: RepositoryTarget): Promise<RepositoryBinding | undefined> {
@@ -85,7 +99,7 @@ export class RepositoryBindingStore {
       : undefined;
   }
 
-  async list(): Promise<readonly StoredBinding[]> {
+  async list(): Promise<readonly RepositoryStoredBinding[]> {
     return Object.freeze([...(await this.readFile()).bindings]);
   }
 
@@ -99,7 +113,7 @@ export class RepositoryBindingStore {
     await withMutationLock(this.filePath, async () => {
       const file = await this.readFile();
       const targetKey = repositoryTargetKey(target);
-      const next: StoredBinding = {
+      const next: RepositoryStoredBinding = {
         targetKey,
         configRoot: normalizePath(target.configRoot),
         configKind: target.configKind,
@@ -137,12 +151,12 @@ export class RepositoryBindingStore {
       if (!Array.isArray(items)) {
         throw new Error('Поле bindings в файле Хранилища должно быть массивом.');
       }
-      const bindings: StoredBinding[] = [];
+      const bindings: RepositoryStoredBinding[] = [];
       for (const item of items) {
         if (!item || typeof item !== 'object') {
           continue;
         }
-        const candidate = item as Partial<StoredBinding>;
+        const candidate = item as Partial<RepositoryStoredBinding>;
         if (
           typeof candidate.targetKey !== 'string'
           || typeof candidate.configRoot !== 'string'
@@ -187,12 +201,17 @@ export class RepositoryBindingStore {
   }
 }
 
-export class RepositoryStateStore {
+export class RepositoryStateStore implements RepositoryStateStorage {
   constructor(private readonly filePath: string) {}
 
   async get(target: RepositoryTarget): Promise<RepositoryObservedState> {
     const file = await this.readFile();
     return file.states[repositoryTargetKey(target)] ?? DEFAULT_STATE;
+  }
+
+  async getStored(target: RepositoryTarget): Promise<RepositoryObservedState | undefined> {
+    const file = await this.readFile();
+    return file.states[repositoryTargetKey(target)];
   }
 
   async set(target: RepositoryTarget, state: RepositoryObservedState): Promise<void> {

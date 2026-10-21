@@ -32,7 +32,7 @@ function makeRegistry(): DebugSessionRegistry {
 function makeRegistryWithSession(sessionId: string) {
     const registry = makeRegistry();
     const ctx = { subscriptions: [] as Array<{ dispose: () => void }> };
-    registry.activate(ctx as never);
+    registry.activate();
 
     const session = makeMockSession(sessionId);
     // Inject session into registry via fireDidStartDebugSession path

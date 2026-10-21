@@ -143,19 +143,15 @@ suite('registerAgentCommands — debug command proxy to AgentDebugOperations', (
         assert.strictEqual(result.success, true, `Ожидался success, получено: ${result.error}`);
     });
 
-    test('debugRegistry.activate вызывается до registerAgentCommands и создаёт подписки', () => {
+    test('debugRegistry.activate returns the subscription owner without mutating ExtensionContext', () => {
         const registry = makeRegistry();
         const ctx = makeContext();
 
-        // Активируем реестр как это делает registerAllCommands
-        registry.activate(ctx as never);
-
-        // После activate в ctx.subscriptions должны появиться подписки реестра
-        // (onDidStartDebugSession, onDidTerminateDebugSession, registerDebugAdapterTrackerFactory)
-        assert.ok(
-            ctx.subscriptions.length > 0,
-            'После registry.activate в context.subscriptions должны быть disposable',
-        );
+        const owner = registry.activate();
+        assert.strictEqual(ctx.subscriptions.length, 0);
+        assert.ok(owner);
+        owner.dispose();
+        assert.strictEqual(debugTestState.onDidStartDebugSessionListeners.length, 0);
     });
 
     test('debug.start проксирует ошибку валидации rootProject через handler', async () => {
@@ -179,7 +175,7 @@ suite('registerAgentCommands — debug command proxy to AgentDebugOperations', (
         const ctx = makeContext();
         const registry = makeRegistry();
         // Активируем реестр чтобы он слушал сессии
-        registry.activate(ctx as never);
+        registry.activate();
         registerAgentCommands(ctx as never, () => null, async () => null, registry);
 
         // Подготавливаем workspace folder
@@ -224,7 +220,7 @@ suite('registerAgentCommands — long debug task receipts', () => {
     test('background debug.waitForStop returns immediately and task.cancel settles as confirmed cancelled', async () => {
         const ctx = makeContext();
         const registry = makeRegistry();
-        registry.activate(ctx as never);
+        registry.activate();
         registerAgentCommands(ctx as never, () => null, async () => null, registry);
         const sessionId = 'receipt-wait-session';
         fireDidStartDebugSession(makeMockSession(sessionId));

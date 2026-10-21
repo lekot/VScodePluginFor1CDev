@@ -167,13 +167,13 @@ function targetUri(arg: unknown): vscode.Uri | undefined {
 }
 
 /** Registers «compare with HEAD» and «compare two templates». */
-export function registerTemplateDiffCommands(context: vscode.ExtensionContext): void {
+export function registerTemplateDiffCommands(extensionUri: vscode.Uri): vscode.Disposable[] {
   const revisions = new TemplateRevisionContentProvider();
-  context.subscriptions.push(
-    vscode.workspace.registerTextDocumentContentProvider(TEMPLATE_REVISION_SCHEME, revisions)
-  );
+  const disposables: vscode.Disposable[] = [];
+  registerOwned(disposables, () =>
+    vscode.workspace.registerTextDocumentContentProvider(TEMPLATE_REVISION_SCHEME, revisions));
 
-  context.subscriptions.push(
+  registerOwned(disposables, () =>
     vscode.commands.registerCommand('1c-template-editor.compareWithHead', async (arg?: unknown) => {
       const uri = targetUri(arg);
       if (!uri || uri.scheme !== 'file') {
@@ -199,7 +199,7 @@ export function registerTemplateDiffCommands(context: vscode.ExtensionContext): 
             }
             const name = path.basename(uri.fsPath);
             showTemplateDiff(
-              context.extensionUri,
+              extensionUri,
               `${relativeName(uri)} ↔ HEAD`,
               { text: base, label: 'HEAD', uri: revisions.remember(base, name) },
               { text: current, label: 'текущее состояние', uri }
@@ -229,10 +229,9 @@ export function registerTemplateDiffCommands(context: vscode.ExtensionContext): 
           }
         }
       );
-    })
-  );
+    }));
 
-  context.subscriptions.push(
+  registerOwned(disposables, () =>
     vscode.commands.registerCommand(
       '1c-template-editor.compareFiles',
       async (arg?: unknown, selected?: unknown) => {
@@ -259,7 +258,7 @@ export function registerTemplateDiffCommands(context: vscode.ExtensionContext): 
         try {
           const [leftText, rightText] = await Promise.all(pair.map((u) => readCurrent(u)));
           showTemplateDiff(
-            context.extensionUri,
+            extensionUri,
             `${relativeName(pair[0])} ↔ ${relativeName(pair[1])}`,
             { text: leftText, label: relativeName(pair[0]), uri: pair[0] },
             { text: rightText, label: relativeName(pair[1]), uri: pair[1] }
@@ -269,8 +268,26 @@ export function registerTemplateDiffCommands(context: vscode.ExtensionContext): 
           void vscode.window.showErrorMessage('Не удалось прочитать макеты для сравнения.');
         }
       }
-    )
-  );
+    ));
+  return disposables;
+}
+
+function registerOwned(
+  owned: vscode.Disposable[],
+  register: () => vscode.Disposable,
+): void {
+  try {
+    owned.push(register());
+  } catch (error) {
+    for (const disposable of owned.splice(0).reverse()) {
+      try {
+        disposable.dispose();
+      } catch (disposeError) {
+        Logger.warn('Template diff registration rollback failed', disposeError);
+      }
+    }
+    throw error;
+  }
 }
 
 /** «Documents/Invoice/Templates/Print» rather than the bare «Template.xml». */

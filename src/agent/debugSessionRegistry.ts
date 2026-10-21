@@ -32,15 +32,15 @@ export interface SessionEntry {
 /** Реестр активных отладочных сессий. Инстанциируется в extension.ts. */
 export class DebugSessionRegistry {
     private _sessions = new Map<string, SessionEntry>();
-    private _disposables: vscode.Disposable[] = [];
+    private _activationDisposable: vscode.Disposable | null = null;
 
     /**
      * Активирует реестр — подписывается на события VS Code Debug API.
      * Идемпотентен: повторный вызов ничего не делает.
      */
-    activate(context: vscode.ExtensionContext): void {
-        if (this._disposables.length > 0) {
-            return;
+    activate(): vscode.Disposable {
+        if (this._activationDisposable) {
+            return this._activationDisposable;
         }
 
         Logger.info('DebugSessionRegistry.activate() — subscribing');
@@ -82,8 +82,24 @@ export class DebugSessionRegistry {
             }),
         });
 
-        this._disposables.push(startSub, terminateSub, trackerSub);
-        context.subscriptions.push(startSub, terminateSub, trackerSub);
+        let disposed = false;
+        this._activationDisposable = {
+            dispose: () => {
+                if (disposed) {
+                    return;
+                }
+                disposed = true;
+                for (const disposable of [startSub, terminateSub, trackerSub]) {
+                    try {
+                        disposable.dispose();
+                    } catch (error) {
+                        Logger.warn('DebugSessionRegistry subscription disposal failed', error);
+                    }
+                }
+                this._activationDisposable = null;
+            },
+        };
+        return this._activationDisposable;
     }
 
     /**
@@ -104,7 +120,7 @@ export class DebugSessionRegistry {
      * Освобождает все подписки реестра.
      */
     dispose(): void {
-        this._disposables.forEach(d => d.dispose());
-        this._disposables = [];
+        this._activationDisposable?.dispose();
+        this._activationDisposable = null;
     }
 }

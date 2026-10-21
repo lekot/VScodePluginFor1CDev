@@ -50,11 +50,11 @@ export interface GitPhase4HeadHandlers {
  * {@link getGitReloadMetadataOnHeadChangeSetting} / {@link getGitRefreshInfobaseManagerOnHeadChangeSetting}.
  */
 export function registerGitPhase4HeadChangeHandlers(
-  context: vscode.ExtensionContext,
   options: GitPhase4HeadHandlers,
 ): vscode.Disposable {
   const subs: vscode.Disposable[] = [];
   let debounce: ReturnType<typeof setTimeout> | undefined;
+  let disposed = false;
   const pending = new Map<string, string | undefined>();
 
   const fireHandlers = (): void => {
@@ -80,10 +80,12 @@ export function registerGitPhase4HeadChangeHandlers(
   };
 
   const attach = (repo: GitRepository): void => {
+    if (disposed) {
+      return;
+    }
     const key = repo.rootUri.toString();
     pending.set(key, repo.state.HEAD?.commit);
-    subs.push(
-      repo.state.onDidChange(() => {
+    const subscription = repo.state.onDidChange(() => {
         if (!gitHeadHandlersActive(options)) {
           return;
         }
@@ -93,8 +95,12 @@ export function registerGitPhase4HeadChangeHandlers(
           pending.set(key, next);
           scheduleReload();
         }
-      }),
-    );
+      });
+    if (disposed) {
+      subscription.dispose();
+    } else {
+      subs.push(subscription);
+    }
   };
 
   const gitExt = vscode.extensions.getExtension<GitExtensionExports>('vscode.git');
@@ -105,11 +111,19 @@ export function registerGitPhase4HeadChangeHandlers(
   void gitExt.activate().then(
     (git) => {
       try {
+        if (disposed) {
+          return;
+        }
         const api = git.getAPI(1);
         for (const r of api.repositories) {
           attach(r);
         }
-        subs.push(api.onDidOpenRepository((r) => attach(r)));
+        const subscription = api.onDidOpenRepository((r) => attach(r));
+        if (disposed) {
+          subscription.dispose();
+        } else {
+          subs.push(subscription);
+        }
       } catch (err) {
         Logger.warn('Git API unavailable; HEAD-change reload disabled', err);
       }
@@ -119,16 +133,23 @@ export function registerGitPhase4HeadChangeHandlers(
     },
   );
 
-  const all = vscode.Disposable.from(
-    { dispose: () => subs.forEach((d) => d.dispose()) },
-    {
+  const all = {
       dispose: () => {
+        if (disposed) {
+          return;
+        }
+        disposed = true;
         if (debounce !== undefined) {
           clearTimeout(debounce);
         }
+        for (const subscription of subs.splice(0).reverse()) {
+          try {
+            subscription.dispose();
+          } catch (err) {
+            Logger.warn('Git HEAD-change subscription disposal failed', err);
+          }
+        }
       },
-    },
-  );
-  context.subscriptions.push(all);
+    };
   return all;
 }

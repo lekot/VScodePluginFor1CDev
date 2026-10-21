@@ -23,14 +23,7 @@ import { registerConfigurationProjectCommands } from '../configurationProject/co
 import { registerAgentCommands } from '../agent/agentCommands';
 import { DebugSessionRegistry } from '../agent/debugSessionRegistry';
 import { activateAgentBridge } from '../agent/agentBridgeActivation';
-import {
-  ConfigurationContextResolver,
-  ConfigurationMutationEngine,
-  setConfigurationMutationEngine,
-  WorkspaceRegistry,
-  WorkspaceRegistryCoordinator,
-} from '../services/configurationSession';
-import { configureConfigurationMutationGateway } from '../services/configurationSession/configurationMutationGateway';
+import type { WorkspaceRegistry } from '../services/configurationSession';
 import { DeployService } from '../bindings/deployService';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import { sharedInfobaseConfigurationOperationQueue } from '../infobases/infobaseConfigurationOperationQueue';
@@ -69,7 +62,7 @@ export type RegisterAllCommandsArgs = {
   state: ExtensionState;
   lifecycle: MetadataTreeFeatureLifecycle;
   requestConfigurationReload: RequestConfigurationReload;
-  infrastructure?: ConfigurationInfrastructure;
+  infrastructure: ConfigurationInfrastructure;
 };
 
 
@@ -81,6 +74,14 @@ export async function registerAllCommands({
   requestConfigurationReload,
   infrastructure,
 }: RegisterAllCommandsArgs): Promise<vscode.Disposable[]> {
+  if (!infrastructure) {
+    throw new Error('Configuration infrastructure is required by registerAllCommands.');
+  }
+  const {
+    runConfigurationMutation,
+    runConfigurationPlan,
+    getConfigurationRegistry,
+  } = infrastructure;
   const utilityDeps = {
     state,
     loadMetadataTree: lifecycle.loadMetadataTree,
@@ -88,77 +89,6 @@ export async function registerAllCommands({
   };
   registerExternalProcessorCommands(context);
   registerPictureCommands(context);
-
-  let runConfigurationMutation: <T>(
-    configPath: string,
-    kind: string,
-    operation: () => Promise<T>,
-  ) => Promise<T>;
-  let runConfigurationPlan: <T>(
-    configPath: string,
-    plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
-  ) => Promise<T>;
-  let getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
-
-  if (infrastructure) {
-    runConfigurationMutation = infrastructure.runConfigurationMutation;
-    runConfigurationPlan = infrastructure.runConfigurationPlan;
-    getConfigurationRegistry = infrastructure.getConfigurationRegistry;
-  } else {
-    const configurationRegistry = new WorkspaceRegistry(
-      path.join(context.globalStorageUri.fsPath, 'configuration-identities.v1.json'),
-    );
-    state.workspaceRegistry = configurationRegistry;
-    const registryCoordinator = new WorkspaceRegistryCoordinator(configurationRegistry, {
-      getWorkspaceFolders: () => (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
-      getWorkspaceFolderForPath: (filePath) =>
-        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
-    });
-    const contextResolver = new ConfigurationContextResolver(registryCoordinator, {
-      getWorkspaceFolderForPath: (filePath) =>
-        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
-    });
-    state.configurationContextResolver = contextResolver;
-    getConfigurationRegistry = async (): Promise<WorkspaceRegistry> => {
-      return registryCoordinator.getRegistry();
-    };
-    context.subscriptions.push(
-      vscode.workspace.onDidChangeWorkspaceFolders(() => {
-        void registryCoordinator.refreshWorkspace().catch((error) => {
-          Logger.error('Workspace registry refresh after folder change failed', error);
-        });
-      }),
-    );
-    runConfigurationMutation = async <T>(
-      configPath: string,
-      kind: string,
-      operation: () => Promise<T>,
-    ): Promise<T> => {
-      const session = await registryCoordinator.resolveResource(configPath);
-      return session.runMutationValue({ kind, execute: operation }, {
-        failureMessage: 'Операция конфигурации не выполнена.',
-        cancelledMessage: 'Операция конфигурации отменена.',
-      });
-    };
-    runConfigurationPlan = async <T>(
-      configPath: string,
-      plan: import('../services/configurationSession/mutationPlan').MutationPlan<T>,
-    ): Promise<T> => {
-      const session = await registryCoordinator.resolveResource(configPath);
-      return session.runPlanValue(plan);
-    };
-    context.subscriptions.push(
-      configureConfigurationMutationGateway(runConfigurationMutation, runConfigurationPlan),
-    );
-    const mutationEngine = new ConfigurationMutationEngine({
-      contextResolver,
-      runMutation: runConfigurationMutation,
-      runPlan: runConfigurationPlan,
-    });
-    state.configurationMutationEngine = mutationEngine;
-    setConfigurationMutationEngine(mutationEngine);
-    context.subscriptions.push({ dispose: () => registryCoordinator.dispose() });
-  }
 
   registerFilterCriterionCommands(context, state, runConfigurationPlan, requestConfigurationReload);
   registerCfeProjectCommands({
@@ -177,7 +107,7 @@ export async function registerAllCommands({
     getConfigurationRegistry,
     refreshTree: lifecycle.loadMetadataTree,
   });
-  configureSupportServices({
+  const supportDisposables = configureSupportServices({
     context,
     state,
     getConfigurationRegistry,
@@ -186,7 +116,7 @@ export async function registerAllCommands({
 
   // Agent API — регистрируем отдельно (не возвращают Disposable[] — управляют подписками сами)
   const debugRegistry = new DebugSessionRegistry();
-  debugRegistry.activate(context);
+  context.subscriptions.push(debugRegistry.activate());
   const { taskManager } = registerAgentCommands(
     context,
     () => state.treeDataProvider,
@@ -243,6 +173,7 @@ export async function registerAllCommands({
   );
 
   return [
+    ...supportDisposables,
     ...registerUtilityCommandsLeading(utilityDeps),
     ...registerConfigurationCompareCommands({ context, state }),
     ...registerCfCommands({ state }),
@@ -283,7 +214,7 @@ function configureSupportServices({
   state,
   getConfigurationRegistry,
   runConfigurationMutation,
-}: ConfigureSupportServicesArgs): void {
+}: ConfigureSupportServicesArgs): vscode.Disposable[] {
   const bindingManager = state.bindingManager;
   const infobaseStorage = state.infobaseStorage;
   const provider = state.treeDataProvider;
@@ -352,11 +283,18 @@ function configureSupportServices({
   provider.setSupportRootRegistrationCallback((configRoots) => {
     rootLifecycle.accept(configRoots);
   });
+  const supportOwnedDisposables: vscode.Disposable[] = [
+    { dispose: () => rootLifecycle.dispose() },
+    watcher,
+    { dispose: () => cache.clear() },
+    { dispose: () => composition.dispose() },
+  ];
+  context.subscriptions.push(...supportOwnedDisposables);
   const commandTargetResolver = new SupportBindingResolver({
     bindingManager,
     infobaseStorage,
   });
-  context.subscriptions.push(...registerSupportCommands({
+  const commandDisposables = registerSupportCommands({
     facade: composition.facade,
     resolveContext: (argument) =>
       resolveSupportCommandContext(argument, provider, cache, composition.registry),
@@ -373,7 +311,13 @@ function configureSupportServices({
         (error) => Logger.error('Support status refresh after command failed', error),
       );
     },
-  }));
+  });
+  context.subscriptions.push(...commandDisposables);
+
+  return [
+    ...commandDisposables,
+    ...supportOwnedDisposables,
+  ];
 }
 
 function createSupportWatcherFactory(): SupportFileSystemWatcherFactory {

@@ -33,6 +33,11 @@ import {
   RepositoryStateStore,
   repositoryTargetKey,
 } from '../../src/services/configurationRepository/repositoryStores';
+import {
+  WorkspaceRepositoryBindingStore,
+  WorkspaceRepositoryStateStore,
+  migrateWorkspaceRepositoryStores,
+} from '../../src/services/configurationRepository/workspaceRepositoryStores';
 import { XmlParser } from '../../src/parsers/xmlParser';
 import type { IbcmdInfobaseOperationResult } from '../../src/services/ibcmd/ibcmdInfobaseOperationResult';
 import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
@@ -419,6 +424,259 @@ suite('Configuration Repository phase 1', () => {
       assert.strictEqual((await stateStore.get(targetCfe)).connection, 'unknown');
     } finally {
       await fs.rm(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test('owner-store deletion failures remain visible after Designer acknowledged disconnect', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-owner-failure-'));
+    const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-global-failure-'));
+    const configRoot = path.join(workspaceRoot, 'Configuration');
+    const target = {
+      configRoot,
+      configKind: 'cf' as const,
+      key: repositoryTargetKey({ configRoot, configKind: 'cf' }),
+    };
+    const entry = infobase(path.join(workspaceRoot, '1Cv8.1CD'));
+    const ownerBindingPath = path.join(workspaceRoot, '.vscode', 'configuration-repository-bindings.json');
+    const ownerStore = new RepositoryBindingStore(ownerBindingPath);
+    await ownerStore.set(target, {
+      repositoryPath: 'repo',
+      repositoryUser: 'user',
+      executionInfobaseId: entry.id,
+    });
+    const stateStore = new WorkspaceRepositoryStateStore({
+      getWorkspaceFolders: () => [workspaceRoot],
+      globalStorageRoot: globalRoot,
+    });
+    await stateStore.set(target, {
+      connection: 'connected',
+      locks: {},
+      source: 'configuratorAcknowledgement',
+    });
+    const bindingStore = new WorkspaceRepositoryBindingStore({
+      getWorkspaceFolders: () => [workspaceRoot],
+      globalStorageRoot: globalRoot,
+    });
+    const secretStore = {
+      get: async () => undefined,
+      set: async () => undefined,
+      delete: async () => undefined,
+    };
+    const service = new ConfigurationRepositoryService({
+      bindingStore,
+      secretStore: secretStore as any,
+      stateStore,
+      infobaseStorage: { getById: async (id: string) => id === entry.id ? entry : undefined } as any,
+      transport: { run: async () => acknowledgedOutcome('unbind') } as any,
+      queue: new InfobaseConfigurationOperationQueue(),
+      requestConfigurationReload: async () => undefined,
+    });
+    const originalDelete = RepositoryBindingStore.prototype.delete;
+    RepositoryBindingStore.prototype.delete = async function (deleteTarget) {
+      if (path.resolve((this as unknown as { filePath: string }).filePath) === path.resolve(ownerBindingPath)) {
+        throw Object.assign(new Error('owner store denied deletion'), { code: 'EPERM' });
+      }
+      return originalDelete.call(this, deleteTarget);
+    };
+
+    try {
+      const result = await service.disconnect(target, neverCancelled());
+      assert.strictEqual(result.status, 'inDoubt', 'a post-ack owner-store failure must be reported to the caller');
+      assert.match(result.message, /owner store denied deletion/u);
+      assert.ok(await ownerStore.get(target), 'failed deletion must leave the binding available for retry');
+    } finally {
+      RepositoryBindingStore.prototype.delete = originalDelete;
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.rm(globalRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('failed legacy migration retains the source binding and state for retry', async () => {
+    const formerFirstRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-legacy-first-'));
+    const ownerRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-legacy-owner-'));
+    const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-legacy-global-'));
+    const configRoot = path.join(ownerRoot, 'Configuration');
+    const target = {
+      configRoot,
+      configKind: 'cf' as const,
+      key: repositoryTargetKey({ configRoot, configKind: 'cf' }),
+    };
+    const legacyBindingPath = path.join(formerFirstRoot, '.vscode', 'configuration-repository-bindings.json');
+    const legacyBindingStore = new RepositoryBindingStore(legacyBindingPath);
+    const legacyStateStore = new RepositoryStateStore(
+      path.join(formerFirstRoot, '.vscode', 'configuration-repository-state.json'),
+    );
+    await legacyBindingStore.set(target, {
+      repositoryPath: 'legacy-repo',
+      repositoryUser: 'legacy-user',
+      executionInfobaseId: 'legacy-ib',
+    });
+    await legacyStateStore.set(target, {
+      connection: 'connected',
+      locks: {},
+      source: 'configuratorAcknowledgement',
+    });
+    const ownerBindingPath = path.join(ownerRoot, '.vscode', 'configuration-repository-bindings.json');
+    const originalSet = RepositoryBindingStore.prototype.set;
+    RepositoryBindingStore.prototype.set = async function (setTarget, binding) {
+      if (path.resolve((this as unknown as { filePath: string }).filePath) === path.resolve(ownerBindingPath)) {
+        throw Object.assign(new Error('destination store denied migration'), { code: 'EPERM' });
+      }
+      return originalSet.call(this, setTarget, binding);
+    };
+
+    try {
+      await assert.rejects(migrateWorkspaceRepositoryStores({
+        getWorkspaceFolders: () => [formerFirstRoot, ownerRoot],
+        globalStorageRoot: globalRoot,
+      }), /destination store denied migration/u);
+      assert.strictEqual((await legacyBindingStore.get(target))?.repositoryPath, 'legacy-repo');
+      assert.strictEqual((await legacyStateStore.get(target)).connection, 'connected');
+      assert.strictEqual(await new RepositoryBindingStore(ownerBindingPath).get(target), undefined);
+    } finally {
+      RepositoryBindingStore.prototype.set = originalSet;
+      await fs.rm(formerFirstRoot, { recursive: true, force: true });
+      await fs.rm(ownerRoot, { recursive: true, force: true });
+      await fs.rm(globalRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('binding list excludes foreign-root records until they are durably migrated', async () => {
+    const legacyRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-list-legacy-'));
+    const ownerRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-list-owner-'));
+    const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-list-global-'));
+    const configRoot = path.join(ownerRoot, 'Configuration');
+    const target = {
+      configRoot,
+      configKind: 'cf' as const,
+      key: repositoryTargetKey({ configRoot, configKind: 'cf' }),
+    };
+    const legacyStore = new RepositoryBindingStore(
+      path.join(legacyRoot, '.vscode', 'configuration-repository-bindings.json'),
+    );
+    const options = {
+      getWorkspaceFolders: () => [legacyRoot, ownerRoot],
+      globalStorageRoot: globalRoot,
+    };
+    const routedStore = new WorkspaceRepositoryBindingStore(options);
+
+    try {
+      await legacyStore.set(target, {
+        repositoryPath: 'legacy-repository',
+        repositoryUser: 'legacy-user',
+        executionInfobaseId: 'legacy-ib',
+      });
+
+      assert.strictEqual((await routedStore.get(target))?.repositoryPath, 'legacy-repository');
+      assert.deepStrictEqual(await routedStore.list(), [], 'foreign legacy records must not appear as owner entries');
+
+      await migrateWorkspaceRepositoryStores(options);
+      assert.strictEqual((await routedStore.list()).length, 1);
+      assert.strictEqual((await routedStore.get(target))?.repositoryPath, 'legacy-repository');
+      assert.strictEqual((await legacyStore.list()).length, 0);
+    } finally {
+      await fs.rm(legacyRoot, { recursive: true, force: true });
+      await fs.rm(ownerRoot, { recursive: true, force: true });
+      await fs.rm(globalRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('migration keeps the owning workspace value when a stale legacy copy disagrees', async () => {
+    const formerFirstRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-stale-first-'));
+    const ownerRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-stale-owner-'));
+    const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-stale-global-'));
+    const configRoot = path.join(ownerRoot, 'Configuration');
+    const target = {
+      configRoot,
+      configKind: 'cfe' as const,
+      extensionName: 'Ext',
+      key: repositoryTargetKey({ configRoot, configKind: 'cfe', extensionName: 'Ext' }),
+    };
+    const legacyBindings = new RepositoryBindingStore(
+      path.join(formerFirstRoot, '.vscode', 'configuration-repository-bindings.json'),
+    );
+    const ownerBindings = new RepositoryBindingStore(
+      path.join(ownerRoot, '.vscode', 'configuration-repository-bindings.json'),
+    );
+    const legacyStates = new RepositoryStateStore(
+      path.join(formerFirstRoot, '.vscode', 'configuration-repository-state.json'),
+    );
+    const ownerStates = new RepositoryStateStore(
+      path.join(ownerRoot, '.vscode', 'configuration-repository-state.json'),
+    );
+    await legacyBindings.set(target, {
+      repositoryPath: 'stale-repository',
+      repositoryUser: 'stale-user',
+      executionInfobaseId: 'stale-ib',
+    });
+    await ownerBindings.set(target, {
+      repositoryPath: 'owner-repository',
+      repositoryUser: 'owner-user',
+      executionInfobaseId: 'owner-ib',
+    });
+    await legacyStates.set(target, { connection: 'disconnected', locks: {}, source: 'unknown' });
+    await ownerStates.set(target, { connection: 'connected', locks: {}, source: 'configuratorAcknowledgement' });
+
+    try {
+      await migrateWorkspaceRepositoryStores({
+        getWorkspaceFolders: () => [formerFirstRoot, ownerRoot],
+        globalStorageRoot: globalRoot,
+      });
+
+      assert.strictEqual((await ownerBindings.get(target))?.repositoryPath, 'owner-repository');
+      assert.strictEqual((await ownerStates.get(target)).connection, 'connected');
+      assert.strictEqual((await legacyBindings.list()).length, 0, 'stale legacy copy must be removed after owner data is durable');
+      assert.strictEqual((await legacyStates.getStored(target)), undefined);
+    } finally {
+      await fs.rm(formerFirstRoot, { recursive: true, force: true });
+      await fs.rm(ownerRoot, { recursive: true, force: true });
+      await fs.rm(globalRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('repository stores use global storage without an owning workspace', async () => {
+    const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-global-fallback-'));
+    const visibleRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-visible-root-'));
+    const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-external-root-'));
+    const configRoot = path.join(externalRoot, 'Configuration');
+    const target = {
+      configRoot,
+      configKind: 'cf' as const,
+      key: repositoryTargetKey({ configRoot, configKind: 'cf' }),
+    };
+    const globalBindings = new RepositoryBindingStore(
+      path.join(globalRoot, 'configuration-repository-bindings.json'),
+    );
+    const globalStates = new RepositoryStateStore(
+      path.join(globalRoot, 'configuration-repository-state.json'),
+    );
+    const options = {
+      getWorkspaceFolders: () => [] as readonly string[],
+      globalStorageRoot: globalRoot,
+    };
+    const bindings = new WorkspaceRepositoryBindingStore(options);
+    const states = new WorkspaceRepositoryStateStore(options);
+
+    try {
+      await bindings.set(target, { repositoryPath: 'global-repository', repositoryUser: 'user', executionInfobaseId: 'ib' });
+      await states.set(target, { connection: 'connected', locks: {}, source: 'configuratorAcknowledgement' });
+      assert.strictEqual((await globalBindings.get(target))?.repositoryPath, 'global-repository');
+      assert.strictEqual((await globalStates.get(target)).connection, 'connected');
+
+      const outsideBindings = new WorkspaceRepositoryBindingStore({
+        getWorkspaceFolders: () => [visibleRoot],
+        globalStorageRoot: globalRoot,
+      });
+      await outsideBindings.set(target, { repositoryPath: 'global-outside', repositoryUser: 'user', executionInfobaseId: 'ib' });
+      assert.strictEqual((await globalBindings.get(target))?.repositoryPath, 'global-outside');
+      assert.strictEqual(
+        await new RepositoryBindingStore(path.join(visibleRoot, '.vscode', 'configuration-repository-bindings.json')).get(target),
+        undefined,
+      );
+    } finally {
+      await fs.rm(globalRoot, { recursive: true, force: true });
+      await fs.rm(visibleRoot, { recursive: true, force: true });
+      await fs.rm(externalRoot, { recursive: true, force: true });
     }
   });
 

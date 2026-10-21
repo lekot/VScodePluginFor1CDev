@@ -92,17 +92,14 @@ export class BslSignatureHelpProvider implements vscode.SignatureHelpProvider {
 }
 
 export function registerBslSignatureHelpProvider(
-  context: Pick<vscode.ExtensionContext, 'subscriptions'>,
   localIndex?: BslSignatureRoutineSource,
 ): vscode.Disposable {
-  const disposable = vscode.languages.registerSignatureHelpProvider(
+  return vscode.languages.registerSignatureHelpProvider(
     { language: 'bsl' },
     new BslSignatureHelpProvider(localIndex),
     '(',
     ',',
   );
-  context.subscriptions.push(disposable);
-  return disposable;
 }
 
 function normalizeIdentifier(value: string): string {
