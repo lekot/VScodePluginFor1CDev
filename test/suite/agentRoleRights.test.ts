@@ -5,7 +5,7 @@ import * as path from 'path';
 import '../helpers/vscodeStubRegister';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { registerAgentCommands } from '../../src/agent/agentCommands';
+import { registerAgentCommands } from '../helpers/agentCommandRegistration';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { compileRoleRightsDsl, planSetRoleRights } from '../../src/agent/agentRoleRights';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';

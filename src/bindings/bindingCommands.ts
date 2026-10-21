@@ -7,7 +7,7 @@
 import * as vscode from 'vscode';
 import type { TreeNode } from '../models/treeNode';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
-import type { ExtensionState } from '../state/extensionState';
+import type { BindingCommandsContext } from '../extension/extensionFeatureContexts';
 import {
   readDeployPrecheckXmlBeforeImportSetting,
   readDeployMode,
@@ -45,18 +45,12 @@ export interface BindingDialogLike {
 }
 
 export async function resolveDeploySupportContext(
-  state: ExtensionState,
+  state: BindingCommandsContext,
   workspaceFolderRoot: string,
   binding: { readonly configRelativePath: string },
 ): Promise<DeploySupportContext | undefined> {
   const composition = state.supportComposition;
-  if (!composition) {
-    return undefined;
-  }
   const cache = state.supportStateCache;
-  if (!cache) {
-    throw new Error('Support state cache is not initialized.');
-  }
   const resolved = resolveConfigurationXmlDirectory(
     workspaceFolderRoot,
     binding.configRelativePath,
@@ -87,14 +81,10 @@ export function resolveBindingTargetForConfigurationTreeNode(
 
 export async function openBindingDialogForConfigurationFromTree(
   arg: unknown,
-  state: ExtensionState,
+  _state: BindingCommandsContext,
   panel: BindingDialogLike,
   treeDataProvider: MetadataTreeDataProvider,
 ): Promise<void> {
-  if (!state.bindingManager || !state.infobaseStorage) {
-    void vscode.window.showErrorMessage('Привязки недоступны: хранилище не инициализировано.');
-    return;
-  }
   const node = arg as TreeNode | undefined;
   if (!node) {
     void vscode.window.showErrorMessage('Выберите узел в дереве метаданных.');
@@ -111,17 +101,15 @@ export async function openBindingDialogForConfigurationFromTree(
   await panel.show(target.workspaceFolderName, target.configRelativePath, target.ibcmdExtensionName);
 }
 
-function getDeployAppService(state: ExtensionState): DeployApplicationService {
+function getDeployAppService(state: BindingCommandsContext): DeployApplicationService {
   return new DeployApplicationService({
-    bindingManager: state.bindingManager!,
-    infobaseStorage: state.infobaseStorage!,
+    bindingManager: state.bindingManager,
+    infobaseStorage: state.infobaseStorage,
     resolveSupportContext: async (_configRoot, workspaceFolderRoot, binding) => {
       return resolveDeploySupportContext(state, workspaceFolderRoot, binding);
     },
     runConfigurationMutation: defaultRunConfigurationMutation,
-    requestConfigurationReload: state.reloadCoordinator
-      ? createRequestConfigurationReload(state)
-      : undefined,
+    requestConfigurationReload: createRequestConfigurationReload(state),
   });
 }
 
@@ -130,13 +118,9 @@ function getDeployAppService(state: ExtensionState): DeployApplicationService {
  */
 export async function runDeployForConfigurationFromTree(
   arg: unknown,
-  state: ExtensionState,
+  state: BindingCommandsContext,
   treeDataProvider: MetadataTreeDataProvider,
 ): Promise<void> {
-  if (!state.bindingManager || !state.infobaseStorage) {
-    void vscode.window.showErrorMessage('Раскатка недоступна: хранилище или привязки не инициализированы.');
-    return;
-  }
   const node = arg as TreeNode | undefined;
   if (!node) {
     void vscode.window.showErrorMessage('Выберите узел «Конфигурация» в дереве метаданных.');
@@ -255,13 +239,9 @@ function showDeployOutcomeToast(outcome: DeployOutcome): void {
 export async function runDeploySelectedObjectsFromTree(
   arg: unknown,
   allSelected: readonly TreeNode[],
-  state: ExtensionState,
+  state: BindingCommandsContext,
   treeDataProvider: MetadataTreeDataProvider,
 ): Promise<void> {
-  if (!state.bindingManager || !state.infobaseStorage) {
-    void vscode.window.showErrorMessage('Раскатка недоступна: хранилище или привязки не инициализированы.');
-    return;
-  }
   const node = arg as TreeNode | undefined;
   if (!node) {
     void vscode.window.showErrorMessage('Выберите узел в дереве метаданных.');
@@ -312,13 +292,9 @@ export async function runDeploySelectedObjectsFromTree(
 export async function runPullSelectedObjectsFromTree(
   arg: unknown,
   allSelected: readonly TreeNode[],
-  state: ExtensionState,
+  state: BindingCommandsContext,
   treeDataProvider: MetadataTreeDataProvider,
 ): Promise<void> {
-  if (!state.bindingManager || !state.infobaseStorage) {
-    void vscode.window.showErrorMessage('Выгрузка недоступна: хранилище или привязки не инициализированы.');
-    return;
-  }
   const node = arg as TreeNode | undefined;
   if (!node) {
     void vscode.window.showErrorMessage('Выберите узел в дереве метаданных.');
@@ -373,13 +349,9 @@ export async function runPullSelectedObjectsFromTree(
  */
 export async function runDeployChangedFilesFromTree(
   arg: unknown,
-  state: ExtensionState,
+  state: BindingCommandsContext,
   treeDataProvider: MetadataTreeDataProvider,
 ): Promise<void> {
-  if (!state.bindingManager || !state.infobaseStorage) {
-    void vscode.window.showErrorMessage('Раскатка недоступна: хранилище или привязки не инициализированы.');
-    return;
-  }
   const node = arg as TreeNode | undefined;
   if (!node) {
     void vscode.window.showErrorMessage('Выберите узел в дереве метаданных.');
@@ -445,13 +417,9 @@ export async function runDeployChangedFilesFromTree(
  */
 export async function runConfigExportStatusFromTree(
   arg: unknown,
-  state: ExtensionState,
+  state: BindingCommandsContext,
   treeDataProvider: MetadataTreeDataProvider,
 ): Promise<void> {
-  if (!state.bindingManager || !state.infobaseStorage) {
-    void vscode.window.showErrorMessage('Статус конфигурации недоступен: хранилище или привязки не инициализированы.');
-    return;
-  }
   const node = arg as TreeNode | undefined;
   if (!node) {
     void vscode.window.showErrorMessage('Выберите узел «Конфигурация» в дереве метаданных.');

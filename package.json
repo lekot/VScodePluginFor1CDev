@@ -2175,7 +2175,7 @@
     "lint:ci": "eslint src --ext ts --max-warnings 0",
     "check:loc-budget": "node scripts/check-loc-budget.js",
     "check:mutation-writer-baseline": "node scripts/check-mutation-writer-baseline.js",
-    "check:architecture-guards": "node scripts/check-mutation-writer-baseline.js && node scripts/check-loc-budget.js",
+    "check:architecture-guards": "node scripts/check-mutation-writer-baseline.js && node scripts/check-loc-budget.js && node scripts/check-extension-composition-boundary.cjs && node scripts/check-extension-composition-boundary.cjs --self-test",
     "verify": "npm run check:architecture-guards && npm run lint:ci && npm run lint:test-promises && npm run test:ci",
     "test": "tsc -p tsconfig.test.json && npm run copy:test-fixtures && node node_modules/mocha/bin/mocha --ui tdd out/test/suite/*.test.js",
     "copy:test-fixtures": "node scripts/copy-test-fixtures.js",

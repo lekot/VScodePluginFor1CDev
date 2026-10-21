@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { TreeNode } from '../models/treeNode';
-import { ExtensionState } from '../state/extensionState';
+import type { TreeWizardContext } from '../extension/extensionFeatureContexts';
 import { getSelectedNode } from '../helpers/commandHelpers';
 import { runFilterCriterionWizard } from '../wizards/filterCriterionWizard';
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
@@ -8,7 +8,7 @@ import type { RequestConfigurationReload } from '../reload/requestConfigurationR
 
 export function registerFilterCriterionCommands(
   context: vscode.ExtensionContext,
-  state: ExtensionState,
+  state: TreeWizardContext,
   runConfigurationPlan: (<T>(configPath: string, plan: MutationPlan<T>) => Promise<T>) | undefined,
   requestConfigurationReload: RequestConfigurationReload
 ): void {

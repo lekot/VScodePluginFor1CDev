@@ -1,13 +1,13 @@
 import * as vscode from 'vscode';
 import { getSelectedNode } from '../../helpers/commandHelpers';
 import { MetadataType, type TreeNode } from '../../models/treeNode';
-import type { ExtensionState } from '../../state/extensionState';
+import type { ExtensionSupportCommandsContext } from '../../extension/extensionFeatureContexts';
 import type { WorkspaceRegistry } from '../../services/configurationSession/WorkspaceRegistry';
 import { CfeProjectServiceFactory } from '.';
 
 export interface RegisterCfeProjectCommandsOptions {
   readonly context: vscode.ExtensionContext;
-  readonly state: ExtensionState;
+  readonly state: ExtensionSupportCommandsContext;
   readonly getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
   readonly refreshTree: () => Promise<void>;
 }
@@ -25,7 +25,7 @@ export function registerCfeProjectCommands(options: RegisterCfeProjectCommandsOp
       try {
         const request = await promptCreateProject();
         if (!request) { return; }
-        const root = options.state.treeDataProvider?.getConfigPathForNode(selected);
+        const root = options.state.treeDataProvider.getConfigPathForNode(selected);
         if (!root) {
           throw new Error('Не удалось определить каталог выбранной конфигурации.');
         }

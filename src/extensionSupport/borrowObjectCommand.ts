@@ -3,11 +3,11 @@ import * as vscode from 'vscode';
 import { getMetadataTypeDescriptorByType } from '../constants/metadataTypeDescriptors';
 import type { TreeNode } from '../models/treeNode';
 import type { WorkspaceRegistry } from '../services/configurationSession/WorkspaceRegistry';
-import type { ExtensionState } from '../state/extensionState';
+import type { TreeProviderContext } from '../extension/extensionFeatureContexts';
 import { CfeProjectServiceFactory, type CfeProjectContext } from './cfeProject';
 
 export interface BorrowObjectToExtensionOptions {
-  readonly state: ExtensionState;
+  readonly state: TreeProviderContext;
   readonly getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
   readonly refreshTree: () => Promise<void>;
 }
@@ -26,10 +26,6 @@ export async function borrowObjectToExtension(
   options: BorrowObjectToExtensionOptions,
 ): Promise<void> {
   const provider = options.state.treeDataProvider;
-  if (!provider) {
-    void vscode.window.showWarningMessage('Дерево метаданных не загружено.');
-    return;
-  }
 
   const sourceDotPath = toBorrowSourceDotPath(sourceNode);
   if (!sourceDotPath) {

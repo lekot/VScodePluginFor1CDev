@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { WorkspaceRegistry, WorkspaceRegistryError } from '../../src/services/configurationSession/WorkspaceRegistry';
+import type { ConfigurationIdentity } from '../../src/services/configurationSession/types';
+import type { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
 import { WorkspaceRegistryCoordinator } from '../../src/services/configurationSession/WorkspaceRegistryCoordinator';
 import { ConfigFormat, FormatDetector } from '../../src/parsers/formatDetector';
 
@@ -256,6 +258,137 @@ suite('WorkspaceRegistryCoordinator and WorkspaceRegistry Lifecycle (#199)', () 
     }
   });
 
+  test('registry quiescence awaits every session drain before surfacing the original failure', async () => {
+    let createIndex = 0;
+    let releaseActive!: () => void;
+    let activeStarted!: () => void;
+    let activeDisposeCalls = 0;
+    const activeGate = new Promise<void>((resolve) => { releaseActive = resolve; });
+    const activeStartedPromise = new Promise<void>((resolve) => { activeStarted = resolve; });
+    const drainFailure = new Error('first session drain failed');
+    const registry = new WorkspaceRegistry(undefined, (identity) => {
+      const index = createIndex++;
+      return createFakeSession(identity, () => {
+        if (index === 0) {
+          throw drainFailure;
+        }
+        activeDisposeCalls += 1;
+        activeStarted();
+        return activeGate;
+      });
+    });
+
+    await registry.registerTargetedRoot({ configPath: configRootA, format: ConfigFormat.Designer });
+    const activeSession = await registry.registerTargetedRoot({ configPath: configRootB, format: ConfigFormat.Designer });
+    let quiescenceSettled = false;
+    const quiescence = registry.quiesce().then(
+      () => { quiescenceSettled = true; },
+      (error: unknown) => { quiescenceSettled = true; throw error; },
+    );
+
+    try {
+      await activeStartedPromise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(quiescenceSettled, false, 'a rejected drain must not bypass another still-active session drain');
+      assert.strictEqual(await registry.resolveResource(configRootB), activeSession, 'known sessions remain resolvable during quiescence');
+      assert.strictEqual(activeDisposeCalls, 1, 'each session receives one disposal request');
+      await assert.rejects(
+        registry.registerTargetedRoot({ configPath: configRootA, format: ConfigFormat.Designer }),
+        (error: unknown) => error instanceof WorkspaceRegistryError && error.code === 'REGISTRY_DISPOSED',
+      );
+    } finally {
+      releaseActive();
+    }
+
+    await assert.rejects(quiescence, (error: unknown) => error === drainFailure);
+    await assert.rejects(registry.dispose(), (error: unknown) => error === drainFailure);
+    assert.throws(() => registry.list(), (error: unknown) => error instanceof WorkspaceRegistryError && error.code === 'REGISTRY_DISPOSED');
+  });
+
+  test('registry quiescence aggregates distinct failures only after every drain finishes', async () => {
+    const configRootC = await createTestConfiguration(path.join(workspaceRoot, 'configC'), '33333333-3333-3333-3333-333333333333');
+    let createIndex = 0;
+    let releaseActive!: () => void;
+    let activeStarted!: () => void;
+    const activeGate = new Promise<void>((resolve) => { releaseActive = resolve; });
+    const activeStartedPromise = new Promise<void>((resolve) => { activeStarted = resolve; });
+    const firstFailure = new Error('first session drain failed');
+    const thirdFailure = new Error('third session drain failed');
+    const registry = new WorkspaceRegistry(undefined, (identity) => {
+      const index = createIndex++;
+      return createFakeSession(identity, () => {
+        if (index === 0) {
+          return Promise.reject(firstFailure);
+        }
+        if (index === 1) {
+          activeStarted();
+          return activeGate;
+        }
+        return Promise.reject(thirdFailure);
+      });
+    });
+
+    await registry.registerTargetedRoot({ configPath: configRootA, format: ConfigFormat.Designer });
+    await registry.registerTargetedRoot({ configPath: configRootB, format: ConfigFormat.Designer });
+    await registry.registerTargetedRoot({ configPath: configRootC, format: ConfigFormat.Designer });
+    const quiescence = registry.quiesce();
+    let settled = false;
+    void quiescence.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+
+    try {
+      await activeStartedPromise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(settled, false, 'all session failures are reported only after the pending drain completes');
+    } finally {
+      releaseActive();
+    }
+
+    await assert.rejects(quiescence, (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.deepStrictEqual((error as Error & { causes?: readonly unknown[] }).causes, [firstFailure, thirdFailure]);
+      return true;
+    });
+    await registry.dispose().catch(() => undefined);
+  });
+
+  test('coordinator quiescence fences a refresh already in flight from publishing new sessions', async () => {
+    let releaseScan!: () => void;
+    let scanStarted!: () => void;
+    let scanCalls = 0;
+    const scanGate = new Promise<void>((resolve) => { releaseScan = resolve; });
+    const scanStartedPromise = new Promise<void>((resolve) => { scanStarted = resolve; });
+    const registry = new WorkspaceRegistry();
+    const coordinator = new WorkspaceRegistryCoordinator(registry, {
+      getWorkspaceFolders: () => [workspaceRoot],
+      findAllConfigurationRoots: async () => {
+        scanCalls += 1;
+        scanStarted();
+        await scanGate;
+        return [
+          { configPath: configRootA, workspaceFolderPath: workspaceRoot },
+          { configPath: configRootB, workspaceFolderPath: workspaceRoot },
+        ];
+      },
+    });
+    const initialization = coordinator.ensureInitialized();
+    await scanStartedPromise;
+    const quiescence = coordinator.quiesce();
+
+    try {
+      releaseScan();
+      await assert.rejects(initialization, (error: unknown) => error instanceof WorkspaceRegistryError && error.code === 'REGISTRY_DISPOSED');
+      await quiescence;
+      assert.strictEqual(scanCalls, 1);
+      assert.strictEqual(registry.list().length, 0, 'the pre-fence scan cannot publish sessions after admission closes');
+    } finally {
+      releaseScan();
+      await coordinator.dispose().catch(() => undefined);
+    }
+  });
+
   test('refreshWorkspace explicitly rescans and reconciles workspace roots', async () => {
     let globalScanCount = 0;
     const registry = new WorkspaceRegistry();
@@ -414,4 +547,20 @@ async function createTestConfiguration(root: string, uuid: string): Promise<stri
     'utf8',
   );
   return fs.promises.realpath(root);
+}
+
+function createFakeSession(
+  initialIdentity: ConfigurationIdentity,
+  dispose: () => Promise<void> | void,
+): ConfigurationSession {
+  let identity = initialIdentity;
+  return {
+    get identity() {
+      return identity;
+    },
+    updateIdentity(nextIdentity: ConfigurationIdentity) {
+      identity = nextIdentity;
+    },
+    dispose,
+  } as unknown as ConfigurationSession;
 }

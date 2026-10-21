@@ -38,12 +38,15 @@ export class SupportRootRegistrationLifecycle {
   private readonly activeByRoot = new Map<string, ActiveRegistration>();
   private tail: Promise<void> = Promise.resolve();
   private epoch = 0;
+  private accepting = true;
   private disposed = false;
+  private quiescePromise: Promise<void> | null = null;
+  private disposePromise: Promise<void> | null = null;
 
   constructor(private readonly deps: SupportRootRegistrationLifecycleDeps) {}
 
   accept(configRoots: readonly string[]): void {
-    if (this.disposed) {
+    if (!this.accepting || this.disposed) {
       return;
     }
     const epoch = ++this.epoch;
@@ -54,18 +57,44 @@ export class SupportRootRegistrationLifecycle {
     });
   }
 
-  async dispose(): Promise<void> {
-    if (this.disposed) {
+  stopAccepting(): void {
+    if (!this.accepting) {
       return;
     }
-    this.disposed = true;
+    this.accepting = false;
     this.epoch += 1;
-    await this.tail;
-    for (const active of this.activeByRoot.values()) {
-      active.watcherRegistration.dispose();
-      this.deps.registry.unregisterConfiguration(active.registration.configurationId);
+  }
+
+  quiesce(): Promise<void> {
+    if (!this.quiescePromise) {
+      this.stopAccepting();
+      this.quiescePromise = this.tail.catch(() => undefined);
     }
-    this.activeByRoot.clear();
+    return this.quiescePromise;
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposePromise) {
+      return this.disposePromise;
+    }
+    this.disposed = true;
+    this.disposePromise = Promise.resolve().then(async () => {
+      await this.quiesce();
+      for (const active of this.activeByRoot.values()) {
+        try {
+          active.watcherRegistration.dispose();
+        } catch (error) {
+          this.reportError(error);
+        }
+        try {
+          this.deps.registry.unregisterConfiguration(active.registration.configurationId);
+        } catch (error) {
+          this.reportError(error);
+        }
+      }
+      this.activeByRoot.clear();
+    });
+    return this.disposePromise;
   }
 
   private async reconcile(configRoots: readonly string[], epoch: number): Promise<void> {
@@ -121,7 +150,15 @@ export class SupportRootRegistrationLifecycle {
   }
 
   private isCurrent(epoch: number): boolean {
-    return !this.disposed && this.epoch === epoch;
+    return this.accepting && !this.disposed && this.epoch === epoch;
+  }
+
+  private reportError(error: unknown): void {
+    try {
+      this.deps.onError(error);
+    } catch {
+      // Diagnostics must not prevent cleanup of other support roots.
+    }
   }
 }
 

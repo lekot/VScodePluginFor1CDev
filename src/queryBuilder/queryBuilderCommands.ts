@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
-import { ExtensionState } from '../state/extensionState';
+import type { QueryBuilderContext } from '../extension/extensionFeatureContexts';
 import { QueryBuilderProvider } from './queryBuilderProvider';
 import { QUERY_BUILDER_FOR_TEXT_COMMAND } from './queryBuilderCommandIds';
 
 export function registerQueryBuilderCommands(
   context: vscode.ExtensionContext,
-  deps: { state: ExtensionState }
+  deps: { state: QueryBuilderContext }
 ): vscode.Disposable[] {
   const provider = new QueryBuilderProvider(context, deps.state);
 

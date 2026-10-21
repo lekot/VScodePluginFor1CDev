@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ExtensionState } from '../state/extensionState';
+import type { ReloadOrchestratorLifecycleContext } from '../extension/extensionFeatureContexts';
 import { Logger } from '../utils/logger';
 import {
   DELETE_RECONCILE_TIMEOUT_MS,
@@ -19,7 +19,7 @@ import {
 
 /** Dependencies for coordinated reload / delete-reconcile (injected from extension activation). */
 export type ReloadOrchestratorDeps = {
-  state: ExtensionState;
+  state: ReloadOrchestratorLifecycleContext;
   /** Test seam for the bounded delete-reconcile wait; production uses the preserved 3-second deadline. */
   reconcileTimeoutMs?: number;
 };

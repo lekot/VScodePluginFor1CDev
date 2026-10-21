@@ -1,12 +1,13 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { activate, deactivate, extensionState, rollbackPartialActivation } from '../../src/extension';
-import { ExtensionState } from '../../src/state/extensionState';
+import { createExtensionState } from '../../src/state/extensionState';
 import { ExtensionCompositionRoot } from '../../src/extension/extensionCompositionRoot';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { InfobaseCatalogMutationService } from '../../src/infobases/infobaseCatalogMutationService';
 import { createActivationSubscriptionScope } from '../../src/extension/activationSubscriptionScope';
 import { debugTestState, resetDebugTestState, resetVscodeTestState, vscodeTestState, fireWorkspaceFoldersChanged } from '../helpers/vscodeModuleStub';
+import { Logger } from '../../src/utils/logger';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -43,12 +44,13 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 suite('extension activation lifecycle', () => {
-  setup(() => {
+  setup(async () => {
+    await deactivate();
     resetVscodeTestState();
     resetDebugTestState();
-    extensionState.init(createActivationContext(process.cwd()), { initializeInfobaseServices: false });
   });
-  teardown(() => {
+  teardown(async () => {
+    await deactivate();
     resetVscodeTestState();
     resetDebugTestState();
   });
@@ -81,7 +83,8 @@ suite('extension activation lifecycle', () => {
   });
 
   test('activation scope preserves ExtensionContext accessors and methods without adopting foreign subscriptions', async () => {
-    const foreign: vscode.Disposable = { dispose: () => undefined };
+    let foreignDisposed = false;
+    const foreign: vscode.Disposable = { dispose: () => { foreignDisposed = true; } };
     const sourceValue: { subscriptions: vscode.Disposable[]; ownerName: string; getSubscriptionCount: () => number } = {
       subscriptions: [foreign],
       ownerName: 'source-context',
@@ -111,24 +114,296 @@ suite('extension activation lifecycle', () => {
     scope.context.subscriptions.push(lateSubscription);
 
     assert.deepStrictEqual(source.subscriptions, [foreign]);
+    assert.strictEqual(foreignDisposed, false, 'scope close must not dispose subscriptions owned by the source context');
     assert.ok(captured.includes(activationSubscription));
     assert.ok(captured.includes(lateSubscription));
   });
 
-  test('activation rolls back and rethrows the original initialization failure', async () => {
+  test('activation rollback preserves the primary failure when disposal and diagnostics also fail', async () => {
+    const globalStoragePath = await fs.mkdtemp(path.join(os.tmpdir(), 'pr347-activation-failure-storage-'));
     const failure = new Error('initialization failed');
-    const originalInit = ExtensionState.prototype.init;
-    ExtensionState.prototype.init = () => { throw failure; };
-    const context = { subscriptions: [] } as unknown as vscode.ExtensionContext;
+    const disposalFailure = new Error('cleanup failed');
+    const diagnosticFailure = new Error('logger failed');
+    const context = createActivationContext(globalStoragePath);
+    const originalLoggerError = Logger.error;
+    const subscriptions = context.subscriptions;
+    const originalPush = subscriptions.push;
+    let capturedRoot: ExtensionCompositionRoot | undefined;
+    let disposalCalls = 0;
+    let diagnosticCalls = 0;
+    Object.defineProperty(subscriptions, 'push', {
+      configurable: true,
+      writable: true,
+      value: function (...items: vscode.Disposable[]): number {
+        for (const item of items) {
+          if (item instanceof ExtensionCompositionRoot) {
+            capturedRoot = item;
+            item.registerDisposable('failing activation cleanup', () => {
+              disposalCalls += 1;
+              throw disposalFailure;
+            });
+          }
+        }
+        return originalPush.apply(this, items);
+      },
+    });
+    debugTestState.registerDebugConfigurationProviderImpl = () => {
+      throw failure;
+    };
+    Logger.error = () => {
+      diagnosticCalls += 1;
+      throw diagnosticFailure;
+    };
 
     try {
+      const foreignSubscription: vscode.Disposable = { dispose: () => undefined };
+      context.subscriptions.push(foreignSubscription);
       await assert.rejects(activate(context), (error: unknown) => error === failure);
-      assert.strictEqual(context.subscriptions.length, 0);
-      assert.ok(
-        vscodeTestState.errorLog.some((message) => message.includes('Failed to activate extension'))
-      );
+      assert.strictEqual(disposalCalls, 1, 'root rollback must continue through a failing disposer');
+      assert.ok(capturedRoot, 'the production composition root must be published before initialization');
+      assert.ok(diagnosticCalls > 0, 'cleanup and activation diagnostics must be attempted');
+      assert.deepStrictEqual(context.subscriptions, [foreignSubscription]);
+      assert.strictEqual(extensionState, undefined, 'failed activation must not leave a current runtime facade');
     } finally {
-      ExtensionState.prototype.init = originalInit;
+      Logger.error = originalLoggerError;
+      subscriptions.push = originalPush;
+      await deactivate();
+      await fs.rm(globalStoragePath, { recursive: true, force: true });
+    }
+  });
+
+  test('overlapping activate calls share one active composition graph', async () => {
+    const globalStoragePath = await fs.mkdtemp(path.join(os.tmpdir(), 'pr347-concurrent-activation-storage-'));
+    const context = createActivationContext(globalStoragePath);
+    const originalRecover = InfobaseCatalogMutationService.prototype.recoverPendingMutations;
+    const recoveryStarted = deferred();
+    const releaseRecovery = deferred();
+    let recoveryCount = 0;
+    InfobaseCatalogMutationService.prototype.recoverPendingMutations = function () {
+      recoveryCount += 1;
+      recoveryStarted.resolve();
+      return releaseRecovery.promise.then(() => originalRecover.call(this));
+    };
+
+    try {
+      const firstActivation = activate(context);
+      const overlappingActivation = activate(context);
+      assert.strictEqual(overlappingActivation, firstActivation, 'overlapping calls must join the same activation promise');
+      await recoveryStarted.promise;
+      assert.strictEqual(recoveryCount, 1, 'only one infobase graph may be constructed');
+      assert.strictEqual(context.subscriptions.filter((item) => item instanceof ExtensionCompositionRoot).length, 1);
+      releaseRecovery.resolve();
+      await firstActivation;
+      assert.strictEqual(recoveryCount, 1);
+      assert.ok(extensionState, 'successful activation must publish a runtime facade');
+    } finally {
+      releaseRecovery.resolve();
+      InfobaseCatalogMutationService.prototype.recoverPendingMutations = originalRecover;
+      await deactivate();
+      await fs.rm(globalStoragePath, { recursive: true, force: true });
+    }
+  });
+
+  test('synchronous reentrant activate during root publication shares the reserved activation', async () => {
+    const globalStoragePath = await fs.mkdtemp(path.join(os.tmpdir(), 'pr347-reentrant-activation-storage-'));
+    const context = createActivationContext(globalStoragePath);
+    const originalRecover = InfobaseCatalogMutationService.prototype.recoverPendingMutations;
+    const recoveryStarted = deferred();
+    const releaseRecovery = deferred();
+    const subscriptions = context.subscriptions;
+    const originalPush = subscriptions.push;
+    const roots: ExtensionCompositionRoot[] = [];
+    let reentrantActivation: Promise<void> | undefined;
+    let reentered = false;
+    let recoveryCount = 0;
+    subscriptions.push = function (...items: vscode.Disposable[]): number {
+      for (const item of items) {
+        if (item instanceof ExtensionCompositionRoot) {
+          roots.push(item);
+          if (!reentered) {
+            reentered = true;
+            reentrantActivation = activate(context);
+          }
+        }
+      }
+      return originalPush.apply(this, items);
+    };
+    InfobaseCatalogMutationService.prototype.recoverPendingMutations = function () {
+      recoveryCount += 1;
+      recoveryStarted.resolve();
+      return releaseRecovery.promise.then(() => originalRecover.call(this));
+    };
+
+    let activation: Promise<void> | undefined;
+    try {
+      activation = activate(context);
+      assert.ok(reentrantActivation, 'root publication must synchronously re-enter activate');
+      assert.strictEqual(reentrantActivation, activation, 'reentrant activation must join the already reserved promise');
+      await recoveryStarted.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(recoveryCount, 1, 'reentrant activation must not start a second construction graph');
+      assert.strictEqual(roots.length, 1, 'one active activation must publish exactly one composition root');
+      releaseRecovery.resolve();
+      await activation;
+      assert.ok(extensionState, 'the shared activation must publish its runtime facade');
+    } finally {
+      releaseRecovery.resolve();
+      InfobaseCatalogMutationService.prototype.recoverPendingMutations = originalRecover;
+      subscriptions.push = originalPush;
+      await Promise.allSettled([activation, reentrantActivation].filter((promise): promise is Promise<void> => Boolean(promise)));
+      await deactivate();
+      await Promise.allSettled(roots.map((root) => root.dispose()));
+      for (const root of roots) {
+        const index = subscriptions.indexOf(root);
+        if (index >= 0) {
+          subscriptions.splice(index, 1);
+        }
+      }
+      await fs.rm(globalStoragePath, { recursive: true, force: true });
+    }
+  });
+
+  test('immediate deactivate fences activation before the first await and closes published resources once', async () => {
+    const globalStoragePath = await fs.mkdtemp(path.join(os.tmpdir(), 'pr347-immediate-deactivation-storage-'));
+    const context = createActivationContext(globalStoragePath);
+    const subscriptions = context.subscriptions;
+    const originalPush = subscriptions.push;
+    const roots: ExtensionCompositionRoot[] = [];
+    let resourceDisposals = 0;
+    Object.defineProperty(subscriptions, 'push', {
+      configurable: true,
+      writable: true,
+      value: function (...items: vscode.Disposable[]): number {
+        for (const item of items) {
+          if (item instanceof ExtensionCompositionRoot) {
+            roots.push(item);
+            item.registerDisposable('immediate shutdown resource', () => { resourceDisposals += 1; });
+          }
+        }
+        return originalPush.apply(this, items);
+      },
+    });
+
+    try {
+      const activation = activate(context);
+      const facadeAtFence = extensionState;
+      const deactivation = deactivate();
+      await Promise.allSettled([activation]);
+      await deactivation;
+
+      assert.strictEqual(extensionState, undefined, 'immediate shutdown must leave no published facade');
+      assert.ok(roots.length <= 1, 'immediate activation must publish at most one composition root');
+      if (facadeAtFence) {
+        assert.strictEqual(facadeAtFence.infobaseStorage, null, 'the facade captured at the fence must not retain live handles');
+      }
+      assert.strictEqual(resourceDisposals, roots.length, 'every published graph resource must be disposed exactly once');
+    } finally {
+      subscriptions.push = originalPush;
+      await deactivate();
+      await fs.rm(globalStoragePath, { recursive: true, force: true });
+    }
+  });
+
+  test('deactivate stops admission during deferred initialization and serializes a fresh activation', async () => {
+    const firstStoragePath = await fs.mkdtemp(path.join(os.tmpdir(), 'pr347-deferred-activation-storage-'));
+    const secondStoragePath = await fs.mkdtemp(path.join(os.tmpdir(), 'pr347-next-activation-storage-'));
+    const firstContext = createActivationContext(firstStoragePath);
+    const secondContext = createActivationContext(secondStoragePath);
+    const originalRecover = InfobaseCatalogMutationService.prototype.recoverPendingMutations;
+    const recoveryStarted = deferred();
+    const releaseRecovery = deferred();
+    const cleanupStarted = deferred();
+    const releaseCleanup = deferred();
+    let recoveryCount = 0;
+    let firstActivationSettled = false;
+    let firstRoot: ExtensionCompositionRoot | undefined;
+    const subscriptions = firstContext.subscriptions;
+    const originalPush = subscriptions.push;
+    subscriptions.push = function (...items: vscode.Disposable[]): number {
+      for (const item of items) {
+        if (item instanceof ExtensionCompositionRoot) {
+          firstRoot = item;
+          item.registerDisposable('deferred activation cleanup', async () => {
+            cleanupStarted.resolve();
+            await releaseCleanup.promise;
+          });
+        }
+      }
+      return originalPush.apply(this, items);
+    };
+    InfobaseCatalogMutationService.prototype.recoverPendingMutations = function () {
+      recoveryCount += 1;
+      if (recoveryCount === 1) {
+        recoveryStarted.resolve();
+        return releaseRecovery.promise.then(() => originalRecover.call(this));
+      }
+      return originalRecover.call(this);
+    };
+
+    try {
+      const firstActivation = activate(firstContext);
+      const firstActivationResult = firstActivation.then(
+        () => ({ status: 'fulfilled' as const }),
+        (error: unknown) => ({ status: 'rejected' as const, error }),
+      ).then((result) => {
+        firstActivationSettled = true;
+        return result;
+      });
+      await recoveryStarted.promise;
+      const firstState = extensionState;
+      assert.ok(firstState, 'facade must be observable while activation is pending');
+      const oldRoot = firstRoot;
+      assert.ok(oldRoot, 'root must be published before deferred construction');
+      let staleCallbackFinished = false;
+      let staleCallback: (() => Promise<void>) | undefined;
+      oldRoot.registerDisposable('old runtime callback', () => {
+        staleCallback = async () => {
+          await firstState.dispose();
+          staleCallbackFinished = true;
+        };
+      });
+
+      let deactivationFinished = false;
+      const deactivation = deactivate().then(() => { deactivationFinished = true; });
+      const nextActivation = activate(secondContext);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(deactivationFinished, false, 'deactivate must wait for deferred initialization and cleanup');
+      assert.strictEqual(recoveryCount, 1, 'the next graph must wait for the current deactivation to drain');
+      assert.strictEqual(secondContext.subscriptions.length, 0, 'the next context must not be published early');
+      assert.strictEqual(firstState.infobaseRecoveryOutcome, null, 'a stopped assembly must not publish late initialization results');
+
+      releaseRecovery.resolve();
+      await cleanupStarted.promise;
+      assert.strictEqual(firstState.infobaseRecoveryOutcome, null, 'recovery completion must not republish into a stopped facade');
+      assert.strictEqual(firstState.infobaseStorage !== null, true, 'facade handles remain observable until the drain finishes');
+
+      releaseCleanup.resolve();
+      await deactivation;
+      await firstActivationResult;
+      assert.strictEqual(firstActivationSettled, true, 'deactivation must drain the canceled initialization before the next session');
+      await nextActivation;
+
+      const secondState = extensionState;
+      assert.ok(secondState, 'the serialized second activation must publish its facade');
+      assert.notStrictEqual(secondState, firstState, 'each activation must receive a fresh facade');
+      assert.strictEqual(secondContext.subscriptions.filter((item) => item instanceof ExtensionCompositionRoot).length, 1);
+      assert.strictEqual(recoveryCount, 2);
+
+      assert.ok(staleCallback, 'an old cleanup callback may remain queued after its root is disposed');
+      await staleCallback();
+
+      assert.strictEqual(staleCallbackFinished, true, 'late callbacks from the old root must still be drained');
+      assert.strictEqual(extensionState, secondState, 'old callbacks must not clear the newer runtime export');
+      assert.ok(secondState.infobaseStorage, 'old callbacks must not clear the newer runtime handles');
+      assert.strictEqual(firstState.infobaseStorage, null, 'the old facade remains cleared');
+    } finally {
+      releaseRecovery.resolve();
+      releaseCleanup.resolve();
+      InfobaseCatalogMutationService.prototype.recoverPendingMutations = originalRecover;
+      subscriptions.push = originalPush;
+      await deactivate();
+      await fs.rm(firstStoragePath, { recursive: true, force: true });
+      await fs.rm(secondStoragePath, { recursive: true, force: true });
     }
   });
 
@@ -161,6 +436,8 @@ suite('extension activation lifecycle', () => {
       assert.ok(root instanceof ExtensionCompositionRoot);
       assert.strictEqual(debugTestState.registeredConfigurationProviders.length, 1);
       assert.strictEqual(debugTestState.registeredDescriptorFactories.length, 1);
+      const activeState = extensionState;
+      assert.ok(activeState, 'production activation must publish its read-only facade');
 
       const session = await root.infrastructure!.workspaceRegistry.registerTargetedRoot({
         configPath: configRoot,
@@ -185,8 +462,8 @@ suite('extension activation lifecycle', () => {
       await Promise.all([deactivation, writer]);
 
       assert.strictEqual(foreignDisposed, false, 'deactivate must leave host-owned subscriptions untouched');
-      assert.strictEqual(extensionState.workspaceRegistry, null);
-      assert.strictEqual(extensionState.infobaseStorage, null);
+      assert.strictEqual(activeState.workspaceRegistry, null);
+      assert.strictEqual(activeState.infobaseStorage, null);
     } finally {
       releaseWriter.resolve();
       InfobaseCatalogMutationService.prototype.recoverPendingMutations = originalRecover;
@@ -202,6 +479,8 @@ suite('extension activation lifecycle', () => {
     const context = createActivationContext(globalStoragePath);
     try {
       await activate(context);
+      const activeState = extensionState;
+      assert.ok(activeState, 'production activation must publish its read-only facade');
       const root = context.subscriptions[0] as ExtensionCompositionRoot;
       const coordinator = root.infrastructure!.registryCoordinator as unknown as {
         deps: { findAllConfigurationRoots?: (folders: string[]) => Promise<Array<{ configPath: string; workspaceFolderPath: string }>> };
@@ -222,7 +501,7 @@ suite('extension activation lifecycle', () => {
       assert.strictEqual(deactivationFinished, false, 'shutdown must wait for an in-flight workspace scan');
       releaseScan.resolve();
       await deactivation;
-      assert.strictEqual(extensionState.workspaceRegistry, null);
+      assert.strictEqual(activeState.workspaceRegistry, null);
     } finally {
       await deactivate();
       await fs.rm(globalStoragePath, { recursive: true, force: true });
@@ -260,7 +539,7 @@ suite('extension activation lifecycle', () => {
       assert.strictEqual(context.subscriptions.length, 1, 'failed activation removes only its own root registration');
       assert.strictEqual(context.subscriptions[0], foreignSubscription);
       assert.strictEqual(foreignDisposed, false);
-      assert.strictEqual(extensionState.infobaseStorage, null);
+      assert.strictEqual(extensionState, undefined);
     } finally {
       releaseCleanup.resolve();
       await deactivate();
@@ -269,18 +548,38 @@ suite('extension activation lifecycle', () => {
   });
 
   test('deactivate awaits agentTaskManager disposal and drains background tasks', async () => {
+    const globalStoragePath = await fs.mkdtemp(path.join(os.tmpdir(), 'pr347-agent-task-storage-'));
+    const context = createActivationContext(globalStoragePath);
+    let releaseTask!: () => void;
+    const taskGate = new Promise<void>((resolve) => { releaseTask = resolve; });
     let taskDrained = false;
-    extensionState.agentTaskManager = {
-      dispose: async () => {
-        await new Promise((r) => setTimeout(r, 30));
+    try {
+      await activate(context);
+      const taskManager = extensionState?.agentTaskManager;
+      assert.ok(taskManager, 'the active composition must expose its AgentTaskManager');
+      let taskStarted!: () => void;
+      const started = new Promise<void>((resolve) => { taskStarted = resolve; });
+      const result = taskManager.start('test.deactivateTask', async () => {
+        taskStarted();
+        await taskGate;
         taskDrained = true;
-      },
-    } as any;
+        return { success: true, data: undefined };
+      });
+      assert.strictEqual(result.success, true);
+      await started;
 
-    const deactivatePromise = deactivate();
-    assert.strictEqual(taskDrained, false, 'deactivate must not finish before task drain');
-    await deactivatePromise;
-    assert.strictEqual(taskDrained, true, 'deactivate must await background task drain');
+      let deactivateFinished = false;
+      const deactivatePromise = deactivate().then(() => { deactivateFinished = true; });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(deactivateFinished, false, 'deactivate must not finish before an active agent task drains');
+      releaseTask();
+      await deactivatePromise;
+      assert.strictEqual(taskDrained, true, 'deactivate must await background task completion');
+    } finally {
+      releaseTask();
+      await deactivate();
+      await fs.rm(globalStoragePath, { recursive: true, force: true });
+    }
   });
 
   test('rollbackPartialActivation awaits in-flight agent tasks via shared disposePromise', async () => {
@@ -298,9 +597,11 @@ suite('extension activation lifecycle', () => {
       return { success: true, data: undefined };
     });
 
-    const state = new ExtensionState();
-    state.init(createActivationContext(process.cwd()), { initializeInfobaseServices: false });
-    state.agentTaskManager = taskManager;
+    const assembly = createExtensionState();
+    assembly.composition.initialize(createActivationContext(process.cwd()));
+    assembly.composition.bindDispose(() => taskManager.dispose());
+    assembly.composition.publish({ agentTaskManager: taskManager });
+    const state = assembly.state;
 
     const context: Pick<vscode.ExtensionContext, 'subscriptions'> = {
       subscriptions: [

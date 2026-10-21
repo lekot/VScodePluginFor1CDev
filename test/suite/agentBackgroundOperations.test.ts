@@ -5,7 +5,7 @@ import * as path from 'path';
 import '../helpers/vscodeStubRegister';
 import type * as vscode from 'vscode';
 import { AgentDeployOperations } from '../../src/agent/agentDeployOperations';
-import { registerAgentCommands } from '../../src/agent/agentCommands';
+import { registerAgentCommands } from '../helpers/agentCommandRegistration';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';

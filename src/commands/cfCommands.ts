@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { ExtensionState } from '../state/extensionState';
+import type { CfCommandsContext } from '../extension/extensionFeatureContexts';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import {
@@ -21,7 +21,7 @@ export interface CfCommandsService {
 }
 
 export interface RegisterCfCommandsArgs {
-  state: ExtensionState;
+  state: CfCommandsContext;
   service?: CfCommandsService;
   copyDirectory?: (srcDir: string, destDir: string) => Promise<void>;
 }
@@ -31,15 +31,15 @@ const DEFAULT_SERVICE: CfCommandsService = {
   buildCfFromXmlConfiguration,
 };
 
-function getSelectedNode(state: ExtensionState, explicit?: TreeNode): TreeNode | undefined {
+function getSelectedNode(state: CfCommandsContext, explicit?: TreeNode): TreeNode | undefined {
   return explicit ?? state.treeView?.selection?.[0];
 }
 
-function getConfigRootForNode(state: ExtensionState, node: TreeNode | undefined): string | undefined {
+function getConfigRootForNode(state: CfCommandsContext, node: TreeNode | undefined): string | undefined {
   const provider = state.treeDataProvider;
   return (
-    (node ? provider?.getConfigPathForNode?.(node) : undefined) ??
-    provider?.getConfigPath?.() ??
+    (node ? provider.getConfigPathForNode?.(node) : undefined) ??
+    provider.getConfigPath?.() ??
     (node?.type === MetadataType.Configuration && node.filePath ? node.filePath : undefined)
   );
 }

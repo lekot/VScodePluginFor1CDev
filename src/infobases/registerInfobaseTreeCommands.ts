@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { ExtensionState } from '../state/extensionState';
+import type { InfobaseTreeCommandsContext } from '../extension/extensionFeatureContexts';
 import type { InfobaseEntry } from './models/infobaseEntry';
 import type { InfobaseTreeEntry, InfobaseTreeNode } from './infobaseTreeProvider';
 import {
@@ -48,13 +48,10 @@ function requireEntry(arg: unknown, title: string): InfobaseTreeEntry | undefine
 }
 
 async function resolveCatalogEntry(
-  state: ExtensionState,
+  state: InfobaseTreeCommandsContext,
   treeEntry: InfobaseTreeEntry,
 ): Promise<InfobaseEntry | undefined> {
   const storage = state.infobaseStorage;
-  if (!storage) {
-    return undefined;
-  }
   const fresh = await storage.getById(treeEntry.entry.id);
   return fresh ?? treeEntry.entry;
 }
@@ -62,9 +59,9 @@ async function resolveCatalogEntry(
 /**
  * Registers Infobase Manager tree commands (WOW design §7). Catalog CRUD: §1D; import/export/check: §1E; запуск платформы: §1F.
  */
-export function registerInfobaseTreeCommands(state: ExtensionState): vscode.Disposable[] {
+export function registerInfobaseTreeCommands(state: InfobaseTreeCommandsContext): vscode.Disposable[] {
   const refresh = () => {
-    state.infobaseTreeProvider?.refresh();
+    state.infobaseTreeProvider.refresh();
   };
 
   return [
@@ -104,10 +101,6 @@ export function registerInfobaseTreeCommands(state: ExtensionState): vscode.Disp
       await runCompareInfobaseWithOther(state.infobaseStorage, entry);
     }),
     vscode.commands.registerCommand('1c-metadata-tree.infobase.openEnterprise', async (arg?: unknown) => {
-      if (!state.infobaseStorage) {
-        void vscode.window.showErrorMessage('Infobase Manager: хранилище не инициализировано.');
-        return;
-      }
       const node = requireEntry(arg, 'Открыть в Предприятии');
       if (!node) {
         return;
@@ -116,10 +109,6 @@ export function registerInfobaseTreeCommands(state: ExtensionState): vscode.Disp
       await runOpenEnterprise(state.infobaseStorage, entry);
     }),
     vscode.commands.registerCommand('1c-metadata-tree.infobase.openDesigner', async (arg?: unknown) => {
-      if (!state.infobaseStorage) {
-        void vscode.window.showErrorMessage('Infobase Manager: хранилище не инициализировано.');
-        return;
-      }
       const node = requireEntry(arg, 'Открыть Конфигуратор');
       if (!node) {
         return;
@@ -169,10 +158,6 @@ export function registerInfobaseTreeCommands(state: ExtensionState): vscode.Disp
       await runEditInfobase(state.infobaseStorage, entry);
     }),
     vscode.commands.registerCommand('1c-metadata-tree.infobase.remove', async (arg?: unknown) => {
-      if (!state.infobaseManager) {
-        void vscode.window.showErrorMessage('Infobase Manager: хранилище не инициализировано.');
-        return;
-      }
       const node = requireEntry(arg, 'Удалить из списка');
       if (!node) {
         return;

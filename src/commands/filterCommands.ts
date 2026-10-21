@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ExtensionState } from '../state/extensionState';
+import type { FilterCommandsContext } from '../extension/extensionFeatureContexts';
 import { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { MetadataType, TreeNode } from '../models/treeNode';
 import { MESSAGES } from '../constants/messages';
@@ -14,7 +14,7 @@ import { IBCMD_SETUP_COMMAND } from '../services/ibcmdService';
 import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
 
 type RegisterFilterCommandsDeps = {
-  state: ExtensionState;
+  state: FilterCommandsContext;
   loadMetadataTree: () => Promise<void>;
   invalidateTreeCacheOnly: (configPath: string) => Promise<void>;
 };
@@ -50,14 +50,11 @@ export function registerFilterCommands(deps: RegisterFilterCommandsDeps): vscode
   const filterByTypeCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.filterByType',
     async () => {
-      if (!state.treeDataProvider) {
-        return;
-      }
       const items = MetadataTreeDataProvider.getFilterableTypeLabels().map(({ type, label }) => ({
         label,
         type,
         picked: (() => {
-          const current = state.treeDataProvider!.getTypeFilter();
+          const current = state.treeDataProvider.getTypeFilter();
           return current != null && current.includes(type);
         })(),
       }));
@@ -80,9 +77,6 @@ export function registerFilterCommands(deps: RegisterFilterCommandsDeps): vscode
         vscode.window.showWarningMessage('Выберите узел подсистемы в дереве метаданных.');
         return;
       }
-      if (!state.treeDataProvider) {
-        return;
-      }
       await state.treeDataProvider.setSubsystemFilter(target.id, target.name, target);
       vscode.commands.executeCommand('setContext', 'subsystemFilterActive', true);
     }
@@ -91,9 +85,6 @@ export function registerFilterCommands(deps: RegisterFilterCommandsDeps): vscode
   const clearSubsystemFilterCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.clearSubsystemFilter',
     async () => {
-      if (!state.treeDataProvider) {
-        return;
-      }
       await state.treeDataProvider.setSubsystemFilter(null, null);
       vscode.commands.executeCommand('setContext', 'subsystemFilterActive', false);
     }
@@ -107,7 +98,7 @@ export function registerFilterCommands(deps: RegisterFilterCommandsDeps): vscode
         vscode.window.showWarningMessage(MESSAGES.SUBSYSTEM_COMPOSITION_SELECT_SUBSYSTEM);
         return;
       }
-      if (!target.filePath || !state.treeDataProvider) {
+      if (!target.filePath) {
         vscode.window.showErrorMessage(MESSAGES.SUBSYSTEM_COMPOSITION_NO_FILE);
         return;
       }
@@ -180,7 +171,7 @@ export function registerFilterCommands(deps: RegisterFilterCommandsDeps): vscode
         vscode.window.showWarningMessage(MESSAGES.SUBSYSTEM_COMPOSITION_SELECT_SUBSYSTEM);
         return;
       }
-      if (!target.filePath || !state.treeDataProvider) {
+      if (!target.filePath) {
         vscode.window.showErrorMessage(MESSAGES.SUBSYSTEM_COMPOSITION_NO_FILE);
         return;
       }

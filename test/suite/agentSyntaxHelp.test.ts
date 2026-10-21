@@ -5,7 +5,7 @@ import * as path from 'path';
 import initSqlJs from 'sql.js';
 import '../helpers/vscodeStubRegister';
 import { AgentSyntaxHelpOperations } from '../../src/agent/agentSyntaxHelp';
-import { registerAgentCommands } from '../../src/agent/agentCommands';
+import { createEmptyWorkspaceRegistryProvider, registerAgentCommands } from '../helpers/agentCommandRegistration';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
 import { registerMcpTools } from '../../src/agent/mcpAdapter/toolCatalog';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -116,7 +116,7 @@ suite('AgentSyntaxHelpOperations', function () {
     resetVscodeTestState();
     try {
       const context = { extensionPath: extensionRoot(), subscriptions: [] as Array<{ dispose(): void }> };
-      registerAgentCommands(context as never, () => null, async () => null, new DebugSessionRegistry());
+      registerAgentCommands(context as never, () => null, createEmptyWorkspaceRegistryProvider(), new DebugSessionRegistry());
       assert.ok(vscodeTestState.registeredCommandIds.includes('1c-metadata-tree.agent.syntaxHelp'));
       setExecuteCommandHandler(async (command, args) => {
         const handler = vscodeTestState.registeredCommandHandlers.get(command);

@@ -15,7 +15,7 @@ import {
 } from '../services/elementOperations';
 import { validateElementName } from '../utils/elementNameValidator';
 import { TreeNode, MetadataType } from '../models/treeNode';
-import { ExtensionState } from '../state/extensionState';
+import type { ElementCommandsContext } from '../extension/extensionFeatureContexts';
 import { getSelectedNode, requireDesignerFormat } from '../helpers/commandHelpers';
 import { optimisticAppendCreatedNode } from '../helpers/optimisticNodeBuilder';
 import { Logger } from '../utils/logger';
@@ -33,7 +33,7 @@ import {
 } from '../services/configurationSession/configurationMutationGateway';
 
 type RegisterElementCommandsDeps = {
-  state: ExtensionState;
+  state: ElementCommandsContext;
   loadMetadataTree: () => Promise<void>;
   requestConfigurationReload: RequestConfigurationReload;
   scheduleDeleteReconcile: (
@@ -277,7 +277,7 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
           );
         }
         try {
-          state.treeDataProvider?.applyOptimisticDelete(target, operationId);
+          state.treeDataProvider.applyOptimisticDelete(target, operationId);
         } catch (optimisticError) {
           Logger.error('delete.optimistic.apply.failed', optimisticError);
           await requestConfigurationReload(configPath, 'delete-command');

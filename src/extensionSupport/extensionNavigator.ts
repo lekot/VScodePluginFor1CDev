@@ -1,16 +1,13 @@
 import * as vscode from 'vscode';
 import { TreeNode, MetadataType } from '../models/treeNode';
-import { ExtensionState } from '../state/extensionState';
+import type { ExtensionSupportCommandsContext } from '../extension/extensionFeatureContexts';
 import { getExtensionRootNodes } from './extensionTypes';
 
 /**
  * Returns all root Configuration nodes that are NOT extensions (main config nodes).
  */
-function getMainConfigRoots(state: ExtensionState): TreeNode[] {
+function getMainConfigRoots(state: ExtensionSupportCommandsContext): TreeNode[] {
   const provider = state.treeDataProvider;
-  if (!provider) {
-    return [];
-  }
   return provider.getRootNodes().filter(
     (r) => typeof r.properties.extensionPurpose !== 'string'
   );
@@ -40,12 +37,8 @@ function findNodeInTree(root: TreeNode, predicate: (n: TreeNode) => boolean): Tr
  * Navigate from a borrowed (Adopted) extension object to the corresponding object in the main config.
  * Uses extendedConfigurationObject UUID or falls back to matching by name+type.
  */
-export async function navigateToMainObject(borrowedNode: TreeNode, state: ExtensionState): Promise<void> {
-  const { treeView, treeDataProvider: provider } = state;
-  if (!treeView || !provider) {
-    vscode.window.showWarningMessage('Дерево метаданных не загружено.');
-    return;
-  }
+export async function navigateToMainObject(borrowedNode: TreeNode, state: ExtensionSupportCommandsContext): Promise<void> {
+  const { treeView } = state;
 
   const mainRoots = getMainConfigRoots(state);
 
@@ -86,7 +79,7 @@ export async function navigateToMainObject(borrowedNode: TreeNode, state: Extens
 /**
  * Find all extension nodes that borrow a given main-config object (same name + type + objectBelonging === 'Adopted').
  */
-export async function findBorrowingExtensions(mainNode: TreeNode, state: ExtensionState): Promise<TreeNode[]> {
+export async function findBorrowingExtensions(mainNode: TreeNode, state: ExtensionSupportCommandsContext): Promise<TreeNode[]> {
   const extensionRoots = getExtensionRootNodes(state);
   const borrowingNodes: TreeNode[] = [];
 
@@ -117,12 +110,8 @@ export async function findBorrowingExtensions(mainNode: TreeNode, state: Extensi
  * - If borrowed: offer "Перейти к оригиналу"
  * - If main config object: offer list of extensions borrowing it
  */
-export async function showRelatedObjects(node: TreeNode, state: ExtensionState): Promise<void> {
-  const { treeView, treeDataProvider: provider } = state;
-  if (!treeView || !provider) {
-    vscode.window.showWarningMessage('Дерево метаданных не загружено.');
-    return;
-  }
+export async function showRelatedObjects(node: TreeNode, state: ExtensionSupportCommandsContext): Promise<void> {
+  const { treeView } = state;
 
   const isBorrowed = node.properties.objectBelonging === 'Adopted';
 

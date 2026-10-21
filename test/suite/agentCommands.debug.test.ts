@@ -13,7 +13,7 @@ import {
     fireDidStartDebugSession,
     makeMockSession,
 } from '../helpers/vscodeModuleStub';
-import { registerAgentCommands } from '../../src/agent/agentCommands';
+import { createEmptyWorkspaceRegistryProvider, registerAgentCommands } from '../helpers/agentCommandRegistration';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
 
 // ---------------------------------------------------------------------------
@@ -64,7 +64,7 @@ suite('registerAgentCommands — debug commands registration', () => {
     test('все 15 debug-команд зарегистрированы', () => {
         const ctx = makeContext();
         const registry = makeRegistry();
-        registerAgentCommands(ctx as never, () => null, async () => null, registry);
+        registerAgentCommands(ctx as never, () => null, createEmptyWorkspaceRegistryProvider(), registry);
 
         for (const id of DEBUG_COMMAND_IDS) {
             assert.ok(
@@ -79,7 +79,7 @@ suite('registerAgentCommands — debug commands registration', () => {
         const registry = makeRegistry();
         // До регистрации: 0 подписок
         const before = ctx.subscriptions.length;
-        registerAgentCommands(ctx as never, () => null, async () => null, registry);
+        registerAgentCommands(ctx as never, () => null, createEmptyWorkspaceRegistryProvider(), registry);
         const after = ctx.subscriptions.length;
         // 13 CRUD + 2 type + 15 debug + 2 binding + 1 deploy + 4 agent deploy ops + 4 command interface + 4 predefined cot ops
         // + listConfigurations + (8 forms commands + 1 formsOutputChannel) + 4 skd commands + 7 xdto commands + 6 support commands + 2 external processor commands
@@ -94,7 +94,7 @@ suite('registerAgentCommands — debug commands registration', () => {
         // Это structural тест: убеждаемся что хэндлеры сохранены как функции.
         const ctx = makeContext();
         const registry = makeRegistry();
-        registerAgentCommands(ctx as never, () => null, async () => null, registry);
+        registerAgentCommands(ctx as never, () => null, createEmptyWorkspaceRegistryProvider(), registry);
 
         for (const id of DEBUG_COMMAND_IDS) {
             const handler = vscodeTestState.registeredCommandHandlers.get(id);
@@ -121,7 +121,7 @@ suite('registerAgentCommands — debug command proxy to AgentDebugOperations', (
     test('debugStop проксирует ошибку если sessionId отсутствует', async () => {
         const ctx = makeContext();
         const registry = makeRegistry();
-        registerAgentCommands(ctx as never, () => null, async () => null, registry);
+        registerAgentCommands(ctx as never, () => null, createEmptyWorkspaceRegistryProvider(), registry);
 
         const handler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.debug.stop');
         assert.ok(handler, 'handler для debug.stop должен существовать');
@@ -134,7 +134,7 @@ suite('registerAgentCommands — debug command proxy to AgentDebugOperations', (
     test('debugClearBreakpoints проксирует успех без file', async () => {
         const ctx = makeContext();
         const registry = makeRegistry();
-        registerAgentCommands(ctx as never, () => null, async () => null, registry);
+        registerAgentCommands(ctx as never, () => null, createEmptyWorkspaceRegistryProvider(), registry);
 
         const handler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.debug.clearBreakpoints');
         assert.ok(handler, 'handler для debug.clearBreakpoints должен существовать');
@@ -157,7 +157,7 @@ suite('registerAgentCommands — debug command proxy to AgentDebugOperations', (
     test('debug.start проксирует ошибку валидации rootProject через handler', async () => {
         const ctx = makeContext();
         const registry = makeRegistry();
-        registerAgentCommands(ctx as never, () => null, async () => null, registry);
+        registerAgentCommands(ctx as never, () => null, createEmptyWorkspaceRegistryProvider(), registry);
 
         const handler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.debug.start');
         assert.ok(handler, 'handler для debug.start должен существовать');
@@ -176,7 +176,7 @@ suite('registerAgentCommands — debug command proxy to AgentDebugOperations', (
         const registry = makeRegistry();
         // Активируем реестр чтобы он слушал сессии
         registry.activate();
-        registerAgentCommands(ctx as never, () => null, async () => null, registry);
+        registerAgentCommands(ctx as never, () => null, createEmptyWorkspaceRegistryProvider(), registry);
 
         // Подготавливаем workspace folder
         vscodeTestState.mockWorkspaceFolders = [
@@ -221,7 +221,7 @@ suite('registerAgentCommands — long debug task receipts', () => {
         const ctx = makeContext();
         const registry = makeRegistry();
         registry.activate();
-        registerAgentCommands(ctx as never, () => null, async () => null, registry);
+        registerAgentCommands(ctx as never, () => null, createEmptyWorkspaceRegistryProvider(), registry);
         const sessionId = 'receipt-wait-session';
         fireDidStartDebugSession(makeMockSession(sessionId));
 
@@ -260,7 +260,7 @@ suite('registerAgentCommands — long debug task receipts', () => {
     test('direct Agent command remains synchronous when background is omitted', async () => {
         const ctx = makeContext();
         const registry = makeRegistry();
-        registerAgentCommands(ctx as never, () => null, async () => null, registry);
+        registerAgentCommands(ctx as never, () => null, createEmptyWorkspaceRegistryProvider(), registry);
         const waitHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.debug.waitForStop');
         assert.ok(waitHandler);
 

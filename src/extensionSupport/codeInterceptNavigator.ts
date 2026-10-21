@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { TreeNode } from '../models/treeNode';
-import { ExtensionState } from '../state/extensionState';
+import type { ExtensionSupportCommandsContext } from '../extension/extensionFeatureContexts';
 import { InterceptEntry } from './extensionTypes';
 
 /**
@@ -36,12 +36,9 @@ export function findInterceptDecorators(bslContent: string): InterceptEntry[] {
  */
 function resolveInterceptTarget(
   targetProcedure: string,
-  state: ExtensionState
+  state: ExtensionSupportCommandsContext
 ): { node: TreeNode | undefined; label: string } {
   const provider = state.treeDataProvider;
-  if (!provider) {
-    return { node: undefined, label: targetProcedure };
-  }
 
   // Try to match by searching for the procedure name
   const nodes = provider.searchByName(targetProcedure);
@@ -65,7 +62,7 @@ function resolveInterceptTarget(
 /**
  * Show QuickPick with intercept decorators found in the BSL file, and navigate to the target.
  */
-export async function showInterceptors(bslFilePath: string, state: ExtensionState): Promise<void> {
+export async function showInterceptors(bslFilePath: string, state: ExtensionSupportCommandsContext): Promise<void> {
   const { treeView } = state;
 
   // Read the BSL file
@@ -127,10 +124,6 @@ export async function showInterceptors(bslFilePath: string, state: ExtensionStat
   }
 
   // Attempt to navigate to the target in the tree
-  if (!treeView || !state.treeDataProvider) {
-    return;
-  }
-
   const { node: targetNode } = resolveInterceptTarget(picked.entry.targetProcedure, state);
   if (targetNode) {
     try {

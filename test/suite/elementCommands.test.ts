@@ -5,10 +5,23 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { registerElementCommands } from '../../src/commands/elementCommands';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
-import type { ExtensionState } from '../../src/state/extensionState';
+import { createElementCommandsContext, type ElementCommandsContext } from '../../src/extension/extensionFeatureContexts';
+import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { MutationPlanExecutor } from '../../src/services/configurationSession/mutationPlan';
 import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
 import { createRequestConfigurationReload } from '../../src/reload/requestConfigurationReload';
+import { createExtensionStateFixture } from '../helpers/extensionStateFixture';
+
+let elementTreeViewId = 0;
+
+function createElementCommandsState(
+  treeDataProvider: MetadataTreeDataProvider = new MetadataTreeDataProvider(),
+): ElementCommandsContext {
+  const treeView = vscode.window.createTreeView(`element-commands-test-${elementTreeViewId++}`, {
+    treeDataProvider,
+  });
+  return createElementCommandsContext(createExtensionStateFixture({ treeDataProvider, treeView }).state);
+}
 
 suite('elementCommands', () => {
   const defaultRegisterCommand = vscode.commands.registerCommand.bind(vscode.commands);
@@ -32,7 +45,7 @@ suite('elementCommands', () => {
     };
 
     const disposables = registerElementCommands({
-      state: {} as unknown as ExtensionState,
+      state: createElementCommandsState(),
       loadMetadataTree: async () => undefined,
       requestConfigurationReload: async () => undefined,
       scheduleDeleteReconcile: () => undefined,
@@ -74,17 +87,13 @@ suite('elementCommands', () => {
       shownWarning = msg;
       return 'Отмена';
     };
+    const treeDataProvider = new MetadataTreeDataProvider();
+    treeDataProvider.getConfigPath = () => tmpDir;
+    treeDataProvider.getConfigPathForNode = () => tmpDir;
 
     try {
       registerElementCommands({
-        state: {
-          currentFormat: 'designer',
-          currentPath: tmpDir,
-          treeDataProvider: {
-            getConfigPath: () => tmpDir,
-            getConfigPathForNode: () => tmpDir,
-          },
-        } as unknown as ExtensionState,
+        state: createElementCommandsState(treeDataProvider),
         loadMetadataTree: async () => undefined,
         requestConfigurationReload: async () => undefined,
         scheduleDeleteReconcile: () => undefined,
@@ -143,6 +152,13 @@ suite('elementCommands', () => {
 
     const sequenceFolderPath = path.join(tempRoot, 'Sequences');
     const sequenceFilePath = path.join(sequenceFolderPath, 'PostingOrder.xml');
+    const treeDataProvider = new MetadataTreeDataProvider();
+    treeDataProvider.getConfigPathForNode = () => tempRoot;
+    treeDataProvider.getConfigPath = () => tempRoot;
+    treeDataProvider.resolveNodeForUi = (node) => node;
+    treeDataProvider.refresh = () => undefined;
+    treeDataProvider.applyOptimisticDelete = () => { throw new Error('projection update failed'); };
+    treeDataProvider.invalidatePendingTypeLoad = () => undefined;
     const reloadReasons: string[] = [];
     const reloadCoordinator = new ReloadCoordinatorService(async ({ reason }) => {
       reloadReasons.push(reason);
@@ -171,16 +187,7 @@ suite('elementCommands', () => {
 
     try {
       registerElementCommands({
-        state: {
-          treeDataProvider: {
-            getConfigPathForNode: () => tempRoot,
-            getConfigPath: () => tempRoot,
-            resolveNodeForUi: (node: TreeNode) => node,
-            refresh: () => undefined,
-            applyOptimisticDelete: () => { throw new Error('projection update failed'); },
-            invalidatePendingTypeLoad: () => undefined,
-          },
-        } as unknown as ExtensionState,
+        state: createElementCommandsState(treeDataProvider),
         loadMetadataTree: async () => undefined,
         requestConfigurationReload,
         scheduleDeleteReconcile: () => undefined,
@@ -305,15 +312,13 @@ suite('elementCommands', () => {
       parent: commonNode,
       properties: {},
     };
+    const treeDataProvider = new MetadataTreeDataProvider();
+    treeDataProvider.getConfigPathForNode = () => tempRoot;
+    treeDataProvider.getConfigPath = () => tempRoot;
 
     try {
       registerElementCommands({
-        state: {
-          treeDataProvider: {
-            getConfigPathForNode: () => tempRoot,
-            getConfigPath: () => tempRoot,
-          },
-        } as unknown as ExtensionState,
+        state: createElementCommandsState(treeDataProvider),
         loadMetadataTree: async () => undefined,
         requestConfigurationReload: async () => undefined,
         scheduleDeleteReconcile: () => undefined,

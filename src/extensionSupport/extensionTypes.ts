@@ -1,15 +1,12 @@
 import { TreeNode } from '../models/treeNode';
-import { ExtensionState } from '../state/extensionState';
+import type { TreeProviderContext } from '../extension/extensionFeatureContexts';
 
 /**
  * Returns all extension root nodes from the tree.
  * Extensions are top-level root nodes that have extensionPurpose in properties.
  */
-export function getExtensionRootNodes(state: ExtensionState): TreeNode[] {
+export function getExtensionRootNodes(state: TreeProviderContext): TreeNode[] {
   const provider = state.treeDataProvider;
-  if (!provider) {
-    return [];
-  }
   return provider.getRootNodes().filter(
     (root) => typeof root.properties.extensionPurpose === 'string'
   ) as TreeNode[];

@@ -3,13 +3,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { registerElementCommands } from '../../src/commands/elementCommands';
+import { createElementCommandsContext } from '../../src/extension/extensionFeatureContexts';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
-import type { ExtensionState } from '../../src/state/extensionState';
+import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
 import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
 import type { MutationOutcome, MutationRequest } from '../../src/services/configurationSession/ConfigurationSession';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
 import { cleanupTempDir, createTempDir } from '../helpers/testHelpers';
+import { createExtensionStateFixture } from '../helpers/extensionStateFixture';
+
+function createElementCommandsState(configPath: string) {
+  const treeDataProvider = new MetadataTreeDataProvider();
+  treeDataProvider.getConfigPath = () => configPath;
+  treeDataProvider.getConfigPathForNode = () => configPath;
+  const treeView = vscode.window.createTreeView('nested-gateway-test', { treeDataProvider });
+  return createElementCommandsContext(createExtensionStateFixture({ treeDataProvider, treeView }).state);
+}
 
 suite('ConfigurationSession nested mutation gateway', () => {
   test('UI createForm completes through one real session FIFO entry', async () => {
@@ -106,12 +116,7 @@ suite('ConfigurationSession nested mutation gateway', () => {
         parent: catalogNode,
       };
       registerElementCommands({
-        state: {
-          treeDataProvider: {
-            getConfigPath: () => configRoot,
-            getConfigPathForNode: () => configRoot,
-          },
-        } as unknown as ExtensionState,
+        state: createElementCommandsState(configRoot),
         loadMetadataTree: async () => undefined,
         requestConfigurationReload: async () => undefined,
         scheduleDeleteReconcile: () => undefined,

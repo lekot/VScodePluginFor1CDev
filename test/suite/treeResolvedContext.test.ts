@@ -13,11 +13,15 @@ import { renderPropertiesBySections } from '../../src/providers/propertiesWebvie
 import { saveProperties } from '../../src/providers/propertiesMessageHandler';
 import { ConfigurationContextResolver } from '../../src/services/configurationSession/ConfigurationContextResolver';
 import { WorkspaceRegistry, WorkspaceRegistryError } from '../../src/services/configurationSession/WorkspaceRegistry';
-import { ExtensionState } from '../../src/state/extensionState';
+import type { ConfigurationContext, ConfigurationId } from '../../src/services/configurationSession/types';
+import { createMetadataTreeLifecycleRuntimeView } from '../../src/extension/extensionFeatureContexts';
+import { MetadataWatcherService } from '../../src/services/metadataWatcherService';
 import { saveTreeToCache } from '../../src/utils/diskCache';
 import { serializeTree, deserializeTree } from '../../src/utils/treeSerializer';
 import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
+import { createExtensionStateFixture, type ExtensionStateFixture } from '../helpers/extensionStateFixture';
+import { createFakeExtensionContext } from '../helpers/rightsEditorTestHarness';
 
 type FakeTreeLoadContext = {
   readonly configurationId: string;
@@ -58,11 +62,17 @@ suite('Tree resolved load context', () => {
     return provider;
   }
 
-  function createState(): { state: ExtensionState; provider: MetadataTreeDataProvider } {
-    const state = new ExtensionState();
+  function createState(globalStoragePath?: string): { stateFixture: ExtensionStateFixture; provider: MetadataTreeDataProvider } {
     const provider = createTrackedProvider();
-    state.treeDataProvider = provider;
-    return { state, provider };
+    const extensionContext = globalStoragePath
+      ? { ...createFakeExtensionContext(), globalStoragePath }
+      : undefined;
+    const stateFixture = createExtensionStateFixture({ treeDataProvider: provider }, extensionContext);
+    return { stateFixture, provider };
+  }
+
+  function createLifecycle(stateFixture: ExtensionStateFixture): ReturnType<typeof createMetadataTreeLifecycle> {
+    return createMetadataTreeLifecycle(createMetadataTreeLifecycleRuntimeView(stateFixture.state));
   }
 
   function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -144,8 +154,8 @@ suite('Tree resolved load context', () => {
     const resolver = new ConfigurationContextResolver(registry);
     const contextA = await resolver.resolveFromResource(resolvedConfigA, 'read');
     const contextB = await resolver.resolveFromResource(resolvedConfigB, 'read');
-    const { state, provider } = createState();
-    state.configurationContextResolver = resolver;
+    const { stateFixture, provider } = createState();
+    stateFixture.publish({ configurationContextResolver: resolver });
     // Keep background cache warmup out of the routing assertions below.
     provider.startTypeContentsCacheWarmup = () => undefined;
 
@@ -180,7 +190,7 @@ suite('Tree resolved load context', () => {
       return [{ id: `${typeName}.Resolved`, name: path.basename(configPath), type, properties: {} }];
     };
 
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createLifecycle(stateFixture);
     try {
       await lifecycle.loadMetadataTree();
       const [rootA, rootB] = provider.getRootNodes();
@@ -271,11 +281,11 @@ suite('Tree resolved load context', () => {
       id: 'new-root', name: 'New', type: MetadataType.Configuration, properties: {}, children: [],
     });
     (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
-    const { state, provider } = createState();
+    const { stateFixture, provider } = createState();
     const oldRoot = makeRoot('previous-root', 'Previous configuration', configPath);
     provider.setRootNode(oldRoot);
 
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createLifecycle(stateFixture);
     let parseCalls = 0;
     (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async () => {
       parseCalls++;
@@ -294,34 +304,58 @@ suite('Tree resolved load context', () => {
     }
   });
 
-  test('resolver capability failure preserves the published tree and stops before parsing', async () => {
+  test('resolver capability failure preserves the published tree and watcher and stops before parsing', async () => {
     const workspace = 'C:\\workspace';
     const configPath = 'C:\\workspace\\Configuration';
     vscodeTestState.mockWorkspaceFolders = [{ name: 'workspace', index: 0, uri: vscode.Uri.file(workspace) }];
     stubDiscovery([{ configPath, workspaceFolderPath: workspace }]);
-    const { state, provider } = createState();
+    const { stateFixture, provider } = createState();
     const oldRoot = makeRoot('previous-root', 'Previous configuration', configPath);
     provider.setRootNode(oldRoot);
+    provider.startTypeContentsCacheWarmup = () => undefined;
     let parseCalls = 0;
     let watcherDisposals = 0;
-    const activeWatcher = { dispose: () => { watcherDisposals++; } } as any;
-    state.metadataWatchers = [activeWatcher];
-    state.configurationContextResolver = {
-      resolveFromResource: async (_resource: string, capability: string) => {
+    let rejectResolution = false;
+    const resolvedContext = {
+      configurationId: 'tree-context-watcher-preservation' as ConfigurationId,
+      rootPath: configPath,
+      rootUri: vscode.Uri.file(configPath).toString(),
+      workspaceFolderUri: vscode.Uri.file(workspace).toString(),
+      format: ConfigFormat.Designer,
+      capabilities: { read: true, write: true, process: true },
+      descriptorUri: vscode.Uri.file(path.join(configPath, 'Configuration.xml')).toString(),
+      session: {} as ConfigurationContext['session'],
+    } satisfies ConfigurationContext;
+    const resolver = {
+      resolveFromResource: async (_resource: string, capability: string): Promise<ConfigurationContext> => {
         assert.strictEqual(capability, 'read');
-        throw new WorkspaceRegistryError(
-          'CONFIGURATION_CAPABILITY_UNSUPPORTED',
-          'Read access is unavailable for this configuration.',
-        );
+        if (rejectResolution) {
+          throw new WorkspaceRegistryError(
+            'CONFIGURATION_CAPABILITY_UNSUPPORTED',
+            'Read access is unavailable for this configuration.',
+          );
+        }
+        return resolvedContext;
       },
-    } as any;
+    } as unknown as ConfigurationContextResolver;
+    stateFixture.publish({ configurationContextResolver: resolver });
     (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async () => {
       parseCalls++;
       return { id: 'new-root', name: 'New', type: MetadataType.Configuration, properties: {}, children: [] };
     };
 
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const originalWatcherStart = MetadataWatcherService.prototype.start;
+    const originalWatcherDispose = MetadataWatcherService.prototype.dispose;
+    MetadataWatcherService.prototype.start = () => undefined;
+    MetadataWatcherService.prototype.dispose = () => { watcherDisposals++; };
+    const lifecycle = createLifecycle(stateFixture);
     try {
+      await lifecycle.loadMetadataTree();
+      const publishedRoot = provider.getRootNodes()[0];
+      const publishedWatcher = lifecycle.metadataWatchers[0];
+      assert.ok(publishedWatcher, 'the successful load must publish its watcher set');
+
+      rejectResolution = true;
       await assert.rejects(
         lifecycle.loadMetadataTree(),
         (error: unknown) => error instanceof MetadataReloadError
@@ -329,12 +363,14 @@ suite('Tree resolved load context', () => {
           && error.cause instanceof WorkspaceRegistryError
           && error.cause.code === 'CONFIGURATION_CAPABILITY_UNSUPPORTED',
       );
-      assert.strictEqual(parseCalls, 0);
-      assert.deepStrictEqual(provider.getRootNodes(), [oldRoot]);
-      assert.deepStrictEqual(state.metadataWatchers, [activeWatcher]);
+      assert.strictEqual(parseCalls, 1, 'the failed reload must stop before parsing');
+      assert.deepStrictEqual(provider.getRootNodes(), [publishedRoot]);
+      assert.deepStrictEqual(lifecycle.metadataWatchers, [publishedWatcher]);
       assert.strictEqual(watcherDisposals, 0);
     } finally {
-      lifecycle.dispose();
+      await lifecycle.dispose();
+      MetadataWatcherService.prototype.start = originalWatcherStart;
+      MetadataWatcherService.prototype.dispose = originalWatcherDispose;
     }
   });
 
@@ -358,16 +394,15 @@ suite('Tree resolved load context', () => {
     const staleCachedRoot = makeRoot('stale-disk-root-id', 'Cached configuration', resolvedConfigPath);
     staleCachedRoot.properties = { bslLanguage: 'ru', configurationId: 'stale-configuration-id' } as any;
     await saveTreeToCache(storagePath, resolvedConfigPath, staleCachedRoot);
-    const { state, provider } = createState();
-    state.configurationContextResolver = resolver;
-    (state as any)._extensionContext = { globalStoragePath: storagePath };
+    const { stateFixture, provider } = createState(storagePath);
+    stateFixture.publish({ configurationContextResolver: resolver });
     let parseCalls = 0;
     (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async () => {
       parseCalls++;
       return makeRoot('unexpected-parser-root', 'Unexpected', resolvedConfigPath);
     };
 
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createLifecycle(stateFixture);
     try {
       await lifecycle.loadMetadataTree();
       const [root] = provider.getRootNodes();
@@ -394,10 +429,10 @@ suite('Tree resolved load context', () => {
       format: ConfigFormat.Designer,
       capabilities: { read: true, write: true, process: true },
     };
-    const { state, provider } = createState();
-    state.configurationContextResolver = {
+    const { stateFixture, provider } = createState();
+    stateFixture.publish({ configurationContextResolver: {
       resolveFromResource: async () => mutableResolverContext,
-    } as any;
+    } as unknown as ConfigurationContextResolver });
     provider.startTypeContentsCacheWarmup = () => undefined;
     const parseStarted = deferred<void>();
     const releaseParse = deferred<void>();
@@ -420,7 +455,7 @@ suite('Tree resolved load context', () => {
       return [];
     };
 
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const lifecycle = createLifecycle(stateFixture);
     try {
       const loading = lifecycle.loadMetadataTree();
       await parseStarted.promise;

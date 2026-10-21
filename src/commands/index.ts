@@ -1,11 +1,7 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs/promises';
-import * as path from 'path';
 import { registerExternalProcessorCommands } from './externalProcessorCommands';
 import { registerFilterCriterionCommands } from './filterCriterionCommands';
 import { registerPictureCommands } from './pictureCommands';
-import { ExtensionState } from '../state/extensionState';
-import type { MetadataTreeFeatureLifecycle } from '../extension/metadataTreeLifecycle';
 import { registerElementCommands } from './elementCommands';
 import { registerNavigationCommands } from './navigationCommands';
 import { registerEditorCommands } from './editorCommands';
@@ -20,68 +16,59 @@ import {
 import { registerExtensionCommands } from '../extensionSupport/extensionCommands';
 import { registerCfeProjectCommands } from '../extensionSupport/cfeProject/cfeProjectCommands';
 import { registerConfigurationProjectCommands } from '../configurationProject/configurationProjectCommands';
-import { registerAgentCommands } from '../agent/agentCommands';
-import { DebugSessionRegistry } from '../agent/debugSessionRegistry';
-import { activateAgentBridge } from '../agent/agentBridgeActivation';
-import type { WorkspaceRegistry } from '../services/configurationSession';
-import { DeployService } from '../bindings/deployService';
-import { MetadataType, type TreeNode } from '../models/treeNode';
-import { sharedInfobaseConfigurationOperationQueue } from '../infobases/infobaseConfigurationOperationQueue';
-import { createSupportServiceComposition } from '../support/supportServiceComposition';
+import type { MetadataTreeFeatureLifecycle } from '../extension/metadataTreeLifecycle';
 import {
-  createSupportStateCacheFacade,
-  SupportStateCache,
-} from '../support/supportStateCache';
-import {
-  SUPPORT_MASTER_WATCH_GLOB,
-  SupportStateWatcher,
-  type SupportFileSystemWatcherFactory,
-} from '../support/supportStateWatcher';
-import { SupportRootRegistrationLifecycle } from '../support/supportRootRegistrationLifecycle';
-import type { SupportConfigurationRegistration } from '../support/supportApplicationServiceRegistry';
-import type { ConfigurationId } from '../services/configurationSession/types';
-import { SupportBindingResolver } from '../support/supportBindingResolver';
-import {
-  registerSupportCommands,
-  type SupportCommandContext,
-  type SupportCommandTarget,
-} from '../support/supportCommands';
-import { resolveSupportTreeDecoration } from '../support/supportTreeDecorations';
-import type { DeploySupportContext } from '../bindings/deployService';
-import { normalizeConfigRelativePath } from '../bindings/bindingPathUtils';
-import { CONFIGURATION_XML } from '../constants/fileNames';
-import { Logger } from '../utils/logger';
+  type CfCommandsContext,
+  type ConfigurationCompareContext,
+  type ConfigurationRepositoryContext,
+  type EditorCommandsContext,
+  type ElementCommandsContext,
+  type ExtensionSupportCommandsContext,
+  type FilterCommandsContext,
+  type TreeNavigationContext,
+  type TreeWizardContext,
+  type UtilityCommandsContext,
+} from '../extension/extensionFeatureContexts';
+import type { RegisterSupportCommandsDeps } from '../support/supportCommands';
+import { registerSupportCommands } from '../support/supportCommands';
+import type { ConfigurationInfrastructure } from '../extension/extensionCompositionRoot';
+import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 import { registerConfigurationRepositoryCommands } from './configurationRepositoryCommands';
 import { registerSyntaxHelpCommands } from '../providers/syntaxHelpProvider';
-import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
+import { registerAgentCommands } from '../agent/agentCommands';
+import type { RegisterAgentCommandsDependencies } from '../agent/agentCommands';
 
-import type { ConfigurationInfrastructure } from '../extension/extensionCompositionRoot';
+export interface RegisterAllCommandsArgs {
+  readonly context: vscode.ExtensionContext;
+  readonly lifecycle: MetadataTreeFeatureLifecycle;
+  readonly requestConfigurationReload: RequestConfigurationReload;
+  readonly infrastructure: ConfigurationInfrastructure;
+  readonly agentCommands: RegisterAgentCommandsDependencies;
+  readonly featureContexts: {
+    readonly cf: CfCommandsContext;
+    readonly chartOfAccounts: TreeWizardContext;
+    readonly configurationCompare: ConfigurationCompareContext;
+    readonly configurationRepository: ConfigurationRepositoryContext;
+    readonly editor: EditorCommandsContext;
+    readonly element: ElementCommandsContext;
+    readonly extensionSupport: ExtensionSupportCommandsContext;
+    readonly filter: FilterCommandsContext;
+    readonly filterCriterion: TreeWizardContext;
+    readonly navigation: TreeNavigationContext;
+    readonly supportCommands: RegisterSupportCommandsDeps;
+    readonly utility: UtilityCommandsContext;
+  };
+}
 
-export type RegisterAllCommandsArgs = {
-  context: vscode.ExtensionContext;
-  state: ExtensionState;
-  lifecycle: MetadataTreeFeatureLifecycle;
-  requestConfigurationReload: RequestConfigurationReload;
-  infrastructure: ConfigurationInfrastructure;
-};
-
-
-/** Registers every extension command; order matches historical subscription order in activation. */
+/** Registers command adapters from already assembled feature contexts. */
 export async function registerAllCommands({
   context,
-  state,
   lifecycle,
   requestConfigurationReload,
   infrastructure,
+  agentCommands,
+  featureContexts,
 }: RegisterAllCommandsArgs): Promise<vscode.Disposable[]> {
-  if (!infrastructure) {
-    throw new Error('Configuration infrastructure is required by registerAllCommands.');
-  }
-  const {
-    runConfigurationMutation,
-    runConfigurationPlan,
-    getConfigurationRegistry,
-  } = infrastructure;
   const returnOnlyDisposables = new Set<vscode.Disposable>();
   const collectReturned = (disposables: vscode.Disposable[]): vscode.Disposable[] => {
     for (const disposable of disposables) {
@@ -92,18 +79,23 @@ export async function registerAllCommands({
     return disposables;
   };
   const utilityDeps = {
-    state,
+    state: featureContexts.utility,
     loadMetadataTree: lifecycle.loadMetadataTree,
     extensionContext: context,
   };
+
   registerExternalProcessorCommands(context);
   registerPictureCommands(context);
-
-  registerFilterCriterionCommands(context, state, runConfigurationPlan, requestConfigurationReload);
+  registerFilterCriterionCommands(
+    context,
+    featureContexts.filterCriterion,
+    infrastructure.runConfigurationPlan,
+    requestConfigurationReload,
+  );
   registerCfeProjectCommands({
     context,
-    state,
-    getConfigurationRegistry,
+    state: featureContexts.extensionSupport,
+    getConfigurationRegistry: infrastructure.getConfigurationRegistry,
     refreshTree: lifecycle.loadMetadataTree,
   });
   registerConfigurationProjectCommands({
@@ -112,430 +104,57 @@ export async function registerAllCommands({
   });
   registerExtensionCommands({
     context,
-    state,
-    getConfigurationRegistry,
+    state: featureContexts.extensionSupport,
+    getConfigurationRegistry: infrastructure.getConfigurationRegistry,
     refreshTree: lifecycle.loadMetadataTree,
   });
-  const supportDisposables = configureSupportServices({
-    context,
-    state,
-    getConfigurationRegistry,
-    runConfigurationMutation,
-  });
-
-  // Agent API — регистрируем отдельно (не возвращают Disposable[] — управляют подписками сами)
-  const debugRegistry = new DebugSessionRegistry();
-  context.subscriptions.push(debugRegistry.activate());
-  const { taskManager } = registerAgentCommands(
-    context,
-    () => state.treeDataProvider,
-    getConfigurationRegistry,
-    debugRegistry,
-    () => {
-      const bm = state.bindingManager;
-      const is = state.infobaseStorage;
-      if (!bm || !is) {return undefined;}
-      return {
-        bindingManager: bm,
-        infobaseStorage: is,
-        getConfigPath: () => state.treeDataProvider?.getConfigPath() ?? null,
-      };
-    },
-    // Deploy deps — same shape as debug deps
-    () => {
-      const bm = state.bindingManager;
-      const is = state.infobaseStorage;
-      if (!bm || !is) {return undefined;}
-      return {
-        bindingManager: bm,
-        infobaseStorage: is,
-        getConfigPath: () => state.treeDataProvider?.getConfigPath() ?? null,
-        resolveSupportContext: (configRoot) =>
-          resolveAgentDeploySupportContext(configRoot, state, getConfigurationRegistry),
-        deployService: new DeployService({
-          runConfigurationMutation,
-        }),
-        runConfigurationMutation,
-        requestConfigurationReload,
-      };
-    },
-    () => {
-      const facade = state.supportComposition?.facade;
-      return facade ? { facade } : undefined;
-    },
-    lifecycle.loadMetadataTree,
-    () => state.configurationRepositoryService,
-    requestConfigurationReload,
-  );
-  state.agentTaskManager = taskManager;
-
-  // Agent Bridge — HTTP сервер для вызова Agent API команд снаружи VS Code
-  const wsFolders = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
-  state.agentBridge = await activateAgentBridge(context, wsFolders) ?? null;
-
-
-  registerChartOfAccountsCommands(
-    context,
-    state,
-    runConfigurationPlan,
-    requestConfigurationReload
-  );
 
   try {
+    const supportDisposables = collectReturned(
+      registerSupportCommands(featureContexts.supportCommands),
+    );
+    registerAgentCommands(agentCommands);
+    registerChartOfAccountsCommands(
+      context,
+      featureContexts.chartOfAccounts,
+      infrastructure.runConfigurationPlan,
+      requestConfigurationReload,
+    );
     return [
-      ...collectReturned(supportDisposables),
+      ...supportDisposables,
       ...collectReturned(registerUtilityCommandsLeading(utilityDeps)),
-      ...collectReturned(registerConfigurationCompareCommands({ context, state })),
-      ...collectReturned(registerCfCommands({ state })),
-      ...collectReturned(registerEditorCommands({ state, context })),
+      ...collectReturned(registerConfigurationCompareCommands({
+        context,
+        state: featureContexts.configurationCompare,
+      })),
+      ...collectReturned(registerCfCommands({ state: featureContexts.cf })),
+      ...collectReturned(registerEditorCommands({ state: featureContexts.editor, context })),
       ...collectReturned(registerSyntaxHelpCommands()),
       ...collectReturned(registerElementCommands({
-        state,
+        state: featureContexts.element,
         loadMetadataTree: lifecycle.loadMetadataTree,
         requestConfigurationReload,
         scheduleDeleteReconcile: lifecycle.reloadOrchestratorHandlers.scheduleDeleteReconcile,
-        runConfigurationMutation,
-        runConfigurationPlan,
+        runConfigurationMutation: infrastructure.runConfigurationMutation,
+        runConfigurationPlan: infrastructure.runConfigurationPlan,
       })),
-      ...collectReturned(registerNavigationCommands({ state })),
+      ...collectReturned(registerNavigationCommands({ state: featureContexts.navigation })),
       ...collectReturned(registerUtilityCommandsTrailing(utilityDeps)),
       ...collectReturned(registerFilterCommands({
-        state,
+        state: featureContexts.filter,
         loadMetadataTree: lifecycle.loadMetadataTree,
         invalidateTreeCacheOnly: lifecycle.invalidateTreeCacheOnly,
       })),
-      ...collectReturned(registerConfigurationRepositoryCommands(state)),
+      ...collectReturned(registerConfigurationRepositoryCommands(featureContexts.configurationRepository)),
     ];
   } catch (error) {
     for (const disposable of [...returnOnlyDisposables].reverse()) {
       try {
         disposable.dispose();
-      } catch (disposeError) {
-        try {
-          Logger.warn('Command registration rollback failed', disposeError);
-        } catch {
-          // Rollback must preserve the registration error and continue cleanup.
-        }
+      } catch {
+        // Preserve the registration error while allowing the root to finish rollback.
       }
     }
     throw error;
   }
-}
-
-interface ConfigureSupportServicesArgs {
-  readonly context: vscode.ExtensionContext;
-  readonly state: ExtensionState;
-  readonly getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
-  readonly runConfigurationMutation: <T>(
-    configPath: string,
-    kind: string,
-    operation: () => Promise<T>,
-  ) => Promise<T>;
-}
-
-function configureSupportServices({
-  context,
-  state,
-  getConfigurationRegistry,
-  runConfigurationMutation,
-}: ConfigureSupportServicesArgs): vscode.Disposable[] {
-  const bindingManager = state.bindingManager;
-  const infobaseStorage = state.infobaseStorage;
-  const provider = state.treeDataProvider;
-  if (!bindingManager || !infobaseStorage || !provider) {
-    throw new Error('Support services require initialized binding, infobase and tree providers.');
-  }
-  if (
-    state.supportComposition
-    || state.supportStateCache
-    || state.supportStateWatcher
-    || state.supportRootRegistrationLifecycle
-  ) {
-    throw new Error('Support services are already configured.');
-  }
-
-  const composition = createSupportServiceComposition({
-    bindingManager,
-    infobaseStorage,
-    globalStorageRoot: context.globalStorageUri.fsPath,
-    selector: (registration) => ({
-      workspaceFolderName: registration.workspaceFolderName,
-      configRelativePath: registration.configRelativePath,
-    }),
-    targetQueue: sharedInfobaseConfigurationOperationQueue,
-    runExclusiveConfigurationOperation: runConfigurationMutation,
-  });
-  const cache = new SupportStateCache(
-    createSupportStateCacheFacade(composition.facade),
-  );
-  const watcher = new SupportStateWatcher(
-    createSupportWatcherFactory(),
-    cache,
-    {
-      onDidReload: (configRoot) => {
-        provider.refreshSupportForRoot(configRoot);
-      },
-      onReloadError: (configRoot, error) => {
-        Logger.error('Support state watcher reload failed', { configRoot, error });
-      },
-    },
-  );
-  const rootLifecycle = new SupportRootRegistrationLifecycle({
-    registry: composition.registry,
-    watcher,
-    resolveRegistrations: async (configRoots) => {
-      const workspaceRegistry = await getConfigurationRegistry();
-      return resolveSupportRegistrations(configRoots, workspaceRegistry);
-    },
-    loadRegistration: async (registration) => {
-      await cache.load(registration.configRoot);
-    },
-    onDidLoad: (registration) => {
-      provider.refreshSupportForRoot(registration.configRoot);
-    },
-    onError: (error) => {
-      Logger.error('Support root registration failed', error);
-    },
-  });
-
-  state.supportComposition = composition;
-  state.supportStateCache = cache;
-  state.supportStateWatcher = watcher;
-  state.supportRootRegistrationLifecycle = rootLifecycle;
-  provider.setSupportStateCache(cache);
-  provider.setSupportDecorationResolver(resolveSupportTreeDecoration);
-  provider.setSupportRootRegistrationCallback((configRoots) => {
-    rootLifecycle.accept(configRoots);
-  });
-  const supportOwnedDisposables: vscode.Disposable[] = [
-    { dispose: () => rootLifecycle.dispose() },
-    watcher,
-    { dispose: () => cache.clear() },
-    { dispose: () => composition.dispose() },
-  ];
-  context.subscriptions.push(...supportOwnedDisposables);
-  const commandTargetResolver = new SupportBindingResolver({
-    bindingManager,
-    infobaseStorage,
-  });
-  const commandDisposables = registerSupportCommands({
-    facade: composition.facade,
-    resolveContext: (argument) =>
-      resolveSupportCommandContext(argument, provider, cache, composition.registry),
-    listTargets: (configurationId) =>
-      listSupportCommandTargets(configurationId, composition.registry, commandTargetResolver),
-    onStatusChanged: (configurationId) => {
-      const registration = composition.registry.getRegistration(configurationId);
-      if (!registration) {
-        return;
-      }
-      cache.invalidate(registration.configRoot);
-      void cache.load(registration.configRoot).then(
-        () => provider.refreshSupportForRoot(registration.configRoot),
-        (error) => Logger.error('Support status refresh after command failed', error),
-      );
-    },
-  });
-  context.subscriptions.push(...commandDisposables);
-
-  return [
-    ...commandDisposables,
-    ...supportOwnedDisposables,
-  ];
-}
-
-function createSupportWatcherFactory(): SupportFileSystemWatcherFactory {
-  return {
-    createFileSystemWatcher: (globPattern) => {
-      if (globPattern !== SUPPORT_MASTER_WATCH_GLOB) {
-        throw new Error('Unexpected support watcher glob.');
-      }
-      const watcher = vscode.workspace.createFileSystemWatcher(globPattern);
-      return {
-        onDidCreate: (listener) => watcher.onDidCreate((uri) => listener({ fsPath: uri.fsPath })),
-        onDidChange: (listener) => watcher.onDidChange((uri) => listener({ fsPath: uri.fsPath })),
-        onDidDelete: (listener) => watcher.onDidDelete((uri) => listener({ fsPath: uri.fsPath })),
-        dispose: () => watcher.dispose(),
-      };
-    },
-  };
-}
-
-async function resolveSupportRegistrations(
-  configRoots: readonly string[],
-  workspaceRegistry: WorkspaceRegistry,
-): Promise<readonly SupportConfigurationRegistration[]> {
-  const descriptorsByRoot = new Map(
-    workspaceRegistry.list().map((descriptor) => [
-      normalizeRootKey(descriptor.rootPath),
-      descriptor,
-    ]),
-  );
-  const workspaceFolders = await Promise.all(
-    (vscode.workspace.workspaceFolders ?? []).map(async (folder) => ({
-      folder,
-      canonicalPath: await fs.realpath(folder.uri.fsPath),
-    })),
-  );
-  const registrations: SupportConfigurationRegistration[] = [];
-  for (const configRoot of configRoots) {
-    const canonicalRoot = await fs.realpath(configRoot);
-    const descriptor = descriptorsByRoot.get(normalizeRootKey(canonicalRoot));
-    if (!descriptor) {
-      throw new Error(`Workspace registry has no exact identity for support root: ${canonicalRoot}`);
-    }
-    const allowedWorkspaceRoots = new Set(
-      descriptor.workspaceFolderUris.map((uri) =>
-        normalizeRootKey(vscode.Uri.parse(uri).fsPath)),
-    );
-    const workspace = workspaceFolders
-      .filter(({ canonicalPath }) =>
-        allowedWorkspaceRoots.has(normalizeRootKey(canonicalPath))
-        && isPathInside(canonicalPath, descriptor.rootPath))
-      .sort((left, right) => right.canonicalPath.length - left.canonicalPath.length)[0];
-    if (!workspace) {
-      throw new Error(`Support root is not owned by an exact workspace folder: ${canonicalRoot}`);
-    }
-    const descriptorPath = path.join(descriptor.rootPath, CONFIGURATION_XML);
-    const configRelativePath = normalizeConfigRelativePath(
-      path.relative(workspace.canonicalPath, descriptorPath).replace(/\\/g, '/'),
-    );
-    registrations.push({
-      configurationId: descriptor.configurationId,
-      configRoot: descriptor.rootPath,
-      workspaceFolderName: workspace.folder.name,
-      configRelativePath,
-    });
-  }
-  return registrations;
-}
-
-function isPathInside(parentPath: string, candidatePath: string): boolean {
-  const relative = path.relative(path.resolve(parentPath), path.resolve(candidatePath));
-  return relative === ''
-    || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
-}
-
-function normalizeRootKey(rootPath: string): string {
-  const resolved = path.resolve(rootPath);
-  return process.platform === 'win32' ? resolved.toLocaleLowerCase() : resolved;
-}
-
-async function resolveAgentDeploySupportContext(
-  configRoot: string,
-  state: ExtensionState,
-  getConfigurationRegistry: () => Promise<WorkspaceRegistry>,
-): Promise<DeploySupportContext> {
-  const composition = state.supportComposition;
-  const cache = state.supportStateCache;
-  if (!composition || !cache) {
-    throw new Error('Support deploy preflight is unavailable.');
-  }
-
-  const canonicalRoot = await fs.realpath(path.resolve(configRoot));
-  const workspaceRegistry = await getConfigurationRegistry();
-  const descriptor = workspaceRegistry.list().find(
-    (candidate) => normalizeRootKey(candidate.rootPath) === normalizeRootKey(canonicalRoot),
-  );
-  const registration = composition.registry.getRegistrationByRoot(canonicalRoot);
-  if (
-    !descriptor
-    || !registration
-    || registration.configurationId !== descriptor.configurationId
-    || normalizeRootKey(registration.configRoot) !== normalizeRootKey(canonicalRoot)
-    || !cache.isRegistered(canonicalRoot)
-  ) {
-    throw new Error('Support deploy preflight cannot resolve an exact registered configuration.');
-  }
-
-  return {
-    configurationId: descriptor.configurationId,
-    facade: Object.freeze({
-      getStatus: (request) => composition.facade.getStatus(request),
-      getMasterStatus: (request) => composition.facade.getMasterStatus(request),
-      sync: (request) => composition.facade.sync(request),
-    }),
-  };
-}
-
-function resolveSupportCommandContext(
-  argument: unknown,
-  provider: NonNullable<ExtensionState['treeDataProvider']>,
-  cache: SupportStateCache,
-  registry: import('../support/supportApplicationServiceRegistry').SupportApplicationServiceRegistry,
-): SupportCommandContext | undefined {
-  if (!isTreeNode(argument)) {
-    return undefined;
-  }
-  if (!provider.isLoadedNode(argument)) {
-    return undefined;
-  }
-  const configRoot = provider.getSupportConfigRootForNode(argument);
-  if (!configRoot) {
-    return undefined;
-  }
-  const registration = registry.getRegistrationByRoot(configRoot);
-  if (!registration) {
-    return undefined;
-  }
-  const status = cache.get(registration.configRoot);
-  if (!status || status.configurationId !== registration.configurationId) {
-    return undefined;
-  }
-  if (
-    argument.type === MetadataType.Configuration
-    && argument.parent === undefined
-  ) {
-    return {
-      kind: 'configuration',
-      configurationId: registration.configurationId,
-    };
-  }
-  const decoration = resolveSupportTreeDecoration(argument, status);
-  if (decoration?.kind !== 'object') {
-    return undefined;
-  }
-  return {
-    kind: 'object',
-    configurationId: registration.configurationId,
-    objectId: decoration.objectId,
-  };
-}
-
-async function listSupportCommandTargets(
-  configurationId: ConfigurationId,
-  registry: import('../support/supportApplicationServiceRegistry').SupportApplicationServiceRegistry,
-  resolver: SupportBindingResolver,
-): Promise<readonly SupportCommandTarget[]> {
-  const registration = registry.getRegistration(configurationId);
-  if (!registration) {
-    return [];
-  }
-  const result = await resolver.resolve({
-    workspaceFolderName: registration.workspaceFolderName,
-    configRelativePath: registration.configRelativePath,
-  });
-  if (!result.accepted || result.scope === 'masterOnly') {
-    return [];
-  }
-  return result.targets.map((target) => ({
-    canonicalTargetId: target.canonicalTargetId,
-    label: target.entry.name,
-    description: target.infobaseIds.length > 1
-      ? `Записей каталога: ${target.infobaseIds.length}`
-      : undefined,
-    detail: target.canonicalTargetId,
-  }));
-}
-
-function isTreeNode(value: unknown): value is TreeNode {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-  const candidate = value as Partial<TreeNode>;
-  return typeof candidate.id === 'string'
-    && typeof candidate.name === 'string'
-    && typeof candidate.type === 'string'
-    && candidate.properties !== undefined
-    && typeof candidate.properties === 'object';
 }

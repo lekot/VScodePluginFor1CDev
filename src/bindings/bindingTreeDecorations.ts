@@ -3,7 +3,7 @@
  */
 
 import * as vscode from 'vscode';
-import type { ExtensionState } from '../state/extensionState';
+import type { BindingTreeDecorationsContext } from '../extension/extensionFeatureContexts';
 import type { ConfigurationBindingDecoration } from './bindingDecorationTypes';
 import { bindingKey } from './bindingPathUtils';
 
@@ -14,13 +14,10 @@ function isInfobaseBindingsFile(fsPath: string): boolean {
 /**
  * Пересчитывает карту привязок и обновляет дерево метаданных.
  */
-export async function rebuildBindingDecorationsForTree(state: ExtensionState): Promise<void> {
+export async function rebuildBindingDecorationsForTree(state: BindingTreeDecorationsContext): Promise<void> {
   const provider = state.treeDataProvider;
   const manager = state.bindingManager;
   const storage = state.infobaseStorage;
-  if (!provider || !manager || !storage) {
-    return;
-  }
   try {
     const bindings = await manager.listAll();
     const entries = await storage.load();
@@ -50,14 +47,14 @@ export async function rebuildBindingDecorationsForTree(state: ExtensionState): P
 /**
  * Подписки: сохранение файла привязок, смена каталога баз, смена workspace.
  */
-export function registerBindingDecorationSync(state: ExtensionState): vscode.Disposable {
+export function registerBindingDecorationSync(state: BindingTreeDecorationsContext): vscode.Disposable {
   const run = (): void => {
     void rebuildBindingDecorationsForTree(state);
   };
   const catalogListener =
-    state.infobaseStorage?.onDidChangeCatalog(() => {
+    state.infobaseStorage.onDidChangeCatalog(() => {
       run();
-    }) ?? { dispose: () => undefined };
+    });
   return vscode.Disposable.from(
     vscode.workspace.onDidSaveTextDocument((doc) => {
       if (isInfobaseBindingsFile(doc.uri.fsPath)) {

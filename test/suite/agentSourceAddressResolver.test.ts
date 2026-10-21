@@ -5,7 +5,7 @@ import * as path from 'path';
 import '../helpers/vscodeStubRegister';
 import { parseSourceAddress, resolveAgentPath, AgentPathError } from '../../src/agent/agentPathResolver';
 import { resolveSourceAddress } from '../../src/agent/agentSourceAddressResolver';
-import { registerAgentCommands } from '../../src/agent/agentCommands';
+import { registerAgentCommands } from '../helpers/agentCommandRegistration';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
 import { CfeProjectRegistry } from '../../src/extensionSupport/cfeProject/registry';

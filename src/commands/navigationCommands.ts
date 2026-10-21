@@ -1,21 +1,21 @@
 import * as vscode from 'vscode';
-import { ExtensionState } from '../state/extensionState';
+import type { TreeNavigationContext } from '../extension/extensionFeatureContexts';
 import { MetadataType, TreeNode } from '../models/treeNode';
 import { locateMetadataFile } from '../services/metadataFileLocator';
 import { MESSAGES } from '../constants/messages';
 
 type RegisterNavigationCommandsDeps = {
-  state: ExtensionState;
+  state: TreeNavigationContext;
 };
 
 async function findFirstFormNode(
-  state: ExtensionState,
+  state: TreeNavigationContext,
   element: TreeNode
 ): Promise<TreeNode | null> {
   if (element.type === MetadataType.Form) {
     return element;
   }
-  const children = await state.treeDataProvider!.getChildren(element);
+  const children = await state.treeDataProvider.getChildren(element);
   for (const child of children) {
     const found = await findFirstFormNode(state, child);
     if (found) {
@@ -33,9 +33,6 @@ export function registerNavigationCommands(
   const focusTreeCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.focus',
     async () => {
-      if (!state.treeView || !state.treeDataProvider) {
-        return;
-      }
       let root = state.treeDataProvider.getRootNode();
       if (!root) {
         await new Promise((r) => setTimeout(r, 200));
@@ -57,9 +54,6 @@ export function registerNavigationCommands(
   const focusSearchCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.focusSearch',
     async () => {
-      if (!state.treeDataProvider) {
-        return;
-      }
       const history = state.treeDataProvider.getSearchHistory();
       const current = state.treeDataProvider.getSearchQuery();
       let query = current;
@@ -104,7 +98,7 @@ export function registerNavigationCommands(
   const clearSearchCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.clearSearch',
     () => {
-      state.treeDataProvider?.clearSearch();
+      state.treeDataProvider.clearSearch();
       vscode.commands.executeCommand('setContext', 'subsystemFilterActive', false);
     }
   );
@@ -112,9 +106,6 @@ export function registerNavigationCommands(
   const nextMatchCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.nextMatch',
     () => {
-      if (!state.treeDataProvider || !state.treeView) {
-        return;
-      }
       const ids = state.treeDataProvider.getVisibleOrderedNodeIds();
       if (ids.length === 0) {
         return;
@@ -134,9 +125,6 @@ export function registerNavigationCommands(
   const previousMatchCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.previousMatch',
     () => {
-      if (!state.treeDataProvider || !state.treeView) {
-        return;
-      }
       const ids = state.treeDataProvider.getVisibleOrderedNodeIds();
       if (ids.length === 0) {
         return;
@@ -158,16 +146,13 @@ export function registerNavigationCommands(
     async () => {
       const uri =
         vscode.window.activeTextEditor?.document.uri ??
-        state.formEditorProvider?.getActiveDocumentUri();
+        state.formEditorProvider.getActiveDocumentUri();
       if (!uri) {
         vscode.window.showInformationMessage(MESSAGES.REVEAL_NO_ACTIVE_EDITOR);
         return;
       }
       if (uri.scheme !== 'file') {
         vscode.window.showInformationMessage(MESSAGES.REVEAL_NOT_FILE_URI);
-        return;
-      }
-      if (!state.treeDataProvider || !state.treeView) {
         return;
       }
       const configRoots = state.treeDataProvider.getConfigRootPaths();

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ExtensionState } from '../state/extensionState';
+import type { ExtensionStateAssembly } from '../state/extensionStateComposition';
 import { MetadataTreeLifecycle } from './metadataTreeLifecycle';
 import { ExtensionCompositionRoot } from './extensionCompositionRoot';
 import { getActivationSubscriptionScope } from './activationSubscriptionScope';
@@ -11,11 +11,11 @@ import { getActivationSubscriptionScope } from './activationSubscriptionScope';
  */
 export async function registerExtensionWorkspace(
   context: vscode.ExtensionContext,
-  state: ExtensionState,
+  assembly: ExtensionStateAssembly,
   lifecycle: MetadataTreeLifecycle,
   onRoot?: (root: ExtensionCompositionRoot) => void,
 ): Promise<ExtensionCompositionRoot> {
-  const root = new ExtensionCompositionRoot(context, state, lifecycle);
+  const root = new ExtensionCompositionRoot(context, assembly, lifecycle);
   try {
     if (onRoot) {
       onRoot(root);

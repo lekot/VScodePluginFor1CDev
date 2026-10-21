@@ -15,6 +15,9 @@ import {
   renderSecureWebviewHtml,
 } from '../../src/utils/webviewSecurity';
 import { QueryBuilderProvider } from '../../src/queryBuilder/queryBuilderProvider';
+import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
+import { createQueryBuilderContext } from '../../src/extension/extensionFeatureContexts';
+import { createExtensionStateFixture } from '../helpers/extensionStateFixture';
 import type { FormSelectionPayload } from '../../src/formEditor/formMessageHandler';
 
 suite('Webview CSP security policy', () => {
@@ -217,21 +220,33 @@ suite('Webview CSP security policy', () => {
     assert.strictEqual(result.nonce, n1);
   });
 
-  test('QueryBuilderProvider getHtmlContent renders matching nonce', () => {
+  test('QueryBuilderProvider getHtmlContent renders matching nonce', async () => {
     const fakeContext = { subscriptions: [] } as unknown as import('vscode').ExtensionContext;
-    const fakeState = {} as unknown as import('../../src/state/extensionState').ExtensionState;
-    const provider = new QueryBuilderProvider(fakeContext, fakeState);
-    const html = provider['getHtmlContent']();
+    const treeDataProvider = new MetadataTreeDataProvider();
+    const fixture = createExtensionStateFixture({ treeDataProvider });
+    try {
+      const provider = new QueryBuilderProvider(
+        fakeContext,
+        createQueryBuilderContext(fixture.state),
+      );
+      const html = provider['getHtmlContent']();
 
-    assert.ok(html.includes('Content-Security-Policy'));
-    assert.doesNotMatch(html, /script-src[^;"'>]*'unsafe-inline'/i);
+      assert.ok(html.includes('Content-Security-Policy'));
+      assert.doesNotMatch(html, /script-src[^;"'>]*'unsafe-inline'/i);
 
-    const cspNonceMatch = html.match(/script-src[^;]*'nonce-([A-Za-z0-9_-]+)'/i);
-    assert.ok(cspNonceMatch, 'CSP must declare script-src with nonce');
+      const cspNonceMatch = html.match(/script-src[^;]*'nonce-([A-Za-z0-9_-]+)'/i);
+      assert.ok(cspNonceMatch, 'CSP must declare script-src with nonce');
 
-    const scriptNonceMatch = html.match(/<script\b[^>]*nonce="([^"]+)"/i);
-    assert.ok(scriptNonceMatch, 'Script tag must declare nonce');
-    assert.strictEqual(scriptNonceMatch[1], cspNonceMatch[1]);
+      const scriptNonceMatch = html.match(/<script\b[^>]*nonce="([^"]+)"/i);
+      assert.ok(scriptNonceMatch, 'Script tag must declare nonce');
+      assert.strictEqual(scriptNonceMatch[1], cspNonceMatch[1]);
+    } finally {
+      await fixture.dispose();
+      treeDataProvider.dispose();
+      for (const subscription of fakeContext.subscriptions) {
+        subscription.dispose();
+      }
+    }
   });
 
   test('properties webview safely escapes hostile HTML/script payloads', () => {

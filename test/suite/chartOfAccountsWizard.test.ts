@@ -2,17 +2,21 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { runChartOfAccountsWizard } from '../../src/wizards/chartOfAccountsWizard';
 import { registerChartOfAccountsCommands } from '../../src/commands/chartOfAccountsCommands';
-import { ExtensionState } from '../../src/state/extensionState';
+import { createRequestReloadContext, createTreeWizardContext } from '../../src/extension/extensionFeatureContexts';
+import type { TreeWizardContext } from '../../src/extension/extensionFeatureContexts';
+import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
 import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
 import { createRequestConfigurationReload } from '../../src/reload/requestConfigurationReload';
+import { createExtensionStateFixture, type ExtensionStateFixture } from '../helpers/extensionStateFixture';
 import * as path from 'path';
 import * as fs from 'fs';
 
 suite('ChartOfAccountsWizard UI Flow', () => {
   let tmpDir: string;
-  let state: ExtensionState;
+  let state: TreeWizardContext;
+  let stateFixture: ExtensionStateFixture;
   let origShowInputBox: typeof vscode.window.showInputBox;
   let origShowQuickPick: typeof vscode.window.showQuickPick;
   let origShowInformationMessage: typeof vscode.window.showInformationMessage;
@@ -21,11 +25,12 @@ suite('ChartOfAccountsWizard UI Flow', () => {
 
   setup(async () => {
     tmpDir = await createTempDir('1cviewer-coa-wizard-');
-    state = new ExtensionState();
-    state.treeDataProvider = {
-      getConfigPathForNode: () => tmpDir,
-      getConfigPath: () => tmpDir,
-    } as any;
+    const treeDataProvider = new MetadataTreeDataProvider();
+    treeDataProvider.getConfigPathForNode = () => tmpDir;
+    treeDataProvider.getConfigPath = () => tmpDir;
+    const treeView = vscode.window.createTreeView('chartOfAccounts-test', { treeDataProvider });
+    stateFixture = createExtensionStateFixture({ treeDataProvider, treeView });
+    state = createTreeWizardContext(stateFixture.state);
 
     // Create minimal Configuration.xml
     await fs.promises.writeFile(
@@ -154,7 +159,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
       reloadReason = reason;
       throw Object.assign(new Error('Configuration parse failed.'), { code: 'CONFIGURATION_PARSE_FAILED' });
     }, { defaultDebounceMs: 0 });
-    state.reloadCoordinator = coordinator;
+    stateFixture.publish({ reloadCoordinator: coordinator });
 
     const commandHandlers = new Map<string, (...args: any[]) => Promise<unknown>>();
     const originalRegisterCommand = vscode.commands.registerCommand;
@@ -180,7 +185,7 @@ suite('ChartOfAccountsWizard UI Flow', () => {
           }
           return plan.result;
         },
-        createRequestConfigurationReload(state),
+        createRequestConfigurationReload(createRequestReloadContext(stateFixture.state)),
       );
       const commandHandler = commandHandlers.get('1c-metadata-tree.createChartOfAccounts');
       assert.ok(commandHandler, 'the chart creation command should be registered');

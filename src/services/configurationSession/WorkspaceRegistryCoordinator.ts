@@ -4,6 +4,7 @@ import { FormatDetector } from '../../parsers/formatDetector';
 import type { ConfigurationSession } from './ConfigurationSession';
 import { WorkspaceRegistry, WorkspaceRegistryError } from './WorkspaceRegistry';
 import type { DiscoveredConfiguration } from './WorkspaceRegistry';
+import { awaitAllDrains } from './awaitAllDrains';
 
 export interface WorkspaceRegistryCoordinatorDeps {
   readonly getWorkspaceFolders: () => string[];
@@ -18,7 +19,9 @@ export interface WorkspaceRegistryCoordinatorDeps {
 export class WorkspaceRegistryCoordinator {
   private isInitialized = false;
   private refreshTail: Promise<void> = Promise.resolve();
+  private accepting = true;
   private disposed = false;
+  private quiescePromise: Promise<void> | null = null;
   private disposePromise: Promise<void> | null = null;
 
   constructor(
@@ -33,6 +36,7 @@ export class WorkspaceRegistryCoordinator {
   async getRegistry(): Promise<WorkspaceRegistry> {
     this.ensureActive();
     if (!this.isInitialized) {
+      this.ensureAccepting();
       await this.ensureInitialized();
     }
     return this.registry;
@@ -47,10 +51,12 @@ export class WorkspaceRegistryCoordinator {
     if (this.isInitialized) {
       return;
     }
+    this.ensureAccepting();
     const runInitial = async () => {
       if (this.isInitialized) {
         return;
       }
+      this.ensureAccepting();
       await this.performWorkspaceScan();
       this.isInitialized = true;
     };
@@ -64,8 +70,9 @@ export class WorkspaceRegistryCoordinator {
    * Serialized so concurrent refreshes execute cleanly.
    */
   async refreshWorkspace(): Promise<void> {
-    this.ensureActive();
+    this.ensureAccepting();
     const runRefresh = async () => {
+      this.ensureAccepting();
       await this.performWorkspaceScan();
       this.isInitialized = true;
     };
@@ -83,7 +90,10 @@ export class WorkspaceRegistryCoordinator {
    */
   async resolveResource(resource: string): Promise<ConfigurationSession> {
     this.ensureActive();
-    await this.ensureInitialized();
+    if (!this.isInitialized) {
+      this.ensureAccepting();
+      await this.ensureInitialized();
+    }
 
     try {
       return await this.registry.resolveResource(resource);
@@ -92,10 +102,12 @@ export class WorkspaceRegistryCoordinator {
         throw error;
       }
     }
+    this.ensureAccepting();
 
     // Targeted fallback: check if resource itself or its ancestor is a configuration root
     const finder = this.deps.findConfigurationRoot ?? ((p: string) => FormatDetector.findConfigurationRoot(p));
     const candidateRoot = await finder(resource);
+    this.ensureAccepting();
     if (!candidateRoot) {
       throw new WorkspaceRegistryError(
         'CONFIGURATION_NOT_FOUND',
@@ -105,8 +117,10 @@ export class WorkspaceRegistryCoordinator {
 
     const detector = this.deps.detectFormat ?? ((p: string) => FormatDetector.detect(p));
     const format = await detector(candidateRoot);
+    this.ensureAccepting();
     const workspaceFolders = this.deps.getWorkspaceFolders();
     const workspaceFolder = await this.findContainingWorkspaceFolder(candidateRoot, workspaceFolders);
+    this.ensureAccepting();
     if (!workspaceFolder) {
       throw new WorkspaceRegistryError(
         'CONFIGURATION_NOT_FOUND',
@@ -127,9 +141,10 @@ export class WorkspaceRegistryCoordinator {
    * Registers a single configuration root directly into the registry.
    */
   async registerTargetedRoot(candidate: DiscoveredConfiguration): Promise<ConfigurationSession> {
-    this.ensureActive();
+    this.ensureAccepting();
     const workspaceFolders = this.deps.getWorkspaceFolders();
     const workspaceFolder = await this.findContainingWorkspaceFolder(candidate.configPath, workspaceFolders);
+    this.ensureAccepting();
     if (!workspaceFolder) {
       throw new WorkspaceRegistryError(
         'CONFIGURATION_NOT_FOUND',
@@ -156,20 +171,49 @@ export class WorkspaceRegistryCoordinator {
    * Unregisters a single configuration root from the registry.
    */
   async unregisterTargetedRoot(configPath: string): Promise<void> {
-    this.ensureActive();
+    this.ensureAccepting();
     return this.registry.unregisterTargetedRoot(configPath);
+  }
+
+  quiesce(): Promise<void> {
+    if (this.quiescePromise) {
+      return this.quiescePromise;
+    }
+    this.accepting = false;
+    // Close registry and session admission synchronously. An in-flight scan can no longer
+    // publish fresh sessions; its tail is drained before the session drain is considered done.
+    const registryDrain = this.registry.quiesce();
+    const refreshDrain = this.refreshTail;
+    this.quiescePromise = awaitAllDrains('Workspace registry coordinator quiescence', [registryDrain, refreshDrain]);
+    return this.quiescePromise;
   }
 
   dispose(): Promise<void> {
     if (this.disposePromise) {
       return this.disposePromise;
     }
-    this.disposed = true;
+    const quiescence = this.quiesce();
     this.disposePromise = Promise.resolve().then(async () => {
-      // A workspace scan may already be reconciling sessions when shutdown starts.
-      // Let it finish before closing the registry those scans update.
-      await this.refreshTail;
-      await this.registry.dispose();
+      let disposeError: unknown;
+      let disposeFailed = false;
+      try {
+        await quiescence;
+      } catch (error) {
+        disposeFailed = true;
+        disposeError = error;
+      }
+      this.disposed = true;
+      try {
+        await this.registry.dispose();
+      } catch (error) {
+        if (!disposeFailed) {
+          disposeFailed = true;
+          disposeError = error;
+        }
+      }
+      if (disposeFailed) {
+        throw disposeError;
+      }
     });
     return this.disposePromise;
   }
@@ -177,6 +221,13 @@ export class WorkspaceRegistryCoordinator {
   private ensureActive(): void {
     if (this.disposed) {
       throw new WorkspaceRegistryError('REGISTRY_DISPOSED', 'Coordinator конфигураций уже закрыт.');
+    }
+  }
+
+  private ensureAccepting(): void {
+    this.ensureActive();
+    if (!this.accepting) {
+      throw new WorkspaceRegistryError('REGISTRY_DISPOSED', 'Coordinator конфигураций уже закрыт для новых операций.');
     }
   }
 

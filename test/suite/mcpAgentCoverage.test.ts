@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import '../helpers/vscodeStubRegister';
-import { registerAgentCommands } from '../../src/agent/agentCommands';
+import { createEmptyWorkspaceRegistryProvider, registerAgentCommands } from '../helpers/agentCommandRegistration';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
 import {
   MCP_OPERATION_CATALOG,
@@ -551,7 +551,7 @@ suite('MCP Agent catalog coverage', () => {
 
   test('runtime Agent registration is exactly the catalog command set and excludes UI commands', () => {
     const context = { subscriptions: [] as Array<{ dispose(): void }> };
-    registerAgentCommands(context as never, () => null, async () => null, new DebugSessionRegistry());
+    registerAgentCommands(context as never, () => null, createEmptyWorkspaceRegistryProvider(), new DebugSessionRegistry());
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 

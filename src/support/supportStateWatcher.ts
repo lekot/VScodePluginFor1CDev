@@ -45,7 +45,10 @@ export class SupportStateWatcher implements SupportWatcherDisposable {
   private readonly roots = new Map<string, RegisteredRoot>();
   private readonly eventVersions = new Map<string, number>();
   private readonly refreshTails = new Map<string, Promise<void>>();
+  private accepting = true;
   private disposed = false;
+  private quiescePromise: Promise<void> | null = null;
+  private disposePromise: Promise<void> | null = null;
 
   constructor(
     factory: SupportFileSystemWatcherFactory,
@@ -62,7 +65,7 @@ export class SupportStateWatcher implements SupportWatcherDisposable {
   }
 
   register(configRoot: string, configurationId: ConfigurationId): SupportWatcherDisposable {
-    if (this.disposed) {
+    if (!this.accepting || this.disposed) {
       throw new Error('Cannot register a configuration root on a disposed support watcher.');
     }
     const resolvedRoot = path.resolve(configRoot);
@@ -89,24 +92,48 @@ export class SupportStateWatcher implements SupportWatcherDisposable {
     };
   }
 
-  dispose(): void {
-    if (this.disposed) {
-      return;
+  quiesce(): Promise<void> {
+    if (!this.quiescePromise) {
+      this.accepting = false;
+      for (const subscription of this.subscriptions) {
+        try {
+          subscription.dispose();
+        } catch {
+          // Continue closing the remaining producer subscriptions.
+        }
+      }
+      try {
+        this.watcher.dispose();
+      } catch {
+        // The producer is fenced even if the host reports an error while closing the watcher.
+      }
+      this.quiescePromise = Promise.allSettled([...this.refreshTails.values()]).then(() => undefined);
+    }
+    return this.quiescePromise;
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposePromise) {
+      return this.disposePromise;
     }
     this.disposed = true;
-    for (const subscription of this.subscriptions) {
-      subscription.dispose();
-    }
-    this.watcher.dispose();
-    for (const root of this.roots.values()) {
-      this.cache.unregister(root.configRoot);
-    }
-    this.roots.clear();
-    this.eventVersions.clear();
+    const quiescence = this.quiesce();
+    this.disposePromise = quiescence.then(() => {
+      for (const root of this.roots.values()) {
+        try {
+          this.cache.unregister(root.configRoot);
+        } catch {
+          // One cache registration must not prevent cleanup of the remaining roots.
+        }
+      }
+      this.roots.clear();
+      this.eventVersions.clear();
+    });
+    return this.disposePromise;
   }
 
   private accept(uri: SupportWatcherUri): void {
-    if (this.disposed) {
+    if (!this.accepting || this.disposed) {
       return;
     }
     const root = this.resolveRegisteredRoot(uri.fsPath);

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { MetadataType, TreeNode } from '../models/treeNode';
-import { ExtensionState } from '../state/extensionState';
+import type { TreeWizardContext } from '../extension/extensionFeatureContexts';
 import { validateElementName } from '../utils/elementNameValidator';
 import {
   collectAvailableFilterTypes,
@@ -16,7 +16,7 @@ import { runConfigurationPlan as defaultRunConfigurationPlan } from '../services
 import { planCreateMetadataObject } from '../services/metadataCrudService';
 
 export interface RunFilterCriterionWizardOptions {
-  state: ExtensionState;
+  state: TreeWizardContext;
   target?: TreeNode;
   runConfigurationPlan?: <T>(configPath: string, plan: MutationPlan<T>) => Promise<T>;
   requestConfigurationReload: RequestConfigurationReload;

@@ -52,6 +52,10 @@ export class ActivationSubscriptionScope {
     }) as vscode.ExtensionContext;
   }
 
+  get hasOwner(): boolean {
+    return this.owner !== null;
+  }
+
   bind(owner: ActivationDisposableOwner): void {
     if (this.closed) {
       throw new Error('Cannot attach a closed activation subscription scope.');

@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { ExtensionState } from '../state/extensionState';
+import type { MetadataTreeLifecycleRuntimeView } from './extensionFeatureContexts';
 import { MetadataParser } from '../parsers/metadataParser';
 import {
   ConfigurationDiscoveryError,
@@ -56,11 +56,13 @@ export type MetadataTreeLifecycle = {
   ) => Promise<ReloadAttemptOutcome>;
   loadMetadataTree: () => Promise<void>;
   reloadOrchestratorHandlers: ReloadOrchestratorHandlers;
-  dispose: () => void;
+  readonly metadataWatchers: readonly MetadataWatcherService[];
+  quiesce: () => Promise<void>;
+  dispose: () => Promise<void>;
 };
 
 /** Lifecycle surface available to feature registrations; targeted execution stays at the composition root. */
-export type MetadataTreeFeatureLifecycle = Omit<MetadataTreeLifecycle, 'executeConfigurationReload'>;
+export type MetadataTreeFeatureLifecycle = Omit<MetadataTreeLifecycle, 'executeConfigurationReload' | 'quiesce'>;
 
 export type MetadataReloadErrorCode =
   | 'RELOAD_DISPOSED'
@@ -83,12 +85,16 @@ export class MetadataReloadError extends Error {
 /**
  * Tree cache invalidation, full metadata load, and reload-orchestrator handlers wired in dependency order.
  */
-export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTreeLifecycle {
+export function createMetadataTreeLifecycle(state: MetadataTreeLifecycleRuntimeView): MetadataTreeLifecycle {
   let disposed = false;
+  let fullLoadQuiescing = false;
+  let metadataWatchers: MetadataWatcherService[] = [];
   let requestedGeneration = 0;
   let completedGeneration = 0;
   let cacheEpoch = 0;
   let loadInProgress: Promise<void> | null = null;
+  let quiescePromise: Promise<void> | null = null;
+  let disposePromise: Promise<void> | null = null;
 
   function throwIfDisposed(): void {
     if (disposed) {
@@ -96,19 +102,30 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     }
   }
 
+  function throwIfFullLoadQuiescing(): void {
+    if (fullLoadQuiescing) {
+      throw new MetadataReloadError('RELOAD_DISPOSED', 'Metadata full-load ingress is quiesced.');
+    }
+    throwIfDisposed();
+  }
+
   function disposeWatchers(watchers: readonly vscode.Disposable[]): void {
     for (const watcher of watchers) {
       try {
         watcher.dispose();
       } catch (error) {
-        Logger.warn('Failed to dispose metadata watcher', error);
+        try {
+          Logger.warn('Failed to dispose metadata watcher', error);
+        } catch {
+          // Diagnostics cannot prevent remaining owned watchers from being disposed.
+        }
       }
     }
   }
 
   function disposeMetadataWatchers(): void {
-    const watchers = state.metadataWatchers;
-    state.metadataWatchers = [];
+    const watchers = metadataWatchers;
+    metadataWatchers = [];
     disposeWatchers(watchers);
   }
 
@@ -126,8 +143,9 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     };
     // Start parser invalidation first so its epoch advances before any disk I/O can suspend.
     const parserInvalidation = invoke(() => MetadataParser.invalidateTypeContentsCache(configPath));
-    const diskInvalidation = state.extensionContext?.globalStoragePath
-      ? invoke(() => invalidateTreeCache(state.extensionContext!.globalStoragePath, configPath))
+    const globalStoragePath = state.extensionContext?.globalStoragePath;
+    const diskInvalidation = globalStoragePath
+      ? invoke(() => invalidateTreeCache(globalStoragePath, configPath))
       : Promise.resolve();
     const results = await Promise.allSettled([diskInvalidation, parserInvalidation]);
     const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
@@ -219,7 +237,7 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
   }
 
   async function doLoadMetadataTree(generation: number): Promise<boolean> {
-    throwIfDisposed();
+    throwIfFullLoadQuiescing();
     if (!state.treeDataProvider) {
       Logger.error(MESSAGES.ERROR_PROVIDER_NOT_INITIALIZED);
       return false;
@@ -227,8 +245,8 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
 
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
+      throwIfFullLoadQuiescing();
       if (generation !== requestedGeneration) { return false; }
-      throwIfDisposed();
       disposeMetadataWatchers();
       vscode.window.showWarningMessage(MESSAGES.NO_WORKSPACE);
       state.treeDataProvider.setRootNodes([], undefined);
@@ -249,8 +267,8 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
       const configs = configDiscovery.items;
       const packages = packageDiscovery.items;
       if (configs.length === 0 && packages.length === 0) {
+        throwIfFullLoadQuiescing();
         if (generation !== requestedGeneration) { return false; }
-        throwIfDisposed();
         disposeMetadataWatchers();
         state.treeDataProvider.setRootNodes([], undefined);
         return true;
@@ -279,6 +297,7 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
               {
                 canWriteTreeCache: () =>
                   !disposed
+                  && !fullLoadQuiescing
                   && generation === requestedGeneration
                   && cacheEpoch === cacheEpochAtParseStart,
               },
@@ -293,8 +312,8 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
             progress.report({ increment: rootProgressIncrement });
           }
 
+          throwIfFullLoadQuiescing();
           if (generation !== requestedGeneration) { return; }
-          throwIfDisposed();
           for (const { configPath: configRoot } of configs) {
             const watcher = createWatcher(configRoot);
             nextWatchers.push(watcher);
@@ -317,11 +336,20 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
           // Commit the new watcher set only after parsing, provider update, and
           // watcher startup have all succeeded. Until this point the previous
           // set keeps observing the last known-good configuration roots.
-          const previousWatchers = state.metadataWatchers;
-          state.metadataWatchers = nextWatchers;
+          if (disposed || fullLoadQuiescing) {
+            disposeWatchers(nextWatchers);
+            throwIfFullLoadQuiescing();
+          }
+          if (generation !== requestedGeneration) {
+            disposeWatchers(nextWatchers);
+            return;
+          }
+          const previousWatchers = metadataWatchers;
+          metadataWatchers = nextWatchers;
           disposeWatchers(previousWatchers);
         }
       );
+      throwIfFullLoadQuiescing();
       if (generation !== requestedGeneration) {
         disposeWatchers(nextWatchers);
         return false;
@@ -338,11 +366,11 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
   }
 
   async function loadMetadataTree(): Promise<void> {
-    throwIfDisposed();
+    throwIfFullLoadQuiescing();
     requestedGeneration += 1;
     if (!loadInProgress) {
       loadInProgress = (async () => {
-        while (completedGeneration < requestedGeneration) {
+        while (!fullLoadQuiescing && completedGeneration < requestedGeneration) {
           const generation = requestedGeneration;
           await doLoadMetadataTree(generation);
           completedGeneration = generation;
@@ -355,6 +383,14 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
   }
 
   async function executeConfigurationReload(
+    configPath: string,
+    canPublish: () => boolean,
+  ): Promise<ReloadAttemptOutcome> {
+    throwIfDisposed();
+    return executeConfigurationReloadCore(configPath, canPublish);
+  }
+
+  async function executeConfigurationReloadCore(
     configPath: string,
     canPublish: () => boolean,
   ): Promise<ReloadAttemptOutcome> {
@@ -428,12 +464,27 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     return { status: 'published' };
   }
 
-  function dispose(): void {
-    if (disposed) { return; }
-    disposed = true;
-    requestedGeneration += 1;
-    disposeMetadataWatchers();
-    state.treeDataProvider?.dispose();
+  function quiesce(): Promise<void> {
+    if (!quiescePromise) {
+      fullLoadQuiescing = true;
+      requestedGeneration += 1;
+      disposeMetadataWatchers();
+      const activeLoad = loadInProgress;
+      quiescePromise = Promise.resolve(activeLoad)
+      .catch(() => undefined)
+      .then(() => {
+        disposeMetadataWatchers();
+      });
+    }
+    return quiescePromise;
+  }
+
+  function dispose(): Promise<void> {
+    if (!disposePromise) {
+      disposed = true;
+      disposePromise = quiesce();
+    }
+    return disposePromise;
   }
 
   return {
@@ -441,6 +492,10 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     executeConfigurationReload,
     loadMetadataTree,
     reloadOrchestratorHandlers,
+    quiesce,
+    get metadataWatchers() {
+      return Object.freeze([...metadataWatchers]);
+    },
     dispose,
   };
 }

@@ -19,10 +19,12 @@ import { getIbcmdService, resetIbcmdServiceSingletonForTests } from '../../src/s
 import { BindingManager } from '../../src/bindings/bindingManager';
 import { InfobaseManager } from '../../src/infobases/infobaseManager';
 import { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
+import { InfobaseTreeDataProvider } from '../../src/infobases/infobaseTreeProvider';
 import { registerInfobaseTreeCommands } from '../../src/infobases/registerInfobaseTreeCommands';
 import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
 import type { InfobaseTreeEntry } from '../../src/infobases/infobaseTreeProvider';
-import type { ExtensionState } from '../../src/state/extensionState';
+import { createInfobaseTreeCommandsContext } from '../../src/extension/extensionFeatureContexts';
+import { createExtensionStateFixture, type ExtensionStateFixture } from '../helpers/extensionStateFixture';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
 class MapMemento implements Memento {
@@ -1001,13 +1003,45 @@ suite('infobaseCommands runEditInfobase', () => {
 suite('registerInfobaseTreeCommands', () => {
   /* eslint-disable @typescript-eslint/no-explicit-any -- match elementCommands.test.ts VS Code stub patching */
   const defaultRegister = vscode.commands.registerCommand.bind(vscode.commands);
+  let stateFixtures: ExtensionStateFixture[] = [];
+  let storages: InfobaseStorageService[] = [];
+
+  function createCommandContext(storage: InfobaseStorageService): {
+    readonly fixture: ExtensionStateFixture;
+    readonly treeProvider: InfobaseTreeDataProvider;
+  } {
+    const treeProvider = new InfobaseTreeDataProvider(storage);
+    const fixture = createExtensionStateFixture({
+      infobaseManager: new InfobaseManager(storage, new BindingManager()),
+      infobaseStorage: storage,
+      infobaseTreeProvider: treeProvider,
+    });
+    stateFixtures.push(fixture);
+    storages.push(storage);
+    return {
+      fixture,
+      treeProvider,
+    };
+  }
+
+  function createStorage(): InfobaseStorageService {
+    return new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
+  }
 
   setup(() => {
     resetVscodeTestState();
+    stateFixtures = [];
+    storages = [];
   });
 
-  teardown(() => {
+  teardown(async () => {
     (vscode.commands as any).registerCommand = defaultRegister;
+    for (const fixture of stateFixtures) {
+      await fixture.dispose();
+    }
+    for (const storage of storages) {
+      storage.dispose();
+    }
     resetVscodeTestState();
   });
 
@@ -1018,12 +1052,8 @@ suite('registerInfobaseTreeCommands', () => {
       return { dispose: () => undefined };
     };
 
-    const state = {
-      infobaseStorage: null,
-      infobaseTreeProvider: null,
-    } as unknown as ExtensionState;
-
-    const d = registerInfobaseTreeCommands(state);
+    const { fixture } = createCommandContext(createStorage());
+    const d = registerInfobaseTreeCommands(createInfobaseTreeCommandsContext(fixture.state));
     assert.strictEqual(d.length, 18);
     assert.deepStrictEqual(ids, [
       '1c-metadata-tree.infobases.refresh',
@@ -1049,10 +1079,8 @@ suite('registerInfobaseTreeCommands', () => {
 
   test('refresh invokes tree provider refresh', () => {
     let calls = 0;
-    const state = {
-      infobaseStorage: null,
-      infobaseTreeProvider: { refresh: () => (calls += 1) },
-    } as unknown as ExtensionState;
+    const { fixture, treeProvider } = createCommandContext(createStorage());
+    treeProvider.refresh = () => { calls += 1; };
 
     const handlers = new Map<string, () => void>();
     (vscode.commands as any).registerCommand = (id: string, fn: () => void) => {
@@ -1060,7 +1088,7 @@ suite('registerInfobaseTreeCommands', () => {
       return { dispose: () => undefined };
     };
 
-    registerInfobaseTreeCommands(state);
+    registerInfobaseTreeCommands(createInfobaseTreeCommandsContext(fixture.state));
     handlers.get('1c-metadata-tree.infobases.refresh')?.();
     assert.strictEqual(calls, 1);
   });
@@ -1074,12 +1102,10 @@ suite('registerInfobaseTreeCommands', () => {
       fs.writeFileSync(exe, '');
       process.env.IBCMD_PATH = exe;
 
-      const storage = new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
+      const storage = createStorage();
+      const { fixture, treeProvider } = createCommandContext(storage);
       let refreshCalls = 0;
-      const state = {
-        infobaseStorage: storage,
-        infobaseTreeProvider: { refresh: () => (refreshCalls += 1) },
-      } as unknown as ExtensionState;
+      treeProvider.refresh = () => { refreshCalls += 1; };
 
       const handlers = new Map<string, () => Promise<void>>();
       (vscode.commands as any).registerCommand = (id: string, fn: () => Promise<void>) => {
@@ -1094,7 +1120,7 @@ suite('registerInfobaseTreeCommands', () => {
         stderr: '',
       });
 
-      registerInfobaseTreeCommands(state);
+      registerInfobaseTreeCommands(createInfobaseTreeCommandsContext(fixture.state));
       vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
       vscodeTestState.openDialogQueue.push([{ fsPath: path.join(td, 'newib'), scheme: 'file' }]);
       vscodeTestState.inputBoxQueue.push('FromCommand');
@@ -1117,13 +1143,7 @@ suite('registerInfobaseTreeCommands', () => {
   });
 
   test('remove with non-entry arg shows warning', async () => {
-    const storage = new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
-    const infobaseManager = new InfobaseManager(storage, new BindingManager());
-    const state = {
-      infobaseStorage: storage,
-      infobaseManager,
-      infobaseTreeProvider: null,
-    } as unknown as ExtensionState;
+    const { fixture } = createCommandContext(createStorage());
 
     const handlers = new Map<string, (arg?: unknown) => Promise<void>>();
     (vscode.commands as any).registerCommand = (id: string, fn: (a?: unknown) => Promise<void>) => {
@@ -1131,60 +1151,18 @@ suite('registerInfobaseTreeCommands', () => {
       return { dispose: () => undefined };
     };
 
-    registerInfobaseTreeCommands(state);
+    registerInfobaseTreeCommands(createInfobaseTreeCommandsContext(fixture.state));
     await handlers.get('1c-metadata-tree.infobase.remove')?.({ kind: 'group', group: 'file' });
     assert.ok(vscodeTestState.warningLog.some((m) => m.includes('выберите базу')));
   });
 
-  test('add command with null storage shows error', async () => {
-    const state = {
-      infobaseStorage: null,
-      infobaseTreeProvider: null,
-    } as unknown as ExtensionState;
-
-    const handlers = new Map<string, () => Promise<void>>();
-    (vscode.commands as any).registerCommand = (id: string, fn: () => Promise<void>) => {
-      handlers.set(id, fn);
-      return { dispose: () => undefined };
-    };
-
-    registerInfobaseTreeCommands(state);
-    await handlers.get('1c-metadata-tree.infobases.add')?.();
-    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('не инициализировано')));
-  });
-
-  test('create command with null storage shows error', async () => {
-    const state = {
-      infobaseStorage: null,
-      infobaseTreeProvider: null,
-    } as unknown as ExtensionState;
-
-    const handlers = new Map<string, () => Promise<void>>();
-    (vscode.commands as any).registerCommand = (id: string, fn: () => Promise<void>) => {
-      handlers.set(id, fn);
-      return { dispose: () => undefined };
-    };
-
-    registerInfobaseTreeCommands(state);
-    await handlers.get('1c-metadata-tree.infobases.create')?.();
-    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('не инициализировано')));
-  });
-
-  test('importV8i command with null storage shows error', async () => {
-    const state = {
-      infobaseStorage: null,
-      infobaseTreeProvider: null,
-    } as unknown as ExtensionState;
-
-    const handlers = new Map<string, () => Promise<void>>();
-    (vscode.commands as any).registerCommand = (id: string, fn: () => Promise<void>) => {
-      handlers.set(id, fn);
-      return { dispose: () => undefined };
-    };
-
-    registerInfobaseTreeCommands(state);
-    await handlers.get('1c-metadata-tree.infobases.importV8i')?.();
-    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('не инициализировано')));
+  test('rejects missing storage at feature context construction before command registration', () => {
+    const { fixture } = createCommandContext(createStorage());
+    fixture.publish({ infobaseStorage: null });
+    assert.throws(
+      () => createInfobaseTreeCommandsContext(fixture.state),
+      /Infobase tree commands requires extension handle "infobaseStorage" before registration\./,
+    );
   });
 
   test('edit command resolves entry from storage before runEditInfobase', async () => {
@@ -1202,10 +1180,7 @@ suite('registerInfobaseTreeCommands', () => {
       entry: { ...e, name: 'Stale', filePath: 'C:/bad' },
     };
 
-    const state = {
-      infobaseStorage: storage,
-      infobaseTreeProvider: null,
-    } as unknown as ExtensionState;
+    const { fixture } = createCommandContext(storage);
 
     const handlers = new Map<string, (arg?: unknown) => Promise<void>>();
     (vscode.commands as any).registerCommand = (id: string, fn: (a?: unknown) => Promise<void>) => {
@@ -1213,7 +1188,7 @@ suite('registerInfobaseTreeCommands', () => {
       return { dispose: () => undefined };
     };
 
-    registerInfobaseTreeCommands(state);
+    registerInfobaseTreeCommands(createInfobaseTreeCommandsContext(fixture.state));
     vscodeTestState.inputBoxQueue.push('Canonical');
     vscodeTestState.quickPickQueue.push({ label: 'keep', path: null });
     vscodeTestState.inputBoxQueue.push('');
