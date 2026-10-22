@@ -16,7 +16,17 @@ import { BindingManager } from '../../src/bindings/bindingManager';
 import { INFOBASE_STORAGE_MAX_ENTRIES } from '../../src/infobases/constants';
 import { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
 import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
-import { ExtensionState } from '../../src/state/extensionState';
+import { InfobaseConfigurationOperationQueue } from '../../src/infobases/infobaseConfigurationOperationQueue';
+import {
+  createBindingDialogCommandsContext,
+  createBindingDialogContext,
+  type BindingDialogContext,
+} from '../../src/extension/extensionFeatureContexts';
+import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
+import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
+import { createSupportServiceComposition } from '../../src/support/supportServiceComposition';
+import { SupportStateCache, createSupportStateCacheFacade } from '../../src/support/supportStateCache';
+import { createExtensionStateFixture } from '../helpers/extensionStateFixture';
 import { createFakeExtensionContext } from '../helpers/rightsEditorTestHarness';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
@@ -382,7 +392,7 @@ suite('BindingDialogPanel', () => {
   let storage: InfobaseStorageService;
   let fs: vscode.FileSystem;
   let bindingManager: BindingManager;
-  let state: ExtensionState;
+  let state: BindingDialogContext;
   let context: vscode.ExtensionContext;
   let restoreCreatePanel: (() => void) | undefined;
 
@@ -396,10 +406,16 @@ suite('BindingDialogPanel', () => {
       fileSystem: fs,
       getWorkspaceFolders: () => [folder],
     });
-    state = new ExtensionState();
-    state.infobaseStorage = storage;
-    state.bindingManager = bindingManager;
     context = createFakeExtensionContext();
+    const treeDataProvider = new MetadataTreeDataProvider();
+    const treeView = vscode.window.createTreeView('binding-dialog-test', { treeDataProvider });
+    const fixture = createExtensionStateFixture({
+      infobaseStorage: storage,
+      bindingManager,
+      treeView,
+      refreshBindingTreeDecorations: async () => undefined,
+    }, context);
+    state = createBindingDialogContext(fixture.state);
   });
 
   teardown(() => {
@@ -417,20 +433,26 @@ suite('BindingDialogPanel', () => {
     };
   }
 
-  test('show reports error when storage is missing', async () => {
-    state.infobaseStorage = null;
-    const dlg = new BindingDialogPanel(context, state);
-    await dlg.show(folder.name, 'Configuration.xml');
-    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('не инициализировано')));
-    dlg.dispose();
+  test('binding dialog context rejects missing storage before feature construction', () => {
+    const fixture = createExtensionStateFixture({
+      bindingManager,
+      treeView: vscode.window.createTreeView('binding-dialog-missing-storage', {
+        treeDataProvider: new MetadataTreeDataProvider(),
+      }),
+      refreshBindingTreeDecorations: async () => undefined,
+    });
+    assert.throws(() => createBindingDialogContext(fixture.state), /infobaseStorage/);
   });
 
-  test('show reports error when binding manager is missing', async () => {
-    state.bindingManager = null;
-    const dlg = new BindingDialogPanel(context, state);
-    await dlg.show(folder.name, 'Configuration.xml');
-    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('не инициализировано')));
-    dlg.dispose();
+  test('binding dialog context rejects missing binding manager before feature construction', () => {
+    const fixture = createExtensionStateFixture({
+      infobaseStorage: storage,
+      treeView: vscode.window.createTreeView('binding-dialog-missing-manager', {
+        treeDataProvider: new MetadataTreeDataProvider(),
+      }),
+      refreshBindingTreeDecorations: async () => undefined,
+    });
+    assert.throws(() => createBindingDialogContext(fixture.state), /bindingManager/);
   });
 
   test('show loads binding, builds html with catalog labels and default binding', async () => {
@@ -871,26 +893,12 @@ suite('bindingDialog runOpenBindingDialog', () => {
     });
   }
 
-  test('errors when binding manager or storage missing', async () => {
-    const state = new ExtensionState();
-    defineWorkspaceFolders([{ name: 'w', index: 0, uri: vscode.Uri.file('/tmp') }]);
-    const panel = { show: async () => assert.fail('show must not run') };
-    await runOpenBindingDialog(state, panel as unknown as BindingDialogPanel);
-    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('не инициализировано')));
-  });
-
   test('errors when no workspace folders', async () => {
-    const state = new ExtensionState();
-    state.infobaseStorage = new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
-    state.bindingManager = new BindingManager({
-      fileSystem: createMemoryFs(),
-      getWorkspaceFolders: () => [],
-    });
     defineWorkspaceFolders(undefined);
 
     const shown: string[][] = [];
     const panel = { show: async (a: string, b: string) => shown.push([a, b]) };
-    await runOpenBindingDialog(state, panel as unknown as BindingDialogPanel);
+    await runOpenBindingDialog(panel as unknown as BindingDialogPanel);
     assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Откройте папку workspace')));
     assert.strictEqual(shown.length, 0);
   });
@@ -900,18 +908,11 @@ suite('bindingDialog runOpenBindingDialog', () => {
     const wf: vscode.WorkspaceFolder = { name: 'solo', index: 0, uri: vscode.Uri.file(root) };
     defineWorkspaceFolders([wf]);
 
-    const state = new ExtensionState();
-    state.infobaseStorage = new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
-    state.bindingManager = new BindingManager({
-      fileSystem: createMemoryFs(),
-      getWorkspaceFolders: () => [wf],
-    });
-
     vscodeTestState.inputBoxQueue.push('  .\\src\\Cfg.xml  ');
 
     const shown: string[][] = [];
     const panel = { show: async (a: string, b: string) => shown.push([a, b]) };
-    await runOpenBindingDialog(state, panel as unknown as BindingDialogPanel);
+    await runOpenBindingDialog(panel as unknown as BindingDialogPanel);
 
     assert.deepStrictEqual(shown, [['solo', 'src/Cfg.xml']]);
   });
@@ -921,18 +922,11 @@ suite('bindingDialog runOpenBindingDialog', () => {
     const b: vscode.WorkspaceFolder = { name: 'b', index: 1, uri: vscode.Uri.file('/tmp/b') };
     defineWorkspaceFolders([a, b]);
 
-    const state = new ExtensionState();
-    state.infobaseStorage = new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
-    state.bindingManager = new BindingManager({
-      fileSystem: createMemoryFs(),
-      getWorkspaceFolders: () => [a, b],
-    });
-
     vscodeTestState.quickPickQueue.push(undefined);
 
     const shown: string[][] = [];
     const panel = { show: async (x: string, y: string) => shown.push([x, y]) };
-    await runOpenBindingDialog(state, panel as unknown as BindingDialogPanel);
+    await runOpenBindingDialog(panel as unknown as BindingDialogPanel);
     assert.strictEqual(shown.length, 0);
   });
 
@@ -941,19 +935,12 @@ suite('bindingDialog runOpenBindingDialog', () => {
     const b: vscode.WorkspaceFolder = { name: 'root-b', index: 1, uri: vscode.Uri.file('/tmp/b') };
     defineWorkspaceFolders([a, b]);
 
-    const state = new ExtensionState();
-    state.infobaseStorage = new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
-    state.bindingManager = new BindingManager({
-      fileSystem: createMemoryFs(),
-      getWorkspaceFolders: () => [a, b],
-    });
-
     vscodeTestState.quickPickQueue.push({ label: 'root-b', description: '/tmp/b', folder: b });
     vscodeTestState.inputBoxQueue.push('Configuration.xml');
 
     const shown: string[][] = [];
     const panel = { show: async (x: string, y: string) => shown.push([x, y]) };
-    await runOpenBindingDialog(state, panel as unknown as BindingDialogPanel);
+    await runOpenBindingDialog(panel as unknown as BindingDialogPanel);
 
     assert.deepStrictEqual(shown, [['root-b', 'Configuration.xml']]);
   });
@@ -962,18 +949,11 @@ suite('bindingDialog runOpenBindingDialog', () => {
     const wf: vscode.WorkspaceFolder = { name: 'w', index: 0, uri: vscode.Uri.file('/tmp/w') };
     defineWorkspaceFolders([wf]);
 
-    const state = new ExtensionState();
-    state.infobaseStorage = new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
-    state.bindingManager = new BindingManager({
-      fileSystem: createMemoryFs(),
-      getWorkspaceFolders: () => [wf],
-    });
-
     vscodeTestState.inputBoxQueue.push(undefined);
 
     const shown: string[][] = [];
     const panel = { show: async (x: string, y: string) => shown.push([x, y]) };
-    await runOpenBindingDialog(state, panel as unknown as BindingDialogPanel);
+    await runOpenBindingDialog(panel as unknown as BindingDialogPanel);
     assert.strictEqual(shown.length, 0);
   });
 });
@@ -982,19 +962,104 @@ suite('bindingDialog registerBindingDialogCommands', () => {
   setup(() => resetVscodeTestState());
   teardown(() => resetVscodeTestState());
 
-  test('returns disposables including command registration', () => {
-    const state = new ExtensionState();
-    state.infobaseStorage = new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
-    state.bindingManager = new BindingManager({ fileSystem: createMemoryFs() });
+  test('registers the binding command surface and owns dialog disposal', async () => {
+    const storage = new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
+    const bindingManager = new BindingManager({ fileSystem: createMemoryFs() });
+    const treeDataProvider = new MetadataTreeDataProvider();
+    const treeView = vscode.window.createTreeView('binding-dialog-command-test', { treeDataProvider });
+    const reloadCoordinator = new ReloadCoordinatorService(async () => undefined, { defaultDebounceMs: 0 });
+    const supportComposition = createSupportServiceComposition({
+      bindingManager,
+      infobaseStorage: storage,
+      globalStorageRoot: path.join(tmpdir(), `1cviewer-binding-dialog-support-${Date.now()}`),
+      selector: (registration) => ({
+        workspaceFolderName: registration.workspaceFolderName,
+        configRelativePath: registration.configRelativePath,
+      }),
+      targetQueue: new InfobaseConfigurationOperationQueue(),
+      runExclusiveConfigurationOperation: async <T>(
+        _resourcePath: string,
+        _kind: string,
+        operation: () => Promise<T>,
+      ) => operation(),
+    });
+    const supportStateCache = new SupportStateCache(createSupportStateCacheFacade(supportComposition.facade));
+    const fixture = createExtensionStateFixture({
+      infobaseStorage: storage,
+      bindingManager,
+      treeDataProvider,
+      treeView,
+      refreshBindingTreeDecorations: async () => undefined,
+      reloadCoordinator,
+      supportComposition,
+      supportStateCache,
+    });
     const ctx = createFakeExtensionContext();
-    const disposables = registerBindingDialogCommands(ctx, state);
-    assert.ok(Array.isArray(disposables));
-    assert.strictEqual(disposables.length, 2);
-    for (const d of disposables) {
-      assert.strictEqual(typeof d.dispose, 'function');
-    }
-    for (const d of disposables) {
-      d.dispose();
+    const commandHandlers = new Map<string, (...args: any[]) => Promise<unknown>>();
+    const commandDisposals = new Map<string, number>();
+    const originalRegisterCommand = vscode.commands.registerCommand;
+    const commandApi = vscode.commands as unknown as { registerCommand: typeof vscode.commands.registerCommand };
+    commandApi.registerCommand = ((commandId: string, handler: (...args: any[]) => Promise<unknown>) => {
+      commandHandlers.set(commandId, handler);
+      return {
+        dispose: () => commandDisposals.set(commandId, (commandDisposals.get(commandId) ?? 0) + 1),
+      };
+    }) as typeof vscode.commands.registerCommand;
+    const { panel } = createFakeBindingPanel();
+    let panelDisposeCalls = 0;
+    const originalPanelDispose = panel.dispose;
+    panel.dispose = () => {
+      panelDisposeCalls++;
+      originalPanelDispose();
+    };
+    const windowApi = vscode.window as unknown as { createWebviewPanel: typeof vscode.window.createWebviewPanel };
+    const originalCreateWebviewPanel = windowApi.createWebviewPanel;
+    windowApi.createWebviewPanel = (() => panel as unknown as vscode.WebviewPanel) as typeof vscode.window.createWebviewPanel;
+    Object.defineProperty(vscode.workspace, 'workspaceFolders', {
+      configurable: true,
+      enumerable: true,
+      value: [{ name: 'binding-dialog-ws', index: 0, uri: vscode.Uri.file('/tmp/binding-dialog-ws') }],
+      writable: true,
+    });
+    vscodeTestState.inputBoxQueue.push('Configuration.xml');
+    try {
+      const disposables = registerBindingDialogCommands(
+        ctx,
+        createBindingDialogContext(fixture.state),
+        createBindingDialogCommandsContext(fixture.state),
+      );
+      assert.deepStrictEqual([...commandHandlers.keys()].sort(), [
+        '1c-metadata-tree.bindings.openDialog',
+        '1c-metadata-tree.bindings.openDialogForConfiguration',
+        '1c-metadata-tree.config.configExportStatus',
+        '1c-metadata-tree.config.deploy',
+        '1c-metadata-tree.config.deployChangedFiles',
+        '1c-metadata-tree.config.deployMultiple',
+        '1c-metadata-tree.config.deploySelectedObjects',
+        '1c-metadata-tree.config.pullSelectedObjects',
+      ].sort());
+      const openDialog = commandHandlers.get('1c-metadata-tree.bindings.openDialog');
+      assert.ok(openDialog, 'the dialog-opening command must be registered');
+      await openDialog();
+      assert.strictEqual(panel.webview.html.includes('<html'), true, 'the command owns and opens its dialog');
+
+      for (const d of disposables) {
+        d.dispose();
+      }
+      assert.deepStrictEqual(
+        [...commandDisposals.entries()].sort(([left], [right]) => left.localeCompare(right)),
+        [...commandHandlers.keys()]
+          .sort((left, right) => left.localeCompare(right))
+          .map((commandId) => [commandId, 1]),
+        'each registered command disposable must be released once',
+      );
+      assert.strictEqual(panelDisposeCalls, 1, 'the registered dialog owner must dispose its opened panel once');
+    } finally {
+      commandApi.registerCommand = originalRegisterCommand;
+      windowApi.createWebviewPanel = originalCreateWebviewPanel;
+      await fixture.dispose();
+      await reloadCoordinator.dispose();
+      await supportComposition.dispose();
     }
   });
 });

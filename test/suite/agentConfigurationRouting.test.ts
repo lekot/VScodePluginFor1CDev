@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import '../helpers/vscodeStubRegister';
-import { registerAgentCommands } from '../../src/agent/agentCommands';
+import { registerAgentCommands } from '../helpers/agentCommandRegistration';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
 import { createDeployAgentOperationRunner } from '../../src/agent/deployAgentOperationRunner';
 import type { AgentResolutionContext, ConfigurationScopedParams } from '../../src/agent/types';

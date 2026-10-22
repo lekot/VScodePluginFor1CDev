@@ -1,16 +1,11 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { createRequestReloadContext } from '../../src/extension/extensionFeatureContexts';
+import { createRequestConfigurationReload } from '../../src/reload/requestConfigurationReload';
 import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
 import type { ReloadOperationResult, ReloadReason } from '../../src/types/reloadContracts';
-
-interface ReloadRequester {
-  (configPath: string, reason: ReloadReason): Promise<void>;
-}
-
-interface RequesterModule {
-  createRequestConfigurationReload(state: { reloadCoordinator: ReloadCoordinatorService | null }): ReloadRequester;
-}
+import { createExtensionStateFixture } from '../helpers/extensionStateFixture';
 
 interface TypeScriptSource {
   relativePath: string;
@@ -25,11 +20,6 @@ const lifecycleOwners = new Set([
 const lifecycleSchedulingPattern = /\b(?:invalidateCacheAndReload|reloadConfiguration)\b/u;
 const lifecycleExecutorPattern = /\bexecuteConfigurationReload\b/u;
 const lifecycleExecutorForwardingPattern = /\bexecuteConfigurationReload\s*:/u;
-
-function loadRequesterModule(): RequesterModule {
-  // Keep the module lookup dynamic so this suite compiles on Red before the adapter exists.
-  return require('../../src/reload/requestConfigurationReload') as RequesterModule;
-}
 
 function collectProductionTypeScriptSources(directory: string, projectRoot: string): TypeScriptSource[] {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -71,7 +61,7 @@ suite('requestConfigurationReload application adapter', () => {
       runnerStarted();
       await runnerGate;
     }, { defaultDebounceMs: 5 });
-    const request = loadRequesterModule().createRequestConfigurationReload({ reloadCoordinator: coordinator });
+    const request = createRequestConfigurationReload({ reloadCoordinator: coordinator });
 
     let settled = false;
     const requests = Promise.all([
@@ -94,7 +84,7 @@ suite('requestConfigurationReload application adapter', () => {
     const coordinator = new ReloadCoordinatorService(async () => {
       throw Object.assign(new Error('Configuration parse failed.'), { code: 'CONFIGURATION_PARSE_FAILED' });
     }, { defaultDebounceMs: 0 });
-    const request = loadRequesterModule().createRequestConfigurationReload({ reloadCoordinator: coordinator });
+    const request = createRequestConfigurationReload({ reloadCoordinator: coordinator });
 
     await assert.rejects(request('C:/config', 'rename-command'), (error: unknown) => {
       assert.ok(error instanceof Error);
@@ -134,7 +124,7 @@ suite('requestConfigurationReload application adapter', () => {
       const coordinator = {
         requestReload: () => ({ operationId: result.operationId, completed: Promise.resolve(result) }),
       } as unknown as ReloadCoordinatorService;
-      const request = loadRequesterModule().createRequestConfigurationReload({ reloadCoordinator: coordinator });
+      const request = createRequestConfigurationReload({ reloadCoordinator: coordinator });
 
       await assert.rejects(request('C:/config', 'repository'), (error: unknown) => {
         assert.strictEqual((error as Error & { code?: string }).code, expectedCode);
@@ -146,7 +136,7 @@ suite('requestConfigurationReload application adapter', () => {
 
   test('rejects pending application requests when the coordinator is disposed', async () => {
     const coordinator = new ReloadCoordinatorService(async () => undefined, { defaultDebounceMs: 10_000 });
-    const request = loadRequesterModule().createRequestConfigurationReload({ reloadCoordinator: coordinator });
+    const request = createRequestConfigurationReload({ reloadCoordinator: coordinator });
     const pending = request('C:/config', 'create-command');
     await coordinator.dispose();
 
@@ -156,20 +146,13 @@ suite('requestConfigurationReload application adapter', () => {
     });
   });
 
-  test('fails closed when no coordinator is available and does not use lifecycle fallback', async () => {
-    let fallbackCalls = 0;
-    const state = {
-      reloadCoordinator: null,
-      lifecycle: { invalidateCacheAndReload: async () => { fallbackCalls++; } },
-    };
-    const request = loadRequesterModule().createRequestConfigurationReload(state);
-
-    await assert.rejects(request('C:/config', 'repository' as ReloadReason), (error: unknown) => {
-      assert.strictEqual((error as Error & { code?: string }).code, 'RELOAD_COORDINATOR_UNAVAILABLE');
-      assert.strictEqual((error as Error).message, 'Координатор перезагрузки конфигурации недоступен.');
-      return true;
-    });
-    assert.strictEqual(fallbackCalls, 0);
+  test('requires the reload coordinator at the request context boundary', async () => {
+    const fixture = createExtensionStateFixture();
+    assert.throws(
+      () => createRequestReloadContext(fixture.state),
+      /Configuration reload requests requires extension handle "reloadCoordinator" before registration\./u,
+    );
+    await fixture.dispose();
   });
 
   test('keeps targeted feature callers routed through the shared application entrypoint', () => {

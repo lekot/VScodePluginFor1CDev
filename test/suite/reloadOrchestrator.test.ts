@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { ExtensionState } from '../../src/state/extensionState';
+import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
 import { ReloadOperationResult, ReloadReason, ReloadScheduleOptions } from '../../src/types/reloadContracts';
 import { Logger } from '../../src/utils/logger';
@@ -9,6 +9,7 @@ import {
   scheduleDeleteReconcile,
 } from '../../src/reload/reloadOrchestrator';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
+import { createExtensionStateFixture } from '../helpers/extensionStateFixture';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -53,16 +54,17 @@ function createDeps(
   coordinator: ReloadCoordinatorService | null,
   options: { reconcileTimeoutMs?: number } = {},
 ): ReloadOrchestratorDeps {
-  const state = new ExtensionState();
-  state.reloadCoordinator = coordinator;
-  state.treeDataProvider = {
-    findNodeById: () => undefined,
-    getConfigPathForNode: () => undefined,
-  } as any;
+  const fixture = createExtensionStateFixture({
+    reloadCoordinator: coordinator,
+    treeDataProvider: new MetadataTreeDataProvider(),
+  });
   return {
-    state,
+    state: {
+      reloadCoordinator: fixture.state.reloadCoordinator,
+      treeDataProvider: fixture.state.treeDataProvider,
+    },
     reconcileTimeoutMs: options.reconcileTimeoutMs,
-  } as unknown as ReloadOrchestratorDeps;
+  };
 }
 
 function observeRequests(coordinator: ReloadCoordinatorService): RequestCall[] {

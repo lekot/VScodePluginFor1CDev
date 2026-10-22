@@ -4,8 +4,13 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { registerUtilityCommandsLeading } from '../../src/commands/utilityCommands';
-import type { ExtensionState } from '../../src/state/extensionState';
+import { createUtilityCommandsContext } from '../../src/extension/extensionFeatureContexts';
+import { PropertiesProvider } from '../../src/providers/propertiesProvider';
+import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
+import { TypeEditorProvider } from '../../src/providers/typeEditorProvider';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
+import { createExtensionStateFixture } from '../helpers/extensionStateFixture';
+import { createFakeExtensionContext } from '../helpers/rightsEditorTestHarness';
 
 const TEST_COMMAND_IDS = [
   '1c-metadata-tree.getSelectionNameForTest',
@@ -255,11 +260,27 @@ suite('extension manifest contracts', () => {
   });
 });
 
+let manifestTreeViewId = 0;
+
 function registerLeadingCommands(extensionMode: vscode.ExtensionMode): void {
+  const extensionContext: vscode.ExtensionContext = {
+    ...createFakeExtensionContext(),
+    extensionMode,
+  };
+  const treeDataProvider = new MetadataTreeDataProvider();
+  const treeView = vscode.window.createTreeView(`manifest-contracts-test-${manifestTreeViewId++}`, {
+    treeDataProvider,
+  });
+  const propertiesProvider = new PropertiesProvider(
+    extensionContext,
+    treeDataProvider,
+    new TypeEditorProvider(extensionContext),
+  );
+  const fixture = createExtensionStateFixture({ treeDataProvider, treeView, propertiesProvider }, extensionContext);
   registerUtilityCommandsLeading({
-    state: {} as ExtensionState,
+    state: createUtilityCommandsContext(fixture.state),
     loadMetadataTree: async () => undefined,
-    extensionContext: { extensionMode } as vscode.ExtensionContext,
+    extensionContext,
   });
 }
 

@@ -3,7 +3,7 @@ import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 
 import type { TreeNode } from '../models/treeNode';
-import type { ExtensionState } from '../state/extensionState';
+import type { ConfigurationCompareContext } from '../extension/extensionFeatureContexts';
 import { showConfigurationCompare } from '../compareMerge/configCompareProvider';
 import {
   buildConfigurationCompare,
@@ -16,7 +16,7 @@ import { isConfigurationCompareCancelled } from '../compareMerge/compareCancella
 
 export interface RegisterConfigurationCompareCommandsDeps {
   context: vscode.ExtensionContext;
-  state: ExtensionState;
+  state: ConfigurationCompareContext;
   pickRightRoot?: () => Promise<string | undefined>;
   withCompareProgress?: (
     title: string,
@@ -44,13 +44,13 @@ export function registerConfigurationCompareCommands(
 }
 
 export function resolveConfigurationCompareLeftRoot(
-  state: Pick<ExtensionState, 'treeDataProvider' | 'treeView'>,
+  state: ConfigurationCompareContext,
   node?: TreeNode
 ): string | null {
-  const target = getSelectedNode(state as ExtensionState, node);
+  const target = getSelectedNode(state, node);
   return (
-    (target ? state.treeDataProvider?.getConfigPathForNode(target) : undefined) ??
-    state.treeDataProvider?.getConfigPath() ??
+    (target ? state.treeDataProvider.getConfigPathForNode(target) : undefined) ??
+    state.treeDataProvider.getConfigPath() ??
     null
   );
 }
@@ -78,7 +78,7 @@ export async function executeConfigurationCompareCommand(
       let configurationId;
       try {
         configurationId = await deps.state.configurationContextResolver
-          ?.resolveFromResource(leftRootPath)
+          .resolveFromResource(leftRootPath)
           .then((context) => context.configurationId);
       } catch {
         // Keep comparison available in view-only contexts without a registered write identity.
@@ -87,7 +87,7 @@ export async function executeConfigurationCompareCommand(
         leftRootPath,
         rightRootPath,
         configurationId,
-        mutationEngine: deps.state.configurationMutationEngine ?? undefined,
+        mutationEngine: deps.state.configurationMutationEngine,
         backupRootPath: createConfigurationCompareBackupRootPath(
           deps.context,
           leftRootPath,

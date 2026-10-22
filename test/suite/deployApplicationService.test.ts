@@ -14,10 +14,18 @@ import type { ConfigurationBinding } from '../../src/bindings/models/configurati
 import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
 import { MetadataType, type TreeNode } from '../../src/models/treeNode';
 import { AgentDeployOperations } from '../../src/agent/agentDeployOperations';
-import { ExtensionState } from '../../src/state/extensionState';
+import { createBindingCommandsContext } from '../../src/extension/extensionFeatureContexts';
 import { runPullSelectedObjectsFromTree } from '../../src/bindings/bindingCommands';
+import { BindingManager } from '../../src/bindings/bindingManager';
+import { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 import type { GitRepository, IncrementalChangeDetectorDeps } from '../../src/services/ibcmd/incrementalChangeDetector';
+import { createExtensionStateFixture } from '../helpers/extensionStateFixture';
+import { createFakeExtensionContext } from '../helpers/rightsEditorTestHarness';
+import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
+import { InfobaseConfigurationOperationQueue } from '../../src/infobases/infobaseConfigurationOperationQueue';
+import { createSupportServiceComposition } from '../../src/support/supportServiceComposition';
+import { SupportStateCache, createSupportStateCacheFacade } from '../../src/support/supportStateCache';
 
 interface MutableIbcmdServiceModule {
   getIbcmdService(): { resolveExecutablePathAsync: () => Promise<{ kind: string; path?: string }>; getTimeoutMs: () => number };
@@ -1116,9 +1124,36 @@ suite('DeployApplicationService (#255)', () => {
   });
 
   test('pull command warns that the write succeeded when tree reconciliation failed', async () => {
-    const state = new ExtensionState();
-    state.bindingManager = mockBindingManager as never;
-    state.infobaseStorage = mockStorage as never;
+    const reloadCoordinator = new ReloadCoordinatorService(async () => undefined, { defaultDebounceMs: 0 });
+    const testContext = createFakeExtensionContext();
+    const featureStorage = new InfobaseStorageService(testContext.globalState, testContext.secrets);
+    featureStorage.load = async () => mockCatalog;
+    const featureBindingManager = new BindingManager();
+    featureBindingManager.get = async () => mockBinding;
+    const supportComposition = createSupportServiceComposition({
+      bindingManager: featureBindingManager,
+      infobaseStorage: featureStorage,
+      globalStorageRoot: path.join(tempDir, 'support-state'),
+      selector: (registration) => ({
+        workspaceFolderName: registration.workspaceFolderName,
+        configRelativePath: registration.configRelativePath,
+      }),
+      targetQueue: new InfobaseConfigurationOperationQueue(),
+      runExclusiveConfigurationOperation: async <T>(
+        _resourcePath: string,
+        _kind: string,
+        operation: () => Promise<T>,
+      ) => operation(),
+    });
+    const supportStateCache = new SupportStateCache(createSupportStateCacheFacade(supportComposition.facade));
+    const fixture = createExtensionStateFixture({
+      bindingManager: featureBindingManager,
+      infobaseStorage: featureStorage,
+      reloadCoordinator,
+      supportComposition,
+      supportStateCache,
+    });
+    const state = createBindingCommandsContext(fixture.state);
     const originalGetIbcmdService = ibcmdServiceModule.getIbcmdService;
     const originalPull = DeployApplicationService.prototype.executePullSelectedObjects;
     try {
@@ -1164,6 +1199,10 @@ suite('DeployApplicationService (#255)', () => {
     } finally {
       DeployApplicationService.prototype.executePullSelectedObjects = originalPull;
       ibcmdServiceModule.getIbcmdService = originalGetIbcmdService;
+      await fixture.dispose();
+      await reloadCoordinator.dispose();
+      await supportComposition.dispose();
+      featureStorage.dispose();
     }
   });
 

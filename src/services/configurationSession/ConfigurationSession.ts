@@ -140,6 +140,7 @@ export class ConfigurationSession {
   private runningPostCommitObservers = 0;
   private queue: QueueEntry[] = [];
   private drainResolvers: Array<() => void> = [];
+  private disposePromise: Promise<void> | null = null;
   private readonly executionContext = new AsyncLocalStorage<SessionExecutionLease>();
   readonly storage: AtomicFileStorage;
   readonly mutations: MutationPlanExecutor;
@@ -659,15 +660,20 @@ export class ConfigurationSession {
     });
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
     this.accepting = false;
-    if (this.runningWriters === 0 && this.runningReaders === 0 && this.runningPostCommitObservers === 0 && this.queue.length === 0) {
-      return;
+    if (this.disposePromise) {
+      return this.disposePromise;
     }
-    await new Promise<void>((resolve) => {
+    if (this.runningWriters === 0 && this.runningReaders === 0 && this.runningPostCommitObservers === 0 && this.queue.length === 0) {
+      this.disposePromise = Promise.resolve();
+      return this.disposePromise;
+    }
+    this.disposePromise = new Promise<void>((resolve) => {
       this.drainResolvers.push(resolve);
       this.processQueue();
     });
+    return this.disposePromise;
   }
 
   private withExecutionLease<T>(lease: SessionExecutionLease, operation: () => Promise<T>): Promise<T> {

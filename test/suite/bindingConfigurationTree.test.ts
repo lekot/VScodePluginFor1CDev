@@ -9,8 +9,15 @@ import {
   runDeployForConfigurationFromTree,
 } from '../../src/bindings/bindingCommands';
 import { bindingKey } from '../../src/bindings/bindingPathUtils';
+import { BindingManager } from '../../src/bindings/bindingManager';
+import type { ConfigurationBinding } from '../../src/bindings/models/configurationBinding';
+import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
+import { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
+import { sharedInfobaseConfigurationOperationQueue } from '../../src/infobases/infobaseConfigurationOperationQueue';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
-import type { ExtensionState } from '../../src/state/extensionState';
+import { createBindingCommandsContext } from '../../src/extension/extensionFeatureContexts';
+import type { BindingCommandsContext } from '../../src/extension/extensionFeatureContexts';
+import { createExtensionStateFixture, type ExtensionStateFixture } from '../helpers/extensionStateFixture';
 import { MetadataType, type TreeNode } from '../../src/models/treeNode';
 import {
   getIbcmdService,
@@ -21,6 +28,11 @@ import type {
   IbcmdStreamingRunnerOptions,
 } from '../../src/services/ibcmd/IbcmdStreamingRunner';
 import type { IbcmdService } from '../../src/services/ibcmd/IbcmdService';
+import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
+import type { ConfigurationId } from '../../src/services/configurationSession/types';
+import { createSupportServiceComposition } from '../../src/support/supportServiceComposition';
+import { createSupportStateCacheFacade, SupportStateCache } from '../../src/support/supportStateCache';
+import type { Memento, SecretStorage } from 'vscode';
 import {
   resetVscodeTestState,
   restoreVscodeWorkspaceFoldersGetter,
@@ -46,6 +58,159 @@ const originalRunIbcmdStreaming = ibcmdRunnerModule.runIbcmdStreaming;
 const originalGetIbcmdService = ibcmdServiceModule.getIbcmdService;
 const originalGetYamlUnsupportedMessage = ibcmdVersionSupportModule.getIbcmdYamlInfobaseConfigUnsupportedMessage;
 
+class TestMemento implements Memento {
+  private readonly values = new Map<string, unknown>();
+
+  keys(): readonly string[] {
+    return [...this.values.keys()];
+  }
+
+  get<T>(key: string): T | undefined;
+  get<T>(key: string, defaultValue: T): T;
+  get<T>(key: string, defaultValue?: T): T | undefined {
+    return this.values.has(key) ? this.values.get(key) as T : defaultValue;
+  }
+
+  update(key: string, value: unknown): Thenable<void> {
+    if (value === undefined) {
+      this.values.delete(key);
+    } else {
+      this.values.set(key, value);
+    }
+    return Promise.resolve();
+  }
+}
+
+class TestSecretStorage implements SecretStorage {
+  private readonly values = new Map<string, string>();
+
+  get onDidChange(): vscode.Event<{ key: string }> {
+    return () => ({ dispose: () => undefined });
+  }
+
+  get(key: string): Thenable<string | undefined> {
+    return Promise.resolve(this.values.get(key));
+  }
+
+  store(key: string, value: string): Thenable<void> {
+    this.values.set(key, value);
+    return Promise.resolve();
+  }
+
+  delete(key: string): Thenable<void> {
+    this.values.delete(key);
+    return Promise.resolve();
+  }
+
+  keys(): Thenable<string[]> {
+    return Promise.resolve([...this.values.keys()]);
+  }
+}
+
+interface BindingCommandsTestFixture {
+  readonly stateFixture: ExtensionStateFixture;
+  readonly bindingManager: BindingManager;
+  readonly infobaseStorage: InfobaseStorageService;
+  context(): BindingCommandsContext;
+  setDeployData(data: {
+    readonly binding?: ConfigurationBinding;
+    readonly entries?: readonly InfobaseEntry[];
+    readonly loadError?: Error;
+  }): void;
+  dispose(): Promise<void>;
+}
+
+function createBindingCommandsTestFixture(configurationRoot?: string): BindingCommandsTestFixture {
+  const bindingManager = new BindingManager();
+  const infobaseStorage = new InfobaseStorageService(new TestMemento(), new TestSecretStorage());
+  let selectedBinding: ConfigurationBinding | undefined;
+  let catalogEntries: readonly InfobaseEntry[] = [];
+  let catalogError: Error | undefined;
+  bindingManager.get = async () => selectedBinding;
+  infobaseStorage.load = async () => {
+    if (catalogError) {
+      throw catalogError;
+    }
+    return [...catalogEntries];
+  };
+
+  const supportStorageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'binding-commands-support-'));
+  const supportComposition = createSupportServiceComposition({
+    bindingManager,
+    infobaseStorage,
+    globalStorageRoot: supportStorageRoot,
+    selector: (registration) => ({
+      workspaceFolderName: registration.workspaceFolderName,
+      configRelativePath: registration.configRelativePath,
+    }),
+    targetQueue: sharedInfobaseConfigurationOperationQueue,
+    runExclusiveConfigurationOperation: async <T>(
+      _resourcePath: string,
+      _kind: string,
+      operation: () => Promise<T>,
+    ) => operation(),
+  });
+  const supportStateCache = new SupportStateCache(createSupportStateCacheFacade(supportComposition.facade));
+  if (configurationRoot) {
+    const configurationId = path.resolve(configurationRoot) as ConfigurationId;
+    supportComposition.registry.registerConfiguration({
+      configurationId,
+      configRoot: configurationRoot,
+      workspaceFolderName: 'MyWs',
+      configRelativePath: 'Configuration.xml',
+    });
+    supportStateCache.register(configurationRoot, configurationId);
+  }
+  const reloadCoordinator = new ReloadCoordinatorService(async () => undefined, { defaultDebounceMs: 0 });
+  const stateFixture = createExtensionStateFixture({
+    bindingManager,
+    infobaseStorage,
+    reloadCoordinator,
+    supportComposition,
+    supportStateCache,
+  });
+
+  return {
+    stateFixture,
+    bindingManager,
+    infobaseStorage,
+    context: () => createBindingCommandsContext(stateFixture.state),
+    setDeployData: ({ binding, entries = [], loadError }) => {
+      selectedBinding = binding;
+      catalogEntries = entries;
+      catalogError = loadError;
+    },
+    dispose: async () => {
+      await stateFixture.dispose();
+      supportStateCache.clear();
+      await supportComposition.dispose();
+      await reloadCoordinator.dispose();
+      infobaseStorage.dispose();
+      fs.rmSync(supportStorageRoot, { recursive: true, force: true });
+    },
+  };
+}
+
+function bindingForDeploy(infobaseIds: string[], massDeployment = false): ConfigurationBinding {
+  return {
+    workspaceFolder: 'MyWs',
+    configRelativePath: 'Configuration.xml',
+    infobaseIds,
+    massDeployment,
+  };
+}
+
+function fileInfobase(id: string, name: string, filePath: string): InfobaseEntry {
+  return {
+    id,
+    name,
+    type: 'file',
+    filePath,
+    hasStoredPassword: false,
+    createdAt: '2020-01-01T00:00:00.000Z',
+  };
+}
+
 function rawOutcome(overrides: Partial<IbcmdStreamingRawOutcome> = {}): IbcmdStreamingRawOutcome {
   return {
     started: false,
@@ -63,6 +228,7 @@ function rawOutcome(overrides: Partial<IbcmdStreamingRawOutcome> = {}): IbcmdStr
 suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
   let mockContext: vscode.ExtensionContext;
   let tree: MetadataTreeDataProvider;
+  let bindingFixture: BindingCommandsTestFixture;
 
   setup(() => {
     resetVscodeTestState();
@@ -86,9 +252,12 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
       asAbsolutePath: (relativePath: string) => relativePath,
     } as unknown as vscode.ExtensionContext;
     tree = new MetadataTreeDataProvider();
+    bindingFixture = createBindingCommandsTestFixture();
   });
 
-  teardown(() => {
+  teardown(async () => {
+    await bindingFixture.dispose();
+    tree.dispose();
     resetVscodeTestState();
   });
 
@@ -148,62 +317,34 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
   });
 
   test('openBindingDialogForConfigurationFromTree shows error when tree argument is undefined', async () => {
-    const state = {
-      bindingManager: {},
-      infobaseStorage: {},
-    } as unknown as ExtensionState;
     const panel = { show: async () => undefined };
-    await openBindingDialogForConfigurationFromTree(undefined, state, panel, tree);
+    await openBindingDialogForConfigurationFromTree(undefined, bindingFixture.context(), panel, tree);
     assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Выберите узел в дереве метаданных')));
   });
 
-  test('openBindingDialogForConfigurationFromTree shows error when bindingManager is missing', async () => {
-    const state = {
-      bindingManager: null,
-      infobaseStorage: {},
-    } as unknown as ExtensionState;
-    const panel = { show: async () => undefined };
-    const node: TreeNode = {
-      id: 'root',
-      name: 'Configuration',
-      type: MetadataType.Configuration,
-      properties: {},
-    };
-    await openBindingDialogForConfigurationFromTree(node, state, panel, tree);
-    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Привязки недоступны')));
+  test('binding commands context rejects a missing binding manager before registration', () => {
+    bindingFixture.stateFixture.publish({ bindingManager: null });
+    assert.throws(
+      () => bindingFixture.context(),
+      /Binding commands requires extension handle "bindingManager" before registration\./,
+    );
   });
 
-  test('openBindingDialogForConfigurationFromTree shows error when infobaseStorage is missing', async () => {
-    const state = {
-      bindingManager: {},
-      infobaseStorage: null,
-    } as unknown as ExtensionState;
-    const panel = { show: async () => undefined };
-    const node: TreeNode = {
-      id: 'root',
-      name: 'Configuration',
-      type: MetadataType.Configuration,
-      properties: {},
-    };
-    await openBindingDialogForConfigurationFromTree(node, state, panel, tree);
-    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Привязки недоступны')));
+  test('binding commands context rejects missing infobase storage before registration', () => {
+    bindingFixture.stateFixture.publish({ infobaseStorage: null });
+    assert.throws(
+      () => bindingFixture.context(),
+      /Binding commands requires extension handle "infobaseStorage" before registration\./,
+    );
   });
 
   test('openBindingDialogForConfigurationFromTree shows error when arg is undefined', async () => {
-    const state = {
-      bindingManager: {},
-      infobaseStorage: {},
-    } as unknown as ExtensionState;
     const panel = { show: async () => undefined };
-    await openBindingDialogForConfigurationFromTree(undefined, state, panel, tree);
+    await openBindingDialogForConfigurationFromTree(undefined, bindingFixture.context(), panel, tree);
     assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Выберите узел в дереве метаданных')));
   });
 
   test('openBindingDialogForConfigurationFromTree shows error for wrong node type', async () => {
-    const state = {
-      bindingManager: {},
-      infobaseStorage: {},
-    } as unknown as ExtensionState;
     let showCalls = 0;
     const panel = { show: async () => {
         showCalls++;
@@ -214,16 +355,12 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
       type: MetadataType.Catalog,
       properties: {},
     };
-    await openBindingDialogForConfigurationFromTree(cat, state, panel, tree);
+    await openBindingDialogForConfigurationFromTree(cat, bindingFixture.context(), panel, tree);
     assert.strictEqual(showCalls, 0);
     assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Не удалось сопоставить выгрузку с workspace')));
   });
 
   test('openBindingDialogForConfigurationFromTree shows error when workspace mapping fails', async () => {
-    const state = {
-      bindingManager: {},
-      infobaseStorage: {},
-    } as unknown as ExtensionState;
     let showCalls = 0;
     const panel = { show: async () => {
         showCalls++;
@@ -235,7 +372,7 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
       properties: {},
       filePath: path.join(path.resolve('orphaned-workspaces', 'cfg'), 'Configuration.xml'),
     };
-    await openBindingDialogForConfigurationFromTree(node, state, panel, tree);
+    await openBindingDialogForConfigurationFromTree(node, bindingFixture.context(), panel, tree);
     assert.strictEqual(showCalls, 0);
     assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Не удалось сопоставить выгрузку с workspace')));
   });
@@ -251,17 +388,13 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
       properties: {},
       filePath: path.join(cfgDir, 'Configuration.xml'),
     };
-    const state = {
-      bindingManager: {},
-      infobaseStorage: {},
-    } as unknown as ExtensionState;
     const seen: string[] = [];
     const panel = {
       show: async (wf: string, rel: string) => {
         seen.push(wf, rel);
       },
     };
-    await openBindingDialogForConfigurationFromTree(node, state, panel, tree);
+    await openBindingDialogForConfigurationFromTree(node, bindingFixture.context(), panel, tree);
     assert.deepStrictEqual(seen, ['W', 'app/Configuration.xml']);
     assert.strictEqual(vscodeTestState.errorLog.length, 0);
   });
@@ -382,6 +515,7 @@ function fixtureSmallMatrixRoot(): string {
 suite('WOW §2D runDeployForConfigurationFromTree', () => {
   let mockContext: vscode.ExtensionContext;
   let tree: MetadataTreeDataProvider;
+  let bindingFixture: BindingCommandsTestFixture;
   const tempDirs: string[] = [];
 
   setup(() => {
@@ -408,9 +542,10 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
       asAbsolutePath: (relativePath: string) => relativePath,
     } as unknown as vscode.ExtensionContext;
     tree = new MetadataTreeDataProvider();
+    bindingFixture = createBindingCommandsTestFixture(fixtureSmallMatrixRoot());
   });
 
-  teardown(() => {
+  teardown(async () => {
     for (const dir of tempDirs) {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
@@ -419,6 +554,8 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     ibcmdServiceModule.getIbcmdService = originalGetIbcmdService;
     ibcmdVersionSupportModule.getIbcmdYamlInfobaseConfigUnsupportedMessage = originalGetYamlUnsupportedMessage;
     resetIbcmdServiceSingletonForTests();
+    await bindingFixture.dispose();
+    tree.dispose();
     resetVscodeTestState();
   });
 
@@ -440,60 +577,32 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     };
   }
 
-  test('shows error when bindingManager is missing', async () => {
+  test('rejects a missing bindingManager before command registration', () => {
     const wsRoot = fixtureSmallMatrixRoot();
     vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
-    const state = {
-      bindingManager: null,
-      infobaseStorage: {},
-    } as unknown as ExtensionState;
-    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
-    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Раскатка недоступна')));
+    bindingFixture.stateFixture.publish({ bindingManager: null });
+    assert.throws(
+      () => bindingFixture.context(),
+      /Binding commands requires extension handle "bindingManager" before registration\./,
+    );
   });
 
   test('shows warning when привязка без баз (пустой infobaseIds)', async () => {
     const wsRoot = fixtureSmallMatrixRoot();
     vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
-    const state = {
-      bindingManager: {
-        async get() {
-          return {
-            workspaceFolder: 'MyWs',
-            configRelativePath: 'Configuration.xml',
-            infobaseIds: [],
-            massDeployment: false,
-          };
-        },
-      },
-      infobaseStorage: { async load() {
-          return [];
-        } },
-    } as unknown as ExtensionState;
-    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+    bindingFixture.setDeployData({ binding: bindingForDeploy([]) });
+    await runDeployForConfigurationFromTree(configurationNode(wsRoot), bindingFixture.context(), tree);
     assert.ok(vscodeTestState.warningLog.some((m) => m.includes('нет привязанных баз')));
   });
 
   test('shows error when каталог ИБ не загрузился', async () => {
     const wsRoot = fixtureSmallMatrixRoot();
     vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
-    const state = {
-      bindingManager: {
-        async get() {
-          return {
-            workspaceFolder: 'MyWs',
-            configRelativePath: 'Configuration.xml',
-            infobaseIds: ['x'],
-            massDeployment: false,
-          };
-        },
-      },
-      infobaseStorage: {
-        async load() {
-          throw new Error('disk');
-        },
-      },
-    } as unknown as ExtensionState;
-    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+    bindingFixture.setDeployData({
+      binding: bindingForDeploy(['x']),
+      loadError: new Error('disk'),
+    });
+    await runDeployForConfigurationFromTree(configurationNode(wsRoot), bindingFixture.context(), tree);
     assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Не удалось загрузить каталог')));
   });
 
@@ -512,36 +621,11 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     tempDirs.push(work);
     const ibPath = path.join(work, 'p.1cd');
     fs.writeFileSync(ibPath, '');
-    const state = {
-      bindingManager: {
-        async get() {
-          return {
-            workspaceFolder: 'MyWs',
-            configRelativePath: 'Configuration.xml',
-            infobaseIds: ['ib1'],
-            massDeployment: false,
-          };
-        },
-      },
-      infobaseStorage: {
-        async load() {
-          return [
-            {
-              id: 'ib1',
-              name: 'N',
-              type: 'file',
-              filePath: ibPath,
-              hasStoredPassword: false,
-              createdAt: '2020-01-01T00:00:00.000Z',
-            },
-          ];
-        },
-        async readPasswordSecret(): Promise<string | undefined> {
-          return undefined;
-        },
-      },
-    } as unknown as ExtensionState;
-    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+    bindingFixture.setDeployData({
+      binding: bindingForDeploy(['ib1']),
+      entries: [fileInfobase('ib1', 'N', ibPath)],
+    });
+    await runDeployForConfigurationFromTree(configurationNode(wsRoot), bindingFixture.context(), tree);
     assert.strictEqual(resolveCalls, 1);
     assert.ok(vscodeTestState.warningLog.some((m) => m.includes('1 с ошибками')));
     assert.ok(vscodeTestState.outputChannelLines.some((l) => l.includes('[раскатка] Итого:')));
@@ -560,36 +644,11 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     tempDirs.push(work);
     const ibPath = path.join(work, 'p.1cd');
     fs.writeFileSync(ibPath, '');
-    const state = {
-      bindingManager: {
-        async get() {
-          return {
-            workspaceFolder: 'MyWs',
-            configRelativePath: 'Configuration.xml',
-            infobaseIds: ['ib1'],
-            massDeployment: false,
-          };
-        },
-      },
-      infobaseStorage: {
-        async load() {
-          return [
-            {
-              id: 'ib1',
-              name: 'N',
-              type: 'file',
-              filePath: ibPath,
-              hasStoredPassword: false,
-              createdAt: '2020-01-01T00:00:00.000Z',
-            },
-          ];
-        },
-        async readPasswordSecret(): Promise<string | undefined> {
-          return undefined;
-        },
-      },
-    } as unknown as ExtensionState;
-    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+    bindingFixture.setDeployData({
+      binding: bindingForDeploy(['ib1']),
+      entries: [fileInfobase('ib1', 'N', ibPath)],
+    });
+    await runDeployForConfigurationFromTree(configurationNode(wsRoot), bindingFixture.context(), tree);
     const msg = vscodeTestState.warningLog.find((m) => m.includes('ibcmd config import'));
     assert.ok(msg?.includes('deploy.mode = copy'), msg);
     assert.ok(msg?.includes('временной копии'), msg);
@@ -609,36 +668,11 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     tempDirs.push(work);
     const ibPath = path.join(work, 'p.1cd');
     fs.writeFileSync(ibPath, '');
-    const state = {
-      bindingManager: {
-        async get() {
-          return {
-            workspaceFolder: 'MyWs',
-            configRelativePath: 'Configuration.xml',
-            infobaseIds: ['ib1'],
-            massDeployment: false,
-          };
-        },
-      },
-      infobaseStorage: {
-        async load() {
-          return [
-            {
-              id: 'ib1',
-              name: 'N',
-              type: 'file',
-              filePath: ibPath,
-              hasStoredPassword: false,
-              createdAt: '2020-01-01T00:00:00.000Z',
-            },
-          ];
-        },
-        async readPasswordSecret(): Promise<string | undefined> {
-          return undefined;
-        },
-      },
-    } as unknown as ExtensionState;
-    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+    bindingFixture.setDeployData({
+      binding: bindingForDeploy(['ib1']),
+      entries: [fileInfobase('ib1', 'N', ibPath)],
+    });
+    await runDeployForConfigurationFromTree(configurationNode(wsRoot), bindingFixture.context(), tree);
     const msg = vscodeTestState.warningLog.find((m) => m.includes('ibcmd config import'));
     assert.ok(msg?.includes('deploy.mode = block'), msg);
     assert.ok(msg?.includes('только просмотр'), msg);
@@ -658,36 +692,11 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     tempDirs.push(work);
     const ibPath = path.join(work, 'p.1cd');
     fs.writeFileSync(ibPath, '');
-    const state = {
-      bindingManager: {
-        async get() {
-          return {
-            workspaceFolder: 'MyWs',
-            configRelativePath: 'Configuration.xml',
-            infobaseIds: ['ib1'],
-            massDeployment: false,
-          };
-        },
-      },
-      infobaseStorage: {
-        async load() {
-          return [
-            {
-              id: 'ib1',
-              name: 'N',
-              type: 'file',
-              filePath: ibPath,
-              hasStoredPassword: false,
-              createdAt: '2020-01-01T00:00:00.000Z',
-            },
-          ];
-        },
-        async readPasswordSecret(): Promise<string | undefined> {
-          return undefined;
-        },
-      },
-    } as unknown as ExtensionState;
-    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+    bindingFixture.setDeployData({
+      binding: bindingForDeploy(['ib1']),
+      entries: [fileInfobase('ib1', 'N', ibPath)],
+    });
+    await runDeployForConfigurationFromTree(configurationNode(wsRoot), bindingFixture.context(), tree);
     const msg = vscodeTestState.warningLog.find((m) => m.includes('ibcmd config import'));
     assert.ok(msg?.includes('1.88+'), msg);
     assert.ok(msg?.includes('без readonly'), msg);
@@ -705,36 +714,11 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     tempDirs.push(work);
     const ibPath = path.join(work, 'p.1cd');
     fs.writeFileSync(ibPath, '');
-    const state = {
-      bindingManager: {
-        async get() {
-          return {
-            workspaceFolder: 'MyWs',
-            configRelativePath: 'Configuration.xml',
-            infobaseIds: ['ib1'],
-            massDeployment: false,
-          };
-        },
-      },
-      infobaseStorage: {
-        async load() {
-          return [
-            {
-              id: 'ib1',
-              name: 'N',
-              type: 'file',
-              filePath: ibPath,
-              hasStoredPassword: false,
-              createdAt: '2020-01-01T00:00:00.000Z',
-            },
-          ];
-        },
-        async readPasswordSecret(): Promise<string | undefined> {
-          return undefined;
-        },
-      },
-    } as unknown as ExtensionState;
-    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+    bindingFixture.setDeployData({
+      binding: bindingForDeploy(['ib1']),
+      entries: [fileInfobase('ib1', 'N', ibPath)],
+    });
+    await runDeployForConfigurationFromTree(configurationNode(wsRoot), bindingFixture.context(), tree);
     assert.ok(vscodeTestState.warningLog.some((m) => m.includes('ibcmd config import')));
     assert.ok(!vscodeTestState.outputChannelLines.some((l) => l.includes('[раскатка] Итого:')));
   });
@@ -752,36 +736,11 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     tempDirs.push(work);
     const ibPath = path.join(work, 'p.1cd');
     fs.writeFileSync(ibPath, '');
-    const state = {
-      bindingManager: {
-        async get() {
-          return {
-            workspaceFolder: 'MyWs',
-            configRelativePath: 'Configuration.xml',
-            infobaseIds: ['ib1'],
-            massDeployment: false,
-          };
-        },
-      },
-      infobaseStorage: {
-        async load() {
-          return [
-            {
-              id: 'ib1',
-              name: 'N',
-              type: 'file',
-              filePath: ibPath,
-              hasStoredPassword: false,
-              createdAt: '2020-01-01T00:00:00.000Z',
-            },
-          ];
-        },
-        async readPasswordSecret(): Promise<string | undefined> {
-          return undefined;
-        },
-      },
-    } as unknown as ExtensionState;
-    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+    bindingFixture.setDeployData({
+      binding: bindingForDeploy(['ib1']),
+      entries: [fileInfobase('ib1', 'N', ibPath)],
+    });
+    await runDeployForConfigurationFromTree(configurationNode(wsRoot), bindingFixture.context(), tree);
     assert.strictEqual(
       vscodeTestState.errorLog.length,
       0,
@@ -834,35 +793,14 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
       vscodeTestState.warningMessageReturnQueue = ['Продолжить'];
       const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-indoubt-toast-'));
       tempDirs.push(work);
-      const state = {
-        bindingManager: {
-          async get() {
-            return {
-              workspaceFolder: 'MyWs',
-              configRelativePath: 'Configuration.xml',
-              infobaseIds: ['ib1', 'ib2'],
-              massDeployment: true,
-            };
-          },
-        },
-        infobaseStorage: {
-          async load() {
-            return ['Alpha', 'Beta'].map((name, index) => ({
-              id: `ib${index + 1}`,
-              name,
-              type: 'file',
-              filePath: path.join(work, `${name}.1cd`),
-              hasStoredPassword: false,
-              createdAt: '2020-01-01T00:00:00.000Z',
-            }));
-          },
-          async readPasswordSecret(): Promise<string | undefined> {
-            return undefined;
-          },
-        },
-      } as unknown as ExtensionState;
+      bindingFixture.setDeployData({
+        binding: bindingForDeploy(['ib1', 'ib2'], true),
+        entries: ['Alpha', 'Beta'].map((name, index) =>
+          fileInfobase(`ib${index + 1}`, name, path.join(work, `${name}.1cd`)),
+        ),
+      });
 
-      await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+      await runDeployForConfigurationFromTree(configurationNode(wsRoot), bindingFixture.context(), tree);
 
       const completionWarning = vscodeTestState.warningLog.find((message) =>
         message.includes('Раскатка завершена:'),
@@ -907,35 +845,14 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
         termination,
       });
     };
-    const state = {
-      bindingManager: {
-        async get() {
-          return {
-            workspaceFolder: 'MyWs',
-            configRelativePath: 'Configuration.xml',
-            infobaseIds: ['ib1', 'ib2'],
-            massDeployment: true,
-          };
-        },
-      },
-      infobaseStorage: {
-        async load() {
-          return ['Alpha', 'Beta'].map((name, index) => ({
-            id: `ib${index + 1}`,
-            name,
-            type: 'file',
-            filePath: path.join(work, `${name}.1cd`),
-            hasStoredPassword: false,
-            createdAt: '2020-01-01T00:00:00.000Z',
-          }));
-        },
-        async readPasswordSecret(): Promise<string | undefined> {
-          return undefined;
-        },
-      },
-    } as unknown as ExtensionState;
+    bindingFixture.setDeployData({
+      binding: bindingForDeploy(['ib1', 'ib2'], true),
+      entries: ['Alpha', 'Beta'].map((name, index) =>
+        fileInfobase(`ib${index + 1}`, name, path.join(work, `${name}.1cd`)),
+      ),
+    });
 
-    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+    await runDeployForConfigurationFromTree(configurationNode(wsRoot), bindingFixture.context(), tree);
 
     assert.strictEqual(runnerCalls, 1, 'uncertain import must prevent apply and the next base');
     assert.strictEqual(vscodeTestState.errorLog.length, 0);

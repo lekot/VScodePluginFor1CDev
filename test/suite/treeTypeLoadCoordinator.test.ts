@@ -7,8 +7,13 @@ import { MetadataParser } from '../../src/parsers/metadataParser';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import { optimisticAppendCreatedNode } from '../../src/helpers/optimisticNodeBuilder';
-import { ExtensionState } from '../../src/state/extensionState';
 import { createMetadataTreeLifecycle } from '../../src/extension/metadataTreeLifecycle';
+import {
+  createMetadataTreeLifecycleRuntimeView,
+  createTreeProviderContext,
+} from '../../src/extension/extensionFeatureContexts';
+import { createExtensionStateFixture } from '../helpers/extensionStateFixture';
+import { createFakeExtensionContext } from '../helpers/rightsEditorTestHarness';
 import * as diskCache from '../../src/utils/diskCache';
 import { fakeTreeLoadContext } from '../helpers/fakeTreeLoadContext';
 
@@ -844,7 +849,7 @@ suite('Tree type-index load ownership runtime', () => {
     const pendingLoad = Promise.resolve(provider.getChildren(fixture.catalogs));
     await parseStarted.promise;
     await optimisticAppendCreatedNode(
-      { treeDataProvider: provider } as ExtensionState,
+      createTreeProviderContext(createExtensionStateFixture({ treeDataProvider: provider }).state),
       fixture.catalogs,
       'Optimistic',
       { configPath: fixture.configPath, format: ConfigFormat.Designer },
@@ -880,7 +885,7 @@ suite('Tree type-index load ownership runtime', () => {
     const pendingLoad = Promise.resolve(provider.getChildren(fixture.catalogs));
     await parseStarted.promise;
     await optimisticAppendCreatedNode(
-      { treeDataProvider: provider } as ExtensionState,
+      createTreeProviderContext(createExtensionStateFixture({ treeDataProvider: provider }).state),
       fixture.catalogs,
       'CreatedThenDeleted',
       { configPath: fixture.configPath, format: ConfigFormat.Designer },
@@ -955,9 +960,8 @@ suite('Tree type-index load ownership runtime', () => {
     const provider = createProvider();
     const fixture = createRootFixture('suspended-configuration');
     provider.setRootNodes([fixture.root], new Map([[fixture.root, contextFor(fixture)]]));
-    const state = new ExtensionState();
-    state.treeDataProvider = provider;
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const fixtureState = createExtensionStateFixture({ treeDataProvider: provider });
+    const lifecycle = createMetadataTreeLifecycle(createMetadataTreeLifecycleRuntimeView(fixtureState.state));
     const invalidationStarted = deferred<void>();
     const releaseInvalidation = deferred<void>();
     let invalidation: Promise<void> | undefined;
@@ -1002,13 +1006,11 @@ suite('Tree type-index load ownership runtime', () => {
         [fixtureB.root, contextFor(fixtureB)],
       ]),
     );
-    const state = new ExtensionState();
-    state.treeDataProvider = provider;
-    Object.defineProperty(state, '_extensionContext', {
-      configurable: true,
-      value: { globalStoragePath: path.join(os.tmpdir(), 'tree-type-load-owner-preserved-root-cache') },
-    });
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const fixtureState = createExtensionStateFixture(
+      { treeDataProvider: provider },
+      { ...createFakeExtensionContext(), globalStoragePath: path.join(os.tmpdir(), 'tree-type-load-owner-preserved-root-cache') },
+    );
+    const lifecycle = createMetadataTreeLifecycle(createMetadataTreeLifecycleRuntimeView(fixtureState.state));
     const diskStarted = deferred<void>();
     const releaseDisk = deferred<void>();
     const parserInvalidationStarted = deferred<void>();
@@ -1174,13 +1176,11 @@ suite('Tree type-index load ownership runtime', () => {
     const provider = createProvider();
     const fixture = createRootFixture('disk-await-invalidation');
     provider.setRootNodes([fixture.root], new Map([[fixture.root, contextFor(fixture)]]));
-    const state = new ExtensionState();
-    state.treeDataProvider = provider;
-    Object.defineProperty(state, '_extensionContext', {
-      configurable: true,
-      value: { globalStoragePath: path.join(os.tmpdir(), 'tree-type-load-owner-disk-cache') },
-    });
-    const lifecycle = createMetadataTreeLifecycle(state);
+    const fixtureState = createExtensionStateFixture(
+      { treeDataProvider: provider },
+      { ...createFakeExtensionContext(), globalStoragePath: path.join(os.tmpdir(), 'tree-type-load-owner-disk-cache') },
+    );
+    const lifecycle = createMetadataTreeLifecycle(createMetadataTreeLifecycleRuntimeView(fixtureState.state));
     const diskStarted = deferred<void>();
     const releaseDisk = deferred<void>();
     const releaseParserInvalidation = deferred<void>();

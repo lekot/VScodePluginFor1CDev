@@ -70,11 +70,23 @@ const Uri = {
   },
   // Minimal subset used by core tests:
   // - parse('file:///tmp/x') for equality checks via `toString()`
-  // - `fsPath` extraction is best-effort and only for `file://` URIs.
+  // - `fsPath` extraction decodes file URLs and removes the leading slash from Windows drives.
   parse: (uri: string) => {
-    const m = uri.match(/^file:\/\/\/(.*)$/);
-    const fsPath = m ? `/${m[1]}` : uri;
     const scheme = uri.slice(0, uri.indexOf(':')) || 'file';
+    let fsPath = uri;
+    if (scheme === 'file') {
+      try {
+        const parsed = new URL(uri);
+        fsPath = decodeURIComponent(parsed.pathname);
+        if (parsed.hostname) {
+          fsPath = `//${parsed.hostname}${fsPath}`;
+        } else if (process.platform === 'win32' && /^\/[A-Za-z]:\//u.test(fsPath)) {
+          fsPath = fsPath.slice(1);
+        }
+      } catch {
+        // Keep malformed test URIs inspectable; valid file URLs use the real VS Code-style path above.
+      }
+    }
     return makeMockUri(fsPath, scheme, uri);
   },
 };

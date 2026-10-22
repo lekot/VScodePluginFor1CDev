@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AgentOperations } from '../../src/agent/agentOperations';
 import { calculateRevision, validateIfRev } from '../../src/agent/agentRevision';
-import { registerAgentCommands } from '../../src/agent/agentCommands';
+import { registerAgentCommands } from '../helpers/agentCommandRegistration';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';

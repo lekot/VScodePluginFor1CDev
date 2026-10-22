@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { TreeNode } from '../models/treeNode';
-import { ExtensionState } from '../state/extensionState';
+import type { ExtensionSupportCommandsContext } from '../extension/extensionFeatureContexts';
 import { getSelectedNode } from '../helpers/commandHelpers';
 import { borrowObjectToExtension } from './borrowObjectCommand';
 import { navigateToMainObject, showRelatedObjects } from './extensionNavigator';
@@ -10,7 +10,7 @@ import type { WorkspaceRegistry } from '../services/configurationSession/Workspa
 
 export interface RegisterExtensionCommandsOptions {
   readonly context: vscode.ExtensionContext;
-  readonly state: ExtensionState;
+  readonly state: ExtensionSupportCommandsContext;
   readonly getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
   readonly refreshTree: () => Promise<void>;
 }

@@ -23,7 +23,7 @@ import {
   configureConfigurationMutationGateway,
   runConfigurationMutation,
 } from '../../src/services/configurationSession/configurationMutationGateway';
-import { registerAgentCommands } from '../../src/agent/agentCommands';
+import { registerAgentCommands } from '../helpers/agentCommandRegistration';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
 import type { AgentResult } from '../../src/agent/types';
 import { BindingManager } from '../../src/bindings/bindingManager';

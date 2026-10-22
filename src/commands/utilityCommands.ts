@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
-import { ExtensionState } from '../state/extensionState';
+import type { UtilityCommandsContext } from '../extension/extensionFeatureContexts';
 import { TreeNode } from '../models/treeNode';
 import { MESSAGES } from '../constants/messages';
 import { Logger } from '../utils/logger';
@@ -18,7 +18,7 @@ import { rulesRegistry, metadataConverter } from '../rules';
 import { locateMetadataFile } from '../services/metadataFileLocator';
 
 type RegisterUtilityCommandsDeps = {
-  state: ExtensionState;
+  state: UtilityCommandsContext;
   loadMetadataTree: () => Promise<void>;
   extensionContext: vscode.ExtensionContext;
 };
@@ -88,17 +88,17 @@ export function registerUtilityCommandsLeading(deps: RegisterUtilityCommandsDeps
   if (deps.extensionContext.extensionMode === vscode.ExtensionMode.Test) {
     const getTreeReadyForTestCommand = vscode.commands.registerCommand(
       '1c-metadata-tree.getTreeReadyForTest',
-      (): boolean => !!(state.treeDataProvider?.getRootNode() ?? null)
+      (): boolean => !!(state.treeDataProvider.getRootNode() ?? null)
     );
 
     const getSelectionNameForTestCommand = vscode.commands.registerCommand(
       '1c-metadata-tree.getSelectionNameForTest',
-      (): string | null => state.treeView?.selection?.[0]?.name ?? null
+      (): string | null => state.treeView.selection[0]?.name ?? null
     );
 
     const getPropertiesOpenStateForTestCommand = vscode.commands.registerCommand(
       '1c-metadata-tree.getPropertiesOpenStateForTest',
-      (): boolean => state.propertiesProvider?.isOpen() ?? false
+      (): boolean => state.propertiesProvider.isOpen()
     );
 
     /**
@@ -115,11 +115,9 @@ export function registerUtilityCommandsLeading(deps: RegisterUtilityCommandsDeps
         nodeName: string | null;
         nodeType: string | null;
       }> => {
-        const configRoots = state.treeDataProvider?.getConfigRootPaths() ?? [];
+        const configRoots = state.treeDataProvider.getConfigRootPaths();
         const loc = configRoots.length > 0 ? locateMetadataFile(filePath, configRoots) : null;
-        const node = loc && state.treeDataProvider
-          ? await state.treeDataProvider.findNodeByLocation(loc)
-          : null;
+        const node = loc ? await state.treeDataProvider.findNodeByLocation(loc) : null;
         return {
           configRoots,
           loc,
@@ -176,11 +174,9 @@ export function registerUtilityCommandsTrailing(deps: RegisterUtilityCommandsDep
   const clearCacheCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.clearCache',
     async () => {
-      if (state.extensionContext?.globalStoragePath) {
-        await clearTreeCache(state.extensionContext.globalStoragePath);
-        await MetadataParser.clearTypeContentsCache();
-        vscode.window.showInformationMessage('CDT 41: cache cleared.');
-      }
+      await clearTreeCache(extensionContext.globalStoragePath);
+      await MetadataParser.clearTypeContentsCache();
+      vscode.window.showInformationMessage('CDT 41: cache cleared.');
     }
   );
 

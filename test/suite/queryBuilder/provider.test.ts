@@ -12,10 +12,13 @@ import { QueryBuilderProvider } from '../../../src/queryBuilder/queryBuilderProv
 import { registerQueryBuilderCommands } from '../../../src/queryBuilder/queryBuilderCommands';
 import { QueryPackage } from '../../../src/queryBuilder/sdbl/sdblAst';
 import { QueryMetadataNode } from '../../../src/queryBuilder/metadata/queryMetadataTypes';
-import { MetadataType } from '../../../src/models/treeNode';
+import { MetadataType, type TreeNode } from '../../../src/models/treeNode';
 import { QueryMetadataProvider } from '../../../src/queryBuilder/metadata/queryMetadataProvider';
+import { MetadataTreeDataProvider } from '../../../src/providers/treeDataProvider';
+import type { QueryBuilderContext } from '../../../src/extension/extensionFeatureContexts';
 
 suite('QueryBuilder Provider & Message Handler', () => {
+  const mockPanelCleanups: Array<() => void> = [];
   let warningMessage: string | undefined;
   let errorMessage: string | undefined;
   let statusBarMessage: string | undefined;
@@ -45,6 +48,9 @@ suite('QueryBuilder Provider & Message Handler', () => {
     (vscode.window as any).showWarningMessage = originalShowWarningMessage;
     (vscode.window as any).showErrorMessage = originalShowErrorMessage;
     (vscode.window as any).setStatusBarMessage = originalSetStatusBarMessage;
+    for (const cleanup of mockPanelCleanups.splice(0)) {
+      cleanup();
+    }
   });
 
   function createMockPanel() {
@@ -53,6 +59,14 @@ suite('QueryBuilder Provider & Message Handler', () => {
     let messageListener: ((msg: any) => void) | undefined;
     let disposeListener: (() => void) | undefined;
     let receiveMessageDisposed = false;
+    const cleanup = () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      disposeListener?.();
+    };
+    mockPanelCleanups.push(cleanup);
 
     return {
       panel: {
@@ -78,10 +92,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
           },
         },
         reveal: () => undefined,
-        dispose: () => {
-          disposed = true;
-          disposeListener?.();
-        },
+        dispose: cleanup,
         onDidDispose: (listener: () => void) => {
           disposeListener = listener;
           return { dispose: () => undefined };
@@ -91,10 +102,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
       isDisposed: () => disposed,
       isReceiveMessageDisposed: () => receiveMessageDisposed,
       simulateMessage: (msg: any) => messageListener?.(msg),
-      simulateDispose: () => {
-        disposed = true;
-        disposeListener?.();
-      },
+      simulateDispose: cleanup,
     };
   }
 
@@ -1249,10 +1257,23 @@ suite('QueryBuilder Provider & Message Handler', () => {
   });
 
   suite('QueryBuilderProvider', () => {
-    const fakeContext = {
-      extensionUri: vscode.Uri.file('/fake/extension'),
-      extensionPath: '/fake/extension',
-    } as vscode.ExtensionContext;
+    const providerFixtures: Array<{
+      context: vscode.ExtensionContext;
+      treeDataProvider: MetadataTreeDataProvider;
+    }> = [];
+
+    function createQueryBuilderProvider(
+      treeDataProvider = new MetadataTreeDataProvider()
+    ): QueryBuilderProvider {
+      const context = {
+        extensionUri: vscode.Uri.file('/fake/extension'),
+        extensionPath: '/fake/extension',
+        subscriptions: [] as vscode.Disposable[],
+      } as vscode.ExtensionContext;
+      const queryBuilderContext: QueryBuilderContext = Object.freeze({ treeDataProvider });
+      providerFixtures.push({ context, treeDataProvider });
+      return new QueryBuilderProvider(context, queryBuilderContext);
+    }
 
     let originalActiveEditor: any;
     let originalCreateWebviewPanel: any;
@@ -1265,11 +1286,17 @@ suite('QueryBuilder Provider & Message Handler', () => {
     teardown(() => {
       (vscode.window as any).activeTextEditor = originalActiveEditor;
       (vscode.window as any).createWebviewPanel = originalCreateWebviewPanel;
+      for (const fixture of providerFixtures.splice(0)) {
+        for (const disposable of fixture.context.subscriptions.splice(0)) {
+          disposable.dispose();
+        }
+        fixture.treeDataProvider.dispose();
+      }
     });
 
     test('shows warning message when no text editor is active and returns undefined', async () => {
       (vscode.window as any).activeTextEditor = undefined;
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
 
       const panel = await provider.open(undefined);
       assert.strictEqual(panel, undefined);
@@ -1292,7 +1319,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
         isEmpty: true,
       } as any;
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor);
 
       // Simulate a change in document text/version that happened while user was editing in webview
@@ -1323,7 +1350,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
       };
 
       const editor = createMockEditor('');
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
 
       const panel = await provider.open(editor, 'simple');
 
@@ -1363,7 +1390,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
       const cursor = editor.document.positionAt(initialCode.indexOf(prefix) + prefix.length);
       editor.selection = { active: cursor, start: cursor, end: cursor, isEmpty: true } as any;
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor, 'simple');
 
       editor.updateContent('// Добавленная строка\r\n' + initialCode, 2);
@@ -1430,7 +1457,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
         const cursor = editor.document.positionAt(initialCode.indexOf('ВЫБРАТЬ') + 2);
         editor.selection = { active: cursor, start: cursor, end: cursor, isEmpty: true } as any;
 
-        const provider = new QueryBuilderProvider(fakeContext, {} as any);
+        const provider = createQueryBuilderProvider();
         await provider.open(editor, 'simple');
 
         const changedAssignment = initialCode.replace(
@@ -1494,7 +1521,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
       const cursor = editor.document.positionAt(code.indexOf(prefix) + prefix.length);
       editor.selection = { active: cursor, start: cursor, end: cursor, isEmpty: true } as any;
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor, 'simple');
       await mockPanel.simulateMessage({
         command: 'save',
@@ -1525,7 +1552,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
       const cursor = editor.document.positionAt(insertOffset);
       editor.selection = { active: cursor, start: cursor, end: cursor, isEmpty: true } as any;
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor, 'withProcessing');
       await mockPanel.simulateMessage({
         command: 'save',
@@ -1564,7 +1591,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
         isEmpty: true,
       } as any;
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor, 'withProcessing');
 
       assert.strictEqual(createdTitle, 'Конструктор запроса');
@@ -1597,7 +1624,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
       };
 
       const editor = createMockEditor('');
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
 
       await provider.open(editor);
       assert.strictEqual(createCallCount, 1);
@@ -1615,7 +1642,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
       const sdblCode = 'ВЫБРАТЬ Ссылка КАК Товар ИЗ Справочник.Номенклатура';
       const editor = createMockEditor(sdblCode, undefined, { languageId: 'sdbl', fileName: 'test.sdbl' });
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       const panel = await provider.open(editor, 'simple');
 
       assert.strictEqual(panel, mockPanel.panel);
@@ -1643,7 +1670,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
         () => { editCount++; },
         { languageId: 'sdbl', fileName: 'test.sdbl' }
       );
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor, 'simple');
 
       mockPanel.simulateMessage({ command: 'ready' });
@@ -1662,7 +1689,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
       (vscode.window as any).activeTextEditor = undefined;
 
       const sdblText = 'ВЫБРАТЬ Товар.Ссылка КАК Ссылка ИЗ Справочник.Номенклатура КАК Товар';
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       const savePromise = provider.openText(sdblText);
 
       mockPanel.simulateMessage({ command: 'ready' });
@@ -1686,7 +1713,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
         editCount++;
       });
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor);
       // Second open call
       await provider.open(editor);
@@ -1705,7 +1732,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
       (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
 
       const editor = createMockEditor('');
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor);
 
       assert.strictEqual(mockPanel.isReceiveMessageDisposed(), false);
@@ -1726,7 +1753,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
         isEmpty: true,
       } as any;
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       const panel = await provider.open(editor);
 
       assert.strictEqual(panel, undefined, 'Provider should return undefined on syntax error');
@@ -1804,7 +1831,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
         isEmpty: true,
       } as any;
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor, 'simple');
 
       // While panel is open, delete Вторая() and add top comment
@@ -1863,7 +1890,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
         isEmpty: true,
       } as any;
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor, 'simple');
 
       // While panel is open, shift Вторая() down by inserting lines
@@ -1925,7 +1952,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
         isEmpty: false,
       } as any;
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor, 'withProcessing');
 
       const modifiedAst: QueryPackage = {
@@ -1956,7 +1983,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
       const sdblCode = 'ВЫБРАТЬ 1';
       const editor = createMockEditor(sdblCode, undefined, { languageId: 'sdbl', fileName: 'query.sdbl' });
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor, 'simple');
 
       const modifiedAst: QueryPackage = {
@@ -2005,7 +2032,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
         isEmpty: true,
       } as any;
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor, 'simple');
 
       // While panel is open, delete Else branch and bump document version
@@ -2062,7 +2089,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
         isEmpty: true,
       } as any;
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor, 'simple');
 
       // While panel is open, shift procedure contents down with comments
@@ -2137,7 +2164,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
         isEmpty: true,
       } as any;
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
       await provider.open(editor, 'simple');
 
       // While panel is open, delete Then branch and bump document version
@@ -2173,27 +2200,28 @@ suite('QueryBuilder Provider & Message Handler', () => {
       const outerRootPath = path.resolve('/ws');
       const nestedRootPath = path.resolve('/ws/ConfigurationExtensions/Patch');
 
-      const outerRootNode = {
+      const outerRootNode: TreeNode = {
+        id: 'outer-config',
         name: 'OuterConfig',
         type: MetadataType.Configuration,
-      } as any;
-
-      const nestedRootNode = {
-        name: 'PatchConfig',
-        type: MetadataType.Configuration,
-      } as any;
-
-      const mockTreeProvider = {
-        getRootNodes: () => [outerRootNode, nestedRootNode],
-        getConfigRootPaths: () => [outerRootPath, nestedRootPath],
-        getSupportConfigRootForNode: (node: any) =>
-          node === nestedRootNode ? nestedRootPath : outerRootPath,
-        onDidChangeTreeData: new vscode.EventEmitter<any>().event,
+        properties: {},
       };
 
-      const provider = new QueryBuilderProvider(fakeContext, {
-        treeDataProvider: mockTreeProvider,
-      } as any);
+      const nestedRootNode: TreeNode = {
+        id: 'nested-config',
+        name: 'PatchConfig',
+        type: MetadataType.Configuration,
+        properties: {},
+      };
+
+      let configRootPaths = [outerRootPath, nestedRootPath];
+      const treeDataProvider = new MetadataTreeDataProvider();
+      treeDataProvider.getRootNodes = () => [outerRootNode, nestedRootNode];
+      treeDataProvider.getConfigRootPaths = () => configRootPaths;
+      treeDataProvider.getSupportConfigRootForNode = (node: TreeNode) =>
+        node === nestedRootNode ? nestedRootPath : outerRootPath;
+
+      const provider = createQueryBuilderProvider(treeDataProvider);
 
       // File inside nested patch
       const patchFileEditor = {
@@ -2218,7 +2246,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
       );
 
       // Also verify reverse order of configRoots
-      mockTreeProvider.getConfigRootPaths = () => [nestedRootPath, outerRootPath];
+      configRootPaths = [nestedRootPath, outerRootPath];
       const targetNestedRev = (provider as any).getTargetRootNode(patchFileEditor.document.uri);
       assert.strictEqual(
         targetNestedRev.targetConfigPath,
@@ -2240,7 +2268,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
       const editorA = createMockEditor('Запрос = "ВЫБРАТЬ 1";');
       const editorB = createMockEditor('Запрос = "ВЫБРАТЬ 2";');
 
-      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const provider = createQueryBuilderProvider();
 
       const openAPromise = provider.open(editorA);
       const openBPromise = provider.open(editorB);
@@ -2251,7 +2279,6 @@ suite('QueryBuilder Provider & Message Handler', () => {
     });
 
     test('Finding 15: treeDataProvider onDidChangeTreeData invalidates metadata cache', () => {
-      const emitter = new vscode.EventEmitter<any>();
       let clearCacheCalled = false;
       const originalClearCache = QueryMetadataProvider.clearCache;
       QueryMetadataProvider.clearCache = () => {
@@ -2259,19 +2286,11 @@ suite('QueryBuilder Provider & Message Handler', () => {
       };
 
       try {
-        const mockTreeProvider = {
-          getRootNodes: () => [],
-          getConfigRootPaths: () => [],
-          getSupportConfigRootForNode: () => '',
-          onDidChangeTreeData: emitter.event,
-        };
-
-        const provider = new QueryBuilderProvider(fakeContext, {
-          treeDataProvider: mockTreeProvider,
-        } as any);
+        const treeDataProvider = new MetadataTreeDataProvider();
+        const provider = createQueryBuilderProvider(treeDataProvider);
 
         assert.ok(provider);
-        emitter.fire(undefined);
+        treeDataProvider.refresh();
         assert.strictEqual(clearCacheCalled, true, 'QueryMetadataProvider.clearCache must be called on tree data change');
       } finally {
         QueryMetadataProvider.clearCache = originalClearCache;
@@ -2289,10 +2308,16 @@ suite('QueryBuilder Provider & Message Handler', () => {
         return { dispose: () => undefined };
       };
 
+      const treeDataProvider = new MetadataTreeDataProvider();
+      const fakeContext = {
+        subscriptions: [] as vscode.Disposable[],
+      } as vscode.ExtensionContext;
+      const fakeDeps: { state: QueryBuilderContext } = {
+        state: Object.freeze({ treeDataProvider }),
+      };
+      let disposables: vscode.Disposable[] = [];
       try {
-        const fakeContext = {} as vscode.ExtensionContext;
-        const fakeDeps = { state: {} as any };
-        const disposables = registerQueryBuilderCommands(fakeContext, fakeDeps);
+        disposables = registerQueryBuilderCommands(fakeContext, fakeDeps);
 
         assert.strictEqual(disposables.length, 3);
         assert.strictEqual(registeredCommands.length, 3);
@@ -2300,6 +2325,13 @@ suite('QueryBuilder Provider & Message Handler', () => {
         assert.strictEqual(registeredCommands[1].id, '1c-metadata-tree.queryBuilderWithProcessing');
         assert.strictEqual(registeredCommands[2].id, '1c-metadata-tree.queryBuilderForText');
       } finally {
+        for (const disposable of disposables) {
+          disposable.dispose();
+        }
+        for (const subscription of fakeContext.subscriptions.splice(0)) {
+          subscription.dispose();
+        }
+        treeDataProvider.dispose();
         (vscode.commands as any).registerCommand = originalRegisterCommand;
       }
     });

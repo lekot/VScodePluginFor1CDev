@@ -4,6 +4,21 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { registerEditorCommands } from '../../src/commands/editorCommands';
+import { BindingManager } from '../../src/bindings/bindingManager';
+import { CompositionEditorProvider } from '../../src/compositionEditor/compositionEditorProvider';
+import { CommonAttributeStrategy } from '../../src/compositionEditor/strategies/commonAttributeStrategy';
+import { ExchangePlanStrategy } from '../../src/compositionEditor/strategies/exchangePlanStrategy';
+import { FilterCriterionStrategy } from '../../src/compositionEditor/strategies/filterCriterionStrategy';
+import { FunctionalOptionStrategy } from '../../src/compositionEditor/strategies/functionalOptionStrategy';
+import { SubsystemStrategy } from '../../src/compositionEditor/strategies/subsystemStrategy';
+import { createEditorCommandsContext, type EditorCommandsContext } from '../../src/extension/extensionFeatureContexts';
+import { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
+import { PropertiesProvider } from '../../src/providers/propertiesProvider';
+import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
+import { TypeEditorProvider } from '../../src/providers/typeEditorProvider';
+import { RolesRightsEditorProvider } from '../../src/rolesEditor/rolesRightsEditorProvider';
+import { SubsystemCommandInterfaceProvider } from '../../src/subsystemCommandInterfaceEditor';
+import { XdtoPackageEditorProvider } from '../../src/xdtoPackageEditor';
 import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
 import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
@@ -11,6 +26,69 @@ import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorSe
 import { createRequestConfigurationReload } from '../../src/reload/requestConfigurationReload';
 import { reconcileAfterCommit } from '../../src/reload/reconciliation';
 import { MetadataType } from '../../src/models/treeNode';
+import { createExtensionStateFixture } from '../helpers/extensionStateFixture';
+import { createFakeExtensionContext } from '../helpers/rightsEditorTestHarness';
+
+let editorTreeViewId = 0;
+const editorCommandTestDisposables: vscode.Disposable[] = [];
+
+function createEditorCommandDependencies(
+  treeDataProvider: MetadataTreeDataProvider = new MetadataTreeDataProvider(),
+): { state: EditorCommandsContext; context: vscode.ExtensionContext } {
+  const context = createFakeExtensionContext();
+  const treeView = vscode.window.createTreeView(`editor-commands-test-${editorTreeViewId++}`, {
+    treeDataProvider,
+  });
+  editorCommandTestDisposables.push(treeView);
+  const propertiesProvider = new PropertiesProvider(
+    context,
+    treeDataProvider,
+    new TypeEditorProvider(context),
+  );
+  const compositionDeps = {
+    loadMetadataTree: async () => undefined,
+    invalidateTreeCacheOnly: async () => undefined,
+  };
+  const infobaseStorage = new InfobaseStorageService(context.globalState, context.secrets);
+  editorCommandTestDisposables.push(infobaseStorage);
+  const stateFixture = createExtensionStateFixture({
+    bindingManager: new BindingManager(),
+    commonAttributeCompositionEditorProvider: new CompositionEditorProvider(
+      context, compositionDeps, CommonAttributeStrategy,
+    ),
+    exchangePlanCompositionEditorProvider: new CompositionEditorProvider(
+      context, compositionDeps, ExchangePlanStrategy,
+    ),
+    filterCriterionCompositionEditorProvider: new CompositionEditorProvider(
+      context, compositionDeps, FilterCriterionStrategy,
+    ),
+    functionalOptionCompositionEditorProvider: new CompositionEditorProvider(
+      context, compositionDeps, FunctionalOptionStrategy,
+    ),
+    infobaseStorage,
+    propertiesProvider,
+    rolesRightsEditorProvider: new RolesRightsEditorProvider(context),
+    subsystemCommandInterfaceProvider: new SubsystemCommandInterfaceProvider(context),
+    subsystemCompositionEditorProvider: new CompositionEditorProvider(
+      context, compositionDeps, SubsystemStrategy,
+    ),
+    treeDataProvider,
+    treeView,
+    xdtoPackageEditorProvider: new XdtoPackageEditorProvider(context),
+  }, context);
+  return {
+    state: createEditorCommandsContext(stateFixture.state, context),
+    context,
+  };
+}
+
+function registerEditorCommandsForTest(
+  treeDataProvider?: MetadataTreeDataProvider,
+): vscode.Disposable[] {
+  const disposables = registerEditorCommands(createEditorCommandDependencies(treeDataProvider));
+  editorCommandTestDisposables.push(...disposables);
+  return disposables;
+}
 
 suite('editorCommands', () => {
   const defaultRegisterCommand = vscode.commands.registerCommand.bind(vscode.commands);
@@ -24,6 +102,9 @@ suite('editorCommands', () => {
   });
 
   teardown(() => {
+    for (const disposable of editorCommandTestDisposables.splice(0)) {
+      disposable.dispose();
+    }
     (vscode.commands as any).registerCommand = defaultRegisterCommand;
     (vscode.commands as any).executeCommand = defaultExecuteCommand;
     (vscode.window as any).showWarningMessage = defaultShowWarningMessage;
@@ -36,7 +117,7 @@ suite('editorCommands', () => {
       return { dispose: () => undefined };
     };
 
-    const disposables = registerEditorCommands({ state: {} as any });
+    const disposables = registerEditorCommandsForTest();
 
     assert.strictEqual(disposables.length, ids.length);
     assert.deepStrictEqual(ids, [
@@ -80,7 +161,7 @@ suite('editorCommands', () => {
       return {} as any;
     };
 
-    registerEditorCommands({ state: {} as any });
+    registerEditorCommandsForTest();
 
     const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), '1cv-bsl-'));
     try {
@@ -123,7 +204,7 @@ suite('editorCommands', () => {
       async (_p, plan) => plan.result,
     );
 
-    registerEditorCommands({ state: {} as any });
+    registerEditorCommandsForTest();
 
     const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), '1cv-bsl-gw-'));
     try {
@@ -195,9 +276,9 @@ suite('editorCommands', () => {
     (vscode.window as any).showInputBox = async () => 'NewPackage';
 
     try {
-      registerEditorCommands({
-        state: { treeDataProvider: { getConfigPath: () => root } } as any,
-      });
+      const treeDataProvider = new MetadataTreeDataProvider();
+      treeDataProvider.getConfigPath = () => root;
+      registerEditorCommandsForTest(treeDataProvider);
 
       await handlers['1c-metadata-tree.importXsdAsNewXdtoPackage']();
 
@@ -228,7 +309,7 @@ suite('editorCommands', () => {
       return {} as any;
     };
 
-    registerEditorCommands({ state: {} as any });
+    registerEditorCommandsForTest();
 
     const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), '1cv-xml-'));
     try {
@@ -266,7 +347,7 @@ suite('editorCommands', () => {
       return {} as any;
     };
 
-    registerEditorCommands({ state: {} as any });
+    registerEditorCommandsForTest();
 
     const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), '1cv-form-'));
     try {
@@ -306,7 +387,7 @@ suite('editorCommands', () => {
       return { dispose: () => undefined };
     };
 
-    registerEditorCommands({ state: {} as any });
+    registerEditorCommandsForTest();
 
     const executeCalls: Array<{ command: string; args: unknown[] }> = [];
     (vscode.commands as any).executeCommand = async (command: string, ...args: unknown[]) => {
@@ -373,7 +454,7 @@ suite('editorCommands', () => {
       return undefined;
     };
     (vscode.window as any).activeTextEditor = undefined;
-    registerEditorCommands({ state: { bindingManager: {}, infobaseStorage: {} } as any });
+    registerEditorCommandsForTest();
     await handlers['1c-metadata-tree.validateCurrentXml']();
     assert.ok(warnings.some((m) => m.includes('XML-файл')));
   });
@@ -392,7 +473,7 @@ suite('editorCommands', () => {
     (vscode.window as any).activeTextEditor = {
       document: { uri: vscode.Uri.file('C:/tmp/test.bsl') },
     };
-    registerEditorCommands({ state: { bindingManager: {}, infobaseStorage: {} } as any });
+    registerEditorCommandsForTest();
     await handlers['1c-metadata-tree.validateCurrentXml']();
     assert.ok(warnings.some((m) => m.includes('только для активного XML')));
   });

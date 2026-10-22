@@ -1,10 +1,10 @@
 import * as vscode from 'vscode';
 import { FormatDetector, ConfigFormat } from '../parsers/formatDetector';
 import { TreeNode } from '../models/treeNode';
-import { ExtensionState } from '../state/extensionState';
+import type { TreeProviderContext, TreeSelectionContext } from '../extension/extensionFeatureContexts';
 
 /** Resolve node from command argument or current tree selection. */
-export function getSelectedNode(state: ExtensionState, node?: TreeNode): TreeNode | undefined {
+export function getSelectedNode(state: TreeSelectionContext, node?: TreeNode): TreeNode | undefined {
   if (node) {
     return node;
   }
@@ -22,12 +22,12 @@ export type RequireDesignerFormatOptions = {
  * Resolves config path for `target`, ensures Designer format; otherwise shows a message and returns null.
  */
 export async function requireDesignerFormat(
-  state: ExtensionState,
+  state: TreeProviderContext,
   target: TreeNode,
   options: RequireDesignerFormatOptions
 ): Promise<{ configPath: string; format: ConfigFormat } | null> {
   const configPath =
-    state.treeDataProvider?.getConfigPathForNode(target) ?? state.treeDataProvider?.getConfigPath();
+    state.treeDataProvider.getConfigPathForNode(target) ?? state.treeDataProvider.getConfigPath();
   if (!configPath) {
     void vscode.window.showWarningMessage(options.notLoadedMessage);
     return null;

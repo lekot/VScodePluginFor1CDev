@@ -6,7 +6,7 @@ import {
   ensureR6PlaceholdersForInstanceNode,
   isTabularSectionColumnsContainer,
 } from '../utils/treeNormalization';
-import { ExtensionState } from '../state/extensionState';
+import type { TreeProviderContext } from '../extension/extensionFeatureContexts';
 
 type OptimisticContext = { configPath: string; format: ConfigFormat };
 
@@ -163,13 +163,12 @@ function buildOptimisticCreatedNode(
 }
 
 export async function optimisticAppendCreatedNode(
-  state: ExtensionState,
+  state: TreeProviderContext,
   target: TreeNode,
   name: string,
   ctx: OptimisticContext
 ): Promise<void> {
   const provider = state.treeDataProvider;
-  if (!provider) {return;}
   const activeTarget = provider.resolveNodeForUi(target);
   const trimmed = name.trim();
   const existing = (activeTarget.children || []).some((c) => c.name === trimmed);

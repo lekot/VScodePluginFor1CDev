@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { ExtensionState } from '../state/extensionState';
+import type { QueryBuilderContext } from '../extension/extensionFeatureContexts';
 import { QueryPackage } from './sdbl/sdblAst';
 import { parseSdbl } from './sdbl/sdblParser';
 import { extractBslQuery, offsetToPosition } from './editor/bslQueryExtractor';
@@ -25,16 +25,14 @@ export class QueryBuilderProvider {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly state: ExtensionState
+    private readonly state: QueryBuilderContext
   ) {
-    const treeProvider = this.state?.treeDataProvider as { onDidChangeTreeData?: vscode.Event<unknown> } | undefined;
-    if (treeProvider?.onDidChangeTreeData) {
+    const treeProvider = this.state.treeDataProvider as { onDidChangeTreeData?: vscode.Event<unknown> };
+    if (treeProvider.onDidChangeTreeData) {
       const sub = treeProvider.onDidChangeTreeData(() => {
         QueryMetadataProvider.clearCache();
       });
-      if (this.context?.subscriptions) {
-        this.context.subscriptions.push(sub);
-      }
+      this.context.subscriptions.push(sub);
     }
   }
 

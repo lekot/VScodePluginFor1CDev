@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { ExtensionState } from '../state/extensionState';
+import type { ConfigurationRepositoryContext } from '../extension/extensionFeatureContexts';
 import type { TreeNode } from '../models/treeNode';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import { getSelectedNode } from '../helpers/commandHelpers';
@@ -12,7 +12,7 @@ const COMMAND_PREFIX = '1c-metadata-tree.repository.';
 
 /** Registers phase-1 Designer Configuration Repository commands. */
 export function registerConfigurationRepositoryCommands(
-  state: ExtensionState,
+  state: ConfigurationRepositoryContext,
 ): vscode.Disposable[] {
   const disposables: vscode.Disposable[] = [];
   const register = (suffix: string, handler: (node?: TreeNode) => Promise<void>): vscode.Disposable => {
@@ -47,10 +47,10 @@ export function registerConfigurationRepositoryCommands(
 
 type RepositoryCommand = 'disconnect' | 'lock' | 'unlock' | 'commit' | 'updateObject' | 'updateConfiguration';
 
-async function runConnect(state: ExtensionState, node: TreeNode | undefined): Promise<void> {
+async function runConnect(state: ConfigurationRepositoryContext, node: TreeNode | undefined): Promise<void> {
   const service = state.configurationRepositoryService;
-  const target = node ? service?.targetForNode(node) : undefined;
-  if (!service || !node || !target) {
+  const target = node ? service.targetForNode(node) : undefined;
+  if (!node || !target) {
     void vscode.window.showWarningMessage('Выберите конфигурацию или её объект в дереве.');
     return;
   }
@@ -93,12 +93,12 @@ async function runConnect(state: ExtensionState, node: TreeNode | undefined): Pr
 }
 
 async function runOperation(
-  state: ExtensionState,
+  state: ConfigurationRepositoryContext,
   node: TreeNode | undefined,
   operation: RepositoryCommand,
 ): Promise<void> {
   const service = state.configurationRepositoryService;
-  if (!service || !node) {
+  if (!node) {
     void vscode.window.showWarningMessage('Выберите конфигурацию или её объект в дереве.');
     return;
   }
@@ -147,12 +147,8 @@ async function runOperation(
   );
 }
 
-async function resolveInfobase(state: ExtensionState, target: RepositoryTarget): Promise<InfobaseEntry | undefined> {
+async function resolveInfobase(state: ConfigurationRepositoryContext, target: RepositoryTarget): Promise<InfobaseEntry | undefined> {
   const storage = state.infobaseStorage;
-  if (!storage) {
-    void vscode.window.showErrorMessage('Каталог информационных баз не инициализирован.');
-    return undefined;
-  }
   const entries = (await storage.load()).filter((entry) => entry.type === 'file');
   if (entries.length === 0) {
     void vscode.window.showWarningMessage('Для Хранилища нужна файловая информационная база в каталоге CDT.');
@@ -160,7 +156,7 @@ async function resolveInfobase(state: ExtensionState, target: RepositoryTarget):
   }
 
   const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(target.configRoot));
-  if (workspaceFolder && state.bindingManager) {
+  if (workspaceFolder) {
     const configXml = path.join(target.configRoot, 'Configuration.xml');
     const relative = normalizeConfigRelativePath(path.relative(workspaceFolder.uri.fsPath, configXml));
     const binding = await state.bindingManager.get(workspaceFolder.name, relative, target.extensionName);

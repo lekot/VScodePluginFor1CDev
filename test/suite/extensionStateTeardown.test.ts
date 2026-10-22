@@ -1,193 +1,207 @@
 import * as assert from 'assert';
+import type { ExtensionContext } from 'vscode';
 import '../helpers/vscodeStubRegister';
-import { ExtensionState } from '../../src/state/extensionState';
-import { MetadataWatcherService } from '../../src/services/metadataWatcherService';
-import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
-import type { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
+import { createExtensionState } from '../../src/state/extensionState';
+import type { ExtensionRuntimeHandles } from '../../src/state/extensionStateComposition';
 
-suite('ExtensionState teardown and drain (#202, #205)', () => {
-  test('#202: dispose() is fault-isolated: error in watcher does not block downstream cleanup', async () => {
-    const state = new ExtensionState();
+function createContext(): ExtensionContext {
+  return { subscriptions: [] } as unknown as ExtensionContext;
+}
 
-    let secondWatcherDisposed = false;
-    let agentBridgeStopped = false;
-    let reloadCoordinatorDisposed = false;
+suite('ExtensionState composition facade (#261)', () => {
+  test('creates isolated frozen facades without initialization or mutation methods', () => {
+    const first = createExtensionState();
+    const second = createExtensionState();
+    const firstContext = createContext();
+    const secondContext = createContext();
 
-    const throwingWatcher = {
-      dispose: () => {
-        throw new Error('Watcher disposal exploded');
-      },
-    } as unknown as MetadataWatcherService;
+    assert.notStrictEqual(first.state, second.state);
+    assert.strictEqual(first.state.extensionContext, undefined);
+    assert.strictEqual(second.state.extensionContext, undefined);
+    assert.strictEqual(first.state.workspaceRegistry, null);
+    assert.strictEqual(second.state.workspaceRegistry, null);
+    assert.strictEqual(Object.isFrozen(first.state), true);
+    assert.strictEqual(Object.isFrozen(second.state), true);
 
-    const healthyWatcher = {
-      dispose: () => {
-        secondWatcherDisposed = true;
-      },
-    } as unknown as MetadataWatcherService;
+    for (const method of ['init', 'initialize', 'publish', 'bindDispose', 'stopPublishing', 'clear']) {
+      assert.strictEqual(method in first.state, false, `state facade must not expose ${method}`);
+    }
 
-    state.metadataWatchers = [throwingWatcher, healthyWatcher];
+    const handleKeys = Object.keys(first.state).filter(
+      (key) => key !== 'extensionContext' && key !== 'dispose'
+    ) as Array<keyof ExtensionRuntimeHandles>;
+    for (const key of handleKeys) {
+      const descriptor = Object.getOwnPropertyDescriptor(first.state, key);
+      assert.strictEqual(typeof descriptor?.get, 'function', `${key} must be exposed through a getter`);
+      assert.strictEqual(descriptor?.set, undefined, `${key} must not have a setter`);
+    }
+    assert.strictEqual(Reflect.set(first.state, 'workspaceRegistry', {}), false);
 
-    state.reloadCoordinator = {
-      dispose: () => {
-        reloadCoordinatorDisposed = true;
-      },
-    } as any;
+    first.composition.initialize(firstContext);
+    second.composition.initialize(secondContext);
+    first.composition.bindDispose(async () => undefined);
+    second.composition.bindDispose(async () => undefined);
 
-    state.agentBridge = {
-      stop: async () => {
-        agentBridgeStopped = true;
-      },
-    } as any;
+    const firstRegistry = {} as NonNullable<ExtensionRuntimeHandles['workspaceRegistry']>;
+    const secondRegistry = {} as NonNullable<ExtensionRuntimeHandles['workspaceRegistry']>;
+    first.composition.publish({ workspaceRegistry: firstRegistry });
+    second.composition.publish({ workspaceRegistry: secondRegistry });
+
+    first.composition.clear();
+
+    assert.strictEqual(first.state.extensionContext, undefined);
+    assert.strictEqual(first.state.workspaceRegistry, null);
+    assert.strictEqual(second.state.extensionContext, secondContext);
+    assert.strictEqual(second.state.workspaceRegistry, secondRegistry);
+  });
+
+  test('initialization and disposal ownership are single-use; publishing needs an owner', async () => {
+    const { state, composition } = createExtensionState();
+    const context = createContext();
+    const registry = {} as NonNullable<ExtensionRuntimeHandles['workspaceRegistry']>;
+    let originalOwnerCalls = 0;
+    let rejectedOwnerCalls = 0;
+
+    composition.initialize(context);
+    assert.strictEqual(state.extensionContext, context);
+    assert.throws(() => composition.initialize(createContext()));
+    assert.strictEqual(state.extensionContext, context);
+    assert.throws(() => composition.publish({ workspaceRegistry: registry }));
+
+    composition.bindDispose(async () => {
+      originalOwnerCalls += 1;
+      composition.clear();
+    });
+    assert.throws(() => composition.bindDispose(async () => {
+      rejectedOwnerCalls += 1;
+    }));
+    composition.publish({ workspaceRegistry: registry });
+    assert.strictEqual(state.workspaceRegistry, registry);
+
+    await state.dispose();
+    assert.strictEqual(originalOwnerCalls, 1);
+    assert.strictEqual(rejectedOwnerCalls, 0);
+    assert.strictEqual(state.workspaceRegistry, null);
+  });
+
+  test('clear is idempotent, clears every exposed handle, and does not own teardown', () => {
+    const { state, composition } = createExtensionState();
+    const context = createContext();
+    let ownerCalls = 0;
+    composition.initialize(context);
+    composition.bindDispose(async () => {
+      ownerCalls += 1;
+    });
+
+    const handleKeys = Object.keys(state).filter(
+      (key) => key !== 'extensionContext' && key !== 'dispose'
+    ) as Array<keyof ExtensionRuntimeHandles>;
+    const published = {} as Partial<ExtensionRuntimeHandles>;
+    const expected = new Map<keyof ExtensionRuntimeHandles, object>();
+    for (const key of handleKeys) {
+      const handle = { key };
+      expected.set(key, handle);
+      Object.defineProperty(published, key, {
+        configurable: true,
+        enumerable: true,
+        value: handle,
+      });
+    }
+
+    composition.publish(published);
+    for (const key of handleKeys) {
+      assert.strictEqual(state[key], expected.get(key), `${key} must be published`);
+    }
+
+    composition.stopPublishing();
+    assert.throws(() => composition.publish({}));
+    for (const key of handleKeys) {
+      assert.strictEqual(state[key], expected.get(key), `${key} must remain observable until clear`);
+    }
+
+    composition.clear();
+    composition.clear();
+
+    assert.strictEqual(state.extensionContext, undefined);
+    for (const key of handleKeys) {
+      assert.strictEqual(state[key], null, `${key} must be cleared`);
+    }
+    assert.strictEqual(ownerCalls, 0, 'clear must not dispose resources itself');
+  });
+
+  test('dispose before an owner clears only the empty facade', async () => {
+    const { state, composition } = createExtensionState();
+    const handleKeys = Object.keys(state).filter(
+      (key) => key !== 'extensionContext' && key !== 'dispose'
+    ) as Array<keyof ExtensionRuntimeHandles>;
 
     await state.dispose();
 
-    assert.strictEqual(secondWatcherDisposed, true, 'Second watcher must be disposed even if first throws');
-    assert.strictEqual(reloadCoordinatorDisposed, true, 'Reload coordinator must be disposed');
-    assert.strictEqual(agentBridgeStopped, true, 'Agent bridge must be stopped');
-    assert.strictEqual(state.metadataWatchers.length, 0, 'Metadata watchers must be cleared');
+    assert.strictEqual(state.extensionContext, undefined);
+    for (const key of handleKeys) {
+      assert.strictEqual(state[key], null, `${key} must remain empty`);
+    }
+    assert.throws(() => composition.initialize(createContext()));
+    assert.throws(() => composition.bindDispose(async () => undefined));
+    assert.throws(() => composition.publish({}));
   });
 
-  test('#202: reject in supportRootRegistrationLifecycle does not block supportComposition or downstream teardown', async () => {
-    const state = new ExtensionState();
+  test('dispose closes publication synchronously and waits for the bound owner to clear handles', async () => {
+    const { state, composition } = createExtensionState();
+    let releaseOwner!: () => void;
+    const ownerGate = new Promise<void>((resolve) => {
+      releaseOwner = resolve;
+    });
+    let ownerCalls = 0;
+    const registry = {} as NonNullable<ExtensionRuntimeHandles['workspaceRegistry']>;
 
-    let supportCompositionDisposed = false;
-    let agentBridgeStopped = false;
+    composition.initialize(createContext());
+    composition.bindDispose(async () => {
+      ownerCalls += 1;
+      await ownerGate;
+      composition.clear();
+    });
+    composition.publish({ workspaceRegistry: registry });
 
-    state.supportRootRegistrationLifecycle = {
-      dispose: async () => {
-        throw new Error('Support root registration lifecycle rejected');
-      },
-    } as any;
+    const firstDispose = state.dispose();
+    try {
+      assert.throws(
+        () => composition.publish({
+          workspaceRegistry: {} as NonNullable<ExtensionRuntimeHandles['workspaceRegistry']>,
+        })
+      );
+      assert.strictEqual(state.workspaceRegistry, registry, 'handles remain observable while owner cleanup is pending');
+      assert.strictEqual(state.extensionContext === undefined, false);
+      assert.strictEqual(state.dispose(), firstDispose, 'concurrent dispose calls join the owner cleanup');
 
-    state.supportComposition = {
-      dispose: async () => {
-        await new Promise((r) => setTimeout(r, 10));
-        supportCompositionDisposed = true;
-      },
-    } as any;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(ownerCalls, 1);
+      assert.strictEqual(state.workspaceRegistry, registry);
+    } finally {
+      releaseOwner();
+    }
 
-    state.agentBridge = {
-      stop: async () => {
-        agentBridgeStopped = true;
-      },
-    } as any;
-
-    await state.dispose();
-
-    assert.strictEqual(supportCompositionDisposed, true, 'supportComposition.dispose must be awaited');
-    assert.strictEqual(agentBridgeStopped, true, 'agentBridge must be stopped despite support lifecycle failure');
+    await firstDispose;
+    assert.strictEqual(ownerCalls, 1);
+    assert.strictEqual(state.workspaceRegistry, null);
+    assert.strictEqual(state.extensionContext, undefined);
   });
 
-  test('#205: ExtensionState.dispose() awaits WorkspaceRegistry disposal and mutation drain', async () => {
-    const state = new ExtensionState();
+  test('dispose propagates the owner error unchanged and invokes the owner once', async () => {
+    const { state, composition } = createExtensionState();
+    const primaryCleanupError = new Error('primary root cleanup failure');
+    let ownerCalls = 0;
 
-    let mutationCompleted = false;
-    let registryDisposed = false;
-
-    const mockRegistry = {
-      dispose: async () => {
-        // Simulate waiting for active mutation queue
-        await new Promise((r) => setTimeout(r, 40));
-        mutationCompleted = true;
-        registryDisposed = true;
-      },
-    } as unknown as WorkspaceRegistry;
-
-    (state as any).workspaceRegistry = mockRegistry;
-
-    const disposePromise = state.dispose();
-    assert.strictEqual(mutationCompleted, false, 'dispose must not complete before registry drain');
-
-    await disposePromise;
-    assert.strictEqual(mutationCompleted, true, 'in-flight mutation must drain before dispose completes');
-    assert.strictEqual(registryDisposed, true, 'registry must be disposed');
-  });
-
-  test('#202: synchronous throw in supportComposition does not prevent supportRootRegistrationLifecycle disposal', async () => {
-    const state = new ExtensionState();
-
-    let supportRootDisposed = false;
-    state.supportComposition = {
-      dispose: () => {
-        throw new Error('Support composition threw synchronously');
-      },
-    } as any;
-
-    state.supportRootRegistrationLifecycle = {
-      dispose: () => {
-        supportRootDisposed = true;
-      },
-    } as any;
-
-    await state.dispose();
-    assert.strictEqual(
-      supportRootDisposed,
-      true,
-      'supportRootRegistrationLifecycle must be disposed even if supportComposition throws synchronously'
-    );
-  });
-
-  test('#204: ExtensionState.dispose() awaits agentTaskManager disposal and drains running tasks', async () => {
-    const state = new ExtensionState();
-
-    let taskDrainCompleted = false;
-    let agentTaskManagerDisposed = false;
-
-    (state as any).agentTaskManager = {
-      dispose: async () => {
-        await new Promise((r) => setTimeout(r, 40));
-        taskDrainCompleted = true;
-        agentTaskManagerDisposed = true;
-      },
-    };
-
-    const disposePromise = state.dispose();
-    assert.strictEqual(taskDrainCompleted, false, 'dispose must not complete before agentTaskManager drain');
-
-    await disposePromise;
-    assert.strictEqual(taskDrainCompleted, true, 'running agent tasks must drain before dispose completes');
-    assert.strictEqual(agentTaskManagerDisposed, true, 'agentTaskManager must be disposed');
-  });
-
-  test('#202: dispose() is idempotent on repeated calls', async () => {
-    const state = new ExtensionState();
-
-    let bridgeStopCalls = 0;
-    state.agentBridge = {
-      stop: async () => {
-        bridgeStopCalls += 1;
-      },
-    } as any;
-
-    await state.dispose();
-    assert.strictEqual(bridgeStopCalls, 1);
-
-    await state.dispose();
-    assert.strictEqual(bridgeStopCalls, 1, 'Repeated dispose must be a safe no-op');
-  });
-
-  test('#202: concurrent dispose calls join the active workspace-registry drain', async () => {
-    const state = new ExtensionState();
-    let releaseDrain!: () => void;
-    let drained = false;
-    const gate = new Promise<void>((resolve) => { releaseDrain = resolve; });
-    state.workspaceRegistry = {
-      dispose: async () => {
-        await gate;
-        drained = true;
-      },
-    } as unknown as WorkspaceRegistry;
+    composition.bindDispose(async () => {
+      ownerCalls += 1;
+      throw primaryCleanupError;
+    });
 
     const firstDispose = state.dispose();
     const secondDispose = state.dispose();
-    try {
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      assert.strictEqual(drained, false, 'state.dispose callers must remain pending while the registry drain is blocked');
-    } finally {
-      releaseDrain();
-      await firstDispose;
-    }
-    await secondDispose;
-    assert.strictEqual(drained, true, 'a concurrent state.dispose caller must wait for the active drain');
+    assert.strictEqual(firstDispose, secondDispose);
+    await assert.rejects(firstDispose, (error: unknown) => error === primaryCleanupError);
+    await assert.rejects(secondDispose, (error: unknown) => error === primaryCleanupError);
+    assert.strictEqual(ownerCalls, 1);
   });
 });

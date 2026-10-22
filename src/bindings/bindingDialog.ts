@@ -9,8 +9,10 @@ import {
   detectIbcmdExtensionNameFromConfigRelativePath,
   normalizeConfigRelativePath,
 } from './bindingPathUtils';
-import type { ExtensionState } from '../state/extensionState';
-import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
+import type {
+  BindingDialogCommandsContext,
+  BindingDialogContext,
+} from '../extension/extensionFeatureContexts';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 import {
@@ -494,7 +496,7 @@ export class BindingDialogPanel {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly state: ExtensionState,
+    private readonly state: BindingDialogContext,
   ) {}
 
   dispose(): void {
@@ -506,26 +508,11 @@ export class BindingDialogPanel {
     this.panel = undefined;
   }
 
-  private assertDeps(): { bindingManager: NonNullable<ExtensionState['bindingManager']>; storage: NonNullable<ExtensionState['infobaseStorage']> } | undefined {
-    const bindingManager = this.state.bindingManager;
-    const storage = this.state.infobaseStorage;
-    if (!bindingManager || !storage) {
-      return undefined;
-    }
-    return { bindingManager, storage };
-  }
-
   async show(
     workspaceFolderName: string,
     configRelativePath: string,
     ibcmdExtensionName?: string,
   ): Promise<void> {
-    const deps = this.assertDeps();
-    if (!deps) {
-      void vscode.window.showErrorMessage('Привязки недоступны: хранилище не инициализировано.');
-      return;
-    }
-
     this.workspaceFolderName = workspaceFolderName;
     this.configRelativePath = configRelativePath;
     this.ibcmdExtensionName = (ibcmdExtensionName ?? '').trim();
@@ -549,8 +536,8 @@ export class BindingDialogPanel {
       this.panel.reveal(vscode.ViewColumn.One);
     }
 
-    this.attachCatalogListener(deps.storage);
-    await this.reloadWebview(deps.bindingManager, deps.storage);
+    this.attachCatalogListener(this.state.infobaseStorage);
+    await this.reloadWebview(this.state.bindingManager, this.state.infobaseStorage);
   }
 
   private onPanelDispose(): void {
@@ -561,14 +548,14 @@ export class BindingDialogPanel {
     this.panel = undefined;
   }
 
-  private attachCatalogListener(storage: NonNullable<ExtensionState['infobaseStorage']>): void {
+  private attachCatalogListener(storage: BindingDialogContext['infobaseStorage']): void {
     this.catalogDisposable?.dispose();
     this.catalogDisposable = storage.onDidChangeCatalog(() => {
       void this.pushLabelUpdate(storage);
     });
   }
 
-  private async pushLabelUpdate(storage: NonNullable<ExtensionState['infobaseStorage']>): Promise<void> {
+  private async pushLabelUpdate(storage: BindingDialogContext['infobaseStorage']): Promise<void> {
     if (!this.panel) {
       return;
     }
@@ -578,8 +565,8 @@ export class BindingDialogPanel {
   }
 
   private async reloadWebview(
-    bindingManager: NonNullable<ExtensionState['bindingManager']>,
-    storage: NonNullable<ExtensionState['infobaseStorage']>,
+    bindingManager: BindingDialogContext['bindingManager'],
+    storage: BindingDialogContext['infobaseStorage'],
   ): Promise<void> {
     if (!this.panel) {
       return;
@@ -605,8 +592,7 @@ export class BindingDialogPanel {
       Logger.warn('bindingDialog: invalid message', msg);
       return;
     }
-    const deps = this.assertDeps();
-    if (!deps || !this.panel) {
+    if (!this.panel) {
       return;
     }
 
@@ -617,7 +603,7 @@ export class BindingDialogPanel {
         this.panel.dispose();
         return;
       case 'save': {
-        const catalogIds = new Set((await deps.storage.load()).map((entry) => entry.id));
+        const catalogIds = new Set((await this.state.infobaseStorage.load()).map((entry) => entry.id));
         const infobaseIds = [...new Set(msg.infobaseIds)];
         if (infobaseIds.some((id) => !catalogIds.has(id))) {
           Logger.warn('bindingDialog: save contains an infobase outside the catalog');
@@ -632,9 +618,9 @@ export class BindingDialogPanel {
           ibcmdExtensionName: this.ibcmdExtensionName.trim() || undefined,
         };
         try {
-          await deps.bindingManager.upsert(next);
+          await this.state.bindingManager.upsert(next);
           void vscode.window.showInformationMessage('Привязка сохранена в .vscode/infobase-bindings.json.');
-          void this.state.refreshBindingTreeDecorations?.();
+          void this.state.refreshBindingTreeDecorations();
         } catch (e) {
           Logger.error('bindingDialog: save failed', e);
           void vscode.window.showErrorMessage(`Не удалось сохранить привязку: ${e instanceof Error ? e.message : String(e)}`);
@@ -642,7 +628,7 @@ export class BindingDialogPanel {
         return;
       }
       case 'addFromList': {
-        const entries = await deps.storage.load();
+        const entries = await this.state.infobaseStorage.load();
         const excludeIds = [...new Set(msg.excludeIds)];
         const exclude = new Set(excludeIds);
         const choices = entries.filter((e) => !exclude.has(e.id));
@@ -682,11 +668,7 @@ export class BindingDialogPanel {
   }
 }
 
-export async function runOpenBindingDialog(state: ExtensionState, panel: BindingDialogPanel): Promise<void> {
-  if (!state.bindingManager || !state.infobaseStorage) {
-    void vscode.window.showErrorMessage('Привязки недоступны: хранилище не инициализировано.');
-    return;
-  }
+export async function runOpenBindingDialog(panel: BindingDialogPanel): Promise<void> {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders?.length) {
     void vscode.window.showErrorMessage('Откройте папку workspace, чтобы настроить привязки.');
@@ -719,40 +701,38 @@ export async function runOpenBindingDialog(state: ExtensionState, panel: Binding
 
 export function registerBindingDialogCommands(
   context: vscode.ExtensionContext,
-  state: ExtensionState,
-  treeDataProvider?: MetadataTreeDataProvider | null,
+  dialogContext: BindingDialogContext,
+  commandContext: BindingDialogCommandsContext,
 ): vscode.Disposable[] {
-  const dialog = new BindingDialogPanel(context, state);
+  const dialog = new BindingDialogPanel(context, dialogContext);
   const out: vscode.Disposable[] = [
     vscode.commands.registerCommand('1c-metadata-tree.bindings.openDialog', async () => {
-      await runOpenBindingDialog(state, dialog);
+      await runOpenBindingDialog(dialog);
     }),
   ];
-  if (treeDataProvider) {
-    out.push(
-      vscode.commands.registerCommand('1c-metadata-tree.bindings.openDialogForConfiguration', async (arg: unknown) => {
-        await openBindingDialogForConfigurationFromTree(arg, state, dialog, treeDataProvider);
-      }),
-      vscode.commands.registerCommand('1c-metadata-tree.config.deploy', async (arg: unknown) => {
-        await runDeployForConfigurationFromTree(arg, state, treeDataProvider);
-      }),
-      vscode.commands.registerCommand('1c-metadata-tree.config.deployMultiple', async (arg: unknown) => {
-        await runDeployForConfigurationFromTree(arg, state, treeDataProvider);
-      }),
-      vscode.commands.registerCommand('1c-metadata-tree.config.deploySelectedObjects', async (arg: unknown) => {
-        await runDeploySelectedObjectsFromTree(arg, state.treeView?.selection ?? [], state, treeDataProvider);
-      }),
-      vscode.commands.registerCommand('1c-metadata-tree.config.pullSelectedObjects', async (arg: unknown) => {
-        await runPullSelectedObjectsFromTree(arg, state.treeView?.selection ?? [], state, treeDataProvider);
-      }),
-      vscode.commands.registerCommand('1c-metadata-tree.config.deployChangedFiles', async (arg: unknown) => {
-        await runDeployChangedFilesFromTree(arg, state, treeDataProvider);
-      }),
-      vscode.commands.registerCommand('1c-metadata-tree.config.configExportStatus', async (arg: unknown) => {
-        await runConfigExportStatusFromTree(arg, state, treeDataProvider);
-      }),
-    );
-  }
+  out.push(
+    vscode.commands.registerCommand('1c-metadata-tree.bindings.openDialogForConfiguration', async (arg: unknown) => {
+      await openBindingDialogForConfigurationFromTree(arg, commandContext, dialog, commandContext.treeDataProvider);
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.config.deploy', async (arg: unknown) => {
+      await runDeployForConfigurationFromTree(arg, commandContext, commandContext.treeDataProvider);
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.config.deployMultiple', async (arg: unknown) => {
+      await runDeployForConfigurationFromTree(arg, commandContext, commandContext.treeDataProvider);
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.config.deploySelectedObjects', async (arg: unknown) => {
+      await runDeploySelectedObjectsFromTree(arg, commandContext.treeView.selection, commandContext, commandContext.treeDataProvider);
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.config.pullSelectedObjects', async (arg: unknown) => {
+      await runPullSelectedObjectsFromTree(arg, commandContext.treeView.selection, commandContext, commandContext.treeDataProvider);
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.config.deployChangedFiles', async (arg: unknown) => {
+      await runDeployChangedFilesFromTree(arg, commandContext, commandContext.treeDataProvider);
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.config.configExportStatus', async (arg: unknown) => {
+      await runConfigExportStatusFromTree(arg, commandContext, commandContext.treeDataProvider);
+    }),
+  );
   out.push({ dispose: () => dialog.dispose() });
   return out;
 }

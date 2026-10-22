@@ -5,7 +5,9 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { ExtensionState } from '../state/extensionState';
+import type { ExtensionState } from '../state/extensionState';
+import type { ExtensionStateAssembly, ExtensionStateCompositionPort } from '../state/extensionStateComposition';
+import { createRequestReloadContext } from './extensionFeatureContexts';
 import type { RecoveryOutcome } from '../infobases/infobaseCatalogMutationService';
 import type {
   MetadataTreeLifecycle,
@@ -91,6 +93,38 @@ import { registerAllCommands } from '../commands';
 import { MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { getActivationSubscriptionScope } from './activationSubscriptionScope';
+import {
+  createAgentFeatureContext,
+  createBindingDialogCommandsContext,
+  createBindingDialogContext,
+  createBindingTreeDecorationsContext,
+  createCfCommandsContext,
+  createConfigurationCompareContext,
+  createConfigurationRepositoryContext,
+  createEditorCommandsContext,
+  createElementCommandsContext,
+  createExtensionSupportCommandsContext,
+  createFilterCommandsContext,
+  createInfobaseTreeCommandsContext,
+  createTreeNavigationContext,
+  createTreeWizardContext,
+  createUtilityCommandsContext,
+  createSupportFeatureContext,
+} from './extensionFeatureContexts';
+import { createSupportFeatureComposition } from './supportFeatureComposition';
+import { createAgentFeatureComposition } from './agentFeatureComposition';
+import type { RegisterSupportCommandsDeps } from '../support/supportCommands';
+import {
+  CompositionContextSubscriptions,
+  createCompositionContext,
+} from './extensionContextComposition';
+import {
+  ExtensionCompositionOwnership,
+  type CompositionResourceOptions,
+  type CompositionQuiescePhase,
+} from './extensionCompositionOwnership';
+
+export type { CompositionResourceOptions, CompositionQuiescePhase } from './extensionCompositionOwnership';
 
 export interface ConfigurationInfrastructure {
   readonly workspaceRegistry: WorkspaceRegistry;
@@ -134,60 +168,6 @@ export interface CompositionPipelineStages {
   ) => Promise<void> | void;
 }
 
-class CompositionRootSubscriptions extends Array<vscode.Disposable> {
-  static get [Symbol.species](): ArrayConstructor {
-    return Array;
-  }
-
-  constructor(private readonly adopt: (disposable: vscode.Disposable) => void) {
-    super();
-  }
-
-  override push(...items: vscode.Disposable[]): number {
-    const length = super.push(...items);
-    for (const disposable of items) {
-      this.adopt(disposable);
-    }
-    return length;
-  }
-}
-
-function createCompositionContext(
-  source: vscode.ExtensionContext,
-  subscriptions: vscode.Disposable[],
-): vscode.ExtensionContext {
-  const target = Object.create(Object.getPrototypeOf(source)) as object;
-  const boundMethods = new WeakMap<object, unknown>();
-  return new Proxy(target, {
-    get: (_target, property) => {
-      if (property === 'subscriptions') {
-        return subscriptions;
-      }
-      const value = Reflect.get(source, property, source) as unknown;
-      if (typeof value !== 'function') {
-        return value;
-      }
-      const existing = boundMethods.get(value);
-      if (existing) {
-        return existing;
-      }
-      const bound = value.bind(source);
-      boundMethods.set(value, bound);
-      return bound;
-    },
-    set: (_target, property, value) => Reflect.set(source, property, value, source),
-    has: (_target, property) => property === 'subscriptions' || Reflect.has(source, property),
-    ownKeys: () => Reflect.ownKeys(source),
-    getOwnPropertyDescriptor: (_target, property) => {
-      if (property === 'subscriptions') {
-        return { configurable: true, enumerable: true, value: subscriptions, writable: true };
-      }
-      const descriptor = Reflect.getOwnPropertyDescriptor(source, property);
-      return descriptor ? { ...descriptor, configurable: true } : undefined;
-    },
-  }) as vscode.ExtensionContext;
-}
-
 async function syncInfobaseTreeViewMessage(state: ExtensionState): Promise<void> {
   const storage = state.infobaseStorage;
   const view = state.infobaseTreeView;
@@ -206,42 +186,63 @@ async function syncInfobaseTreeViewMessage(state: ExtensionState): Promise<void>
 }
 
 export class ExtensionCompositionRoot implements vscode.Disposable {
-  private readonly _disposables: Array<{ name: string; dispose: () => Promise<void> | void }> = [];
-  private readonly _registeredDisposables = new Set<unknown>();
-  private readonly _pendingLateDisposals = new Set<Promise<void>>();
+  private readonly _ownership: ExtensionCompositionOwnership;
   private readonly _workspaceFolderLifecycle: MetadataWorkspaceFolderLifecycle;
+  private _activationSubscriptionScope: ReturnType<typeof getActivationSubscriptionScope> = undefined;
   private readonly _featureLifecycle: MetadataTreeFeatureLifecycle;
   private _isDisposing = false;
   private _rollbackPromise: Promise<void> | null = null;
   private _disposePromise: Promise<void> | null = null;
+  private _quiescePromise: Promise<void> | null = null;
   private _compositionPromise: Promise<void> | null = null;
   private _infra: ConfigurationInfrastructure | null = null;
   private _requestConfigurationReload: RequestConfigurationReload | null = null;
+  private _supportCommandDependencies: RegisterSupportCommandsDeps | null = null;
   private readonly context: vscode.ExtensionContext;
-  private readonly _ownedContextSubscriptions: CompositionRootSubscriptions;
+  private readonly _ownedContextSubscriptions: CompositionContextSubscriptions;
+  private _subscriptionQuiescePhase: CompositionQuiescePhase | undefined;
+  private readonly state: ExtensionState;
+  private readonly composition: ExtensionStateCompositionPort;
 
   constructor(
     context: vscode.ExtensionContext,
-    private readonly state: ExtensionState,
+    assembly: ExtensionStateAssembly,
     private readonly lifecycle: MetadataTreeLifecycle,
     private readonly stages?: CompositionPipelineStages,
   ) {
-    this.state.enableCompositionManagedMode();
-    this._ownedContextSubscriptions = new CompositionRootSubscriptions((disposable) => {
-      this.registerDisposable('extension context subscription', disposable);
+    this.state = assembly.state;
+    this.composition = assembly.composition;
+    this._ownership = new ExtensionCompositionOwnership((message, error) => this.logCleanupError(message, error));
+    this.composition.bindDispose(() => this.dispose());
+    this._ownedContextSubscriptions = new CompositionContextSubscriptions((disposable) => {
+      const options = this._subscriptionQuiescePhase
+        ? { quiescePhase: this._subscriptionQuiescePhase }
+        : undefined;
+      this.registerDisposable('extension context subscription', disposable, options);
     });
     this.context = createCompositionContext(context, this._ownedContextSubscriptions);
     const subscriptionScope = getActivationSubscriptionScope(context);
     if (subscriptionScope) {
       subscriptionScope.bind(this);
-      this.registerDisposable('activation subscription scope', () => subscriptionScope.close());
+      this.registerDisposable('activation subscription scope', () => subscriptionScope.close(), {
+        quiescePhase: 'ingress',
+      });
+      this._activationSubscriptionScope = subscriptionScope;
     }
 
     this._workspaceFolderLifecycle = registerMetadataWorkspaceFolderLifecycle(lifecycle);
+    this.registerDisposable(
+      'workspace folder lifecycle',
+      () => this._workspaceFolderLifecycle.dispose(),
+    );
+    this.registerQuiesce('workspace folder lifecycle', 'producers', () => this._workspaceFolderLifecycle.quiesce());
     this._featureLifecycle = {
       invalidateTreeCacheOnly: lifecycle.invalidateTreeCacheOnly,
       loadMetadataTree: () => this._workspaceFolderLifecycle.loadMetadataTree(),
       reloadOrchestratorHandlers: lifecycle.reloadOrchestratorHandlers,
+      get metadataWatchers() {
+        return lifecycle.metadataWatchers;
+      },
       dispose: lifecycle.dispose,
     };
   }
@@ -249,28 +250,17 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
   registerDisposable(
     name: string,
     disposable: vscode.Disposable | { dispose: () => Promise<void> | void } | (() => Promise<void> | void),
+    options: CompositionResourceOptions = {},
   ): void {
-    if (this._registeredDisposables.has(disposable)) {
-      return;
-    }
-    this._registeredDisposables.add(disposable);
+    this._ownership.registerDisposable(name, disposable, options);
+  }
 
-    const dispose = typeof disposable === 'function'
-      ? disposable
-      : () => disposable.dispose();
-    if (this._isDisposing) {
-      this.trackLateDisposal(name, dispose);
-      return;
-    }
-
-    if (typeof disposable === 'function') {
-      this._disposables.push({ name, dispose: disposable });
-    } else {
-      this._disposables.push({
-        name,
-        dispose,
-      });
-    }
+  registerQuiesce(
+    name: string,
+    phase: CompositionQuiescePhase,
+    action: () => Promise<void> | void,
+  ): void {
+    this._ownership.registerQuiesce(name, phase, action);
   }
 
   get infrastructure(): ConfigurationInfrastructure | null {
@@ -328,6 +318,11 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       }
       this.throwIfDisposing();
 
+      if (!this.stages) {
+        this.defaultInitSupportServices(infra);
+      }
+      this.throwIfDisposing();
+
       // 5. Infobase UI & Bindings Features
       if (this.stages?.initInfobaseFeatures) {
         await this.stages.initInfobaseFeatures(this);
@@ -353,14 +348,8 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       this.throwIfDisposing();
     } catch (err) {
       if (!this._isDisposing) {
-        Logger.error('ExtensionCompositionRoot: composition failed, rolling back partial state', err);
+        this.logCleanupError('ExtensionCompositionRoot: composition failed, rolling back partial state', err);
         await this.rollback();
-        try {
-          await this.state.dispose();
-        } catch (error) {
-          Logger.error('ExtensionCompositionRoot state fallback disposal failed', error);
-        }
-        await this.drainLateDisposals();
       }
       throw err;
     }
@@ -376,71 +365,70 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     if (this._rollbackPromise) {
       return this._rollbackPromise;
     }
-    this._isDisposing = true;
-    this._rollbackPromise = this.performRollback();
+    const quiescence = this.startQuiescence();
+    this._rollbackPromise = Promise.resolve().then(async () => {
+      await quiescence;
+      await this.performRollback();
+    });
     return this._rollbackPromise;
   }
 
   private async performRollback(): Promise<void> {
-    const errors: unknown[] = [];
-    try {
-      await this._workspaceFolderLifecycle.dispose();
-    } catch (err) {
-      errors.push(err);
-      Logger.error('ExtensionCompositionRoot rollback error for workspaceFolderLifecycle', err);
-    }
-    const items = this._disposables.splice(0).reverse();
+    await this._ownership.disposeResources();
 
-    for (const item of items) {
-      try {
-        await item.dispose();
-      } catch (err) {
-        errors.push(err);
-        Logger.error(`ExtensionCompositionRoot rollback error for ${item.name}`, err);
-      }
-    }
-
-    this.state.releaseCompositionRootReferences();
     setConfigurationMutationEngine(undefined);
     this._infra = null;
     this._requestConfigurationReload = null;
-    await this.drainLateDisposals();
+    this.composition.clear();
   }
 
   dispose(): Promise<void> {
     if (this._disposePromise) {
       return this._disposePromise;
     }
-    this._isDisposing = true;
+    const quiescence = this.startQuiescence();
     this._disposePromise = Promise.resolve().then(async () => {
       if (this._compositionPromise) {
         await this._compositionPromise.catch(() => undefined);
       }
+      // Keep the synchronous fence, then wait for both in-flight composition and its quiescence
+      // drain before rollback disposes resources. rollback awaits this same memoized drain too.
+      await quiescence;
       await this.rollback();
-      try {
-        await this.state.dispose();
-      } catch (error) {
-        Logger.error('ExtensionCompositionRoot state fallback disposal failed', error);
-      }
-      await this.drainLateDisposals();
     });
     return this._disposePromise;
   }
 
-  private trackLateDisposal(name: string, dispose: () => Promise<void> | void): void {
-    const pending = Promise.resolve()
-      .then(dispose)
-      .catch((error) => {
-        Logger.error(`ExtensionCompositionRoot late disposal error for ${name}`, error);
-      })
-      .then(() => undefined)
-      .finally(() => this._pendingLateDisposals.delete(pending));
-    this._pendingLateDisposals.add(pending);
+  private startQuiescence(): Promise<void> {
+    if (this._quiescePromise) {
+      return this._quiescePromise;
+    }
+    this._isDisposing = true;
+    this.composition.stopPublishing();
+    this._activationSubscriptionScope?.close();
+    this._workspaceFolderLifecycle?.stopAccepting();
+    this._quiescePromise = this._ownership.beginQuiescence();
+    return this._quiescePromise;
   }
 
-  private async drainLateDisposals(): Promise<void> {
-    while (this._pendingLateDisposals.size > 0) {
-      await Promise.all([...this._pendingLateDisposals]);
+  private async withSubscriptionQuiescePhase<T>(
+    phase: CompositionQuiescePhase,
+    action: () => Promise<T> | T,
+  ): Promise<T> {
+    const previous = this._subscriptionQuiescePhase;
+    this._subscriptionQuiescePhase = phase;
+    try {
+      return await action();
+    } finally {
+      this._subscriptionQuiescePhase = previous;
+    }
+  }
+
+  private logCleanupError(message: string, error: unknown): void {
+    try {
+      Logger.error(message, error);
+    } catch {
+      // Diagnostics must not interrupt resource cleanup or replace its primary error.
     }
   }
 
@@ -468,18 +456,16 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     this.registerDisposable('ibcmdService', () => resetIbcmdService());
     this.registerDisposable('formsContext', () => FormsContext.get().dispose());
 
-    this.state.infobaseStorage = storage;
-    this.state.bindingManager = bindingManager;
-    this.state.infobaseManager = infobaseManager;
+    this.composition.publish({ infobaseStorage: storage, bindingManager, infobaseManager });
 
     let recovery = this.state.infobaseMutationRecovery;
     if (!recovery) {
       recovery = mutationService.recoverPendingMutations();
-      this.state.infobaseMutationRecovery = recovery;
+      this.registerDisposable('infobaseMutationRecovery', async () => {
+        await recovery;
+      });
+      this.composition.publish({ infobaseMutationRecovery: recovery });
     }
-    this.registerDisposable('infobaseMutationRecovery', async () => {
-      await recovery;
-    });
 
     let outcome: RecoveryOutcome;
     try {
@@ -489,7 +475,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       outcome = { recoveredCount: 0, errors: [message] };
       Logger.error('Infobase catalog mutation recovery failed', error);
     }
-    this.state.infobaseRecoveryOutcome = outcome;
+    this.composition.publish({ infobaseRecoveryOutcome: outcome });
     if (outcome.errors.length > 0) {
       Logger.warn('Infobase catalog recovery is required; read-only catalog features remain available.', outcome.errors);
     }
@@ -517,7 +503,6 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       path.join(this.context.globalStorageUri.fsPath, 'configuration-identities.v1.json'),
       createSession,
     );
-    this.state.workspaceRegistry = configurationRegistry;
     const registryCoordinator = new WorkspaceRegistryCoordinator(configurationRegistry, {
       getWorkspaceFolders: () =>
         (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
@@ -527,12 +512,15 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     this.registerDisposable('registryCoordinator', {
       dispose: () => registryCoordinator.dispose(),
     });
+    this.registerQuiesce('registryCoordinator', 'sessions', () => registryCoordinator.quiesce());
+
+    this.composition.publish({ workspaceRegistry: configurationRegistry });
 
     const contextResolver = new ConfigurationContextResolver(registryCoordinator, {
       getWorkspaceFolderForPath: (filePath) =>
         vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath,
     });
-    this.state.configurationContextResolver = contextResolver;
+    this.composition.publish({ configurationContextResolver: contextResolver });
 
     const getConfigurationRegistry = async (): Promise<WorkspaceRegistry> => {
       return registryCoordinator.getRegistry();
@@ -543,7 +531,9 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
         Logger.error('Workspace registry refresh after folder change failed', error);
       });
     });
-    this.registerDisposable('workspaceFoldersChangeSub', workspaceFoldersChangeSub);
+    this.registerDisposable('workspaceFoldersChangeSub', workspaceFoldersChangeSub, {
+      quiescePhase: 'ingress',
+    });
 
     const runConfigurationMutation = async <T>(
       configPath: string,
@@ -600,7 +590,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       runMutationWithOutcome: runConfigurationMutationOutcome,
       runPlanWithOutcome: runConfigurationPlanOutcome,
     });
-    this.state.configurationMutationEngine = mutationEngine;
+    this.composition.publish({ configurationMutationEngine: mutationEngine });
     setConfigurationMutationEngine(mutationEngine);
 
     return {
@@ -623,18 +613,20 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     );
     this.registerDisposable('bslSignatureHelpProvider', registerBslSignatureHelpProvider());
 
+    this.registerQuiesce('metadata tree lifecycle', 'producers', () => this.lifecycle.quiesce());
     this.registerDisposable('lifecycle', { dispose: this.lifecycle.dispose });
 
     const treeDataProvider = new MetadataTreeDataProvider();
-    this.state.treeDataProvider = treeDataProvider;
+    this.registerDisposable('tree data provider', treeDataProvider);
+    this.composition.publish({ treeDataProvider });
 
     const treeView = vscode.window.createTreeView('1c-metadata-tree', {
       treeDataProvider,
       showCollapseAll: true,
       canSelectMany: true,
     });
-    this.state.treeView = treeView;
     this.registerDisposable('treeView', treeView);
+    this.composition.publish({ treeView });
 
     treeDataProvider.setMessageUpdater((msg) => {
       if (this.state.treeView) {
@@ -655,12 +647,12 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
         return outcome;
       },
     );
-    this.state.reloadCoordinator = reloadCoordinator;
     this.registerDisposable('reloadCoordinator', {
       dispose: () => reloadCoordinator.dispose(),
     });
+    this.composition.publish({ reloadCoordinator });
 
-    this._requestConfigurationReload = createRequestConfigurationReload(this.state);
+    this._requestConfigurationReload = createRequestConfigurationReload(createRequestReloadContext(this.state));
   }
 
   private async defaultInitEditors(): Promise<void> {
@@ -670,40 +662,40 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     };
 
     const typeEditor = new TypeEditorProvider(this.context);
-    this.state.typeEditorProvider = typeEditor;
     this.registerDisposable('typeEditorProvider', typeEditor);
+    this.composition.publish({ typeEditorProvider: typeEditor });
 
     const rolesEditor = new RolesRightsEditorProvider(this.context);
-    this.state.rolesRightsEditorProvider = rolesEditor;
     this.registerDisposable('rolesRightsEditorProvider', rolesEditor);
+    this.composition.publish({ rolesRightsEditorProvider: rolesEditor });
 
     const subsystemComp = new CompositionEditorProvider(this.context, compositionDeps, SubsystemStrategy);
-    this.state.subsystemCompositionEditorProvider = subsystemComp;
     this.registerDisposable('subsystemCompositionEditorProvider', subsystemComp);
+    this.composition.publish({ subsystemCompositionEditorProvider: subsystemComp });
 
     const exchangePlanComp = new CompositionEditorProvider(this.context, compositionDeps, ExchangePlanStrategy);
-    this.state.exchangePlanCompositionEditorProvider = exchangePlanComp;
     this.registerDisposable('exchangePlanCompositionEditorProvider', exchangePlanComp);
+    this.composition.publish({ exchangePlanCompositionEditorProvider: exchangePlanComp });
 
     const commonAttrComp = new CompositionEditorProvider(this.context, compositionDeps, CommonAttributeStrategy);
-    this.state.commonAttributeCompositionEditorProvider = commonAttrComp;
     this.registerDisposable('commonAttributeCompositionEditorProvider', commonAttrComp);
+    this.composition.publish({ commonAttributeCompositionEditorProvider: commonAttrComp });
 
     const functionalOptionComp = new CompositionEditorProvider(this.context, compositionDeps, FunctionalOptionStrategy);
-    this.state.functionalOptionCompositionEditorProvider = functionalOptionComp;
     this.registerDisposable('functionalOptionCompositionEditorProvider', functionalOptionComp);
+    this.composition.publish({ functionalOptionCompositionEditorProvider: functionalOptionComp });
 
     const filterCriterionComp = new CompositionEditorProvider(this.context, compositionDeps, FilterCriterionStrategy);
-    this.state.filterCriterionCompositionEditorProvider = filterCriterionComp;
     this.registerDisposable('filterCriterionCompositionEditorProvider', filterCriterionComp);
+    this.composition.publish({ filterCriterionCompositionEditorProvider: filterCriterionComp });
 
     const subsystemCmd = new SubsystemCommandInterfaceProvider(this.context);
-    this.state.subsystemCommandInterfaceProvider = subsystemCmd;
     this.registerDisposable('subsystemCommandInterfaceProvider', subsystemCmd);
+    this.composition.publish({ subsystemCommandInterfaceProvider: subsystemCmd });
 
     const xdtoEditor = new XdtoPackageEditorProvider(this.context);
-    this.state.xdtoPackageEditorProvider = xdtoEditor;
     this.registerDisposable('xdtoPackageEditorProvider', xdtoEditor);
+    this.composition.publish({ xdtoPackageEditorProvider: xdtoEditor });
 
     const propertiesProvider = new PropertiesProvider(
       this.context,
@@ -719,8 +711,8 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
         this.state.formEditorProvider?.createEventHandler(payload);
       },
     );
-    this.state.propertiesProvider = propertiesProvider;
     this.registerDisposable('propertiesProvider', propertiesProvider);
+    this.composition.publish({ propertiesProvider });
 
     if (this.state.treeView) {
       const treeSelectionDisposable = this.state.treeView.onDidChangeSelection(async (e) => {
@@ -745,8 +737,8 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
         void this.state.propertiesProvider.showFormSelectionProperties(payload);
       }
     });
-    this.state.formEditorProvider = formEditor;
     this.registerDisposable('formEditorProviderInstance', formEditor);
+    this.composition.publish({ formEditorProvider: formEditor });
     this.registerDisposable(
       'formEditorProvider',
       vscode.window.registerCustomEditorProvider('1c-form-editor', formEditor, {
@@ -755,7 +747,6 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     );
 
     const mxlPreview = new MxlPreviewProvider();
-    this.state.mxlPreviewProvider = mxlPreview;
     this.registerDisposable(
       'mxlPreviewProvider',
       vscode.window.registerCustomEditorProvider('1c-mxl-preview', mxlPreview, {
@@ -763,6 +754,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
         supportsMultipleEditorsPerDocument: true,
       }),
     );
+    this.composition.publish({ mxlPreviewProvider: mxlPreview });
 
     this.registerDisposable(
       'templateEditorProvider',
@@ -777,49 +769,70 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     }
   }
 
+  private defaultInitSupportServices(infra: ConfigurationInfrastructure): void {
+    const support = createSupportFeatureComposition({
+      context: createSupportFeatureContext(this.state, this.context),
+      getConfigurationRegistry: infra.getConfigurationRegistry,
+      runConfigurationMutation: infra.runConfigurationMutation,
+      registerDisposable: (name, disposable, options) => {
+        this.registerDisposable(name, disposable, options);
+      },
+      registerQuiesce: (name, phase, action) => {
+        this.registerQuiesce(name, phase, action);
+      },
+    });
+    this.composition.publish(support.handles);
+    this._supportCommandDependencies = support.commandDependencies;
+  }
+
   private async defaultInitInfobaseFeatures(): Promise<void> {
     for (const disposable of registerIbcmdInfobaseHooks()) {
       this.registerDisposable('ibcmdInfobaseHook', disposable);
     }
 
-    if (this.state.infobaseStorage) {
-      const storage = this.state.infobaseStorage;
-      const infobaseTreeProvider = new InfobaseTreeDataProvider(storage);
-      this.state.infobaseTreeProvider = infobaseTreeProvider;
-
-      const infobaseTreeView = vscode.window.createTreeView(INFOBASE_TREE_VIEW_ID, {
-        treeDataProvider: infobaseTreeProvider,
-        showCollapseAll: true,
-      });
-      this.state.infobaseTreeView = infobaseTreeView;
-      this.registerDisposable('infobaseTreeView', infobaseTreeView);
-      void syncInfobaseTreeViewMessage(this.state);
-
-      const catalogChangeSub = storage.onDidChangeCatalog(() => {
-        infobaseTreeProvider.refresh();
-        void syncInfobaseTreeViewMessage(this.state);
-      });
-      this.registerDisposable('catalogChangeSub', catalogChangeSub);
-
-      const treeCommands = registerInfobaseTreeCommands(this.state);
-      for (const cmd of treeCommands) {
-        this.registerDisposable('infobaseTreeCommand', cmd);
-      }
-
-      this.state.refreshBindingTreeDecorations = () => rebuildBindingDecorationsForTree(this.state);
-      const bindingDialogCommands = registerBindingDialogCommands(
-        this.context,
-        this.state,
-        this.state.treeDataProvider,
-      );
-      for (const cmd of bindingDialogCommands) {
-        this.registerDisposable('bindingDialogCommand', cmd);
-      }
-
-      const bindingSyncDisposable = registerBindingDecorationSync(this.state);
-      this.registerDisposable('bindingDecorationSync', bindingSyncDisposable);
-      void rebuildBindingDecorationsForTree(this.state);
+    const storage = this.state.infobaseStorage;
+    const manager = this.state.infobaseManager;
+    if (!storage || !manager) {
+      throw new Error('Infobase UI requires its composition handles before registration.');
     }
+    const infobaseTreeProvider = new InfobaseTreeDataProvider(storage);
+    this.composition.publish({ infobaseTreeProvider });
+
+    const infobaseTreeView = vscode.window.createTreeView(INFOBASE_TREE_VIEW_ID, {
+      treeDataProvider: infobaseTreeProvider,
+      showCollapseAll: true,
+    });
+    this.registerDisposable('infobaseTreeView', infobaseTreeView);
+    this.composition.publish({ infobaseTreeView });
+    void syncInfobaseTreeViewMessage(this.state);
+
+    const catalogChangeSub = storage.onDidChangeCatalog(() => {
+      infobaseTreeProvider.refresh();
+      void syncInfobaseTreeViewMessage(this.state);
+    });
+    this.registerDisposable('catalogChangeSub', catalogChangeSub, { quiescePhase: 'producers' });
+
+    const infobaseTreeContext = createInfobaseTreeCommandsContext(this.state);
+    for (const cmd of registerInfobaseTreeCommands(infobaseTreeContext)) {
+      this.registerDisposable('infobaseTreeCommand', cmd, { quiescePhase: 'ingress' });
+    }
+
+    const decorationsContext = createBindingTreeDecorationsContext(this.state);
+    this.composition.publish({
+      refreshBindingTreeDecorations: () => rebuildBindingDecorationsForTree(decorationsContext),
+    });
+    const bindingDialogCommands = registerBindingDialogCommands(
+      this.context,
+      createBindingDialogContext(this.state),
+      createBindingDialogCommandsContext(this.state),
+    );
+    for (const cmd of bindingDialogCommands) {
+      this.registerDisposable('bindingDialogCommand', cmd, { quiescePhase: 'ingress' });
+    }
+
+    const bindingSyncDisposable = registerBindingDecorationSync(decorationsContext);
+    this.registerDisposable('bindingDecorationSync', bindingSyncDisposable, { quiescePhase: 'producers' });
+    void rebuildBindingDecorationsForTree(decorationsContext);
   }
 
   private async defaultInitRepositoryServices(
@@ -862,8 +875,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       onStateChanged: () => provider.refresh(),
       requestConfigurationReload,
     });
-    this.state.configurationRepositoryProjection = projection;
-    this.state.configurationRepositoryService = service;
+    this.composition.publish({ configurationRepositoryProjection: projection, configurationRepositoryService: service });
     this.registerDisposable('configurationRepositoryProjection', () => projection.clear());
     provider.setRepositoryStateReader(projection);
     provider.setRepositoryDecorationResolver(resolveRepositoryTreeDecoration);
@@ -887,18 +899,50 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     const trackedLifecycle: MetadataTreeFeatureLifecycle = {
       ...this._featureLifecycle,
     };
+    const supportCommands = this._supportCommandDependencies;
+    if (!supportCommands) {
+      throw new Error('Support command capabilities must be assembled before command registration.');
+    }
+    const agentFeature = await createAgentFeatureComposition({
+      context: createAgentFeatureContext(this.state, this.context),
+      getConfigurationRegistry: infra.getConfigurationRegistry,
+      runConfigurationMutation: infra.runConfigurationMutation,
+      requestConfigurationReload: this._requestConfigurationReload!,
+      refreshMetadataTree: trackedLifecycle.loadMetadataTree,
+      registerDisposable: (name, disposable, options) => {
+        this.registerDisposable(name, disposable, options);
+      },
+    });
 
-    const commandDisposables = await registerAllCommands({
+    const commandDisposables = await this.withSubscriptionQuiescePhase('ingress', () => registerAllCommands({
       context: this.context,
-      state: this.state,
       lifecycle: trackedLifecycle,
       requestConfigurationReload: this._requestConfigurationReload!,
       infrastructure: infra,
-    });
+      agentCommands: agentFeature.commandDependencies,
+      featureContexts: {
+        cf: createCfCommandsContext(this.state),
+        chartOfAccounts: createTreeWizardContext(this.state),
+        configurationCompare: createConfigurationCompareContext(this.state),
+        configurationRepository: createConfigurationRepositoryContext(this.state),
+        editor: createEditorCommandsContext(this.state, this.context),
+        element: createElementCommandsContext(this.state),
+        extensionSupport: createExtensionSupportCommandsContext(this.state),
+        filter: createFilterCommandsContext(this.state),
+        filterCriterion: createTreeWizardContext(this.state),
+        navigation: createTreeNavigationContext(this.state),
+        supportCommands,
+        utility: createUtilityCommandsContext(this.state),
+      },
+    }));
 
     for (const d of commandDisposables) {
-      this.registerDisposable('command', d);
+      this.registerDisposable('command', d, { quiescePhase: 'ingress' });
     }
+
+    this.throwIfDisposing();
+    const agentBridge = await this.withSubscriptionQuiescePhase('ingress', agentFeature.startBridge);
+    this.composition.publish({ ...agentFeature.handles, agentBridge });
 
     if (this.state.treeView) {
       const infobaseTreeForGitRefresh = this.state.infobaseTreeProvider;
@@ -912,7 +956,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
             onRefreshInfobaseManager: infobaseTreeForGitRefresh
               ? () => {
                   infobaseTreeForGitRefresh.refresh();
-                  void rebuildBindingDecorationsForTree(this.state);
+                  void rebuildBindingDecorationsForTree(createBindingTreeDecorationsContext(this.state));
                   void syncInfobaseTreeViewMessage(this.state);
                 }
               : undefined,
@@ -921,7 +965,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
         },
         onAutoLoadError: (error) => Logger.error('Error during auto-load', error),
       });
-      this.registerDisposable('lazyWorkspaceOrchestrator', lazyOrchestrator);
+      this.registerDisposable('lazyWorkspaceOrchestrator', lazyOrchestrator, { quiescePhase: 'producers' });
     }
   }
 }

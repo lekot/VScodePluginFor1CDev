@@ -1,11 +1,13 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
-import { ExtensionState } from '../../src/state/extensionState';
+import { createExtensionState, type ExtensionState } from '../../src/state/extensionState';
+import type { ExtensionStateAssembly } from '../../src/state/extensionStateComposition';
 import {
   ExtensionCompositionRoot,
   type CompositionPipelineStages,
 } from '../../src/extension/extensionCompositionRoot';
 import { createMetadataTreeLifecycle } from '../../src/extension/metadataTreeLifecycle';
+import { createMetadataTreeLifecycleRuntimeView, createFilterCommandsContext } from '../../src/extension/extensionFeatureContexts';
 import { InfobaseCatalogMutationService } from '../../src/infobases/infobaseCatalogMutationService';
 import { fireTreeViewVisibility, fireWorkspaceFoldersChanged, resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 import * as fs from 'fs/promises';
@@ -13,7 +15,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Logger } from '../../src/utils/logger';
 import { createActivationSubscriptionScope } from '../../src/extension/activationSubscriptionScope';
-import { registerAllCommands } from '../../src/commands';
+import { rollbackPartialActivation } from '../../src/extension';
 import {
   RepositoryBindingStore,
   RepositoryStateStore,
@@ -22,13 +24,12 @@ import {
 
 suite('ExtensionCompositionRoot (#261)', () => {
   let context: vscode.ExtensionContext;
+  let assembly: ExtensionStateAssembly;
   let state: ExtensionState;
   let lifecycle: ReturnType<typeof createMetadataTreeLifecycle>;
 
   setup(() => {
     resetVscodeTestState();
-    state = new ExtensionState();
-    lifecycle = createMetadataTreeLifecycle(state);
     context = {
       subscriptions: [],
       globalStorageUri: vscode.Uri.file('C:/tmp/globalStorage'),
@@ -45,16 +46,20 @@ suite('ExtensionCompositionRoot (#261)', () => {
         onDidChange: new vscode.EventEmitter<{ key: string }>().event,
       },
     } as unknown as vscode.ExtensionContext;
+    assembly = createExtensionState();
+    assembly.composition.initialize(context);
+    state = assembly.state;
+    lifecycle = createMetadataTreeLifecycle(createMetadataTreeLifecycleRuntimeView(state));
   });
 
   teardown(async () => {
     await state.dispose();
-    lifecycle.dispose();
+    await lifecycle.dispose();
     resetVscodeTestState();
   });
 
   test('composition root builds complete service graph and assigns non-null foundational dependencies to state', async () => {
-    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle);
     await root.compose();
 
     assert.ok(state.infobaseStorage, 'infobaseStorage must be non-null after composition');
@@ -73,7 +78,7 @@ suite('ExtensionCompositionRoot (#261)', () => {
   });
 
   test('composition root owns the shared state graph disposal and clears facade references', async () => {
-    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle);
     await root.compose();
     const storage = state.infobaseStorage;
     assert.ok(storage);
@@ -103,27 +108,13 @@ suite('ExtensionCompositionRoot (#261)', () => {
     assert.strictEqual(state.supportComposition, null);
   });
 
-  test('registerAllCommands rejects missing infrastructure before registering any commands', async () => {
+  test('feature context builders reject missing required handles before command registration', async () => {
     const initialSubscriptions = context.subscriptions.length;
     const initialCommandCount = vscodeTestState.registeredCommandHandlers.size;
 
-    try {
-      await assert.rejects(
-        registerAllCommands({
-          context,
-          state,
-          lifecycle,
-          requestConfigurationReload: async () => undefined,
-        } as never),
-        /configuration infrastructure is required/iu,
-      );
-      assert.strictEqual(context.subscriptions.length, initialSubscriptions);
-      assert.strictEqual(vscodeTestState.registeredCommandHandlers.size, initialCommandCount);
-    } finally {
-      for (const disposable of context.subscriptions.splice(initialSubscriptions)) {
-        disposable.dispose();
-      }
-    }
+    assert.throws(() => createFilterCommandsContext(state), /requires extension handle "treeDataProvider"/u);
+    assert.strictEqual(context.subscriptions.length, initialSubscriptions);
+    assert.strictEqual(vscodeTestState.registeredCommandHandlers.size, initialCommandCount);
   });
 
   test('composition rolls back command registrations when the final command registrar throws', async () => {
@@ -132,7 +123,7 @@ suite('ExtensionCompositionRoot (#261)', () => {
     const registrationError = new Error('late repository command registration failed');
     const created: vscode.Disposable[] = [];
     let disposed = 0;
-    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle);
     commandApi.registerCommand = (id: string, callback: unknown): vscode.Disposable => {
       if (id === '1c-metadata-tree.repository.updateConfiguration') {
         throw registrationError;
@@ -163,7 +154,7 @@ suite('ExtensionCompositionRoot (#261)', () => {
     const workspaceB = await fs.mkdtemp(path.join(os.tmpdir(), 'pr354-workspace-b-'));
     const nestedWorkspace = path.join(workspaceA, 'nested');
     await fs.mkdir(nestedWorkspace, { recursive: true });
-    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle);
 
     const createTarget = (configRoot: string, configKind: 'cf' | 'cfe', extensionName?: string) => ({
       configRoot,
@@ -263,7 +254,7 @@ suite('ExtensionCompositionRoot (#261)', () => {
       index,
       uri: vscode.Uri.file(workspaceRoot),
     }));
-    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle);
 
     try {
       await root.compose();
@@ -287,7 +278,7 @@ suite('ExtensionCompositionRoot (#261)', () => {
     }
   });
 
-  test('composition root adopts the initialized infobase graph and observes its single recovery run', async () => {
+  test('composition root adopts and recovers its infobase mutation graph once', async () => {
     const originalRecover = InfobaseCatalogMutationService.prototype.recoverPendingMutations;
     const recoveryPromises: Promise<unknown>[] = [];
     InfobaseCatalogMutationService.prototype.recoverPendingMutations = function () {
@@ -297,19 +288,14 @@ suite('ExtensionCompositionRoot (#261)', () => {
     };
 
     try {
-      state.init(context);
-      const originalStorage = state.infobaseStorage;
-      const originalManager = state.infobaseManager;
-      const originalBindings = state.bindingManager;
-
-      const root = new ExtensionCompositionRoot(context, state, lifecycle);
+      const root = new ExtensionCompositionRoot(context, assembly, lifecycle);
       await root.compose();
       await Promise.all(recoveryPromises);
 
-      assert.strictEqual(state.infobaseStorage, originalStorage, 'root must keep the storage built by state.init');
-      assert.strictEqual(state.infobaseManager, originalManager, 'root must keep the manager built by state.init');
-      assert.strictEqual(state.bindingManager, originalBindings, 'root must keep the binding manager built by state.init');
-      assert.strictEqual(recoveryPromises.length, 1, 'pending mutation recovery must run once for the adopted graph');
+      assert.ok(state.infobaseStorage, 'the root must publish the storage it owns');
+      assert.ok(state.infobaseManager, 'the root must publish the manager it owns');
+      assert.ok(state.bindingManager, 'the root must publish the binding manager it owns');
+      assert.strictEqual(recoveryPromises.length, 1, 'pending mutation recovery must run once for the owned graph');
 
       await root.dispose();
     } finally {
@@ -318,7 +304,7 @@ suite('ExtensionCompositionRoot (#261)', () => {
   });
 
   test('concurrent root disposal calls share one promise and wait for asynchronous drains', async () => {
-    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle);
     let releaseDrain!: () => void;
     let drained = false;
     const gate = new Promise<void>((resolve) => { releaseDrain = resolve; });
@@ -345,13 +331,12 @@ suite('ExtensionCompositionRoot (#261)', () => {
     const initializationGate = new Promise<void>((resolve) => { releaseInitialization = resolve; });
     let lateDisposableDisposed = false;
     let disposeFinished = false;
-    const root = new ExtensionCompositionRoot(context, state, lifecycle, {
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle, {
       initInfobaseServices: async (compositionRoot) => {
         await initializationGate;
         compositionRoot.registerDisposable('late initialization resource', {
           dispose: () => { lateDisposableDisposed = true; },
         });
-        state.infobaseStorage = { dispose: () => undefined } as any;
       },
     });
 
@@ -369,7 +354,7 @@ suite('ExtensionCompositionRoot (#261)', () => {
 
   test('late asynchronous registrations are drained and async disposal failures do not stop cleanup', async () => {
     const scope = createActivationSubscriptionScope(context);
-    const root = new ExtensionCompositionRoot(scope.context, state, lifecycle);
+    const root = new ExtensionCompositionRoot(scope.context, assembly, lifecycle);
     let releaseBlocking!: () => void;
     let releaseLate!: () => void;
     let blockingStarted!: () => void;
@@ -393,21 +378,75 @@ suite('ExtensionCompositionRoot (#261)', () => {
     });
 
     const disposePromise = root.dispose().then(() => { disposeFinished = true; });
-    await blockingStartedPromise;
-    scope.context.subscriptions.push({
-      dispose: async () => {
-        lateStarted();
-        await lateGate;
-      },
-    });
-    await lateStartedPromise;
-    releaseBlocking();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.strictEqual(disposeFinished, false, 'root disposal must include async registrations created during drain');
-    releaseLate();
-    await disposePromise;
+    try {
+      await blockingStartedPromise;
+      scope.context.subscriptions.push({
+        dispose: async () => {
+          lateStarted();
+          await lateGate;
+        },
+      });
+      await lateStartedPromise;
+      releaseBlocking();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(disposeFinished, false, 'root disposal must include async registrations created during drain');
+    } finally {
+      releaseBlocking();
+      releaseLate();
+      await disposePromise;
+    }
     assert.strictEqual(lateDisposed, true, 'cleanup continues after a rejected async disposer');
     assert.ok(Logger.getBufferedContent().includes('async failing teardown'));
+  });
+
+  test('partial root construction rollback gives adopted subscriptions one cleanup owner despite diagnostic failure', async () => {
+    const scope = createActivationSubscriptionScope(context);
+    let brokenDisposals = 0;
+    let healthyDisposals = 0;
+    const registrationFailure = new Error('workspace listener registration failed');
+    const diagnosticsFailure = new Error('cleanup diagnostics unavailable');
+    const workspaceApi = vscode.workspace as unknown as {
+      onDidChangeWorkspaceFolders: typeof vscode.workspace.onDidChangeWorkspaceFolders;
+    };
+    const originalWorkspaceListener = workspaceApi.onDidChangeWorkspaceFolders;
+    const originalLoggerError = Logger.error;
+    scope.context.subscriptions.push(
+      {
+        dispose: () => {
+          brokenDisposals += 1;
+          throw new Error('captured subscription cleanup failed');
+        },
+      },
+      {
+        dispose: () => {
+          healthyDisposals += 1;
+        },
+      },
+    );
+    workspaceApi.onDidChangeWorkspaceFolders = () => {
+      throw registrationFailure;
+    };
+    Logger.error = () => {
+      throw diagnosticsFailure;
+    };
+
+    let constructionError: unknown;
+    try {
+      new ExtensionCompositionRoot(scope.context, assembly, lifecycle);
+    } catch (error) {
+      constructionError = error;
+    } finally {
+      workspaceApi.onDidChangeWorkspaceFolders = originalWorkspaceListener;
+      Logger.error = originalLoggerError;
+    }
+
+    const rollbackErrors = await rollbackPartialActivation(scope.context, state);
+    assert.strictEqual(constructionError, registrationFailure, 'the host subscription error remains the construction failure');
+    assert.deepStrictEqual(rollbackErrors, [], 'the root owner safely reports cleanup failures without blocking rollback');
+    assert.strictEqual(brokenDisposals, 1, 'the root owner and activation fallback must not dispose an adopted subscription twice');
+    assert.strictEqual(healthyDisposals, 1, 'cleanup must continue after a resource and its diagnostics both fail');
+    assert.strictEqual(scope.subscriptions.length, 0, 'the partial root closes the activation subscription scope');
+    assert.strictEqual(state.extensionContext, undefined, 'partial root rollback clears the runtime facade');
   });
 
   test('visible and explicit metadata loads arm workspace add and remove reloads', async () => {
@@ -429,7 +468,7 @@ suite('ExtensionCompositionRoot (#261)', () => {
       await originalLoad();
     };
 
-    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle);
     try {
       await root.compose();
       fireTreeViewVisibility('1c-metadata-tree', true);
@@ -477,7 +516,7 @@ suite('ExtensionCompositionRoot (#261)', () => {
   });
 
   test('root drains support root registration before closing its workspace registry', async () => {
-    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle);
     await root.compose();
 
     const supportLifecycle = state.supportRootRegistrationLifecycle;
@@ -513,6 +552,128 @@ suite('ExtensionCompositionRoot (#261)', () => {
     }
   });
 
+  test('root drains a committed foreground session through real reload publication and ACK before resource teardown', async () => {
+    const workspacePathAlias = await fs.mkdtemp(path.join(os.tmpdir(), 'issue261-session-drain-'));
+    const workspacePath = await fs.realpath(workspacePathAlias);
+    const configRoot = path.join(workspacePath, 'Configuration');
+    await fs.cp(path.join(process.cwd(), 'test', 'fixtures', 'designer-config'), configRoot, { recursive: true });
+    const canonicalConfigRoot = await fs.realpath(configRoot);
+    vscodeTestState.mockWorkspaceFolders = [{
+      name: 'issue261-session-drain',
+      index: 0,
+      uri: vscode.Uri.file(workspacePath),
+    }];
+
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle);
+    const originalExecuteReload = lifecycle.executeConfigurationReload;
+    let restoreCoordinatorQuiesce = (): void => undefined;
+    let restoreTreeProviderMethod = (): void => undefined;
+    let releaseMutation!: () => void;
+    let mutationStarted!: () => void;
+    let releaseAck!: () => void;
+    let reloadPublished!: () => void;
+    let registryQuiesceStarted!: () => void;
+    const mutationGate = new Promise<void>((resolve) => { releaseMutation = resolve; });
+    const mutationStartedPromise = new Promise<void>((resolve) => { mutationStarted = resolve; });
+    const ackGate = new Promise<void>((resolve) => { releaseAck = resolve; });
+    const reloadPublishedPromise = new Promise<void>((resolve) => { reloadPublished = resolve; });
+    const registryQuiesceStartedPromise = new Promise<void>((resolve) => { registryQuiesceStarted = resolve; });
+    let providerReplacements = 0;
+    let disposalFinished = false;
+
+    try {
+      await root.compose();
+      await lifecycle.loadMetadataTree();
+      await waitForCondition(
+        () => Boolean(state.supportComposition?.registry.getRegistrationByRoot(canonicalConfigRoot)),
+        'the loaded tree root must have a live support registration',
+      );
+
+      const coordinator = root.infrastructure!.registryCoordinator;
+      const originalCoordinatorQuiesce = coordinator.quiesce;
+      coordinator.quiesce = () => {
+        registryQuiesceStarted();
+        return originalCoordinatorQuiesce.call(coordinator);
+      };
+      restoreCoordinatorQuiesce = () => { coordinator.quiesce = originalCoordinatorQuiesce; };
+      const session = await coordinator.resolveResource(canonicalConfigRoot);
+      const supportComposition = state.supportComposition;
+      const supportCache = state.supportStateCache;
+      const treeProvider = state.treeDataProvider;
+      assert.ok(supportComposition);
+      assert.ok(supportCache);
+      assert.ok(treeProvider);
+      const originalReplaceConfigurationRoot = treeProvider.replaceConfigurationRoot;
+      treeProvider.replaceConfigurationRoot = (...args) => {
+        const published = originalReplaceConfigurationRoot.apply(treeProvider, args);
+        if (published) {
+          providerReplacements += 1;
+        }
+        return published;
+      };
+      restoreTreeProviderMethod = () => { treeProvider.replaceConfigurationRoot = originalReplaceConfigurationRoot; };
+      lifecycle.executeConfigurationReload = async (pathToReload, canPublish) => {
+        const outcome = await originalExecuteReload(pathToReload, canPublish);
+        if (outcome.status === 'published') {
+          reloadPublished();
+          await ackGate;
+        }
+        return outcome;
+      };
+
+      const mutation = session.runExclusive({
+        kind: 'issue261.foreground-mutation',
+        reconcile: true,
+        execute: async () => {
+          mutationStarted();
+          await mutationGate;
+          return 'committed-value';
+        },
+      });
+      await mutationStartedPromise;
+      const disposal = root.dispose().then(() => { disposalFinished = true; });
+      await registryQuiesceStartedPromise;
+
+      const lateMutation = await session.runExclusive({
+        kind: 'issue261.late-mutation',
+        reconcile: true,
+        execute: async () => 'must-not-run',
+      });
+      assert.strictEqual(lateMutation.status, 'cancelled', 'session admission closes before the active mutation drains');
+
+      releaseMutation();
+      await reloadPublishedPromise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(disposalFinished, false, 'resource teardown waits for the actual reload ACK');
+      assert.strictEqual(providerReplacements, 1, 'the admitted session publishes through the real metadata lifecycle');
+      assert.strictEqual(await coordinator.resolveResource(canonicalConfigRoot), session, 'existing session identity remains resolvable while its post-commit reload is held');
+
+      const supportRegistration = supportComposition.registry.getRegistrationByRoot(canonicalConfigRoot);
+      assert.ok(supportRegistration, 'support registry entry remains live until the ACK');
+      assert.strictEqual(supportCache.isRegistered(canonicalConfigRoot), true, 'support cache registration remains live until the ACK');
+      const supportStatus = await supportComposition.facade.getMasterStatus({
+        configurationId: supportRegistration.configurationId,
+      });
+      assert.ok(supportStatus && typeof supportStatus.status === 'string', 'the support facade remains queryable through session drain');
+
+      releaseAck();
+      const outcome = await mutation;
+      assert.strictEqual(outcome.status, 'committed');
+      assert.strictEqual(outcome.reconciliation?.status, 'succeeded', 'the mutation receives a successful reconciliation ACK');
+      await disposal;
+      assert.strictEqual(state.workspaceRegistry, null, 'registry handles are released after session ACK');
+      assert.strictEqual(state.supportComposition, null, 'support services are released after session ACK');
+    } finally {
+      releaseMutation();
+      releaseAck();
+      lifecycle.executeConfigurationReload = originalExecuteReload;
+      restoreTreeProviderMethod();
+      restoreCoordinatorQuiesce();
+      await root.dispose();
+      await fs.rm(workspacePath, { recursive: true, force: true });
+    }
+  });
+
   test('composition observes a failed recovery outcome while keeping the catalog available', async () => {
     const originalRecover = InfobaseCatalogMutationService.prototype.recoverPendingMutations;
     let releaseRecovery!: () => void;
@@ -526,7 +687,7 @@ suite('ExtensionCompositionRoot (#261)', () => {
     };
 
     try {
-      const root = new ExtensionCompositionRoot(context, state, lifecycle);
+      const root = new ExtensionCompositionRoot(context, assembly, lifecycle);
       const composition = root.compose();
       await recoveryStartedPromise;
       assert.strictEqual(state.infobaseRecoveryOutcome, null, 'root must await recovery before exposing its outcome');
@@ -545,7 +706,7 @@ suite('ExtensionCompositionRoot (#261)', () => {
 
   test('teardown executes disposables in reverse LIFO order with one-time guarantee', async () => {
     const order: string[] = [];
-    const root = new ExtensionCompositionRoot(context, state, lifecycle);
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle);
 
     root.registerDisposable('storage', () => {
       order.push('storage');
@@ -589,7 +750,7 @@ suite('ExtensionCompositionRoot (#261)', () => {
       },
     };
 
-    const root = new ExtensionCompositionRoot(context, state, lifecycle, stages);
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle, stages);
 
     await assert.rejects(
       root.compose(),
@@ -623,12 +784,14 @@ suite('ExtensionCompositionRoot (#261)', () => {
           disposed.push('tree');
         });
       },
+      initEditors: () => undefined,
+      initInfobaseFeatures: () => undefined,
       initCommands: () => {
         throw new Error('Simulated command registration failure');
       },
     };
 
-    const root = new ExtensionCompositionRoot(context, state, lifecycle, stages);
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle, stages);
 
     await assert.rejects(
       root.compose(),
@@ -662,7 +825,7 @@ suite('ExtensionCompositionRoot (#261)', () => {
       },
     };
 
-    const root = new ExtensionCompositionRoot(context, state, lifecycle, stages);
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle, stages);
 
     await assert.rejects(root.compose(), /Trigger rollback/);
 
@@ -672,4 +835,54 @@ suite('ExtensionCompositionRoot (#261)', () => {
       'Rollback must continue disposing remaining services even when one throws',
     );
   });
+
+  test('rollback completes LIFO cleanup and preserves the initialization error when diagnostics fail', async () => {
+    const disposed: string[] = [];
+    const initializationError = new Error('primary initialization failure');
+    const disposerError = new Error('resource cleanup failure');
+    const diagnosticsError = new Error('diagnostics unavailable');
+    const originalLoggerError = Logger.error;
+    Logger.error = (message: string, error?: unknown): void => {
+      if (message === 'ExtensionCompositionRoot rollback error for broken') {
+        throw diagnosticsError;
+      }
+      originalLoggerError.call(Logger, message, error);
+    };
+
+    const root = new ExtensionCompositionRoot(context, assembly, lifecycle, {
+      initInfobaseServices: (compositionRoot) => {
+        compositionRoot.registerDisposable('older resource', () => { disposed.push('older'); });
+        compositionRoot.registerDisposable('broken', () => {
+          disposed.push('broken');
+          throw disposerError;
+        });
+        compositionRoot.registerDisposable('newer resource', () => { disposed.push('newer'); });
+      },
+      initConfigurationInfrastructure: () => {
+        throw initializationError;
+      },
+    });
+
+    try {
+      await assert.rejects(root.compose(), (error: unknown) => error === initializationError);
+      assert.deepStrictEqual(
+        disposed,
+        ['newer', 'broken', 'older'],
+        'diagnostics failure must not interrupt the reverse-order cleanup pass',
+      );
+    } finally {
+      Logger.error = originalLoggerError;
+      await root.dispose().catch(() => undefined);
+    }
+  });
 });
+
+async function waitForCondition(condition: () => boolean, description: string): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (!condition()) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for ${description}.`);
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+}

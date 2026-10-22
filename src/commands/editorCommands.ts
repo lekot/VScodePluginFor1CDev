@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { ExtensionState } from '../state/extensionState';
+import type { EditorCommandsContext } from '../extension/extensionFeatureContexts';
 import { MetadataType, TreeNode } from '../models/treeNode';
 import { getSelectedNode } from '../helpers/commandHelpers';
 import { Logger } from '../utils/logger';
@@ -34,11 +34,11 @@ import { isSameOrDescendantPath } from '../utils/configurationPathIdentity';
 import { registerQueryBuilderCommands } from '../queryBuilder/queryBuilderCommands';
 
 type RegisterEditorCommandsDeps = {
-  state: ExtensionState;
-  context?: vscode.ExtensionContext;
+  state: EditorCommandsContext;
+  context: vscode.ExtensionContext;
 };
 
-function ensureSelectedXdtoPackage(state: ExtensionState, node: TreeNode | undefined): TreeNode | undefined {
+function ensureSelectedXdtoPackage(state: EditorCommandsContext, node: TreeNode | undefined): TreeNode | undefined {
   const target = getSelectedNode(state, node);
   if (!target || target.type !== MetadataType.XDTOPackage || !target.filePath) {
     vscode.window.showWarningMessage('Выберите узел XDTO-пакета в дереве метаданных.');
@@ -62,13 +62,13 @@ function getXsdNamespace(source: string): string {
   return parseXdtoPackage(source).targetNamespace ?? '';
 }
 
-function getXdtoPackagesDir(state: ExtensionState, node: TreeNode | undefined): string | undefined {
+function getXdtoPackagesDir(state: EditorCommandsContext, node: TreeNode | undefined): string | undefined {
   const target = getSelectedNode(state, node);
   if (target?.type === MetadataType.XDTOPackage && target.filePath) {
     return path.dirname(target.filePath);
   }
-  const configPath = (target ? state.treeDataProvider?.getConfigPathForNode(target) : undefined)
-    ?? state.treeDataProvider?.getConfigPath();
+  const configPath = (target ? state.treeDataProvider.getConfigPathForNode(target) : undefined)
+    ?? state.treeDataProvider.getConfigPath();
   return configPath ? path.join(configPath, 'XDTOPackages') : undefined;
 }
 
@@ -92,20 +92,18 @@ function sanitizePackageName(raw: string): string {
 
 export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode.Disposable[] {
   const { state } = deps;
-  const context = deps.context ?? ({} as vscode.ExtensionContext);
+  const context = deps.context;
 
   const showPropertiesCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.showProperties',
     async (node?: TreeNode) => {
       const target = getSelectedNode(state, node);
-      if (state.propertiesProvider) {
-        if (target) {
-          Logger.info(`Showing properties for: ${target.name}`);
-        } else {
-          Logger.debug('Showing properties panel (no node selected)');
-        }
-        await state.propertiesProvider.showProperties(target);
+      if (target) {
+        Logger.info(`Showing properties for: ${target.name}`);
+      } else {
+        Logger.debug('Showing properties panel (no node selected)');
       }
+      await state.propertiesProvider.showProperties(target);
     }
   );
 
@@ -117,8 +115,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         return;
       }
       const pathToOpen =
-        (state.treeDataProvider &&
-          getConfigurationXmlPathForNode(target, state.treeDataProvider.getConfigPathForNode.bind(state.treeDataProvider))) ??
+        getConfigurationXmlPathForNode(target, state.treeDataProvider.getConfigPathForNode.bind(state.treeDataProvider)) ??
         (target.type === MetadataType.Form && target.filePath
           ? getFormPaths(target.filePath).formXmlPath
           : target.filePath);
@@ -216,11 +213,9 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         return;
       }
       try {
-        if (state.rolesRightsEditorProvider) {
-          const configPath =
-            state.treeDataProvider?.getConfigPathForNode(target) ?? state.treeDataProvider?.getConfigPath();
-          await state.rolesRightsEditorProvider.show(target.filePath, configPath);
-        }
+        const configPath =
+          state.treeDataProvider.getConfigPathForNode(target) ?? state.treeDataProvider.getConfigPath();
+        await state.rolesRightsEditorProvider.show(target.filePath, configPath);
       } catch (err) {
         Logger.error('Failed to open rights editor', err);
         vscode.window.showErrorMessage(
@@ -276,21 +271,13 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
   const saveRightsEditorCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.saveRightsEditor',
     async () => {
-      if (state.rolesRightsEditorProvider) {
-        await state.rolesRightsEditorProvider.triggerSave();
-      } else {
-        vscode.window.showWarningMessage('Rights editor is not open.');
-      }
+      await state.rolesRightsEditorProvider.triggerSave();
     }
   );
 
   const validateCurrentXmlCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.validateCurrentXml',
     async () => {
-      if (!state.bindingManager || !state.infobaseStorage) {
-        void vscode.window.showErrorMessage('Проверка XML недоступна: привязки или хранилище ИБ не инициализированы.');
-        return;
-      }
       const editor = vscode.window.activeTextEditor;
       const activePath = editor?.document.uri.fsPath;
       if (!activePath) {
@@ -395,7 +382,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         vscode.window.showWarningMessage('Выберите узел подсистемы в дереве метаданных.');
         return;
       }
-      if (!target.filePath || !state.treeDataProvider || !state.subsystemCompositionEditorProvider) {
+      if (!target.filePath) {
         vscode.window.showErrorMessage('CDT 41: не удалось открыть редактор состава подсистемы.');
         return;
       }
@@ -423,7 +410,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         vscode.window.showWarningMessage('Выберите узел плана обмена в дереве метаданных.');
         return;
       }
-      if (!target.filePath || !state.treeDataProvider || !state.exchangePlanCompositionEditorProvider) {
+      if (!target.filePath) {
         vscode.window.showErrorMessage('CDT 41: не удалось открыть редактор состава плана обмена.');
         return;
       }
@@ -451,7 +438,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         vscode.window.showWarningMessage('Выберите узел общего реквизита в дереве метаданных.');
         return;
       }
-      if (!target.filePath || !state.treeDataProvider || !state.commonAttributeCompositionEditorProvider) {
+      if (!target.filePath) {
         vscode.window.showErrorMessage('CDT 41: не удалось открыть редактор состава общего реквизита.');
         return;
       }
@@ -479,7 +466,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         vscode.window.showWarningMessage('Выберите узел функциональной опции в дереве метаданных.');
         return;
       }
-      if (!target.filePath || !state.treeDataProvider || !state.functionalOptionCompositionEditorProvider) {
+      if (!target.filePath) {
         vscode.window.showErrorMessage('CDT 41: не удалось открыть редактор состава функциональной опции.');
         return;
       }
@@ -507,7 +494,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         vscode.window.showWarningMessage('Выберите узел критерия отбора в дереве метаданных.');
         return;
       }
-      if (!target.filePath || !state.treeDataProvider || !state.filterCriterionCompositionEditorProvider) {
+      if (!target.filePath) {
         vscode.window.showErrorMessage('CDT 41: не удалось открыть редактор состава критерия отбора.');
         return;
       }
@@ -535,7 +522,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         vscode.window.showWarningMessage('Выберите узел подсистемы в дереве метаданных.');
         return;
       }
-      if (!target.filePath || !state.subsystemCommandInterfaceProvider) {
+      if (!target.filePath) {
         vscode.window.showErrorMessage('CDT 41: не удалось открыть командный интерфейс подсистемы.');
         return;
       }
@@ -563,7 +550,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         vscode.window.showWarningMessage('Выберите узел XDTO-пакета в дереве метаданных.');
         return;
       }
-      if (!target.filePath || !state.xdtoPackageEditorProvider) {
+      if (!target.filePath) {
         vscode.window.showErrorMessage('CDT 41: не удалось открыть редактор XDTO-пакета.');
         return;
       }
@@ -732,7 +719,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     '1c-metadata-tree.compareMergeXdtoPackage',
     async (node?: TreeNode) => {
       const target = ensureSelectedXdtoPackage(state, node);
-      if (!target?.filePath || !state.extensionContext) {
+      if (!target?.filePath) {
         return;
       }
       await showXdtoPackageCompare(state.extensionContext, target);
@@ -747,7 +734,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         vscode.window.showWarningMessage('Выберите узел ПВХ в дереве метаданных.');
         return;
       }
-      if (!target.filePath || !state.treeDataProvider) {
+      if (!target.filePath) {
         vscode.window.showErrorMessage('CDT 41: не удалось определить путь к ПВХ.');
         return;
       }
@@ -802,10 +789,6 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
       const target = getSelectedNode(state, node);
       if (!target) {
         vscode.window.showWarningMessage('Выберите узел конфигурации в дереве метаданных.');
-        return;
-      }
-      if (!state.bindingManager || !state.infobaseStorage || !state.treeDataProvider) {
-        vscode.window.showErrorMessage('Отладка недоступна: не инициализированы зависимости.');
         return;
       }
       await startDebugging({

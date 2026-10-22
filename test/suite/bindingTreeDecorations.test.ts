@@ -1,12 +1,19 @@
 import * as assert from 'assert';
 import * as path from 'path';
+import * as vscode from 'vscode';
 import {
   rebuildBindingDecorationsForTree,
   registerBindingDecorationSync,
 } from '../../src/bindings/bindingTreeDecorations';
+import { BindingManager } from '../../src/bindings/bindingManager';
+import type { ConfigurationBinding } from '../../src/bindings/models/configurationBinding';
 import { bindingKey } from '../../src/bindings/bindingPathUtils';
-import type { ExtensionState } from '../../src/state/extensionState';
 import type { ConfigurationBindingDecoration } from '../../src/bindings/bindingDecorationTypes';
+import { createBindingTreeDecorationsContext, type BindingTreeDecorationsContext } from '../../src/extension/extensionFeatureContexts';
+import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
+import { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
+import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
+import { createExtensionStateFixture } from '../helpers/extensionStateFixture';
 import {
   fireWorkspaceDidSaveDocument,
   fireWorkspaceFoldersChanged,
@@ -19,78 +26,156 @@ function flushAsyncDecorationRebuild(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+const testStorageServices = new Set<InfobaseStorageService>();
+
+interface BindingDecorationsTestOverrides {
+  provider?: {
+    setConfigurationBindingDecorations: (m: ReadonlyMap<string, ConfigurationBindingDecoration>) => void;
+    refresh: () => void;
+  };
+  manager?: { listAll: () => Promise<ConfigurationBinding[]> };
+  storage?: { load: () => Promise<InfobaseEntry[]> };
+}
+
+class TestMemento implements vscode.Memento {
+  private readonly values = new Map<string, unknown>();
+
+  keys(): readonly string[] {
+    return [...this.values.keys()];
+  }
+
+  get<T>(key: string): T | undefined;
+  get<T>(key: string, defaultValue: T): T;
+  get<T>(key: string, defaultValue?: T): T | undefined {
+    const value = this.values.get(key);
+    return value === undefined ? defaultValue : value as T;
+  }
+
+  async update(key: string, value: unknown): Promise<void> {
+    if (value === undefined) {
+      this.values.delete(key);
+    } else {
+      this.values.set(key, value);
+    }
+  }
+}
+
+function createInfobaseStorageService(): InfobaseStorageService {
+  const secrets = new Map<string, string>();
+  const changes = new vscode.EventEmitter<vscode.SecretStorageChangeEvent>();
+  const secretStorage: vscode.SecretStorage = {
+    keys: async () => [...secrets.keys()],
+    get: async (key) => secrets.get(key),
+    store: async (key, value) => {
+      secrets.set(key, value);
+      changes.fire({ key });
+    },
+    delete: async (key) => {
+      secrets.delete(key);
+      changes.fire({ key });
+    },
+    onDidChange: changes.event,
+  };
+  const storage = new InfobaseStorageService(new TestMemento(), secretStorage);
+  testStorageServices.add(storage);
+  return storage;
+}
+
+function makeStateFixture(overrides: BindingDecorationsTestOverrides = {}): {
+  state: BindingTreeDecorationsContext;
+  storage: InfobaseStorageService;
+} {
+  const provider = new MetadataTreeDataProvider();
+  if (overrides.provider) {
+    provider.setConfigurationBindingDecorations = overrides.provider.setConfigurationBindingDecorations;
+    provider.refresh = overrides.provider.refresh;
+  }
+  const manager = new BindingManager();
+  if (overrides.manager) {
+    manager.listAll = overrides.manager.listAll;
+  }
+  const storage = createInfobaseStorageService();
+  if (overrides.storage) {
+    storage.load = overrides.storage.load;
+  }
+  const fixture = createExtensionStateFixture({
+    bindingManager: manager,
+    infobaseStorage: storage,
+    treeDataProvider: provider,
+  });
+  return {
+    state: createBindingTreeDecorationsContext(fixture.state),
+    storage,
+  };
+}
+
+function makeState(overrides: BindingDecorationsTestOverrides = {}): BindingTreeDecorationsContext {
+  return makeStateFixture(overrides).state;
+}
+
+function makeEntry(id: string, name: string): InfobaseEntry {
+  return {
+    id,
+    name,
+    type: 'file',
+    filePath: `/${id}.1cd`,
+    hasStoredPassword: false,
+    createdAt: new Date(0).toISOString(),
+  };
+}
+
 suite('bindingTreeDecorations (WOW §2C sync)', () => {
   teardown(() => {
+    for (const storage of testStorageServices) {
+      storage.dispose();
+    }
+    testStorageServices.clear();
     resetVscodeTestState();
   });
 
-  function makeState(overrides: {
-    provider?: {
-      setConfigurationBindingDecorations: (m: ReadonlyMap<string, ConfigurationBindingDecoration>) => void;
-      refresh: () => void;
-    } | null;
-    manager?: { listAll: () => Promise<unknown[]> } | null;
-    storage?: {
-      load: () => Promise<Array<{ id: string; name: string }>>;
-      onDidChangeCatalog?: (cb: () => void) => { dispose: () => void };
-    } | null;
-  }): ExtensionState {
-    const rawStorage = overrides.storage;
-    const storage =
-      rawStorage === null
-        ? null
-        : ({
-            load: rawStorage!.load,
-            onDidChangeCatalog:
-              rawStorage!.onDidChangeCatalog ?? (() => ({ dispose: () => undefined })),
-          } as ExtensionState['infobaseStorage']);
-    return {
-      treeDataProvider: overrides.provider ?? null,
-      bindingManager: (overrides.manager ?? null) as ExtensionState['bindingManager'],
-      infobaseStorage: storage,
-    } as ExtensionState;
-  }
-
-  test('rebuildBindingDecorationsForTree is no-op when treeDataProvider is missing', async () => {
-    const state = makeState({
-      provider: null,
-      manager: { listAll: async () => [{ workspaceFolder: 'W', configRelativePath: 'c.xml', infobaseIds: ['a'] }] },
-      storage: { load: async () => [{ id: 'a', name: 'A' }] },
-    });
-    await rebuildBindingDecorationsForTree(state);
-    assert.strictEqual(vscodeTestState.warningLog.length, 0);
-  });
-
-  test('rebuildBindingDecorationsForTree is no-op when bindingManager is missing', async () => {
-    let setCalls = 0;
+  test('rebuildBindingDecorationsForTree publishes an empty map when there are no bindings', async () => {
+    let published: ReadonlyMap<string, ConfigurationBindingDecoration> | undefined;
+    let refreshCount = 0;
     const state = makeState({
       provider: {
-        setConfigurationBindingDecorations: () => {
-          setCalls++;
+        setConfigurationBindingDecorations: (map) => { published = map; },
+        refresh: () => { refreshCount++; },
+      },
+      manager: { listAll: async () => [] },
+      storage: { load: async () => [makeEntry('a', 'A')] },
+    });
+    await rebuildBindingDecorationsForTree(state);
+    assert.strictEqual(published?.size, 0);
+    assert.strictEqual(refreshCount, 1);
+  });
+
+  test('rebuildBindingDecorationsForTree retains a binding with an empty infobase list', async () => {
+    const captured = new Map<string, ConfigurationBindingDecoration>();
+    const state = makeState({
+      provider: {
+        setConfigurationBindingDecorations: (map) => {
+          captured.clear();
+          for (const [key, value] of map) {
+            captured.set(key, value);
+          }
         },
         refresh: () => undefined,
       },
-      manager: null,
+      manager: {
+        listAll: async () => [{
+          workspaceFolder: 'W',
+          configRelativePath: 'empty/Configuration.xml',
+          infobaseIds: [],
+          massDeployment: false,
+        }],
+      },
       storage: { load: async () => [] },
     });
     await rebuildBindingDecorationsForTree(state);
-    assert.strictEqual(setCalls, 0);
-  });
-
-  test('rebuildBindingDecorationsForTree is no-op when infobaseStorage is missing', async () => {
-    let setCalls = 0;
-    const state = makeState({
-      provider: {
-        setConfigurationBindingDecorations: () => {
-          setCalls++;
-        },
-        refresh: () => undefined,
-      },
-      manager: { listAll: async () => [] },
-      storage: null,
-    });
-    await rebuildBindingDecorationsForTree(state);
-    assert.strictEqual(setCalls, 0);
+    const decoration = captured.get(bindingKey('W', 'empty/Configuration.xml'));
+    assert.ok(decoration);
+    assert.strictEqual(decoration!.boundCount, 0);
+    assert.strictEqual(decoration!.namesPreview, '');
   });
 
   test('rebuildBindingDecorationsForTree maps bindings, resolves names, truncates preview, calls refresh', async () => {
@@ -120,13 +205,13 @@ suite('bindingTreeDecorations (WOW §2C sync)', () => {
       },
       storage: {
         load: async () => [
-          { id: 'i1', name: 'N1' },
-          { id: 'i2', name: 'N2' },
-          { id: 'i3', name: 'N3' },
-          { id: 'i4', name: 'N4' },
-          { id: 'i5', name: 'N5' },
-          { id: 'i6', name: 'N6' },
-          { id: 'i7', name: 'N7' },
+          makeEntry('i1', 'N1'),
+          makeEntry('i2', 'N2'),
+          makeEntry('i3', 'N3'),
+          makeEntry('i4', 'N4'),
+          makeEntry('i5', 'N5'),
+          makeEntry('i6', 'N6'),
+          makeEntry('i7', 'N7'),
         ],
       },
     });
@@ -198,7 +283,7 @@ suite('bindingTreeDecorations (WOW §2C sync)', () => {
         setConfigurationBindingDecorations: () => undefined,
         refresh: () => undefined,
       },
-      manager: { listAll: async () => [{ workspaceFolder: 'W', configRelativePath: 'c.xml', infobaseIds: ['x'] }] },
+      manager: { listAll: async () => [{ workspaceFolder: 'W', configRelativePath: 'c.xml', infobaseIds: ['x'], massDeployment: false }] },
       storage: {
         load: async () => {
           throw new Error('catalog read failed');
@@ -222,10 +307,7 @@ suite('bindingTreeDecorations (WOW §2C sync)', () => {
         },
       },
       manager: { listAll: async () => [] },
-      storage: {
-        load: async () => [],
-        onDidChangeCatalog: () => ({ dispose: () => undefined }),
-      },
+      storage: { load: async () => [] },
     });
     const sub = registerBindingDecorationSync(state);
     assert.strictEqual(refreshCount, 0);
@@ -248,10 +330,7 @@ suite('bindingTreeDecorations (WOW §2C sync)', () => {
         },
       },
       manager: { listAll: async () => [] },
-      storage: {
-        load: async () => [],
-        onDidChangeCatalog: () => ({ dispose: () => undefined }),
-      },
+      storage: { load: async () => [] },
     });
     const sub = registerBindingDecorationSync(state);
     const p = 'C:\\x\\.vscode\\infobase-bindings.json';
@@ -271,10 +350,7 @@ suite('bindingTreeDecorations (WOW §2C sync)', () => {
         },
       },
       manager: { listAll: async () => [] },
-      storage: {
-        load: async () => [],
-        onDidChangeCatalog: () => ({ dispose: () => undefined }),
-      },
+      storage: { load: async () => [] },
     });
     const sub = registerBindingDecorationSync(state);
     fireWorkspaceFoldersChanged();
@@ -284,29 +360,32 @@ suite('bindingTreeDecorations (WOW §2C sync)', () => {
   });
 
   test('registerBindingDecorationSync: onDidChangeCatalog fires rebuild', async () => {
+    const infobaseId = '7f0f0e1e-e4df-4bc0-a291-4765fc20a74a';
     let refreshCount = 0;
-    const catalogCallbacks: Array<() => void> = [];
-    const state = makeState({
+    let published: ReadonlyMap<string, ConfigurationBindingDecoration> | undefined;
+    const { state, storage } = makeStateFixture({
       provider: {
-        setConfigurationBindingDecorations: () => undefined,
+        setConfigurationBindingDecorations: (decorations) => { published = decorations; },
         refresh: () => {
           refreshCount++;
         },
       },
-      manager: { listAll: async () => [] },
-      storage: {
-        load: async () => [],
-        onDidChangeCatalog: (cb) => {
-          catalogCallbacks.push(cb);
-          return { dispose: () => undefined };
-        },
+      manager: {
+        listAll: async () => [{
+          workspaceFolder: 'W',
+          configRelativePath: 'Configuration.xml',
+          infobaseIds: [infobaseId],
+          massDeployment: false,
+        }],
       },
     });
-    registerBindingDecorationSync(state);
-    assert.strictEqual(catalogCallbacks.length, 1);
-    catalogCallbacks[0]!();
+    const subscription = registerBindingDecorationSync(state);
+    assert.strictEqual(refreshCount, 0);
+    await storage.upsert(makeEntry(infobaseId, 'Event base'));
     await flushAsyncDecorationRebuild();
     assert.strictEqual(refreshCount, 1);
+    assert.strictEqual(published?.get(bindingKey('W', 'Configuration.xml'))?.boundCount, 1);
+    subscription.dispose();
   });
 
 });

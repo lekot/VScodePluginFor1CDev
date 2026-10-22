@@ -129,7 +129,6 @@ import type {
     AgentTaskIdParams,
 } from './types';
 import type { ConfigurationRepositoryService } from '../services/configurationRepository/configurationRepositoryService';
-import type { RequestConfigurationReload } from '../reload/requestConfigurationReload';
 import type { MutationExecutionOptions } from '../services/configurationSession/ConfigurationSession';
 import {
     AGENT_SUPPORT_COMMAND_IDS,
@@ -150,39 +149,45 @@ import {
     type AgentCfeValidateParams,
 } from './agentCfeProjectOperations';
 
-/**
- * Регистрирует Agent API команды.
- *
- * @param context - ExtensionContext для подписок.
- * @param getTreeDataProvider - Геттер провайдера дерева (может быть null до инициализации).
- * @param getConfigurationRegistry - Асинхронный геттер registry конфигураций.
- * @param debugRegistry - Реестр отладочных сессий.
- * @param getDebugDeps - Опциональный геттер зависимостей для debug.startFromBinding.
- * @param getDeployDeps - Опциональный геттер зависимостей deploy/pull.
- * @param getSupportDeps - Опциональный геттер общего support application facade.
- */
-export function registerAgentCommands(
-    context: vscode.ExtensionContext,
-    getTreeDataProvider: () => MetadataTreeDataProvider | null,
-    getConfigurationRegistry: () => Promise<WorkspaceRegistry | null>,
-    debugRegistry: DebugSessionRegistry,
-    getDebugDeps?: () => AgentDebugOperationsDeps | undefined,
-    getDeployDeps?: () => AgentDeployOperationsDeps | undefined,
-    getSupportDeps?: () => AgentSupportOperationsDeps | undefined,
+export interface RegisterAgentCommandsDependencies {
+    readonly context: vscode.ExtensionContext;
+    readonly taskManager: AgentTaskManager;
+    readonly treeDataProvider?: MetadataTreeDataProvider;
+    readonly getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
+    readonly debugRegistry: DebugSessionRegistry;
+    /** Optional headless capability; production composition provides a ready binding context. */
+    readonly debug?: AgentDebugOperationsDeps;
+    /** Optional headless capability; production composition provides a ready deploy context. */
+    readonly deploy?: AgentDeployOperationsDeps;
+    /** Optional headless capability; production composition provides the support facade. */
+    readonly support?: AgentSupportOperationsDeps;
     /** Optional lifecycle hook used by CFE creation after registry discovery succeeds. */
-    refreshCfeLifecycle?: () => Promise<void>,
-    getRepositoryService?: () => ConfigurationRepositoryService | null,
-    _requestConfigurationReload?: RequestConfigurationReload,
-    getSkdOperationsDeps?: () => Pick<SkdOperationsDeps, 'runPowerShellScript'> | undefined,
-): { readonly taskManager: AgentTaskManager } {
+    readonly refreshCfeLifecycle?: () => Promise<void>;
+    /** Optional headless capability; production composition provides the repository service. */
+    readonly repositoryService?: ConfigurationRepositoryService;
+    /** Optional whole SKD execution capability. */
+    readonly skd?: Pick<SkdOperationsDeps, 'runPowerShellScript'>;
+}
+
+/** Registers Agent commands from a stable, activation-scoped capability snapshot. */
+export function registerAgentCommands({
+    context,
+    taskManager,
+    treeDataProvider,
+    getConfigurationRegistry,
+    debugRegistry,
+    debug: debugDeps,
+    deploy: deployDeps,
+    support: supportDeps,
+    refreshCfeLifecycle,
+    repositoryService,
+    skd,
+}: RegisterAgentCommandsDependencies): { readonly taskManager: AgentTaskManager } {
     const resolveSession = async (
         params: ConfigurationScopedParams = {},
         capability: keyof ConfigurationIdentity['capabilities'] = 'read',
     ): Promise<AgentResolutionContext> => {
         const registry = await getConfigurationRegistry();
-        if (!registry) {
-            throw new WorkspaceRegistryError('CONFIGURATION_NOT_FOUND', 'Корень конфигурации не найден.');
-        }
         const skdSession = await resolveSkdConfiguration(registry, params, capability);
         if (skdSession) { return { session: skdSession }; }
         const candidateResource = extractCandidateResourcePath(params);
@@ -215,7 +220,7 @@ export function registerAgentCommands(
                 {
                     registry,
                     workspaceRoot: targetFolder?.uri.fsPath,
-                    treeDataProvider: getTreeDataProvider ? getTreeDataProvider() ?? undefined : undefined,
+                    treeDataProvider,
                 },
             );
 
@@ -424,8 +429,6 @@ export function registerAgentCommands(
         }
     };
 
-    const taskManager = new AgentTaskManager();
-    context.subscriptions.push({ dispose: () => taskManager.dispose() });
     const runAgentLongTask = <T>(
         name: string,
         background: boolean | undefined,
@@ -454,10 +457,10 @@ export function registerAgentCommands(
         return execute(requestToken);
     };
     const repositoryOperations = new AgentRepositoryOperations({
-        getService: () => getRepositoryService?.() ?? null,
-        getTreeProvider: getTreeDataProvider,
+        getService: () => repositoryService ?? null,
+        getTreeProvider: () => treeDataProvider ?? null,
         getConfigurationRegistry,
-        infobaseStorage: getDeployDeps?.()?.infobaseStorage ?? null,
+        infobaseStorage: deployDeps?.infobaseStorage ?? null,
         taskManager,
     });
 
@@ -678,9 +681,6 @@ export function registerAgentCommands(
         async (params: ResolveSourceAddressParams) => {
             try {
                 const registry = await getConfigurationRegistry();
-                if (!registry) {
-                    return { success: false, error: 'Корень конфигурации не найден.' };
-                }
                 let targetSession;
                 if (params.configurationId) {
                     try {
@@ -696,7 +696,7 @@ export function registerAgentCommands(
                 const resolved = await resolveSourceAddress(params, {
                     registry,
                     workspaceRoot: targetFolder?.uri.fsPath,
-                    treeDataProvider: getTreeDataProvider ? getTreeDataProvider() ?? undefined : undefined,
+                    treeDataProvider,
                 });
 
                 return {
@@ -989,7 +989,7 @@ export function registerAgentCommands(
     const debugStartFromBindingCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.debug.startFromBinding',
         async (params: DebugStartFromBindingParams, requestToken?: vscode.CancellationToken) => {
-            const ops = new AgentDebugOperations(debugRegistry, getDebugDeps?.());
+            const ops = new AgentDebugOperations(debugRegistry, debugDeps);
             return runAgentLongTask('agent.debug.startFromBinding', params.background, requestToken, (token, reportStage) =>
                 ops.debugStartFromBinding(params, token, reportStage));
         }
@@ -1000,7 +1000,7 @@ export function registerAgentCommands(
     const resolveBindingCmd = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.resolveBinding',
         async (params: { configPath?: string } = {}) => {
-            const deps = getDebugDeps?.();
+            const deps = debugDeps;
             if (!deps) {
                 return { success: false, error: 'Привязки не инициализированы (нет deps).' };
             }
@@ -1013,7 +1013,7 @@ export function registerAgentCommands(
     const listBindingsCmd = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.listBindings',
         async () => {
-            const deps = getDebugDeps?.();
+            const deps = debugDeps;
             if (!deps) {
                 return { success: false, error: 'Привязки не инициализированы (нет deps).' };
             }
@@ -1028,7 +1028,7 @@ export function registerAgentCommands(
     const deployCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deploy',
         async (params: DeployParams = {}, requestToken?: vscode.CancellationToken) => {
-            const deps = getDeployDeps?.();
+            const deps = deployDeps;
             if (!deps) {
                 return { success: false, error: 'Раскатка недоступна: хранилище или привязки не инициализированы.' };
             }
@@ -1042,7 +1042,7 @@ export function registerAgentCommands(
     const deploySelectedObjectsCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deploySelectedObjects',
         async (params: DeploySelectedObjectsParams, requestToken?: vscode.CancellationToken) => {
-            const deps = getDeployDeps?.();
+            const deps = deployDeps;
             if (!deps) {
                 return { success: false, error: 'Раскатка недоступна: хранилище или привязки не инициализированы.' };
             }
@@ -1056,7 +1056,7 @@ export function registerAgentCommands(
     const deployChangedFilesCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deployChangedFiles',
         async (params: DeployChangedFilesParams = {}, requestToken?: vscode.CancellationToken) => {
-            const deps = getDeployDeps?.();
+            const deps = deployDeps;
             if (!deps) {
                 return { success: false, error: 'Раскатка недоступна: хранилище или привязки не инициализированы.' };
             }
@@ -1070,7 +1070,7 @@ export function registerAgentCommands(
     const pullSelectedObjectsCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.pullSelectedObjects',
         async (params: AgentPullParams, requestToken?: vscode.CancellationToken) => {
-            const deps = getDeployDeps?.();
+            const deps = deployDeps;
             if (!deps) {
                 return { success: false, error: 'Выгрузка недоступна: хранилище или привязки не инициализированы.' };
             }
@@ -1088,7 +1088,7 @@ export function registerAgentCommands(
     const exportStatusCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.exportStatus',
         async (params: ExportStatusAgentParams = {}, requestToken?: vscode.CancellationToken) => {
-            const deps = getDeployDeps?.();
+            const deps = deployDeps;
             if (!deps) {
                 return { success: false, error: 'Статус недоступен: хранилище или привязки не инициализированы.' };
             }
@@ -1242,7 +1242,7 @@ export function registerAgentCommands(
     );
 
     const createFormsOperations = () => new FormsOperations({
-        infobaseStorage: getDeployDeps?.()?.infobaseStorage ?? null,
+        infobaseStorage: deployDeps?.infobaseStorage ?? null,
         getConfiguredPlatformPath: getPlatformPathSetting,
     });
 
@@ -1346,7 +1346,7 @@ export function registerAgentCommands(
         extensionPath: context.extensionPath,
         taskManager,
         runForConfiguration,
-        runPowerShellScript: getSkdOperationsDeps?.()?.runPowerShellScript,
+        runPowerShellScript: skd?.runPowerShellScript,
     });
 
     const listXdtoPackagesCommand = vscode.commands.registerCommand(
@@ -1421,7 +1421,7 @@ export function registerAgentCommands(
         error: 'Операции поддержки недоступны: application facade не инициализирован.',
     });
     const supportOperations = (): AgentSupportOperations | undefined => {
-        const deps = getSupportDeps?.();
+        const deps = supportDeps;
         return deps ? new AgentSupportOperations(deps) : undefined;
     };
 

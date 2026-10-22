@@ -1,7 +1,6 @@
 import * as assert from 'assert';
 import { randomUUID } from 'crypto';
 import type { Memento, SecretStorage } from 'vscode';
-import * as vscode from 'vscode';
 import {
   infobasePasswordSecretKey,
   INFOBASE_GLOBAL_STATE_KEY,
@@ -21,7 +20,6 @@ import {
   validateInfobaseFolders,
 } from '../../src/infobases/infobaseValidator';
 import type { InfobaseEntry, InfobaseFolder } from '../../src/infobases/models/infobaseEntry';
-import { ExtensionState } from '../../src/state/extensionState';
 
 type SecretStorageChangeEvent = { key: string };
 
@@ -817,44 +815,6 @@ suite('validateInfobaseCatalog (Phase 4 folders)', () => {
   });
 });
 
-
-suite('ExtensionState infobase wiring', () => {
-  test('starts with infobaseStorage null', () => {
-    assert.strictEqual(new ExtensionState().infobaseStorage, null);
-  });
-
-  test('init creates InfobaseStorageService; dispose clears it', async () => {
-    const memento = new MapMemento();
-    const secrets = new MapSecretStorage();
-    const ctx = {
-      globalState: memento,
-      secrets,
-      globalStoragePath: 'C:/tmp/1cviewer-test-storage',
-      subscriptions: [] as vscode.Disposable[],
-    } as unknown as vscode.ExtensionContext;
-
-    const state = new ExtensionState();
-    state.init(ctx);
-    const ib = state.infobaseStorage;
-    if (ib === null) {
-      assert.fail('expected infobaseStorage after init');
-    }
-
-    const e = makeEntry();
-    await ib.saveAll([e]);
-    const stored = memento.get(INFOBASE_GLOBAL_STATE_KEY) as {
-      rootSchemaVersion: number;
-      entries: InfobaseEntry[];
-      folders: InfobaseFolder[];
-    };
-    assert.strictEqual(stored.rootSchemaVersion, 3);
-    assert.deepStrictEqual(stored.folders, []);
-    assert.strictEqual(stored.entries.length, 1);
-
-    await state.dispose();
-    assert.strictEqual(state.infobaseStorage, null);
-  });
-});
 
 suite('InfobaseStorageService concurrent mutations (#187)', () => {
   class AsyncMemento implements Memento {

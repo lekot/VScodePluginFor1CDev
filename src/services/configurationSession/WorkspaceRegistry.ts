@@ -7,6 +7,7 @@ import { ConfigFormat } from '../../parsers/formatDetector';
 import { ConfigurationSession } from './ConfigurationSession';
 import type { ExclusiveConfigurationOperation, MutationOutcome } from './ConfigurationSession';
 import { assertPathWithinRoot, isPathInside } from './pathBoundary';
+import { awaitAllDrains } from './awaitAllDrains';
 import type { ConfigurationDescriptor, ConfigurationId, ConfigurationIdentity } from './types';
 
 export type WorkspaceRegistryErrorCode =
@@ -30,6 +31,12 @@ export interface DiscoveredConfiguration {
 }
 
 export type ConfigurationSessionFactory = (identity: ConfigurationIdentity) => ConfigurationSession;
+
+function invokeSessionDisposeImmediately(session: ConfigurationSession): Promise<void> {
+  // An async invocation begins executing synchronously, so dispose closes session admission
+  // before this helper returns while converting a synchronous throw into a rejected promise.
+  return (async () => session.dispose())();
+}
 
 interface PersistedIdentityEntry {
   readonly configurationId: ConfigurationId;
@@ -64,7 +71,11 @@ export class WorkspaceRegistry {
   private sessions = new Map<ConfigurationId, ConfigurationSession>();
   private descriptors = new Map<ConfigurationId, ConfigurationDescriptor>();
   private rootIndex = new Map<string, ConfigurationSession>();
+  private retiredSessionDrains = new Set<Promise<void>>();
+  private accepting = true;
   private disposed = false;
+  private quiescePromise: Promise<void> | null = null;
+  private disposePromise: Promise<void> | null = null;
   private identityStoreLoaded = false;
   private identityStore: PersistedIdentityStore = { version: 1, entries: [], tombstones: [] };
 
@@ -74,13 +85,14 @@ export class WorkspaceRegistry {
   ) {}
 
   async refresh(discovered: readonly DiscoveredConfiguration[]): Promise<void> {
-    this.ensureActive();
+    this.ensureAccepting();
     await this.loadIdentityStore();
     const nextIdentities = new Map<ConfigurationId, ConfigurationIdentity>();
     const labels = new Map<ConfigurationId, string>();
     const health = new Map<ConfigurationId, ConfigurationDescriptor['health']>();
     for (const candidate of discovered) {
       const facts = await discoverIdentityFacts(candidate);
+      this.ensureAccepting();
       const identity = this.resolveIdentity(facts);
       const existing = nextIdentities.get(identity.configurationId);
       if (existing) {
@@ -96,6 +108,7 @@ export class WorkspaceRegistry {
     }
 
     await this.persistIdentityStore();
+    this.ensureAccepting();
 
     const removed = [...this.sessions.entries()].filter(([id]) => !nextIdentities.has(id));
     const nextSessions = new Map<ConfigurationId, ConfigurationSession>();
@@ -113,7 +126,7 @@ export class WorkspaceRegistry {
     this.sessions = nextSessions;
     this.descriptors = nextDescriptors;
     this.rebuildRootIndex();
-    await Promise.all(removed.map(([, session]) => session.dispose()));
+    await Promise.all(removed.map(([, session]) => this.disposeSession(session)));
   }
 
   list(): ConfigurationDescriptor[] {
@@ -151,9 +164,10 @@ export class WorkspaceRegistry {
   }
 
   async registerTargetedRoot(candidate: DiscoveredConfiguration): Promise<ConfigurationSession> {
-    this.ensureActive();
+    this.ensureAccepting();
     await this.loadIdentityStore();
     const facts = await discoverIdentityFacts(candidate);
+    this.ensureAccepting();
     const identity = this.resolveIdentity(facts);
     const existing = this.sessions.get(identity.configurationId);
     const session = existing ?? this.createSession(identity);
@@ -161,13 +175,15 @@ export class WorkspaceRegistry {
 
     // Clean up any stale session that previously owned this rootPath under a different configurationId
     const rootKey = normalizePathKey(identity.rootPath);
+    const staleSessions: ConfigurationSession[] = [];
     for (const [id, s] of this.sessions.entries()) {
       if (id !== identity.configurationId && normalizePathKey(s.identity.rootPath) === rootKey) {
         this.sessions.delete(id);
         this.descriptors.delete(id);
-        void s.dispose();
+        staleSessions.push(s);
       }
     }
+    const staleDrains = staleSessions.map((stale) => this.disposeSession(stale));
 
     this.sessions.set(identity.configurationId, session);
     this.descriptors.set(identity.configurationId, {
@@ -177,12 +193,14 @@ export class WorkspaceRegistry {
     });
     this.rootIndex.set(rootKey, session);
     await this.persistIdentityStore();
+    await Promise.all(staleDrains);
     return session;
   }
 
   async unregisterTargetedRoot(configPath: string): Promise<void> {
-    this.ensureActive();
+    this.ensureAccepting();
     const canonical = await fs.promises.realpath(path.resolve(configPath)).catch(() => path.resolve(configPath));
+    this.ensureAccepting();
     const toRemove: Array<[ConfigurationId, ConfigurationSession]> = [];
     for (const [id, session] of this.sessions.entries()) {
       if (session.identity.rootPath === canonical) {
@@ -193,7 +211,7 @@ export class WorkspaceRegistry {
       this.sessions.delete(id);
       this.descriptors.delete(id);
       this.rootIndex.delete(normalizePathKey(session.identity.rootPath));
-      await session.dispose();
+      await this.disposeSession(session);
     }
     if (toRemove.length > 0) {
       await this.persistIdentityStore();
@@ -268,12 +286,14 @@ export class WorkspaceRegistry {
 
         return candidate;
       } catch {
-        const id = candidate.identity.configurationId;
-        this.sessions.delete(id);
-        this.descriptors.delete(id);
-        this.rootIndex.delete(normalizePathKey(candidate.identity.rootPath));
-        void candidate.dispose();
-        await this.persistIdentityStore().catch(() => undefined);
+        if (this.accepting) {
+          const id = candidate.identity.configurationId;
+          this.sessions.delete(id);
+          this.descriptors.delete(id);
+          this.rootIndex.delete(normalizePathKey(candidate.identity.rootPath));
+          void this.disposeSession(candidate);
+          await this.persistIdentityStore().catch(() => undefined);
+        }
       }
     }
 
@@ -289,16 +309,42 @@ export class WorkspaceRegistry {
     return session.runExclusive(operation);
   }
 
-  async dispose(): Promise<void> {
-    if (this.disposed) {
-      return;
+  quiesce(): Promise<void> {
+    if (this.quiescePromise) {
+      return this.quiescePromise;
     }
-    this.disposed = true;
-    const sessions = [...this.sessions.values()];
-    this.sessions.clear();
-    this.descriptors.clear();
-    this.rootIndex.clear();
-    await Promise.all(sessions.map((session) => session.dispose()));
+    this.accepting = false;
+    const sessionDrains = new Set(this.retiredSessionDrains);
+    for (const session of this.sessions.values()) {
+      sessionDrains.add(this.disposeSession(session));
+    }
+    this.quiescePromise = awaitAllDrains('Workspace registry session quiescence', [...sessionDrains]);
+    return this.quiescePromise;
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposePromise) {
+      return this.disposePromise;
+    }
+    const quiescence = this.quiesce();
+    this.disposePromise = Promise.resolve().then(async () => {
+      let drainError: unknown;
+      let drainFailed = false;
+      try {
+        await quiescence;
+      } catch (error) {
+        drainFailed = true;
+        drainError = error;
+      }
+      this.disposed = true;
+      this.sessions.clear();
+      this.descriptors.clear();
+      this.rootIndex.clear();
+      if (drainFailed) {
+        throw drainError;
+      }
+    });
+    return this.disposePromise;
   }
 
   private rebuildRootIndex(): void {
@@ -312,6 +358,23 @@ export class WorkspaceRegistry {
     if (this.disposed) {
       throw new WorkspaceRegistryError('REGISTRY_DISPOSED', 'Registry конфигураций уже закрыт.');
     }
+  }
+
+  private ensureAccepting(): void {
+    this.ensureActive();
+    if (!this.accepting) {
+      throw new WorkspaceRegistryError('REGISTRY_DISPOSED', 'Registry конфигураций уже закрыт для новых операций.');
+    }
+  }
+
+  private disposeSession(session: ConfigurationSession): Promise<void> {
+    const drain = invokeSessionDisposeImmediately(session);
+    this.retiredSessionDrains.add(drain);
+    void drain.then(
+      () => this.retiredSessionDrains.delete(drain),
+      () => this.retiredSessionDrains.delete(drain),
+    );
+    return drain;
   }
 
   private async loadIdentityStore(): Promise<void> {

@@ -2,13 +2,14 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import * as vscode from 'vscode';
 import { MESSAGES } from '../../src/constants/messages';
 import {
   createMetadataTreeLifecycle,
   MetadataReloadError,
 } from '../../src/extension/metadataTreeLifecycle';
-import { MetadataType, TreeNode } from '../../src/models/treeNode';
+import { MetadataType } from '../../src/models/treeNode';
 import {
   ConfigurationDiscoveryError,
   ConfigFormat,
@@ -17,8 +18,14 @@ import {
 } from '../../src/parsers/formatDetector';
 import { MetadataParser } from '../../src/parsers/metadataParser';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
+import { ConfigurationContextResolver } from '../../src/services/configurationSession/ConfigurationContextResolver';
+import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
+import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
+import { MetadataWatcherService } from '../../src/services/metadataWatcherService';
 import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
-import { ExtensionState } from '../../src/state/extensionState';
+import { Logger } from '../../src/utils/logger';
+import { createMetadataTreeLifecycleRuntimeView } from '../../src/extension/extensionFeatureContexts';
+import { createExtensionStateFixture, type ExtensionStateFixture } from '../helpers/extensionStateFixture';
 import { fakeTreeLoadContext } from '../helpers/fakeTreeLoadContext';
 import {
   fireWorkspaceFoldersChanged,
@@ -35,8 +42,28 @@ suite('MetadataTreeLifecycle', () => {
   const originalDetect = FormatDetector.detect;
   const originalParseStructureOnly = MetadataParser.parseStructureOnly;
   const originalInvalidateTypeContentsCache = MetadataParser.invalidateTypeContentsCache;
+  const originalWatcherStart = MetadataWatcherService.prototype.start;
+  const originalWatcherDispose = MetadataWatcherService.prototype.dispose;
   const activeLifecycles = new Set<ReturnType<typeof createMetadataTreeLifecycle>>();
   const activeProviders = new Set<MetadataTreeDataProvider>();
+  const activeStateFixtures = new Set<ExtensionStateFixture>();
+  let watcherDisposals = 0;
+
+  class TestWorkspaceRegistry extends WorkspaceRegistry {
+    override async resolveResource(resource: string): Promise<ConfigurationSession> {
+      const context = fakeTreeLoadContext(resource, ConfigFormat.Designer);
+      const absoluteRootPath = path.resolve(resource);
+      return new ConfigurationSession({
+        configurationId: context.configurationId,
+        rootPath: resource,
+        rootUri: pathToFileURL(absoluteRootPath).toString(),
+        descriptorUri: pathToFileURL(path.join(absoluteRootPath, 'Configuration.xml')).toString(),
+        workspaceFolderUris: [pathToFileURL(path.dirname(absoluteRootPath)).toString()],
+        format: context.format,
+        capabilities: { read: true, write: true, process: true },
+      });
+    }
+  }
 
   interface Deferred<T> {
     promise: Promise<T>;
@@ -73,32 +100,48 @@ suite('MetadataTreeLifecycle', () => {
       });
   }
 
-  function createStateWithProvider(): {
-    state: ExtensionState;
+  function stubSuccessfulTreeParsing(): void {
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async () => ({
+      id: 'configuration',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    });
+    (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
+  }
+
+  function testExtensionContext(globalStoragePath: string): vscode.ExtensionContext {
+    return {
+      subscriptions: [],
+      globalStoragePath,
+    } as unknown as vscode.ExtensionContext;
+  }
+
+  function createStateWithProvider(extensionContext?: vscode.ExtensionContext): {
+    state: ReturnType<typeof createMetadataTreeLifecycleRuntimeView>;
     provider: MetadataTreeDataProvider;
     messages: Array<string | undefined>;
   } {
-    const state = new ExtensionState();
     const provider = new MetadataTreeDataProvider();
     activeProviders.add(provider);
     const messages: Array<string | undefined> = [];
     provider.setMessageUpdater((message) => messages.push(message));
-    state.treeDataProvider = provider;
-    state.configurationContextResolver = {
-      resolveFromResource: async (configPath: string, capability: string) => {
-        assert.strictEqual(capability, 'read');
-        const context = fakeTreeLoadContext(configPath, ConfigFormat.Designer);
-        return {
-          configurationId: context.configurationId,
-          rootPath: context.configPath,
-          format: context.format,
-        };
-      },
-    } as any;
-    return { state, provider, messages };
+    const fixture = createExtensionStateFixture({
+      treeDataProvider: provider,
+      configurationContextResolver: new ConfigurationContextResolver(new TestWorkspaceRegistry()),
+    }, extensionContext);
+    activeStateFixtures.add(fixture);
+    return {
+      state: createMetadataTreeLifecycleRuntimeView(fixture.state),
+      provider,
+      messages,
+    };
   }
 
-  function createTrackedLifecycle(state: ExtensionState): ReturnType<typeof createMetadataTreeLifecycle> {
+  function createTrackedLifecycle(
+    state: ReturnType<typeof createMetadataTreeLifecycleRuntimeView>,
+  ): ReturnType<typeof createMetadataTreeLifecycle> {
     const lifecycle = createMetadataTreeLifecycle(state);
     activeLifecycles.add(lifecycle);
     return lifecycle;
@@ -120,19 +163,25 @@ suite('MetadataTreeLifecycle', () => {
   setup(() => {
     activeLifecycles.clear();
     activeProviders.clear();
+    activeStateFixtures.clear();
+    watcherDisposals = 0;
+    MetadataWatcherService.prototype.start = () => undefined;
+    MetadataWatcherService.prototype.dispose = () => { watcherDisposals += 1; };
     resetVscodeTestState();
     stubDiscovery();
   });
 
-  teardown(() => {
-    for (const lifecycle of activeLifecycles) {
-      lifecycle.dispose();
-    }
+  teardown(async () => {
+    await Promise.all([...activeLifecycles].map((lifecycle) => lifecycle.dispose()));
     activeLifecycles.clear();
+    await Promise.all([...activeStateFixtures].map((fixture) => fixture.dispose()));
+    activeStateFixtures.clear();
     for (const provider of activeProviders) {
       provider.dispose();
     }
     activeProviders.clear();
+    MetadataWatcherService.prototype.start = originalWatcherStart;
+    MetadataWatcherService.prototype.dispose = originalWatcherDispose;
     (FormatDetector.discoverAllConfigurationRoots as unknown as typeof FormatDetector.discoverAllConfigurationRoots) =
       originalDiscoverAllConfigurationRoots;
     (FormatDetector.discoverAllConfigurationPackageFiles as unknown as typeof FormatDetector.discoverAllConfigurationPackageFiles) =
@@ -146,27 +195,28 @@ suite('MetadataTreeLifecycle', () => {
   });
 
   test('no configuration clears roots and uses contextual empty state without a global warning', async () => {
+    const workspaceFolderPath = 'C:/workspace/non-1c';
     vscodeTestState.mockWorkspaceFolders = [
-      { name: 'non-1c', index: 0, uri: vscode.Uri.file('C:/workspace/non-1c') },
+      { name: 'non-1c', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
     ];
+    const existingConfigPath = `${workspaceFolderPath}/config`;
+    stubDiscovery({ configs: [{ configPath: existingConfigPath, workspaceFolderPath }] });
+    stubSuccessfulTreeParsing();
     const { state, provider, messages } = createStateWithProvider();
-    let watcherDisposals = 0;
-    state.metadataWatchers = [{ dispose: () => { watcherDisposals += 1; } } as any];
-    const existingRoot: TreeNode = {
-      id: 'existing-configuration',
-      name: 'Configuration',
-      type: MetadataType.Configuration,
-      properties: {},
-    };
-    provider.setRootNode(existingRoot);
+    const lifecycle = createTrackedLifecycle(state);
+    await lifecycle.loadMetadataTree();
+    const previousWatchers = [...lifecycle.metadataWatchers];
+    assert.strictEqual(previousWatchers.length, 1);
 
-    await createTrackedLifecycle(state).loadMetadataTree();
+    stubDiscovery();
+
+    await lifecycle.loadMetadataTree();
 
     assert.deepStrictEqual(vscodeTestState.warningLog, []);
     assert.deepStrictEqual(provider.getRootNodes(), []);
     assert.strictEqual(messages.at(-1), MESSAGES.EMPTY_TREE_MESSAGE);
-    assert.strictEqual(watcherDisposals, 1, 'watchers from removed configuration roots must be disposed');
-    assert.deepStrictEqual(state.metadataWatchers, []);
+    assert.strictEqual(watcherDisposals, previousWatchers.length, 'watchers from removed configuration roots must be disposed');
+    assert.deepStrictEqual(lifecycle.metadataWatchers, []);
   });
 
   test('no workspace preserves NO_WORKSPACE warning and clears the tree', async () => {
@@ -185,21 +235,36 @@ suite('MetadataTreeLifecycle', () => {
     vscodeTestState.mockWorkspaceFolders = [
       { name: '1c', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
     ];
-    stubDiscovery({
-      configs: [{ configPath: 'C:/missing-configuration', workspaceFolderPath }],
-    });
+    const configPath = `${workspaceFolderPath}/config`;
+    stubDiscovery({ configs: [{ configPath, workspaceFolderPath }] });
+    let parseCalls = 0;
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async () => {
+      parseCalls += 1;
+      if (parseCalls > 1) {
+        throw new Error('synthetic metadata parse failure');
+      }
+      return {
+        id: 'configuration',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        children: [],
+      };
+    };
+    (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
     const { state } = createStateWithProvider();
-    let watcherDisposals = 0;
-    const activeWatcher = { dispose: () => { watcherDisposals += 1; } } as any;
-    state.metadataWatchers = [activeWatcher];
+    const lifecycle = createTrackedLifecycle(state);
+    await lifecycle.loadMetadataTree();
+    const previousWatchers = [...lifecycle.metadataWatchers];
+    assert.strictEqual(previousWatchers.length, 1);
 
-    await assert.rejects(createTrackedLifecycle(state).loadMetadataTree());
+    await assert.rejects(lifecycle.loadMetadataTree());
 
     assert.strictEqual(vscodeTestState.warningLog.length, 0);
     assert.strictEqual(vscodeTestState.errorLog.length, 1);
     assert.match(vscodeTestState.errorLog[0], new RegExp(`^${MESSAGES.ERROR_LOADING}:`));
     assert.strictEqual(watcherDisposals, 0, 'last known-good watcher must survive a failed reload');
-    assert.deepStrictEqual(state.metadataWatchers, [activeWatcher]);
+    assert.deepStrictEqual(lifecycle.metadataWatchers, previousWatchers);
   });
 
   test('partial discovery is rejected and preserves last known-good roots and watchers', async () => {
@@ -207,30 +272,28 @@ suite('MetadataTreeLifecycle', () => {
     vscodeTestState.mockWorkspaceFolders = [
       { name: '1c', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
     ];
+    const existingConfigPath = `${workspaceFolderPath}/existing-config`;
+    stubDiscovery({ configs: [{ configPath: existingConfigPath, workspaceFolderPath }] });
+    stubSuccessfulTreeParsing();
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createTrackedLifecycle(state);
+    await lifecycle.loadMetadataTree();
+    const previousRoots = provider.getRootNodes();
+    const previousWatchers = [...lifecycle.metadataWatchers];
+    assert.strictEqual(previousWatchers.length, 1);
     stubDiscovery({
       configStatus: 'partial',
       configs: [{ configPath: 'C:/workspace/1c/new-config', workspaceFolderPath }],
     });
-    const { state, provider } = createStateWithProvider();
-    const existingRoot: TreeNode = {
-      id: 'existing-configuration',
-      name: 'Existing configuration',
-      type: MetadataType.Configuration,
-      properties: {},
-    };
-    provider.setRootNode(existingRoot);
-    let watcherDisposals = 0;
-    const activeWatcher = { dispose: () => { watcherDisposals += 1; } } as any;
-    state.metadataWatchers = [activeWatcher];
 
     await assert.rejects(
-      createTrackedLifecycle(state).loadMetadataTree(),
+      lifecycle.loadMetadataTree(),
       ConfigurationDiscoveryError
     );
 
-    assert.deepStrictEqual(provider.getRootNodes(), [existingRoot]);
+    assert.deepStrictEqual(provider.getRootNodes(), previousRoots);
     assert.strictEqual(watcherDisposals, 0);
-    assert.deepStrictEqual(state.metadataWatchers, [activeWatcher]);
+    assert.deepStrictEqual(lifecycle.metadataWatchers, previousWatchers);
   });
 
   test('successful load atomically replaces and disposes the previous watcher set', async () => {
@@ -239,28 +302,70 @@ suite('MetadataTreeLifecycle', () => {
     vscodeTestState.mockWorkspaceFolders = [
       { name: '1c', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
     ];
-    stubDiscovery({ configs: [{ configPath, workspaceFolderPath }] });
-    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) =
-      async () => ({
-        id: 'configuration',
-        name: 'Configuration',
-        type: MetadataType.Configuration,
-        properties: {},
-        children: [],
-      });
-    (FormatDetector.detect as unknown as typeof FormatDetector.detect) =
-      async () => ConfigFormat.Designer;
-
+    const previousConfigPath = `${workspaceFolderPath}/previous-config`;
+    stubDiscovery({ configs: [{ configPath: previousConfigPath, workspaceFolderPath }] });
+    stubSuccessfulTreeParsing();
     const { state } = createStateWithProvider();
-    let watcherDisposals = 0;
-    const activeWatcher = { dispose: () => { watcherDisposals += 1; } } as any;
-    state.metadataWatchers = [activeWatcher];
+    const lifecycle = createTrackedLifecycle(state);
+    await lifecycle.loadMetadataTree();
+    const previousWatchers = [...lifecycle.metadataWatchers];
+    assert.strictEqual(previousWatchers.length, 1);
 
-    await createTrackedLifecycle(state).loadMetadataTree();
+    stubDiscovery({ configs: [{ configPath, workspaceFolderPath }] });
+    await lifecycle.loadMetadataTree();
 
-    assert.strictEqual(watcherDisposals, 1);
-    assert.strictEqual(state.metadataWatchers.length, 1);
-    assert.notStrictEqual(state.metadataWatchers[0], activeWatcher);
+    assert.strictEqual(watcherDisposals, previousWatchers.length);
+    assert.strictEqual(lifecycle.metadataWatchers.length, 1);
+    assert.notStrictEqual(lifecycle.metadataWatchers[0], previousWatchers[0]);
+  });
+
+  test('watcher cleanup continues when disposal and warning diagnostics both throw', async () => {
+    const workspaceFolderPath = 'C:/workspace/watcher-cleanup';
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'watcher-cleanup', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({
+      configs: [
+        { configPath: `${workspaceFolderPath}/cfg-a`, workspaceFolderPath },
+        { configPath: `${workspaceFolderPath}/cfg-b`, workspaceFolderPath },
+      ],
+    });
+    stubSuccessfulTreeParsing();
+    const { state } = createStateWithProvider();
+    const lifecycle = createTrackedLifecycle(state);
+    await lifecycle.loadMetadataTree();
+    assert.strictEqual(lifecycle.metadataWatchers.length, 2, 'the regression needs multiple owned watcher instances');
+
+    const originalDispose = MetadataWatcherService.prototype.dispose;
+    const originalWarn = Logger.warn;
+    const watcherFailure = new Error('first watcher failed to dispose');
+    const diagnosticsFailure = new Error('warning logger unavailable');
+    let watcherDisposalsAttempted = 0;
+    MetadataWatcherService.prototype.dispose = function (): void {
+      watcherDisposalsAttempted += 1;
+      if (watcherDisposalsAttempted === 1) {
+        throw watcherFailure;
+      }
+    };
+    Logger.warn = () => {
+      throw diagnosticsFailure;
+    };
+
+    try {
+      const quiescence = lifecycle.quiesce();
+      assert.deepStrictEqual(lifecycle.metadataWatchers, [], 'quiescence removes the published watcher snapshot immediately');
+      assert.strictEqual(lifecycle.quiesce(), quiescence, 'quiesce must remain idempotent');
+      await quiescence;
+      assert.strictEqual(watcherDisposalsAttempted, 2, 'one disposal failure and logger failure must not skip later watchers');
+
+      const disposal = lifecycle.dispose();
+      assert.strictEqual(lifecycle.dispose(), disposal, 'terminal disposal must remain idempotent');
+      await disposal;
+      assert.strictEqual(watcherDisposalsAttempted, 2, 'repeated quiesce/dispose must not dispose watchers twice');
+    } finally {
+      MetadataWatcherService.prototype.dispose = originalDispose;
+      Logger.warn = originalWarn;
+    }
   });
 
   test('targeted reload reparses only the affected configuration and preserves sibling roots and watchers', async () => {
@@ -298,7 +403,7 @@ suite('MetadataTreeLifecycle', () => {
       await lifecycle.loadMetadataTree();
       const rootsBeforeReload = provider.getRootNodes();
       const siblingRoot = rootsBeforeReload[1];
-      const watchersBeforeReload = [...state.metadataWatchers];
+      const watchersBeforeReload = [...lifecycle.metadataWatchers];
       parseCalls.length = 0;
       revisions.set(configA, 2);
 
@@ -310,9 +415,9 @@ suite('MetadataTreeLifecycle', () => {
       assert.notStrictEqual(rootsAfterReload[0], rootsBeforeReload[0]);
       assert.strictEqual(rootsAfterReload[0].properties.comment, '2');
       assert.strictEqual(rootsAfterReload[1], siblingRoot, 'unaffected root must retain object identity');
-      assert.deepStrictEqual(state.metadataWatchers, watchersBeforeReload, 'targeted reload must preserve watcher sessions');
+      assert.deepStrictEqual(lifecycle.metadataWatchers, watchersBeforeReload, 'targeted reload must preserve watcher sessions');
     } finally {
-      lifecycle.dispose();
+      await lifecycle.dispose();
     }
   });
 
@@ -413,7 +518,7 @@ suite('MetadataTreeLifecycle', () => {
     } finally {
       releaseParseA?.();
       await coordinator.dispose();
-      lifecycle.dispose();
+      await lifecycle.dispose();
     }
   });
 
@@ -475,7 +580,7 @@ suite('MetadataTreeLifecycle', () => {
       );
     } finally {
       await coordinator.dispose();
-      lifecycle.dispose();
+      await lifecycle.dispose();
     }
   });
 
@@ -521,7 +626,7 @@ suite('MetadataTreeLifecycle', () => {
       assert.strictEqual(warmupCalls[0]?.preferredRootId, provider.getRootNodes()[0].id);
       assert.strictEqual(warmupCalls[0]?.rootIds, undefined, 'rootIds must not be restricted to single root on reload');
     } finally {
-      lifecycle.dispose();
+      await lifecycle.dispose();
     }
   });
 
@@ -561,11 +666,7 @@ suite('MetadataTreeLifecycle', () => {
     (FormatDetector.detect as unknown as typeof FormatDetector.detect) =
       async () => ConfigFormat.Designer;
 
-    const { state, provider } = createStateWithProvider();
-    Object.defineProperty(state, '_extensionContext', {
-      configurable: true,
-      value: { globalStoragePath },
-    });
+    const { state, provider } = createStateWithProvider(testExtensionContext(globalStoragePath));
     const lifecycle = createTrackedLifecycle(state);
     const coordinator = createReloadCoordinator(lifecycle);
     try {
@@ -597,7 +698,7 @@ suite('MetadataTreeLifecycle', () => {
       );
     } finally {
       await coordinator.dispose();
-      lifecycle.dispose();
+      await lifecycle.dispose();
       await fs.promises.rm(tempRoot, { recursive: true, force: true });
     }
   });
@@ -688,7 +789,7 @@ suite('MetadataTreeLifecycle', () => {
       releaseFirstTargetedParse.resolve(undefined);
       releaseRetryParse.resolve(undefined);
       await coordinator.dispose();
-      lifecycle.dispose();
+      await lifecycle.dispose();
     }
   });
 
@@ -779,7 +880,7 @@ suite('MetadataTreeLifecycle', () => {
       releaseFullParse.resolve(undefined);
       releaseRetryParse.resolve(undefined);
       await coordinator.dispose();
-      lifecycle.dispose();
+      await lifecycle.dispose();
     }
   });
 
@@ -828,11 +929,7 @@ suite('MetadataTreeLifecycle', () => {
     };
     (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
 
-    const { state, provider } = createStateWithProvider();
-    Object.defineProperty(state, '_extensionContext', {
-      configurable: true,
-      value: { globalStoragePath },
-    });
+    const { state, provider } = createStateWithProvider(testExtensionContext(globalStoragePath));
     const lifecycle = createTrackedLifecycle(state);
     const coordinator = new ReloadCoordinatorService(async ({ configPath: requestedConfigPath, canPublish }) => {
       runnerAttempts += 1;
@@ -884,7 +981,7 @@ suite('MetadataTreeLifecycle', () => {
       releaseInvalidation.resolve(undefined);
       releaseRetryParse.resolve(undefined);
       await coordinator.dispose();
-      lifecycle.dispose();
+      await lifecycle.dispose();
       await fs.promises.rm(tempRoot, { recursive: true, force: true });
     }
   });
@@ -936,11 +1033,7 @@ suite('MetadataTreeLifecycle', () => {
     };
     (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
 
-    const { state, provider } = createStateWithProvider();
-    Object.defineProperty(state, '_extensionContext', {
-      configurable: true,
-      value: { globalStoragePath },
-    });
+    const { state, provider } = createStateWithProvider(testExtensionContext(globalStoragePath));
     const lifecycle = createTrackedLifecycle(state);
     const coordinator = new ReloadCoordinatorService(async ({ configPath: requestedConfigPath, canPublish }) => {
       runnerAttempts += 1;
@@ -984,7 +1077,7 @@ suite('MetadataTreeLifecycle', () => {
       rejectFullParse.reject(new Error('test cleanup released the full parse'));
       releaseDiskInvalidation.resolve(undefined);
       await coordinator.dispose();
-      lifecycle.dispose();
+      await lifecycle.dispose();
       mutableDiskCache.invalidateTreeCache = originalInvalidateTreeCache;
       await fs.promises.rm(tempRoot, { recursive: true, force: true });
     }
@@ -1030,7 +1123,7 @@ suite('MetadataTreeLifecycle', () => {
       await targetedParseStarted.promise;
 
       const disposal = coordinator.dispose();
-      lifecycle.dispose();
+      await lifecycle.dispose();
       const result = await request.completed;
       assert.strictEqual(result.succeeded, false);
       assert.strictEqual(result.failure?.code, 'RELOAD_DISPOSED');
@@ -1046,7 +1139,7 @@ suite('MetadataTreeLifecycle', () => {
     } finally {
       releaseTargetedParse.resolve(undefined);
       await coordinator.dispose();
-      lifecycle.dispose();
+      await lifecycle.dispose();
     }
   });
 
@@ -1084,11 +1177,7 @@ suite('MetadataTreeLifecycle', () => {
     };
     (FormatDetector.detect as unknown as typeof FormatDetector.detect) = async () => ConfigFormat.Designer;
 
-    const { state, provider } = createStateWithProvider();
-    Object.defineProperty(state, '_extensionContext', {
-      configurable: true,
-      value: { globalStoragePath },
-    });
+    const { state, provider } = createStateWithProvider(testExtensionContext(globalStoragePath));
     const lifecycle = createTrackedLifecycle(state);
     const coordinator = createReloadCoordinator(lifecycle);
     try {
@@ -1112,7 +1201,7 @@ suite('MetadataTreeLifecycle', () => {
       assert.strictEqual(provider.getRootNodes()[0]?.properties.comment, 'fresh-full');
     } finally {
       await coordinator.dispose();
-      lifecycle.dispose();
+      await lifecycle.dispose();
       await fs.promises.rm(tempRoot, { recursive: true, force: true });
     }
   });
@@ -1155,7 +1244,7 @@ suite('MetadataTreeLifecycle', () => {
       (error: unknown) => error instanceof MetadataReloadError && error.code === 'RELOAD_DISPOSED',
     );
     assert.deepStrictEqual(provider.getRootNodes(), []);
-    assert.deepStrictEqual(state.metadataWatchers, []);
+    assert.deepStrictEqual(lifecycle.metadataWatchers, []);
     assert.deepStrictEqual(vscodeTestState.informationLog, []);
   });
 
@@ -1177,7 +1266,7 @@ suite('MetadataTreeLifecycle', () => {
         return { status: 'authoritative', items: [], issues: [] };
       };
 
-    const lifecycle = createMetadataTreeLifecycle(createStateWithProvider().state);
+    const lifecycle = createTrackedLifecycle(createStateWithProvider().state);
     const first = lifecycle.loadMetadataTree();
     await new Promise<void>((resolve) => setImmediate(resolve));
     const second = lifecycle.loadMetadataTree();
