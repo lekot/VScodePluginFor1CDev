@@ -8,13 +8,24 @@ import { MetadataType, type TreeNode } from '../../src/models/treeNode';
 import { saveProperties, type MessageHandlerContext } from '../../src/providers/propertiesMessageHandler';
 import { createElement, deleteElement, duplicateElement, planDuplicateRootElement } from '../../src/services/elementOperations';
 import { planDeleteMetadataObject } from '../../src/services/metadataCrudService';
+import { installDirectConfigurationMutationEngineForTests } from '../helpers/directConfigurationMutationEngine';
 
 suite('CFE generic CRUD guards', () => {
+  let restoreMutationEngine: (() => void) | undefined;
   let workspace: string;
   let cfeRoot: string;
   let adoptedPath: string;
   let catalogsNode: TreeNode;
   let adoptedNode: TreeNode;
+
+  suiteSetup(() => {
+    restoreMutationEngine = installDirectConfigurationMutationEngineForTests();
+  });
+
+  suiteTeardown(() => {
+    restoreMutationEngine?.();
+    restoreMutationEngine = undefined;
+  });
 
   setup(async () => {
     workspace = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cfe-crud-'));

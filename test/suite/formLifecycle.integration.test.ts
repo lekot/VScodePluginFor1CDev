@@ -13,8 +13,20 @@ import type { FormModel, FormChildItem } from '../../src/formEditor/formModel';
 import { parseFormXml } from '../../src/formEditor/formXmlParser';
 import { writeFormXml } from '../../src/formEditor/formXmlWriter';
 import { createSerializedMessageHandler } from '../../src/formEditor/formMessageHandler';
+import { installDirectConfigurationMutationEngineForTests } from '../helpers/directConfigurationMutationEngine';
 
 suite('form lifecycle integration', () => {
+  let restoreMutationEngine: (() => void) | undefined;
+
+  suiteSetup(() => {
+    restoreMutationEngine = installDirectConfigurationMutationEngineForTests();
+  });
+
+  suiteTeardown(() => {
+    restoreMutationEngine?.();
+    restoreMutationEngine = undefined;
+  });
+
   test('create -> rename -> duplicate -> delete keeps tree and disk consistent', async () => {
     const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-lifecycle-'));
     const formXmlPath = path.join(tmpRoot, 'Catalogs', 'Orders', 'Forms', 'MainForm', 'Ext', 'Form.xml');

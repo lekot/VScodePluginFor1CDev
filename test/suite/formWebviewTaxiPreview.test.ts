@@ -6,12 +6,20 @@ import { parseFormXml } from '../../src/formEditor/formXmlParser';
 import { getWebviewHtml } from '../../src/formEditor/formWebviewHtml';
 import { writeFormXml } from '../../src/formEditor/formXmlWriter';
 import { getPreviewFieldCharacterWidth } from '../../src/formEditor/formPreviewLayout';
+import { installDirectConfigurationMutationEngineForTests } from '../helpers/directConfigurationMutationEngine';
 
 suite('Form editor Taxi style preview', () => {
   let html: string;
+  let restoreMutationEngine: (() => void) | undefined;
 
   suiteSetup(() => {
+    restoreMutationEngine = installDirectConfigurationMutationEngineForTests();
     html = getWebviewHtml({} as any);
+  });
+
+  suiteTeardown(() => {
+    restoreMutationEngine?.();
+    restoreMutationEngine = undefined;
   });
 
   test('parses a representative nested Pages, group, command bar, table, and typed attributes fixture', async () => {

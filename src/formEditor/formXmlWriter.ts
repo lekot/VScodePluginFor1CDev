@@ -5,12 +5,14 @@
 import * as fs from 'fs';
 import { XMLBuilder } from 'fast-xml-parser';
 import { Logger } from '../utils/logger';
+import { getConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
+import { hashContent } from '../services/configurationSession/atomicFileStorage';
+import { unwrapMutationReceipt } from '../services/configurationSession/mutationReceiptError';
 import {
   requireDocumentWriteFormatProfile,
   requireWriteFormatProfile,
 } from '../utils/format/formatRank';
 import type { FormModel, FormChildItem, FormEventItem } from './formModel';
-import { writeUtf8FileWithBackup, withFileLock, type WriteUtf8FileWithBackupOptions } from '../utils/xml/xmlFileIo';
 
 const BUILDER_OPTIONS = {
   ignoreAttributes: false,
@@ -303,32 +305,35 @@ export function injectXmlnsIntoFormTag(xmlString: string, xmlnsDeclarations: Rec
 }
 
 /**
- * Write FormModel to Ext/Form.xml. Creates backup before write; on write failure restores from backup.
+ * Write FormModel to Ext/Form.xml with the existing snapshot protected by compare-and-swap.
  */
 export async function writeFormXml(
   formXmlPath: string,
-  model: FormModel,
-  options?: WriteUtf8FileWithBackupOptions
+  model: FormModel
 ): Promise<void> {
-  return await withFileLock(formXmlPath, async () => {
-    // Existing Form.xml is authoritative for updates. Validate and preserve its
-    // exact version before any backup or write is attempted.
-    let existingContent: string | undefined;
-    try {
-      existingContent = await fs.promises.readFile(formXmlPath, 'utf-8');
-    } catch (readErr) {
-      if ((readErr as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw readErr;
-      }
+  // Existing Form.xml is authoritative for updates. Preserve its exact version,
+  // then require the same snapshot when the engine admits the write.
+  let existingContent: string | undefined;
+  try {
+    existingContent = await fs.promises.readFile(formXmlPath, 'utf-8');
+  } catch (readErr) {
+    if ((readErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw readErr;
     }
-    const fullContent = buildFormXmlDocument(model, existingContent, formXmlPath);
+  }
+  const fullContent = buildFormXmlDocument(model, existingContent, formXmlPath);
 
-    await writeUtf8FileWithBackup(formXmlPath, existingContent, fullContent, {
-      ...options,
-      skipLock: true,
-    });
-    Logger.info(`Form.xml written: ${formXmlPath}`);
-  });
+  const receipt = await getConfigurationMutationEngine().transformFile(
+    formXmlPath,
+    {
+      kind: 'form.xml.save',
+      resourcePath: formXmlPath,
+      expectedRevision: existingContent === undefined ? null : hashContent(existingContent),
+    },
+    () => ({ content: fullContent, result: undefined }),
+  );
+  unwrapMutationReceipt(receipt, `Unable to write Form.xml: ${formXmlPath}`);
+  Logger.info(`Form.xml written: ${formXmlPath}`);
 }
 
 /** Builds a validated Form.xml without performing filesystem writes. */

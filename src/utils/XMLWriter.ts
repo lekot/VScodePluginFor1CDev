@@ -5,6 +5,7 @@ import {
   type SingleFileMutationChange,
   type SingleFileMutationState,
 } from '../services/configurationSession/ConfigurationMutationEngine';
+import { hashContent } from '../services/configurationSession/atomicFileStorage';
 import {
   MutationReceiptError,
   projectMutationFailure,
@@ -12,7 +13,7 @@ import {
 } from '../services/configurationSession/mutationReceiptError';
 import { xmlParser } from './xml/xmlCore';
 import { XmlReadError, XmlParseError, XmlWriteError } from './xml/xmlErrors';
-import { buildXmlString, writeUtf8FileWithBackup } from './xml/xmlFileIo';
+import { buildXmlString } from './xml/xmlFileIo';
 import { generateSimpleUuid as xmlGenerateSimpleUuid } from './xml/xmlHelpers';
 import { extractProperties, updateRootPropertiesInStructure } from './xml/xmlPropertiesService';
 import {
@@ -454,14 +455,20 @@ export class XMLWriter {
       Logger.error(`Failed to build XML for ${filePath}`, buildError);
       throw new XmlWriteError(`Failed to generate XML content for: ${filePath}. ${msg}`);
     }
-    await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
+    await this.transformFileWithEngine(
+      filePath,
+      'xml.structure.save',
+      () => ({ content: xmlString, result: undefined }),
+      hashContent(xmlContent),
+    );
     Logger.info(logMessage);
   }
 
   private static async transformFileWithEngine<T>(
     filePath: string,
     kind: string,
-    transform: (state: SingleFileMutationState) => SingleFileMutationChange<T> | Promise<SingleFileMutationChange<T>>
+    transform: (state: SingleFileMutationState) => SingleFileMutationChange<T> | Promise<SingleFileMutationChange<T>>,
+    expectedRevision?: string | null,
   ): Promise<T> {
     let transformStarted = false;
     let transformFailureCaptured = false;
@@ -471,7 +478,7 @@ export class XMLWriter {
     try {
       receipt = await getConfigurationMutationEngine().transformFile(
         filePath,
-        { kind, resourcePath: filePath },
+        { kind, resourcePath: filePath, expectedRevision },
         async (state) => {
           transformStarted = true;
           try {
@@ -508,7 +515,7 @@ export class XMLWriter {
     if (receipt.status !== 'committed') {
       const receiptMessage = receipt.message ?? `Mutation failed with status '${receipt.status}'.`;
       let message = receiptMessage;
-      if (receipt.code === 'STALE_TARGET_REVISION') {
+      if (receipt.code === 'STALE_TARGET_REVISION' || receipt.code === 'STALE_TARGET_HASH') {
         message = `Concurrent modification detected: ${filePath}. ${receiptMessage}`;
       } else if (receipt.code === 'WRITE_FAILED') {
         message = `Unable to write to file. Check file permissions and disk space. ${receiptMessage}`;
@@ -568,7 +575,12 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
     targetVersion: string
   ): Promise<void> {
     const content = this.buildMinimalElementContent(rootTag, elementName, targetVersion);
-    await fs.promises.writeFile(filePath, content, 'utf-8');
+    await this.transformFileWithEngine(
+      filePath,
+      'xml.metadata.create',
+      () => ({ content, result: undefined }),
+      null,
+    );
     Logger.info(`Created minimal ${rootTag} file ${filePath}`);
   }
 

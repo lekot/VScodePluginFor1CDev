@@ -2,10 +2,11 @@
  * Append or create Designer `Ext/Predefined.xml` items (Catalog / COT / ChartOfAccounts).
  */
 import * as fs from 'fs';
-import * as path from 'path';
 import { MetadataType } from '../../models/treeNode';
+import { getConfigurationMutationEngine } from '../../services/configurationSession/ConfigurationMutationEngine';
+import { unwrapMutationReceipt } from '../../services/configurationSession/mutationReceiptError';
 import { xmlParser } from './xmlCore';
-import { buildXmlString, writeUtf8FileWithBackup } from './xmlFileIo';
+import { buildXmlString } from './xmlFileIo';
 import { generateSimpleUuid } from './xmlHelpers';
 import { requireDocumentWriteFormatProfile, requireWriteFormatProfile } from '../format/formatRank';
 
@@ -275,40 +276,41 @@ export async function appendPredefinedDesignerItem(
       ? await readCotOwnerType(ownerFilePath)
       : undefined;
 
-  let xmlContent: string;
-  try {
-    xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-      if (!targetVersion) {
-        throw new Error('Для создания Predefined.xml не определён формат проекта.');
+  const receipt = await getConfigurationMutationEngine().transformFile(
+    filePath,
+    { kind: 'predefined.append', resourcePath: filePath },
+    (state) => {
+      if (!state.exists) {
+        if (!targetVersion) {
+          throw new Error('Для создания Predefined.xml не определён формат проекта.');
+        }
+        return {
+          content: buildNewPredefinedFileContent(ownerType, name, desc, cotResolvedType, targetVersion),
+          result: undefined,
+        };
       }
-      const body = buildNewPredefinedFileContent(ownerType, name, desc, cotResolvedType, targetVersion);
-      await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.promises.writeFile(filePath, body, 'utf-8');
-      return;
-    }
-    throw e;
-  }
-  requireDocumentWriteFormatProfile(xmlContent);
 
-  let parsed: unknown;
-  try {
-    parsed = xmlParser.parse(xmlContent);
-  } catch (parseErr) {
-    const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
-    throw new Error(`Не удалось разобрать Predefined.xml: ${msg}`);
-  }
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('Некорректное содержимое Predefined.xml');
-  }
-  const root = findPredefinedDataRoot(parsed as Record<string, unknown>);
-  if (!root) {
-    throw new Error('В Predefined.xml не найден корень PredefinedData');
-  }
-  mergeItemIntoPredefinedRoot(root, buildItemObjectForMerge(ownerType, name, desc, cotResolvedType));
-  const updated = buildXmlString(parsed);
-  await writeUtf8FileWithBackup(filePath, xmlContent, updated);
+      requireDocumentWriteFormatProfile(state.content);
+
+      let parsed: unknown;
+      try {
+        parsed = xmlParser.parse(state.content);
+      } catch (parseErr) {
+        const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+        throw new Error(`Не удалось разобрать Predefined.xml: ${msg}`);
+      }
+      if (!parsed || typeof parsed !== 'object') {
+        throw new Error('Некорректное содержимое Predefined.xml');
+      }
+      const root = findPredefinedDataRoot(parsed as Record<string, unknown>);
+      if (!root) {
+        throw new Error('В Predefined.xml не найден корень PredefinedData');
+      }
+      mergeItemIntoPredefinedRoot(root, buildItemObjectForMerge(ownerType, name, desc, cotResolvedType));
+      return { content: buildXmlString(parsed), result: undefined };
+    },
+  );
+  unwrapMutationReceipt(receipt, `Не удалось обновить Predefined.xml: ${filePath}`);
 }
 
 function predefinedItemName(item: unknown): string {
@@ -336,42 +338,45 @@ function predefinedItemName(item: unknown): string {
 
 /** Remove exactly one named root item from an existing Designer Ext/Predefined.xml. */
 export async function removePredefinedDesignerItem(filePath: string, name: string): Promise<void> {
-  let xmlContent: string;
-  try {
-    xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Не удалось прочитать Predefined.xml: ${message}`);
-  }
-  requireDocumentWriteFormatProfile(xmlContent);
+  const receipt = await getConfigurationMutationEngine().transformFile(
+    filePath,
+    { kind: 'predefined.remove', resourcePath: filePath },
+    (state) => {
+      if (!state.exists) {
+        throw new Error(`Не удалось прочитать Predefined.xml: Файл не найден: ${filePath}`);
+      }
+      requireDocumentWriteFormatProfile(state.content);
 
-  let parsed: unknown;
-  try {
-    parsed = xmlParser.parse(xmlContent);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Не удалось разобрать Predefined.xml: ${message}`);
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('Некорректное содержимое Predefined.xml.');
-  }
-  const root = findPredefinedDataRoot(parsed as Record<string, unknown>);
-  if (!root) {
-    throw new Error('В Predefined.xml не найден корень PredefinedData.');
-  }
+      let parsed: unknown;
+      try {
+        parsed = xmlParser.parse(state.content);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Не удалось разобрать Predefined.xml: ${message}`);
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('Некорректное содержимое Predefined.xml.');
+      }
+      const root = findPredefinedDataRoot(parsed as Record<string, unknown>);
+      if (!root) {
+        throw new Error('В Predefined.xml не найден корень PredefinedData.');
+      }
 
-  const rawItems = root.Item;
-  const items = Array.isArray(rawItems) ? [...rawItems] : rawItems == null ? [] : [rawItems];
-  const targetIndex = items.findIndex((item) => predefinedItemName(item) === name);
-  if (targetIndex < 0) {
-    throw new Error(`Предопределённый элемент '${name}' не найден.`);
-  }
-  items.splice(targetIndex, 1);
-  if (items.length === 0) {
-    delete root.Item;
-  } else {
-    root.Item = items;
-  }
+      const rawItems = root.Item;
+      const items = Array.isArray(rawItems) ? [...rawItems] : rawItems == null ? [] : [rawItems];
+      const targetIndex = items.findIndex((item) => predefinedItemName(item) === name);
+      if (targetIndex < 0) {
+        throw new Error(`Предопределённый элемент '${name}' не найден.`);
+      }
+      items.splice(targetIndex, 1);
+      if (items.length === 0) {
+        delete root.Item;
+      } else {
+        root.Item = items;
+      }
 
-  await writeUtf8FileWithBackup(filePath, xmlContent, buildXmlString(parsed));
+      return { content: buildXmlString(parsed), result: undefined };
+    },
+  );
+  unwrapMutationReceipt(receipt, `Не удалось обновить Predefined.xml: ${filePath}`);
 }

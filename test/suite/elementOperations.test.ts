@@ -33,6 +33,7 @@ import {
   clearDesignerTemplateRepositoryForTests,
   initDesignerTemplateRepository,
 } from '../../src/services/designerTemplateRepository';
+import { installDirectConfigurationMutationEngineForTests } from '../helpers/directConfigurationMutationEngine';
 
 interface FixtureDirectoryCopier {
   copyRegularDirectory(sourcePath: string, destinationPath: string): void;
@@ -49,11 +50,21 @@ async function writeConfigurationWithFormat(dir: string, version = '2.20'): Prom
 }
 
 suite('elementOperations', () => {
+  let restoreMutationEngine: (() => void) | undefined;
   let tmpDir: string;
   let catalogPath: string;
   let configNode: TreeNode;
   let catalogsTypeNode: TreeNode;
   let catalogNode: TreeNode;
+
+  suiteSetup(() => {
+    restoreMutationEngine = installDirectConfigurationMutationEngineForTests();
+  });
+
+  suiteTeardown(() => {
+    restoreMutationEngine?.();
+    restoreMutationEngine = undefined;
+  });
 
   setup(async () => {
     tmpDir = await createTempDir('1cviewer-el-');

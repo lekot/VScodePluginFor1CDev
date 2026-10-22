@@ -84,4 +84,36 @@ export async function save(target: string): Promise<void> {
     assert.strictEqual(added.status, 0, added.stderr);
     assert.match(added.stderr, /rename in move/);
   });
+
+  test('strict XML writer boundary rejects a counterfactual raw write regardless of baseline', async () => {
+    const protectedWriterPath = path.join(sourceRoot, 'utils', 'XMLWriter.ts');
+    await fs.promises.mkdir(path.dirname(protectedWriterPath), { recursive: true });
+    await fs.promises.writeFile(
+      protectedWriterPath,
+      `export async function createMinimalElementFile(): Promise<void> {
+  return;
+}
+`,
+      'utf8',
+    );
+
+    const clean = runGuard('--enforce-files', 'src/utils/XMLWriter.ts');
+    assert.strictEqual(clean.status, 0, clean.stderr);
+    assert.match(clean.stdout, /XML writer boundary passed/);
+
+    await fs.promises.writeFile(
+      protectedWriterPath,
+      `import * as fs from 'fs';
+export async function createMinimalElementFile(target: string): Promise<void> {
+  await fs.promises.writeFile(target, '<Catalog/>', 'utf8');
+}
+`,
+      'utf8',
+    );
+
+    const violating = runGuard('--enforce-files', 'src/utils/XMLWriter.ts');
+    assert.notStrictEqual(violating.status, 0);
+    assert.match(violating.stderr, /XML writer boundary failed/);
+    assert.match(violating.stderr, /src\/utils\/XMLWriter\.ts:\d+ writeFile in createMinimalElementFile/);
+  });
 });

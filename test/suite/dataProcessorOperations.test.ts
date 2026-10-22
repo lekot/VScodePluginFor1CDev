@@ -9,6 +9,7 @@ import {
   renameElement,
 } from '../../src/services/elementOperations';
 import { XMLWriter } from '../../src/utils/XMLWriter';
+import { installDirectConfigurationMutationEngineForTests } from '../helpers/directConfigurationMutationEngine';
 import {
   createTempDir,
   cleanupTempDir,
@@ -20,8 +21,18 @@ import {
 
 suite('DataProcessor Operations', () => {
   let tmpDir: string;
+  let restoreMutationEngine: (() => void) | undefined;
   let configNode: TreeNode;
   let dataProcessorsTypeNode: TreeNode;
+
+  suiteSetup(() => {
+    restoreMutationEngine = installDirectConfigurationMutationEngineForTests();
+  });
+
+  suiteTeardown(() => {
+    restoreMutationEngine?.();
+    restoreMutationEngine = undefined;
+  });
 
   setup(async () => {
     tmpDir = await createTempDir('1cviewer-dp-');

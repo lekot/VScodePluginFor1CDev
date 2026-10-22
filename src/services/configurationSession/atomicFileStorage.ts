@@ -191,6 +191,13 @@ export class AtomicFileStorage {
     try {
       current = await this.fileSystem.readFile(canonicalTarget);
     } catch (error) {
+      if (isNotFoundError(error)) {
+        return {
+          status: 'conflict',
+          code: 'STALE_TARGET_HASH',
+          message: 'Файл удалён после чтения; запись отменена.',
+        };
+      }
       return { status: 'rolledBack', code: 'WRITE_FAILED', message: errorMessage(error) };
     }
     if (hashContent(current) !== expectedHash) {
@@ -223,7 +230,19 @@ export class AtomicFileStorage {
         );
       }
       await assertNoSymlinkSegments(canonicalRoot, canonicalTarget);
-      const latest = await this.fileSystem.readFile(canonicalTarget);
+      let latest: Buffer;
+      try {
+        latest = await this.fileSystem.readFile(canonicalTarget);
+      } catch (error) {
+        if (isNotFoundError(error)) {
+          return {
+            status: 'conflict',
+            code: 'STALE_TARGET_HASH',
+            message: 'Файл удалён непосредственно перед заменой; запись отменена.',
+          };
+        }
+        throw error;
+      }
       if (hashContent(latest) !== expectedHash) {
         return {
           status: 'conflict',

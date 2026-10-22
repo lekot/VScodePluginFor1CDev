@@ -7,7 +7,9 @@ import { XMLParser } from 'fast-xml-parser';
 import { compareCodeUnits } from '../utils/compareCodeUnits';
 import { Logger } from '../utils/logger';
 import { parsePredefinedCharacteristics } from '../parsers/predefinedCharacteristicsParser';
-import { buildXmlString, writeUtf8FileWithBackup } from '../utils/xml/xmlFileIo';
+import { buildXmlString } from '../utils/xml/xmlFileIo';
+import { getConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
+import { unwrapMutationReceipt } from '../services/configurationSession/mutationReceiptError';
 import { requireDocumentWriteFormatProfile } from '../utils/format/formatRank';
 import type { PredefinedCharacteristicEntry } from '../types/predefinedCharacteristic';
 import { AgentPathError } from './agentPathResolver';
@@ -311,70 +313,77 @@ export async function setPredefinedCharacteristicType(
   const { cotDir } = resolveCotTarget(configRoot, cotTarget);
   const initialBoundary = await assertConfiguredPathHasNoSymlinks(configRoot, predefinedXmlPath(cotDir));
   const xmlPath = initialBoundary.canonicalTarget;
-  const originalContent = await fs.promises.readFile(xmlPath, 'utf-8');
-  requireDocumentWriteFormatProfile(originalContent);
+  let transformFailureCaptured = false;
+  let transformFailure: unknown;
+  const receipt = await getConfigurationMutationEngine().transformFile(
+    xmlPath,
+    { kind: 'agent.cot.setPredefinedCharacteristicType', resourcePath: xmlPath },
+    async (state) => {
+      try {
+        if (!state.exists) {
+          throw new Error(`Predefined.xml not found: ${xmlPath}`);
+        }
+        const currentBoundary = await assertConfiguredPathHasNoSymlinks(
+          configRoot,
+          predefinedXmlPath(cotDir),
+        );
+        if (!isSamePath(xmlPath, currentBoundary.canonicalTarget)) {
+          throw invalidCotTarget('Predefined.xml target changed while the update was being prepared.');
+        }
+        requireDocumentWriteFormatProfile(state.content);
 
-  let parsed: unknown;
-  try {
-    parsed = xmlParser.parse(originalContent);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to parse Predefined.xml: ${msg}`);
-  }
+        let parsed: unknown;
+        try {
+          parsed = xmlParser.parse(state.content);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          throw new Error(`Failed to parse Predefined.xml: ${msg}`);
+        }
 
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('Invalid Predefined.xml structure');
-  }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('Invalid Predefined.xml structure');
+        }
 
-  // Find PredefinedData root
-  let root: Record<string, unknown> | null = null;
-  for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
-    if ((key === 'PredefinedData' || key.endsWith(':PredefinedData')) &&
-        val && typeof val === 'object' && !Array.isArray(val)) {
-      root = val as Record<string, unknown>;
-      break;
-    }
-  }
+        let root: Record<string, unknown> | null = null;
+        for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
+          if ((key === 'PredefinedData' || key.endsWith(':PredefinedData')) &&
+              val && typeof val === 'object' && !Array.isArray(val)) {
+            root = val as Record<string, unknown>;
+            break;
+          }
+        }
 
-  if (!root) {
-    throw new Error('PredefinedData root not found in Predefined.xml');
-  }
+        if (!root) {
+          throw new Error('PredefinedData root not found in Predefined.xml');
+        }
 
-  const rawItems = root['Item'];
-  if (!rawItems) {
-    throw new Error(`Item "${predefinedName}" not found`);
-  }
+        const rawItems = root['Item'];
+        if (!rawItems) {
+          throw new Error(`Item "${predefinedName}" not found`);
+        }
 
-  const itemArray = Array.isArray(rawItems) ? rawItems as Record<string, unknown>[] : [rawItems as Record<string, unknown>];
-  const targetItem = itemArray.find((item) => item['Name'] === predefinedName);
+        const itemArray = Array.isArray(rawItems)
+          ? rawItems as Record<string, unknown>[]
+          : [rawItems as Record<string, unknown>];
+        const targetItem = itemArray.find((item) => item['Name'] === predefinedName);
 
-  if (!targetItem) {
-    throw new Error(`Predefined item "${predefinedName}" not found`);
-  }
+        if (!targetItem) {
+          throw new Error(`Predefined item "${predefinedName}" not found`);
+        }
 
-  targetItem['Type'] = buildTypeObject(types);
-
-  const updated = buildXmlString(parsed);
-  const currentBoundary = await assertConfiguredPathHasNoSymlinks(configRoot, predefinedXmlPath(cotDir));
-  if (!isSamePath(xmlPath, currentBoundary.canonicalTarget)) {
-    throw invalidCotTarget('Predefined.xml target changed while the update was being prepared.');
-  }
-  await writeUtf8FileWithBackup(xmlPath, originalContent, updated, {
-    hooks: {
-      readFile: async (filePath, encoding) => {
-        await assertConfiguredPathHasNoSymlinks(initialBoundary.canonicalRoot, filePath);
-        return fs.promises.readFile(filePath, encoding);
-      },
-      writeFile: async (filePath, content, optionsOrEncoding) => {
-        await assertConfiguredPathHasNoSymlinks(initialBoundary.canonicalRoot, filePath);
-        return fs.promises.writeFile(filePath, content, optionsOrEncoding);
-      },
-      unlink: async (filePath) => {
-        await assertConfiguredPathHasNoSymlinks(initialBoundary.canonicalRoot, filePath);
-        return fs.promises.unlink(filePath);
-      },
+        targetItem['Type'] = buildTypeObject(types);
+        return { content: buildXmlString(parsed), result: undefined };
+      } catch (error) {
+        transformFailureCaptured = true;
+        transformFailure = error;
+        throw error;
+      }
     },
-  });
+  );
+  if (transformFailureCaptured) {
+    throw transformFailure;
+  }
+  unwrapMutationReceipt(receipt, `Unable to update Predefined.xml: ${xmlPath}`);
   Logger.info(`setPredefinedCharacteristicType: updated "${predefinedName}" in ${xmlPath}`);
 }
 

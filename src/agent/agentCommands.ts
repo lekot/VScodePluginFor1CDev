@@ -82,6 +82,8 @@ import type {
 } from './types';
 import { FormsOperations } from './agentFormsOperations';
 import { getPlatformPathSetting } from '../services/metadataTreeSettings';
+import { MutationReceiptError } from '../services/configurationSession/mutationReceiptError';
+import { mutationFailure } from './agentOperationsShared';
 import { AgentStaticFormOperations } from './agentStaticForms';
 import { AgentSyntaxHelpOperations } from './agentSyntaxHelp';
 import type {
@@ -1210,13 +1212,20 @@ export function registerAgentCommands({
         async (params: SetPredefinedCotTypeParams) => {
             const normalizedParams = { ...params, path: normalizeCotAddress(params.path) };
             return runForConfiguration(normalizedParams, 'write', 'agent.setPredefinedCharacteristicType', async (configRoot, context) => {
-                await setPredefinedCharacteristicType(
-                    configRoot,
-                    context.resolvedAddress ?? normalizedParams.path,
-                    params.predefinedName,
-                    params.types,
-                );
-                return { success: true };
+                try {
+                    await setPredefinedCharacteristicType(
+                        configRoot,
+                        context.resolvedAddress ?? normalizedParams.path,
+                        params.predefinedName,
+                        params.types,
+                    );
+                    return { success: true };
+                } catch (error) {
+                    if (error instanceof MutationReceiptError) {
+                        return mutationFailure(error);
+                    }
+                    throw error;
+                }
             });
         }
     );
