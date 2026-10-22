@@ -1,7 +1,8 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
-import { activate, deactivate, extensionState, rollbackPartialActivation } from '../../src/extension';
+import { activate, deactivate, extensionDiagnostics, rollbackPartialActivation } from '../../src/extension';
 import { createExtensionState } from '../../src/state/extensionState';
+import type { ExtensionState } from '../../src/state/extensionState';
 import { ExtensionCompositionRoot } from '../../src/extension/extensionCompositionRoot';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { InfobaseCatalogMutationService } from '../../src/infobases/infobaseCatalogMutationService';
@@ -53,6 +54,23 @@ suite('extension activation lifecycle', () => {
     await deactivate();
     resetVscodeTestState();
     resetDebugTestState();
+  });
+
+  test('diagnostics facade exposes the active state through a frozen readonly getter', () => {
+    const state: ExtensionState | undefined = extensionDiagnostics.state;
+    const descriptor = Object.getOwnPropertyDescriptor(extensionDiagnostics, 'state');
+
+    assert.strictEqual(state, undefined);
+    assert.ok(Object.isFrozen(extensionDiagnostics));
+    assert.strictEqual(typeof descriptor?.get, 'function');
+    assert.strictEqual(descriptor?.set, undefined);
+    assert.strictEqual(Reflect.set(extensionDiagnostics, 'state', undefined), false);
+
+    function assertReadonlyDiagnosticsType(): void {
+      // @ts-expect-error Diagnostics state is intentionally readonly.
+      extensionDiagnostics.state = undefined;
+    }
+    void assertReadonlyDiagnosticsType;
   });
 
   test('rollback disposes subscriptions in reverse order, continues after errors, and is idempotent', async () => {
@@ -163,7 +181,7 @@ suite('extension activation lifecycle', () => {
       assert.ok(capturedRoot, 'the production composition root must be published before initialization');
       assert.ok(diagnosticCalls > 0, 'cleanup and activation diagnostics must be attempted');
       assert.deepStrictEqual(context.subscriptions, [foreignSubscription]);
-      assert.strictEqual(extensionState, undefined, 'failed activation must not leave a current runtime facade');
+      assert.strictEqual(extensionDiagnostics.state, undefined, 'failed activation must not leave a current runtime facade');
     } finally {
       Logger.error = originalLoggerError;
       subscriptions.push = originalPush;
@@ -195,7 +213,7 @@ suite('extension activation lifecycle', () => {
       releaseRecovery.resolve();
       await firstActivation;
       assert.strictEqual(recoveryCount, 1);
-      assert.ok(extensionState, 'successful activation must publish a runtime facade');
+      assert.ok(extensionDiagnostics.state, 'successful activation must publish a runtime facade');
     } finally {
       releaseRecovery.resolve();
       InfobaseCatalogMutationService.prototype.recoverPendingMutations = originalRecover;
@@ -245,7 +263,7 @@ suite('extension activation lifecycle', () => {
       assert.strictEqual(roots.length, 1, 'one active activation must publish exactly one composition root');
       releaseRecovery.resolve();
       await activation;
-      assert.ok(extensionState, 'the shared activation must publish its runtime facade');
+      assert.ok(extensionDiagnostics.state, 'the shared activation must publish its runtime facade');
     } finally {
       releaseRecovery.resolve();
       InfobaseCatalogMutationService.prototype.recoverPendingMutations = originalRecover;
@@ -286,12 +304,12 @@ suite('extension activation lifecycle', () => {
 
     try {
       const activation = activate(context);
-      const facadeAtFence = extensionState;
+      const facadeAtFence = extensionDiagnostics.state;
       const deactivation = deactivate();
       await Promise.allSettled([activation]);
       await deactivation;
 
-      assert.strictEqual(extensionState, undefined, 'immediate shutdown must leave no published facade');
+      assert.strictEqual(extensionDiagnostics.state, undefined, 'immediate shutdown must leave no published facade');
       assert.ok(roots.length <= 1, 'immediate activation must publish at most one composition root');
       if (facadeAtFence) {
         assert.strictEqual(facadeAtFence.infobaseStorage, null, 'the facade captured at the fence must not retain live handles');
@@ -350,7 +368,7 @@ suite('extension activation lifecycle', () => {
         return result;
       });
       await recoveryStarted.promise;
-      const firstState = extensionState;
+      const firstState = extensionDiagnostics.state;
       assert.ok(firstState, 'facade must be observable while activation is pending');
       const oldRoot = firstRoot;
       assert.ok(oldRoot, 'root must be published before deferred construction');
@@ -383,7 +401,7 @@ suite('extension activation lifecycle', () => {
       assert.strictEqual(firstActivationSettled, true, 'deactivation must drain the canceled initialization before the next session');
       await nextActivation;
 
-      const secondState = extensionState;
+      const secondState = extensionDiagnostics.state;
       assert.ok(secondState, 'the serialized second activation must publish its facade');
       assert.notStrictEqual(secondState, firstState, 'each activation must receive a fresh facade');
       assert.strictEqual(secondContext.subscriptions.filter((item) => item instanceof ExtensionCompositionRoot).length, 1);
@@ -393,7 +411,7 @@ suite('extension activation lifecycle', () => {
       await staleCallback();
 
       assert.strictEqual(staleCallbackFinished, true, 'late callbacks from the old root must still be drained');
-      assert.strictEqual(extensionState, secondState, 'old callbacks must not clear the newer runtime export');
+      assert.strictEqual(extensionDiagnostics.state, secondState, 'old callbacks must not clear the newer runtime export');
       assert.ok(secondState.infobaseStorage, 'old callbacks must not clear the newer runtime handles');
       assert.strictEqual(firstState.infobaseStorage, null, 'the old facade remains cleared');
     } finally {
@@ -436,7 +454,7 @@ suite('extension activation lifecycle', () => {
       assert.ok(root instanceof ExtensionCompositionRoot);
       assert.strictEqual(debugTestState.registeredConfigurationProviders.length, 1);
       assert.strictEqual(debugTestState.registeredDescriptorFactories.length, 1);
-      const activeState = extensionState;
+      const activeState = extensionDiagnostics.state;
       assert.ok(activeState, 'production activation must publish its read-only facade');
 
       const session = await root.infrastructure!.workspaceRegistry.registerTargetedRoot({
@@ -479,7 +497,7 @@ suite('extension activation lifecycle', () => {
     const context = createActivationContext(globalStoragePath);
     try {
       await activate(context);
-      const activeState = extensionState;
+      const activeState = extensionDiagnostics.state;
       assert.ok(activeState, 'production activation must publish its read-only facade');
       const root = context.subscriptions[0] as ExtensionCompositionRoot;
       const coordinator = root.infrastructure!.registryCoordinator as unknown as {
@@ -539,7 +557,7 @@ suite('extension activation lifecycle', () => {
       assert.strictEqual(context.subscriptions.length, 1, 'failed activation removes only its own root registration');
       assert.strictEqual(context.subscriptions[0], foreignSubscription);
       assert.strictEqual(foreignDisposed, false);
-      assert.strictEqual(extensionState, undefined);
+      assert.strictEqual(extensionDiagnostics.state, undefined);
     } finally {
       releaseCleanup.resolve();
       await deactivate();
@@ -555,7 +573,7 @@ suite('extension activation lifecycle', () => {
     let taskDrained = false;
     try {
       await activate(context);
-      const taskManager = extensionState?.agentTaskManager;
+      const taskManager = extensionDiagnostics.state?.agentTaskManager;
       assert.ok(taskManager, 'the active composition must expose its AgentTaskManager');
       let taskStarted!: () => void;
       const started = new Promise<void>((resolve) => { taskStarted = resolve; });

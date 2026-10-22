@@ -386,11 +386,14 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     if (this._disposePromise) {
       return this._disposePromise;
     }
-    this.startQuiescence();
+    const quiescence = this.startQuiescence();
     this._disposePromise = Promise.resolve().then(async () => {
       if (this._compositionPromise) {
         await this._compositionPromise.catch(() => undefined);
       }
+      // Keep the synchronous fence, then wait for both in-flight composition and its quiescence
+      // drain before rollback disposes resources. rollback awaits this same memoized drain too.
+      await quiescence;
       await this.rollback();
     });
     return this._disposePromise;

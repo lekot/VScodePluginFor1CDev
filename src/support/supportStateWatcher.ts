@@ -8,6 +8,12 @@ export interface SupportWatcherDisposable {
   dispose(): void;
 }
 
+/** Lifecycle owner whose shutdown drains asynchronous watcher callbacks. */
+export interface SupportStateWatcherLifecycle {
+  quiesce(): Promise<void>;
+  dispose(): Promise<void>;
+}
+
 export interface SupportWatcherUri {
   readonly fsPath: string;
 }
@@ -39,7 +45,7 @@ interface RegisteredRoot {
  * Watches only the support master file. It never invokes metadata parsing or metadata lifecycle
  * reload; consumers receive a targeted root callback after the support-only cache refresh.
  */
-export class SupportStateWatcher implements SupportWatcherDisposable {
+export class SupportStateWatcher implements SupportStateWatcherLifecycle {
   private readonly watcher: SupportFileSystemWatcher;
   private readonly subscriptions: SupportWatcherDisposable[];
   private readonly roots = new Map<string, RegisteredRoot>();

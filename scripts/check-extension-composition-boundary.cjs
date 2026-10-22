@@ -36,6 +36,7 @@ const forbiddenStateModules = new Set([
   'src/state/extensionState',
   'src/state/extensionStateComposition',
 ]);
+const forbiddenExtensionEntryModules = new Set(['src/extension']);
 const forbiddenCompositionModules = new Set([
   'src/extension/agentFeatureComposition',
   'src/extension/supportFeatureComposition',
@@ -171,6 +172,13 @@ function runFixtureChecks() {
     analyzeStateAssemblyImports('src/providers/exampleProvider.ts', providerCompositionImport).length === 1,
     'Guard fixture: provider feature modules must not import the state composition port.',
   );
+
+  const agentDiagnosticsImport = "import { extensionDiagnostics } from '../extension';";
+  assert(
+    analyzeStateAssemblyImports('src/agent/agentCommands.ts', agentDiagnosticsImport)
+      .some((item) => item.includes('imports the extension activation entry module')),
+    'Guard fixture: Agent feature modules must not import the extension entry diagnostics view.',
+  );
 }
 
 if (process.argv.includes('--self-test')) {
@@ -232,6 +240,9 @@ function analyzeStateAssemblyImports(relativePath, sourceText = read(relativePat
     const importedPath = resolveImportPath(relativePath, specifier);
     if (forbiddenStateModules.has(importedPath)) {
       violations.push(`${relativePath} imports the extension state assembly.`);
+    }
+    if (forbiddenExtensionEntryModules.has(importedPath)) {
+      violations.push(`${relativePath} imports the extension activation entry module.`);
     }
   });
   return violations;

@@ -16,8 +16,13 @@ import {
 } from './extension/activationSubscriptionScope';
 import { ExtensionCompositionRoot } from './extension/extensionCompositionRoot';
 
-/** Active facade exposed for diagnostics; every activation replaces it with a fresh frozen facade. */
-export let extensionState: ExtensionState | undefined;
+let activeExtensionState: ExtensionState | undefined;
+/** Immutable diagnostics view; features must receive dependencies through their composition context. */
+export const extensionDiagnostics: Readonly<{ readonly state: ExtensionState | undefined }> = Object.freeze({
+  get state(): ExtensionState | undefined {
+    return activeExtensionState;
+  },
+});
 let activeAssembly: ExtensionStateAssembly | undefined;
 let activeCompositionRoot: ExtensionCompositionRoot | undefined;
 let activeSubscriptionScope: ActivationSubscriptionScope | undefined;
@@ -94,7 +99,7 @@ async function performActivation(context: vscode.ExtensionContext): Promise<void
   const scope = createActivationSubscriptionScope(context);
   let compositionRoot: ExtensionCompositionRoot | undefined;
   activeAssembly = assembly;
-  extensionState = state;
+  activeExtensionState = state;
   try {
     activeSubscriptionScope = scope;
     assembly.composition.initialize(scope.context);
@@ -140,7 +145,7 @@ async function performActivation(context: vscode.ExtensionContext): Promise<void
     }
     if (activeAssembly === assembly) {
       activeAssembly = undefined;
-      extensionState = undefined;
+      activeExtensionState = undefined;
     }
     for (const rollbackError of rollbackErrors) {
       try {
@@ -188,7 +193,7 @@ export function deactivate(): Promise<void> {
     }
     if (activeAssembly === assembly) {
       activeAssembly = undefined;
-      extensionState = undefined;
+      activeExtensionState = undefined;
     }
     if (activeActivationPromise === activation) {
       activeActivationPromise = undefined;

@@ -32,6 +32,12 @@ export interface DiscoveredConfiguration {
 
 export type ConfigurationSessionFactory = (identity: ConfigurationIdentity) => ConfigurationSession;
 
+function invokeSessionDisposeImmediately(session: ConfigurationSession): Promise<void> {
+  // An async invocation begins executing synchronously, so dispose closes session admission
+  // before this helper returns while converting a synchronous throw into a rejected promise.
+  return (async () => session.dispose())();
+}
+
 interface PersistedIdentityEntry {
   readonly configurationId: ConfigurationId;
   rootUri: string;
@@ -362,12 +368,7 @@ export class WorkspaceRegistry {
   }
 
   private disposeSession(session: ConfigurationSession): Promise<void> {
-    let drain: Promise<void>;
-    try {
-      drain = session.dispose();
-    } catch (error) {
-      drain = Promise.reject(error);
-    }
+    const drain = invokeSessionDisposeImmediately(session);
     this.retiredSessionDrains.add(drain);
     void drain.then(
       () => this.retiredSessionDrains.delete(drain),
