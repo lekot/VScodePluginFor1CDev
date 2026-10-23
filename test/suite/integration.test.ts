@@ -10,6 +10,7 @@ import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { createElement } from '../../src/services/elementOperations';
 import { renameElement } from '../../src/services/elementOperations';
+import { installDirectConfigurationMutationEngineForTests } from '../helpers/directConfigurationMutationEngine';
 
 interface FixtureDirectoryCopier {
   copyRegularDirectory(sourcePath: string, destinationPath: string): void;
@@ -19,6 +20,16 @@ const { copyRegularDirectory } = require(path.resolve(__dirname, '../../../scrip
 
 suite('Integration', () => {
   const fixturesPath = path.join(__dirname, '../fixtures', 'designer-config');
+  let restoreMutationEngine: (() => void) | undefined;
+
+  suiteSetup(() => {
+    restoreMutationEngine = installDirectConfigurationMutationEngineForTests();
+  });
+
+  suiteTeardown(() => {
+    restoreMutationEngine?.();
+    restoreMutationEngine = undefined;
+  });
 
   test('createElement creates missing type folder (Documents)', async () => {
     // Arrange: copy fixture to temp dir and remove Documents folder

@@ -5,9 +5,20 @@ import * as path from 'path';
 import { parseFormXml } from '../../src/formEditor/formXmlParser';
 import { injectMissingFormOpenTagAttrs, writeFormXml } from '../../src/formEditor/formXmlWriter';
 import { isFormParseError, isFormParseFileMissing, createEmptyFormModel } from '../../src/formEditor/formModel';
+import { installDirectConfigurationMutationEngineForTests } from '../helpers/directConfigurationMutationEngine';
 
 suite('FormXmlParser', () => {
   const fixturePath = path.resolve(__dirname, '../fixtures/form-editor/Form.xml');
+  let restoreMutationEngine: (() => void) | undefined;
+
+  suiteSetup(() => {
+    restoreMutationEngine = installDirectConfigurationMutationEngineForTests();
+  });
+
+  suiteTeardown(() => {
+    restoreMutationEngine?.();
+    restoreMutationEngine = undefined;
+  });
 
   test('fixture file exists', () => {
     assert.ok(fs.existsSync(fixturePath), `Fixture not found: ${fixturePath}`);

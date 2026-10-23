@@ -39,6 +39,7 @@ export const coreSuiteFiles: string[] = [
   'suite/reloadReconciliation.test.js',
   'suite/formXmlParser.test.js',
   'suite/formXmlWriter.test.js',
+  'suite/atomicXmlWriterContracts.test.js',
   'suite/formXmlTextEditor.test.js',
   'suite/metadataParser.test.js',
   'suite/metadataParser.edge.test.js',

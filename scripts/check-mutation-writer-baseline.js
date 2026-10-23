@@ -23,6 +23,7 @@ function readOptions(argv) {
     sourceRoot: defaultSourceRoot,
     baselinePath: defaultBaselinePath,
     writeBaseline: false,
+    enforceFiles: [],
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -32,6 +33,8 @@ function readOptions(argv) {
       options.sourceRoot = path.resolve(argv[++i]);
     } else if (arg === '--baseline' && argv[i + 1]) {
       options.baselinePath = path.resolve(argv[++i]);
+    } else if (arg === '--enforce-files' && argv[i + 1]) {
+      options.enforceFiles.push(...argv[++i].split(',').map((file) => file.trim()).filter(Boolean));
     } else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -48,6 +51,7 @@ function printHelp() {
 Options:
   --source-root <path>  Source directory to scan (default: src)
   --baseline <path>     Baseline JSON path
+  --enforce-files <list> Comma-separated src-relative files where direct mutations fail
   --write-baseline      Replace the baseline with the current scan
 
 Normal checks are warning-only so existing direct writers can be migrated incrementally.`);
@@ -362,9 +366,28 @@ function checkBaseline(baselinePath, sites) {
   console.log(`Mutation writer architecture guard passed: no new direct filesystem mutation call(s) (${sites.length} observed, warning-only baseline mode).`);
 }
 
+function enforceNoMutationsInFiles(files, sites) {
+  if (files.length === 0) {
+    return;
+  }
+  const protectedFiles = new Set(files.map((file) => file.replace(/\\/g, '/')));
+  const violations = sites.filter((site) => protectedFiles.has(site.file));
+  if (violations.length === 0) {
+    console.log(`XML writer boundary passed: no direct filesystem mutation in ${files.join(', ')}.`);
+    return;
+  }
+
+  console.error(`XML writer boundary failed: direct filesystem mutations are forbidden in ${files.join(', ')}.`);
+  for (const site of violations) {
+    console.error(`  ERROR ${site.file}:${site.line} ${site.method} in ${site.owner} (target: ${site.target})`);
+  }
+  process.exitCode = 1;
+}
+
 function main() {
   const options = readOptions(process.argv.slice(2));
   const sites = scanSource(options.sourceRoot);
+  enforceNoMutationsInFiles(options.enforceFiles, sites);
   if (options.writeBaseline) {
     writeBaseline(options.baselinePath, sites);
   } else {

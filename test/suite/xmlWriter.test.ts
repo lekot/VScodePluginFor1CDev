@@ -6,8 +6,20 @@ import { XMLParser } from 'fast-xml-parser';
 import { XMLWriter } from '../../src/utils/XMLWriter';
 import { xmlParser, XML_WRITER_OPTIONS } from '../../src/utils/xml/xmlCore';
 import { updatePropertiesInStructure } from '../../src/utils/xml/xmlPropertiesService';
+import { installDirectConfigurationMutationEngineForTests } from '../helpers/directConfigurationMutationEngine';
 
 suite('XMLWriter', () => {
+  let restoreMutationEngine: (() => void) | undefined;
+
+  suiteSetup(() => {
+    restoreMutationEngine = installDirectConfigurationMutationEngineForTests();
+  });
+
+  suiteTeardown(() => {
+    restoreMutationEngine?.();
+    restoreMutationEngine = undefined;
+  });
+
   // Use source fixtures path, not compiled path
   const fixturesPath = path.join(__dirname, '../../../test/fixtures');
   const testXmlPath = path.join(fixturesPath, 'test-properties.xml');

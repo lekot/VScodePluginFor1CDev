@@ -7,6 +7,7 @@ import {
   deleteElement,
 } from '../../src/services/elementOperations';
 import { XMLWriter } from '../../src/utils/XMLWriter';
+import { installDirectConfigurationMutationEngineForTests } from '../helpers/directConfigurationMutationEngine';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import {
   createTempDir,
@@ -51,7 +52,17 @@ function createElementNode(name: string, type: MetadataType, parentNode: TreeNod
 suite('elementOperations Configuration.xml integration', () => {
   let tmpDir: string;
   let configNode: TreeNode;
+  let restoreMutationEngine: (() => void) | undefined;
   const configXmlPath = () => path.join(tmpDir, 'Configuration.xml');
+
+  suiteSetup(() => {
+    restoreMutationEngine = installDirectConfigurationMutationEngineForTests();
+  });
+
+  suiteTeardown(() => {
+    restoreMutationEngine?.();
+    restoreMutationEngine = undefined;
+  });
 
   const BASE_CONFIG_XML = (childObjects: string) =>
     `<?xml version="1.0" encoding="UTF-8"?>

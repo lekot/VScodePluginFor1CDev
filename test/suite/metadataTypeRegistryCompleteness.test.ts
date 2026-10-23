@@ -15,8 +15,20 @@ import { extractChildSubsystems, findChildObjects } from '../../src/parsers/xmlC
 import { metadataConverter, rulesRegistry } from '../../src/rules';
 import { normalizeEmptyPlaceholderTree } from '../../src/utils/treeNormalization';
 import { ROOT_TAGS_WITHOUT_CHILDOBJECTS, XMLWriter } from '../../src/utils/XMLWriter';
+import { installDirectConfigurationMutationEngineForTests } from '../helpers/directConfigurationMutationEngine';
 
 suite('Metadata type registry completeness', () => {
+  let restoreMutationEngine: (() => void) | undefined;
+
+  suiteSetup(() => {
+    restoreMutationEngine = installDirectConfigurationMutationEngineForTests();
+  });
+
+  suiteTeardown(() => {
+    restoreMutationEngine?.();
+    restoreMutationEngine = undefined;
+  });
+
   test('canonical descriptors and XML rules cover the same root type set', () => {
     const descriptorRootTags = METADATA_TYPE_DESCRIPTORS.map((descriptor) => descriptor.designerRootTag).sort();
     assert.deepStrictEqual([...rulesRegistry.allRootTags()].sort(), descriptorRootTags);

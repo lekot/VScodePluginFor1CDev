@@ -20,6 +20,7 @@ import {
   getConfigurationMutationEngine,
   setConfigurationMutationEngine,
 } from '../../src/services/configurationSession/ConfigurationMutationEngine';
+import { AtomicFileStorage } from '../../src/services/configurationSession/atomicFileStorage';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 import type { AgentResult } from '../../src/agent/types';
 
@@ -203,6 +204,27 @@ suite('Agent configuration routing', () => {
     assert.ok((await fs.promises.readFile(path.join(root, 'Configuration.xml'), 'utf8')).includes('<XDTOPackage>Created</XDTOPackage>'));
     assert.ok((await fs.promises.readFile(catalogPath, 'utf8')).includes('Updated products'));
     assert.ok((await fs.promises.readFile(formPath, 'utf8')).includes('name="Confirm" id="2"'));
+
+    const originalReplace = AtomicFileStorage.prototype.replace;
+    AtomicFileStorage.prototype.replace = async () => ({
+      status: 'conflict',
+      code: 'STALE_TARGET_HASH',
+      message: 'Injected stale Predefined.xml target.',
+    });
+    try {
+      const failedPredefinedResult = await setPredefinedType({
+        path: 'ChartOfCharacteristicTypes.Shared',
+        predefinedName: 'Choice',
+        types: ['xs:dateTime'],
+      }) as AgentResult;
+      assert.strictEqual(failedPredefinedResult.success, false);
+      assert.strictEqual(failedPredefinedResult.code, 'STALE_TARGET_HASH');
+      assert.strictEqual(failedPredefinedResult.mutationFailure?.status, 'conflict');
+      assert.strictEqual(failedPredefinedResult.reconciliation, undefined);
+      assert.strictEqual(commits.length, 5, 'a failed nested XML receipt must not commit or reconcile its outer Agent session');
+    } finally {
+      AtomicFileStorage.prototype.replace = originalReplace;
+    }
     } finally {
       setConfigurationMutationEngine(previousMutationEngine);
     }

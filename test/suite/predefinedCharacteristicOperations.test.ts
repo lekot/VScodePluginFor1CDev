@@ -15,6 +15,7 @@ import {
 } from '../../src/agent/predefinedCharacteristicOperations';
 import { AgentPathError } from '../../src/agent/agentPathResolver';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
+import { installDirectConfigurationMutationEngineForTests } from '../helpers/directConfigurationMutationEngine';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -141,6 +142,16 @@ suite('predefinedCharacteristicOperations: getPredefinedCharacteristicType', () 
 
 suite('predefinedCharacteristicOperations: setPredefinedCharacteristicType', () => {
   let tmpDir: string;
+  let restoreMutationEngine: (() => void) | undefined;
+
+  suiteSetup(() => {
+    restoreMutationEngine = installDirectConfigurationMutationEngineForTests();
+  });
+
+  suiteTeardown(() => {
+    restoreMutationEngine?.();
+    restoreMutationEngine = undefined;
+  });
 
   setup(async () => {
     tmpDir = await createTempDir('1cviewer-cot-settype-');
@@ -242,7 +253,17 @@ suite('predefinedCharacteristicOperations: getCharacteristicValueRegisters', () 
 
 suite('predefinedCharacteristicOperations: semantic address boundary and cross-type safety (#266)', () => {
   let tmpDir: string;
+  let restoreMutationEngine: (() => void) | undefined;
   const COT_NAME = 'Shared';
+
+  suiteSetup(() => {
+    restoreMutationEngine = installDirectConfigurationMutationEngineForTests();
+  });
+
+  suiteTeardown(() => {
+    restoreMutationEngine?.();
+    restoreMutationEngine = undefined;
+  });
 
   setup(async () => {
     tmpDir = await createTempDir('1cviewer-cot-boundary-');
