@@ -1785,67 +1785,66 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
         id: 'Attributes.AttrB',
         name: 'AttrB',
         type: MetadataType.Attribute,
-        properties: {
-          Name: 'AttrB',
-          Type: '<Type xmlns="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema"><Type>xs:decimal</Type></Type>',
-        },
+        properties: { Name: 'AttrB', Type: '<Type/>' },
       };
+      const lookupModule = treeDataProvider as any;
+      const originalLookup = lookupModule.getReferenceableObjectsForTypeEditor;
+      const originalShow = (typeEditorProvider as any).show;
+      const originalPostMessage = (provider as any).postMessage;
+      const lookupStarted = createDeferredValue<void>();
+      const lookupResult = createDeferredValue<any>();
+      const editorStarted = createDeferredValue<void>();
+      const editorResult = createDeferredValue<any>();
+      const postedMessages: unknown[] = [];
+      let edit: Promise<void> | undefined;
 
-      let resolveShow!: (value: any) => void;
-      const showPromise = new Promise<any>((res) => {
-        resolveShow = res;
-      });
+      try {
+        await provider.showProperties(nodeA);
+        lookupModule.getReferenceableObjectsForTypeEditor = async () => {
+          lookupStarted.resolve(undefined);
+          return lookupResult.promise;
+        };
+        (typeEditorProvider as any).show = async () => {
+          editorStarted.resolve(undefined);
+          return editorResult.promise;
+        };
+        (provider as any).postMessage = (message: unknown) => postedMessages.push(message);
 
-      const mockTypeEditor = {
-        show: async () => showPromise,
-      } as unknown as TypeEditorProvider;
+        const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+        edit = handleMessage(
+          {
+            type: 'editType',
+            propertyName: 'Type',
+            nodeId: nodeA.id,
+            sessionToken: ctx.currentSessionToken,
+          },
+          ctx
+        );
+        await lookupStarted.promise;
+        lookupResult.resolve([]);
+        await editorStarted.promise;
+        await provider.showProperties(nodeB);
+        editorResult.resolve({
+          category: 'primitive',
+          types: [{ kind: 'date', qualifiers: { dateFractions: 'Date' } }],
+        });
+        await edit;
 
-      const postedMessages: any[] = [];
-      const ctx: MessageHandlerContext = {
-        currentNode: nodeA,
-        currentFormSelection: null,
-        currentFormSelectionRevision: 0,
-        currentSessionToken: 'session-node-A',
-        isSaving: false,
-        treeDataProvider: {
-          getReferenceableObjectsForTypeEditor: async () => [],
-        } as any,
-        typeEditorProvider: mockTypeEditor,
-        objectTypeEditorProvider: {} as any,
-        postMessage: (msg) => postedMessages.push(msg),
-        updateWebviewContent: () => {},
-        setIsSaving: () => {},
-      };
-
-      const msgPromise = handleMessage(
-        {
-          type: 'editType',
-          propertyName: 'Type',
-          nodeId: 'Attributes.AttrA',
-          sessionToken: 'session-node-A',
-        },
-        ctx
-      );
-
-      // Node selection changes to Node B while editor is open
-      ctx.currentNode = nodeB;
-      ctx.currentSessionToken = 'session-node-B';
-
-      // Type editor finishes with Date type
-      resolveShow({
-        category: 'primitive',
-        types: [{ kind: 'date', qualifiers: { dateFractions: 'Date' } }],
-      });
-
-      await msgPromise;
-
-      // Stale typeUpdated message must NOT be posted for Node B
-      const typeUpdated = postedMessages.find((m) => m.type === 'typeUpdated');
-      assert.strictEqual(
-        typeUpdated,
-        undefined,
-        'typeUpdated must not be sent when currentNode has changed during edit'
-      );
+        assert.strictEqual(
+          postedMessages.some((message) => (message as { type?: string }).type === 'typeUpdated'),
+          false,
+          'a captured A editor result must not be published into the B presentation'
+        );
+      } finally {
+        lookupResult.resolve([]);
+        editorResult.resolve(null);
+        if (edit) {
+          await edit.catch(() => undefined);
+        }
+        lookupModule.getReferenceableObjectsForTypeEditor = originalLookup;
+        (typeEditorProvider as any).show = originalShow;
+        (provider as any).postMessage = originalPostMessage;
+      }
     });
 
     test('editSource result is discarded if selected node changes while ObjectTypeEditor is open', async () => {
@@ -1861,61 +1860,64 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
         type: MetadataType.EventSubscription,
         properties: { Name: 'SubB', Source: '<Source/>' },
       };
+      const lookupModule = treeDataProvider as any;
+      const objectEditorProvider = (provider as any).objectTypeEditorProvider;
+      const originalLookup = lookupModule.getObjectableObjectsForEditor;
+      const originalShow = objectEditorProvider.show;
+      const originalPostMessage = (provider as any).postMessage;
+      const lookupStarted = createDeferredValue<void>();
+      const lookupResult = createDeferredValue<any>();
+      const editorStarted = createDeferredValue<void>();
+      const editorResult = createDeferredValue<any>();
+      const postedMessages: unknown[] = [];
+      let edit: Promise<void> | undefined;
 
-      let resolveShow!: (value: any) => void;
-      const showPromise = new Promise<any>((res) => {
-        resolveShow = res;
-      });
+      try {
+        await provider.showProperties(nodeA);
+        lookupModule.getObjectableObjectsForEditor = async () => {
+          lookupStarted.resolve(undefined);
+          return lookupResult.promise;
+        };
+        objectEditorProvider.show = async () => {
+          editorStarted.resolve(undefined);
+          return editorResult.promise;
+        };
+        (provider as any).postMessage = (message: unknown) => postedMessages.push(message);
 
-      const mockObjectTypeEditor = {
-        show: async () => showPromise,
-      } as any;
+        const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+        edit = handleMessage(
+          {
+            type: 'editSource',
+            propertyName: 'Source',
+            nodeId: nodeA.id,
+            sessionToken: ctx.currentSessionToken,
+          },
+          ctx
+        );
+        await lookupStarted.promise;
+        lookupResult.resolve([]);
+        await editorStarted.promise;
+        await provider.showProperties(nodeB);
+        editorResult.resolve({
+          types: [{ objectKind: 'CatalogObject', objectName: 'Goods' }],
+        });
+        await edit;
 
-      const postedMessages: any[] = [];
-      const ctx: MessageHandlerContext = {
-        currentNode: nodeA,
-        currentFormSelection: null,
-        currentFormSelectionRevision: 0,
-        currentSessionToken: 'session-node-A',
-        isSaving: false,
-        treeDataProvider: {
-          getObjectableObjectsForEditor: async () => [],
-        } as any,
-        typeEditorProvider: {} as any,
-        objectTypeEditorProvider: mockObjectTypeEditor,
-        postMessage: (msg) => postedMessages.push(msg),
-        updateWebviewContent: () => {},
-        setIsSaving: () => {},
-      };
-
-      const msgPromise = handleMessage(
-        {
-          type: 'editSource',
-          propertyName: 'Source',
-          nodeId: 'EventSubscriptions.SubA',
-          sessionToken: 'session-node-A',
-        },
-        ctx
-      );
-
-      // Node selection changes to Node B while editor is open
-      ctx.currentNode = nodeB;
-      ctx.currentSessionToken = 'session-node-B';
-
-      // Source editor finishes with new types
-      resolveShow({
-        types: [{ objectKind: 'CatalogObject', objectName: 'Goods' }],
-      });
-
-      await msgPromise;
-
-      // Stale sourceUpdated message must NOT be posted for Node B
-      const sourceUpdated = postedMessages.find((m) => m.type === 'sourceUpdated');
-      assert.strictEqual(
-        sourceUpdated,
-        undefined,
-        'sourceUpdated must not be sent when currentNode has changed during edit'
-      );
+        assert.strictEqual(
+          postedMessages.some((message) => (message as { type?: string }).type === 'sourceUpdated'),
+          false,
+          'a captured A editor result must not be published into the B presentation'
+        );
+      } finally {
+        lookupResult.resolve([]);
+        editorResult.resolve(null);
+        if (edit) {
+          await edit.catch(() => undefined);
+        }
+        lookupModule.getObjectableObjectsForEditor = originalLookup;
+        objectEditorProvider.show = originalShow;
+        (provider as any).postMessage = originalPostMessage;
+      }
     });
 
     test('editType result is applied when node remains unchanged', async () => {
@@ -2029,57 +2031,53 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
         type: MetadataType.Attribute,
         properties: { Name: 'AttrB', Type: '<Type/>' },
       };
-
+      const lookupModule = treeDataProvider as any;
+      const originalLookup = lookupModule.getReferenceableObjectsForTypeEditor;
+      const originalShow = (typeEditorProvider as any).show;
+      const lookupStarted = createDeferredValue<void>();
+      const lookupResult = createDeferredValue<any>();
       let typeEditorShowCalled = false;
-      const mockTypeEditor = {
-        show: async () => {
+      let edit: Promise<void> | undefined;
+
+      try {
+        await provider.showProperties(nodeA);
+        lookupModule.getReferenceableObjectsForTypeEditor = async () => {
+          lookupStarted.resolve(undefined);
+          return lookupResult.promise;
+        };
+        (typeEditorProvider as any).show = async () => {
           typeEditorShowCalled = true;
           return null;
-        },
-      } as any;
+        };
 
-      let resolveLookupA!: (val: any) => void;
-      const lookupAPromise = new Promise<any>((resolve) => {
-        resolveLookupA = resolve;
-      });
+        const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+        edit = handleMessage(
+          {
+            type: 'editType',
+            propertyName: 'Type',
+            nodeId: nodeA.id,
+            sessionToken: ctx.currentSessionToken,
+          },
+          ctx
+        );
+        await lookupStarted.promise;
+        await provider.showProperties(nodeB);
+        lookupResult.resolve([]);
+        await edit;
 
-      const ctx: MessageHandlerContext = {
-        currentNode: nodeA,
-        currentFormSelection: null,
-        currentFormSelectionRevision: 0,
-        currentSessionToken: 'session-node-A',
-        isSaving: false,
-        treeDataProvider: {
-          getReferenceableObjectsForTypeEditor: async () => lookupAPromise,
-        } as any,
-        typeEditorProvider: mockTypeEditor,
-        objectTypeEditorProvider: {} as any,
-        postMessage: () => {},
-        updateWebviewContent: () => {},
-        setIsSaving: () => {},
-      };
-
-      const editTypeAPromise = handleMessage(
-        {
-          type: 'editType',
-          propertyName: 'Type',
-          nodeId: 'Attributes.AttrA',
-          sessionToken: 'session-node-A',
-        },
-        ctx
-      );
-
-      ctx.currentNode = nodeB;
-      ctx.currentSessionToken = 'session-node-B';
-
-      resolveLookupA([]);
-      await editTypeAPromise;
-
-      assert.strictEqual(
-        typeEditorShowCalled,
-        false,
-        'typeEditorProvider.show must NOT be called for stale Node A after switching to Node B'
-      );
+        assert.strictEqual(
+          typeEditorShowCalled,
+          false,
+          'the real captured A context must stop before opening its editor after public navigation to B'
+        );
+      } finally {
+        lookupResult.resolve([]);
+        if (edit) {
+          await edit.catch(() => undefined);
+        }
+        lookupModule.getReferenceableObjectsForTypeEditor = originalLookup;
+        (typeEditorProvider as any).show = originalShow;
+      }
     });
 
     test('slow getObjectableObjects lookup for Node A does not invoke objectTypeEditorProvider.show if switched to Node B', async () => {
@@ -2095,57 +2093,54 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
         type: MetadataType.EventSubscription,
         properties: { Name: 'SubB', Source: '<Source/>' },
       };
-
+      const lookupModule = treeDataProvider as any;
+      const originalLookup = lookupModule.getObjectableObjectsForEditor;
+      const objectEditorProvider = (provider as any).objectTypeEditorProvider;
+      const originalShow = objectEditorProvider.show;
+      const lookupStarted = createDeferredValue<void>();
+      const lookupResult = createDeferredValue<any>();
       let objectEditorShowCalled = false;
-      const mockObjectTypeEditor = {
-        show: async () => {
+      let edit: Promise<void> | undefined;
+
+      try {
+        await provider.showProperties(nodeA);
+        lookupModule.getObjectableObjectsForEditor = async () => {
+          lookupStarted.resolve(undefined);
+          return lookupResult.promise;
+        };
+        objectEditorProvider.show = async () => {
           objectEditorShowCalled = true;
           return null;
-        },
-      } as any;
+        };
 
-      let resolveLookupA!: (val: any) => void;
-      const lookupAPromise = new Promise<any>((resolve) => {
-        resolveLookupA = resolve;
-      });
+        const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+        edit = handleMessage(
+          {
+            type: 'editSource',
+            propertyName: 'Source',
+            nodeId: nodeA.id,
+            sessionToken: ctx.currentSessionToken,
+          },
+          ctx
+        );
+        await lookupStarted.promise;
+        await provider.showProperties(nodeB);
+        lookupResult.resolve([]);
+        await edit;
 
-      const ctx: MessageHandlerContext = {
-        currentNode: nodeA,
-        currentFormSelection: null,
-        currentFormSelectionRevision: 0,
-        currentSessionToken: 'session-node-A',
-        isSaving: false,
-        treeDataProvider: {
-          getObjectableObjectsForEditor: async () => lookupAPromise,
-        } as any,
-        typeEditorProvider: {} as any,
-        objectTypeEditorProvider: mockObjectTypeEditor,
-        postMessage: () => {},
-        updateWebviewContent: () => {},
-        setIsSaving: () => {},
-      };
-
-      const editSourceAPromise = handleMessage(
-        {
-          type: 'editSource',
-          propertyName: 'Source',
-          nodeId: 'EventSubscriptions.SubA',
-          sessionToken: 'session-node-A',
-        },
-        ctx
-      );
-
-      ctx.currentNode = nodeB;
-      ctx.currentSessionToken = 'session-node-B';
-
-      resolveLookupA([]);
-      await editSourceAPromise;
-
-      assert.strictEqual(
-        objectEditorShowCalled,
-        false,
-        'objectTypeEditorProvider.show must NOT be called for stale Node A after switching to Node B'
-      );
+        assert.strictEqual(
+          objectEditorShowCalled,
+          false,
+          'the real captured A context must stop before opening its editor after public navigation to B'
+        );
+      } finally {
+        lookupResult.resolve([]);
+        if (edit) {
+          await edit.catch(() => undefined);
+        }
+        lookupModule.getObjectableObjectsForEditor = originalLookup;
+        objectEditorProvider.show = originalShow;
+      }
     });
 
     test('reverse completion order: slow lookup A resolving after fast lookup B does not overwrite or show editor A', async () => {
@@ -2162,78 +2157,74 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
         properties: { Name: 'AttrB', Type: '<Type/>' },
       };
 
+      const lookupModule = treeDataProvider as any;
+      const originalLookup = lookupModule.getReferenceableObjectsForTypeEditor;
+      const originalShow = (typeEditorProvider as any).show;
+      const lookupAStarted = createDeferredValue<void>();
+      const lookupA = createDeferredValue<any>();
       const shownXmls: string[] = [];
-      const mockTypeEditor = {
-        show: async (xml: string) => {
+      let editA: Promise<void> | undefined;
+      let editB: Promise<void> | undefined;
+
+      try {
+        await provider.showProperties(nodeA);
+        lookupModule.getReferenceableObjectsForTypeEditor = async (node: TreeNode) => {
+          if (node === nodeA) {
+            lookupAStarted.resolve(undefined);
+            return lookupA.promise;
+          }
+          return [];
+        };
+        (typeEditorProvider as any).show = async (xml: string) => {
           shownXmls.push(xml);
           return null;
-        },
-      } as any;
+        };
 
-      let resolveLookupA!: (val: any) => void;
-      const lookupAPromise = new Promise<any>((resolve) => {
-        resolveLookupA = resolve;
-      });
-
-      const ctx: MessageHandlerContext = {
-        currentNode: nodeA,
-        currentFormSelection: null,
-        currentFormSelectionRevision: 0,
-        currentSessionToken: 'session-node-A',
-        isSaving: false,
-        treeDataProvider: {
-          getReferenceableObjectsForTypeEditor: async (node: TreeNode) => {
-            if (node.id === 'Attributes.AttrA') {
-              return lookupAPromise;
-            }
-            return [];
+        const ctxA = (provider as any).buildHandlerContext() as MessageHandlerContext;
+        editA = handleMessage(
+          {
+            type: 'editType',
+            propertyName: 'Type',
+            nodeId: nodeA.id,
+            sessionToken: ctxA.currentSessionToken,
           },
-        } as any,
-        typeEditorProvider: mockTypeEditor,
-        objectTypeEditorProvider: {} as any,
-        postMessage: () => {},
-        updateWebviewContent: () => {},
-        setIsSaving: () => {},
-      };
+          ctxA
+        );
+        await lookupAStarted.promise;
 
-      // Start editType for A (slow lookup)
-      const editTypeAPromise = handleMessage(
-        {
-          type: 'editType',
-          propertyName: 'Type',
-          nodeId: 'Attributes.AttrA',
-          sessionToken: 'session-node-A',
-        },
-        ctx
-      );
+        await provider.showProperties(nodeB);
+        const ctxB = (provider as any).buildHandlerContext() as MessageHandlerContext;
+        editB = handleMessage(
+          {
+            type: 'editType',
+            propertyName: 'Type',
+            nodeId: nodeB.id,
+            sessionToken: ctxB.currentSessionToken,
+          },
+          ctxB
+        );
+        await editB;
+        assert.deepStrictEqual(shownXmls, ['<Type/>'], 'only the active B editor should be shown first');
 
-      // Switch to B and trigger editType for B (fast lookup)
-      ctx.currentNode = nodeB;
-      ctx.currentSessionToken = 'session-node-B';
-      const editTypeBPromise = handleMessage(
-        {
-          type: 'editType',
-          propertyName: 'Type',
-          nodeId: 'Attributes.AttrB',
-          sessionToken: 'session-node-B',
-        },
-        ctx
-      );
+        lookupA.resolve([]);
+        await editA;
 
-      // B resolves first
-      await editTypeBPromise;
-      assert.deepStrictEqual(shownXmls, ['<Type/>'], 'Only Node B should be shown initially');
-
-      // Now A resolves late
-      resolveLookupA([]);
-      await editTypeAPromise;
-
-      // shownXmls should STILL be only B
-      assert.deepStrictEqual(
-        shownXmls,
-        ['<Type/>'],
-        'Slow Node A lookup must NOT invoke show() after Node B already active'
-      );
+        assert.deepStrictEqual(
+          shownXmls,
+          ['<Type/>'],
+          'the old A lookup must not open its editor after the real provider has navigated to B'
+        );
+      } finally {
+        lookupA.resolve([]);
+        if (editA) {
+          await editA.catch(() => undefined);
+        }
+        if (editB) {
+          await editB.catch(() => undefined);
+        }
+        lookupModule.getReferenceableObjectsForTypeEditor = originalLookup;
+        (typeEditorProvider as any).show = originalShow;
+      }
     });
 
     test('parseDisplayTypeString parses numeric and string qualifiers correctly', () => {
@@ -2252,5 +2243,1051 @@ suite('PropertiesProvider — Issue #165 Navigation Guard & Dirty State', () => 
         allowedLength: 'Variable',
       });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #379: async navigation ownership and dirty-guard session isolation
+// ---------------------------------------------------------------------------
+
+interface DeferredValue<T> {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+}
+
+function createDeferredValue<T>(): DeferredValue<T> {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function formParseResultWithHandler(handlerName: string): Record<string, unknown> {
+  return {
+    model: {
+      childItemsRoot: [],
+      attributes: [],
+      commands: [],
+      formEvents: [{ name: 'OnOpen', method: handlerName }],
+    },
+  };
+}
+
+suite('PropertiesProvider — Issue #379 async navigation ownership', () => {
+  let provider: PropertiesProvider;
+  let mockContext: vscode.ExtensionContext;
+  let defaultShowWarningMessage: any;
+  let defaultCreateWebviewPanel: any;
+  let tempXmlA: string;
+  let tempXmlB: string;
+  let tempXmlC: string;
+  let mockHtml: string;
+  let postedMessages: unknown[];
+  let panelCreateCount: number;
+  let panelDidDispose: (() => void) | undefined;
+
+  setup(() => {
+    mockContext = {
+      subscriptions: [],
+      extensionPath: '',
+      extensionUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
+      globalState: {} as any,
+      workspaceState: {} as any,
+      secrets: {} as any,
+      storageUri: undefined,
+      storagePath: undefined,
+      globalStorageUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
+      globalStoragePath: '',
+      logUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
+      logPath: '',
+      extensionMode: vscode.ExtensionMode.Test,
+      extension: {} as any,
+      environmentVariableCollection: {} as any,
+      languageModelAccessInformation: {} as any,
+      asAbsolutePath: (relativePath: string) => relativePath,
+    };
+    provider = new PropertiesProvider(
+      mockContext,
+      new MetadataTreeDataProvider(),
+      new TypeEditorProvider(mockContext)
+    );
+
+    defaultShowWarningMessage = vscode.window.showWarningMessage;
+    defaultCreateWebviewPanel = vscode.window.createWebviewPanel;
+    mockHtml = '';
+    postedMessages = [];
+    panelCreateCount = 0;
+    panelDidDispose = undefined;
+
+    (vscode.window as any).createWebviewPanel = () => {
+      panelCreateCount += 1;
+      return {
+        webview: {
+          get html(): string { return mockHtml; },
+          set html(value: string) { mockHtml = value; },
+          onDidReceiveMessage: () => ({ dispose: () => undefined }),
+          postMessage: async (message: unknown) => {
+            postedMessages.push(message);
+            return true;
+          },
+          asWebviewUri: (uri: vscode.Uri) => uri,
+          cspSource: 'https://test',
+        },
+        onDidDispose: (callback: () => void) => {
+          panelDidDispose = callback;
+          return { dispose: () => undefined };
+        },
+        reveal: () => undefined,
+        dispose: () => undefined,
+      };
+    };
+    const fixturesPath = path.join(__dirname, '../../../test/fixtures');
+    const testXmlPath = path.join(fixturesPath, 'test-properties.xml');
+    const uniqueId = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    tempXmlA = path.join(fixturesPath, `temp-issue379-a-${uniqueId}.xml`);
+    tempXmlB = path.join(fixturesPath, `temp-issue379-b-${uniqueId}.xml`);
+    tempXmlC = path.join(fixturesPath, `temp-issue379-c-${uniqueId}.xml`);
+    fs.copyFileSync(testXmlPath, tempXmlA);
+    fs.copyFileSync(testXmlPath, tempXmlB);
+    fs.copyFileSync(testXmlPath, tempXmlC);
+  });
+
+  teardown(() => {
+    provider.dispose();
+    (vscode.window as any).showWarningMessage = defaultShowWarningMessage;
+    (vscode.window as any).createWebviewPanel = defaultCreateWebviewPanel;
+    for (const tempFile of [tempXmlA, tempXmlB, tempXmlC]) {
+      if (tempFile && fs.existsSync(tempFile)) {
+        fs.unlinkSync(tempFile);
+      }
+    }
+  });
+
+  test('late Form parse result cannot replace the active same-id form across A to B to A navigation', async () => {
+    const formNodeA: TreeNode = {
+      id: 'Forms.Shared',
+      name: 'SharedA',
+      type: MetadataType.Form,
+      properties: {},
+      filePath: path.join(path.resolve('config-root-a'), 'Forms', 'Shared.xml'),
+    };
+    const formNodeB: TreeNode = {
+      id: 'Forms.Shared',
+      name: 'SharedB',
+      type: MetadataType.Form,
+      properties: {},
+      filePath: path.join(path.resolve('config-root-b'), 'Forms', 'Shared.xml'),
+    };
+    assert.notStrictEqual(formNodeA, formNodeB);
+    assert.strictEqual(formNodeA.id, formNodeB.id);
+    assert.notStrictEqual(path.dirname(formNodeA.filePath!), path.dirname(formNodeB.filePath!));
+
+    const parser = await import('../../src/formEditor/formXmlParser');
+    const originalParseFormXml = parser.parseFormXml;
+    const firstAStarted = createDeferredValue<void>();
+    const firstA = createDeferredValue<any>();
+    let parseACount = 0;
+    let firstNavigation: Promise<boolean> | undefined;
+
+    try {
+      (parser as any).parseFormXml = async (formXmlPath: string) => {
+        if (formXmlPath.includes('config-root-a')) {
+          parseACount += 1;
+          if (parseACount === 1) {
+            firstAStarted.resolve(undefined);
+            return firstA.promise;
+          }
+          return formParseResultWithHandler('LatestAHandler');
+        }
+        return formParseResultWithHandler('RootBHandler');
+      };
+
+      firstNavigation = provider.showProperties(formNodeA);
+      await firstAStarted.promise;
+
+      await provider.showProperties(formNodeB);
+      assert.ok(mockHtml.includes('config-root-b'), 'the second root should be visible while A is still parsing');
+      assert.ok(mockHtml.includes('RootBHandler'));
+
+      await provider.showProperties(formNodeA);
+      assert.ok(mockHtml.includes('LatestAHandler'), 'the latest A navigation should display its own parse result');
+
+      firstA.resolve(formParseResultWithHandler('StaleAHandler'));
+      await firstNavigation;
+
+      assert.ok(mockHtml.includes('LatestAHandler'), 'the older A parse must not replace the latest A panel');
+      assert.ok(!mockHtml.includes('StaleAHandler'), 'the stale parse result must not be published');
+    } finally {
+      firstA.resolve(formParseResultWithHandler('CleanupAHandler'));
+      if (firstNavigation) {
+        await firstNavigation.catch(() => false);
+      }
+      (parser as any).parseFormXml = originalParseFormXml;
+    }
+  });
+
+  test('updateIfOpen on the same Form node preserves its pending successful presentation', async () => {
+    const node: TreeNode = {
+      id: 'Forms.Pending',
+      name: 'PendingForm',
+      type: MetadataType.Form,
+      properties: {},
+      filePath: tempXmlA,
+    };
+    const parser = await import('../../src/formEditor/formXmlParser');
+    const originalParseFormXml = parser.parseFormXml;
+    const parseStarted = createDeferredValue<void>();
+    const parseResult = createDeferredValue<any>();
+    let navigation: Promise<boolean> | undefined;
+
+    try {
+      (parser as any).parseFormXml = async () => {
+        parseStarted.resolve(undefined);
+        return parseResult.promise;
+      };
+
+      navigation = provider.showProperties(node);
+      await parseStarted.promise;
+
+      const refresh = provider.updateIfOpen(node);
+      parseResult.resolve(formParseResultWithHandler('SameNodeUpdateHandler'));
+      await refresh;
+      await navigation;
+
+      assert.ok(
+        mockHtml.includes('SameNodeUpdateHandler'),
+        'a same-node refresh must not strand the Form presentation already in progress'
+      );
+    } finally {
+      parseResult.resolve(formParseResultWithHandler('CleanupSameNodeUpdateHandler'));
+      if (navigation) {
+        await navigation.catch(() => false);
+      }
+      (parser as any).parseFormXml = originalParseFormXml;
+    }
+  });
+
+  test('updateIfOpen on the same Form node preserves fallback after a pending parse error', async () => {
+    const node: TreeNode = {
+      id: 'Forms.Pending',
+      name: 'PendingForm',
+      type: MetadataType.Form,
+      properties: {},
+      filePath: tempXmlA,
+    };
+    const parser = await import('../../src/formEditor/formXmlParser');
+    const writerModule = await import('../../src/utils/XMLWriter');
+    const originalParseFormXml = parser.parseFormXml;
+    const originalReadProperties = writerModule.XMLWriter.readProperties;
+    const parseStarted = createDeferredValue<void>();
+    const parseResult = createDeferredValue<any>();
+    let navigation: Promise<boolean> | undefined;
+
+    try {
+      (parser as any).parseFormXml = async () => {
+        parseStarted.resolve(undefined);
+        return parseResult.promise;
+      };
+      (writerModule.XMLWriter as any).readProperties = async () => ({
+        Name: 'RecoveredAfterSameNodeUpdate',
+      });
+
+      navigation = provider.showProperties(node);
+      await parseStarted.promise;
+
+      const refresh = provider.updateIfOpen(node);
+      parseResult.resolve({ error: 'Malformed Form.xml' });
+      await refresh;
+      await navigation;
+
+      assert.strictEqual(node.properties.Name, 'RecoveredAfterSameNodeUpdate');
+      assert.ok(
+        mockHtml.includes('RecoveredAfterSameNodeUpdate'),
+        'a same-node refresh must not suppress the regular properties fallback after a parse error'
+      );
+    } finally {
+      parseResult.resolve({ error: 'cleanup parse result' });
+      if (navigation) {
+        await navigation.catch(() => false);
+      }
+      (parser as any).parseFormXml = originalParseFormXml;
+      (writerModule.XMLWriter as any).readProperties = originalReadProperties;
+    }
+  });
+
+  test('repeated showProperties on a pending Form node publishes the latest successful parse', async () => {
+    const node: TreeNode = {
+      id: 'Forms.Pending',
+      name: 'PendingForm',
+      type: MetadataType.Form,
+      properties: {},
+      filePath: tempXmlA,
+    };
+    const parser = await import('../../src/formEditor/formXmlParser');
+    const originalParseFormXml = parser.parseFormXml;
+    const firstParseStarted = createDeferredValue<void>();
+    const firstParse = createDeferredValue<any>();
+    let parseCount = 0;
+    let firstNavigation: Promise<boolean> | undefined;
+    let latestNavigation: Promise<boolean> | undefined;
+
+    try {
+      (parser as any).parseFormXml = async () => {
+        parseCount += 1;
+        if (parseCount === 1) {
+          firstParseStarted.resolve(undefined);
+          return firstParse.promise;
+        }
+        return formParseResultWithHandler('LatestRepeatedShowHandler');
+      };
+
+      firstNavigation = provider.showProperties(node);
+      await firstParseStarted.promise;
+      latestNavigation = provider.showProperties(node);
+      await latestNavigation;
+
+      assert.ok(mockHtml.includes('LatestRepeatedShowHandler'));
+      firstParse.resolve(formParseResultWithHandler('StaleRepeatedShowHandler'));
+      await firstNavigation;
+
+      assert.ok(mockHtml.includes('LatestRepeatedShowHandler'));
+      assert.ok(!mockHtml.includes('StaleRepeatedShowHandler'));
+    } finally {
+      firstParse.resolve(formParseResultWithHandler('CleanupRepeatedShowHandler'));
+      if (firstNavigation) {
+        await firstNavigation.catch(() => false);
+      }
+      if (latestNavigation) {
+        await latestNavigation.catch(() => false);
+      }
+      (parser as any).parseFormXml = originalParseFormXml;
+    }
+  });
+
+  test('repeated showProperties on a pending Form node preserves fallback after the latest parse errors', async () => {
+    const node: TreeNode = {
+      id: 'Forms.Pending',
+      name: 'PendingForm',
+      type: MetadataType.Form,
+      properties: {},
+      filePath: tempXmlA,
+    };
+    const parser = await import('../../src/formEditor/formXmlParser');
+    const writerModule = await import('../../src/utils/XMLWriter');
+    const originalParseFormXml = parser.parseFormXml;
+    const originalReadProperties = writerModule.XMLWriter.readProperties;
+    const firstParseStarted = createDeferredValue<void>();
+    const firstParse = createDeferredValue<any>();
+    let parseCount = 0;
+    let fallbackReadCount = 0;
+    let firstNavigation: Promise<boolean> | undefined;
+    let latestNavigation: Promise<boolean> | undefined;
+
+    try {
+      (parser as any).parseFormXml = async () => {
+        parseCount += 1;
+        if (parseCount === 1) {
+          firstParseStarted.resolve(undefined);
+          return firstParse.promise;
+        }
+        return { error: 'Malformed latest Form.xml' };
+      };
+      (writerModule.XMLWriter as any).readProperties = async () => {
+        fallbackReadCount += 1;
+        return { Name: 'LatestRepeatedShowFallback' };
+      };
+
+      firstNavigation = provider.showProperties(node);
+      await firstParseStarted.promise;
+      latestNavigation = provider.showProperties(node);
+      await latestNavigation;
+
+      assert.strictEqual(fallbackReadCount, 1, 'the active parse error should use the ordinary properties fallback');
+      assert.ok(mockHtml.includes('LatestRepeatedShowFallback'));
+
+      firstParse.resolve(formParseResultWithHandler('StaleAfterRepeatedShowErrorHandler'));
+      await firstNavigation;
+
+      assert.ok(mockHtml.includes('LatestRepeatedShowFallback'));
+      assert.ok(!mockHtml.includes('StaleAfterRepeatedShowErrorHandler'));
+    } finally {
+      firstParse.resolve(formParseResultWithHandler('CleanupRepeatedShowErrorHandler'));
+      if (firstNavigation) {
+        await firstNavigation.catch(() => false);
+      }
+      if (latestNavigation) {
+        await latestNavigation.catch(() => false);
+      }
+      (parser as any).parseFormXml = originalParseFormXml;
+      (writerModule.XMLWriter as any).readProperties = originalReadProperties;
+    }
+  });
+
+  test('late Form metadata read error cannot replace a newer A navigation', async () => {
+    const nodeA: TreeNode = {
+      id: 'Forms.Shared',
+      name: 'SharedA',
+      type: MetadataType.Form,
+      properties: {},
+      filePath: tempXmlA,
+    };
+    const nodeB: TreeNode = {
+      id: 'Forms.Other',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogB' },
+      filePath: tempXmlB,
+    };
+
+    const parser = await import('../../src/formEditor/formXmlParser');
+    const writerModule = await import('../../src/utils/XMLWriter');
+    const originalParseFormXml = parser.parseFormXml;
+    const originalReadProperties = writerModule.XMLWriter.readProperties;
+    const firstParseStarted = createDeferredValue<void>();
+    const firstParse = createDeferredValue<any>();
+    const secondParseStarted = createDeferredValue<void>();
+    const secondParse = createDeferredValue<any>();
+    const firstReadStarted = createDeferredValue<void>();
+    const firstRead = createDeferredValue<Record<string, unknown>>();
+    let parseCount = 0;
+    let readDeferred = false;
+    let firstNavigation: Promise<boolean> | undefined;
+    let latestNavigation: Promise<boolean> | undefined;
+
+    try {
+      (parser as any).parseFormXml = async () => {
+        parseCount += 1;
+        if (parseCount === 1) {
+          firstParseStarted.resolve(undefined);
+          return firstParse.promise;
+        }
+        secondParseStarted.resolve(undefined);
+        return secondParse.promise;
+      };
+      (writerModule.XMLWriter as any).readProperties = async (filePath: string, ...args: unknown[]) => {
+        if (filePath === nodeA.filePath && !readDeferred) {
+          readDeferred = true;
+          firstReadStarted.resolve(undefined);
+          return firstRead.promise;
+        }
+        return (originalReadProperties as (...values: unknown[]) => Promise<unknown>).apply(
+          writerModule.XMLWriter,
+          [filePath, ...args]
+        );
+      };
+
+      firstNavigation = provider.showProperties(nodeA);
+      await firstParseStarted.promise;
+      firstParse.resolve({ error: 'Malformed Form.xml' });
+      await firstReadStarted.promise;
+
+      await provider.showProperties(nodeB);
+      assert.ok(mockHtml.includes('CatalogB'));
+
+      latestNavigation = provider.showProperties(nodeA);
+      await secondParseStarted.promise;
+      firstRead.reject(new Error('stale Form metadata read failed'));
+      await firstNavigation;
+
+      assert.ok(mockHtml.includes('CatalogB'), 'an old error must not replace the panel while the newer A parse is pending');
+      assert.ok(!mockHtml.includes('Failed to read properties from file'));
+
+      secondParse.resolve(formParseResultWithHandler('LatestAHandler'));
+      await latestNavigation;
+      assert.ok(mockHtml.includes('LatestAHandler'));
+    } finally {
+      if (!readDeferred) {
+        firstParse.resolve({ error: 'cleanup parse result' });
+        await firstReadStarted.promise;
+      }
+      firstRead.reject(new Error('cleanup read failure'));
+      secondParse.resolve(formParseResultWithHandler('CleanupAHandler'));
+      if (firstNavigation) {
+        await firstNavigation.catch(() => false);
+      }
+      if (latestNavigation) {
+        await latestNavigation.catch(() => false);
+      }
+      (parser as any).parseFormXml = originalParseFormXml;
+      (writerModule.XMLWriter as any).readProperties = originalReadProperties;
+    }
+  });
+
+  for (const resolutionOrder of ['older-first', 'newer-first'] as const) {
+    for (const olderChoice of [MESSAGES.SAVE, MESSAGES.DONT_SAVE, MESSAGES.CANCEL]) {
+      test(`an older ${olderChoice} dialog cannot overtake a newer navigation (${resolutionOrder})`, async () => {
+        const nodeA: TreeNode = {
+          id: 'node-a',
+          name: 'CatalogA',
+          type: MetadataType.Catalog,
+          properties: { Name: 'CatalogA' },
+          filePath: tempXmlA,
+        };
+        const nodeB: TreeNode = {
+          id: 'node-b',
+          name: 'CatalogB',
+          type: MetadataType.Catalog,
+          properties: { Name: 'CatalogB' },
+          filePath: tempXmlB,
+        };
+        const nodeC: TreeNode = {
+          id: 'node-c',
+          name: 'CatalogC',
+          type: MetadataType.Catalog,
+          properties: { Name: 'CatalogC' },
+          filePath: tempXmlC,
+        };
+        const dialogs: Array<DeferredValue<any>> = [];
+        let olderNavigation: Promise<boolean> | undefined;
+        let newerNavigation: Promise<boolean> | undefined;
+        (vscode.window as any).showWarningMessage = () => {
+          const dialog = createDeferredValue<any>();
+          dialogs.push(dialog);
+          return dialog.promise;
+        };
+
+        try {
+          await provider.showProperties(nodeA);
+          provider.setIsDirty(true, { Synonym: 'PendingA' });
+          olderNavigation = provider.showProperties(nodeB);
+          newerNavigation = provider.showProperties(nodeC);
+          assert.strictEqual(dialogs.length, 2, 'both navigation intents should be waiting on their own dialog result');
+
+          if (resolutionOrder === 'older-first') {
+            provider.setIsDirty(true, { Synonym: 'NewerPendingA' });
+            dialogs[0].resolve(olderChoice);
+            await olderNavigation;
+            assert.strictEqual((provider as any).currentNode, nodeA, 'the stale decision must not navigate to B');
+            assert.strictEqual(provider.isDirty(), true, 'the stale decision must preserve newer A edits');
+            assert.strictEqual((provider as any).pendingProperties?.Synonym, 'NewerPendingA');
+
+            dialogs[1].resolve(MESSAGES.CANCEL);
+            await newerNavigation;
+            assert.strictEqual((provider as any).currentNode, nodeA, 'cancelling the newest intent should leave A selected');
+            assert.strictEqual(provider.isDirty(), true);
+            assert.strictEqual((provider as any).pendingProperties?.Synonym, 'NewerPendingA');
+          } else {
+            dialogs[1].resolve(MESSAGES.DONT_SAVE);
+            await newerNavigation;
+            assert.strictEqual((provider as any).currentNode, nodeC, 'the newest intent should reach C');
+            provider.setIsDirty(true, { Synonym: 'PendingC' });
+
+            dialogs[0].resolve(olderChoice);
+            await olderNavigation;
+            assert.strictEqual((provider as any).currentNode, nodeC, 'the late decision must not navigate back to B');
+            assert.strictEqual(provider.isDirty(), true, 'the late decision must preserve edits in C');
+            assert.strictEqual((provider as any).pendingProperties?.Synonym, 'PendingC');
+            assert.strictEqual(
+              fs.readFileSync(tempXmlC, 'utf8'),
+              fs.readFileSync(path.join(__dirname, '../../../test/fixtures/test-properties.xml'), 'utf8'),
+              'an older Save decision must not save the newly active C session'
+            );
+          }
+        } finally {
+          for (const dialog of dialogs) {
+            dialog.resolve(MESSAGES.CANCEL);
+          }
+          if (olderNavigation) {
+            await olderNavigation.catch(() => false);
+          }
+          if (newerNavigation) {
+            await newerNavigation.catch(() => false);
+          }
+        }
+      });
+    }
+  }
+
+  for (const choice of [MESSAGES.SAVE, MESSAGES.DONT_SAVE]) {
+    test(`a ${choice} decision cannot consume edits made after its dirty prompt opened`, async () => {
+      const nodeA: TreeNode = {
+        id: 'node-a',
+        name: 'CatalogA',
+        type: MetadataType.Catalog,
+        properties: { Name: 'CatalogA' },
+        filePath: tempXmlA,
+      };
+      const nodeB: TreeNode = {
+        id: 'node-b',
+        name: 'CatalogB',
+        type: MetadataType.Catalog,
+        properties: { Name: 'CatalogB' },
+        filePath: tempXmlB,
+      };
+      const dialog = createDeferredValue<any>();
+      (vscode.window as any).showWarningMessage = () => dialog.promise;
+      let navigation: Promise<boolean> | undefined;
+
+      try {
+        await provider.showProperties(nodeA);
+        provider.setIsDirty(true, { Synonym: 'First edit' });
+        const before = fs.readFileSync(tempXmlA, 'utf8');
+        navigation = provider.showProperties(nodeB);
+        provider.setIsDirty(true, { Synonym: 'Newer edit' });
+
+        dialog.resolve(choice);
+        await navigation;
+
+        assert.strictEqual((provider as any).currentNode, nodeA, 'navigation must remain pending for the newer edit');
+        assert.strictEqual(provider.isDirty(), true, 'the newer edit must remain dirty');
+        assert.strictEqual((provider as any).pendingProperties?.Synonym, 'Newer edit');
+        assert.strictEqual(fs.readFileSync(tempXmlA, 'utf8'), before, 'an old choice must not save newer edits');
+      } finally {
+        dialog.resolve(MESSAGES.CANCEL);
+        if (navigation) {
+          await navigation.catch(() => false);
+        }
+      }
+    });
+  }
+
+  test('a late Save completion does not publish into or clear a newer dirty session', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA' },
+      filePath: tempXmlA,
+    };
+    const nodeB: TreeNode = {
+      id: 'node-b',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogB' },
+      filePath: tempXmlB,
+    };
+    const nodeC: TreeNode = {
+      id: 'node-c',
+      name: 'CatalogC',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogC' },
+      filePath: tempXmlC,
+    };
+    const dialogs: Array<DeferredValue<any>> = [];
+    (vscode.window as any).showWarningMessage = () => {
+      const dialog = createDeferredValue<any>();
+      dialogs.push(dialog);
+      return dialog.promise;
+    };
+    await provider.showProperties(nodeA);
+    provider.setIsDirty(true, { Synonym: 'SavedA' });
+
+    const writerModule = await import('../../src/utils/XMLWriter');
+    const originalWriteProperties = writerModule.XMLWriter.writeProperties;
+    const writeStarted = createDeferredValue<void>();
+    const releaseWrite = createDeferredValue<void>();
+    (writerModule.XMLWriter as any).writeProperties = async (...args: unknown[]) => {
+      writeStarted.resolve(undefined);
+      await releaseWrite.promise;
+      return (originalWriteProperties as (...values: unknown[]) => Promise<unknown>).apply(
+        writerModule.XMLWriter,
+        args
+      );
+    };
+
+    let olderNavigation: Promise<boolean> | undefined;
+    let newerNavigation: Promise<boolean> | undefined;
+    try {
+      olderNavigation = provider.showProperties(nodeB);
+      assert.strictEqual(dialogs.length, 1);
+      dialogs[0].resolve(MESSAGES.SAVE);
+      await writeStarted.promise;
+
+      newerNavigation = provider.showProperties(nodeC);
+      assert.strictEqual(dialogs.length, 2);
+      dialogs[1].resolve(MESSAGES.DONT_SAVE);
+      await newerNavigation;
+      provider.setIsDirty(true, { Synonym: 'NewerC' });
+
+      releaseWrite.resolve(undefined);
+      await olderNavigation;
+
+      assert.strictEqual((provider as any).currentNode, nodeC, 'the old navigation must not replace C after Save completes');
+      assert.strictEqual(provider.isDirty(), true, 'the old save acknowledgement must not clear C dirty state');
+      assert.strictEqual((provider as any).pendingProperties?.Synonym, 'NewerC');
+      assert.strictEqual((nodeA.properties as Record<string, unknown>).Synonym, 'SavedA', 'the captured A save should finish');
+      assert.strictEqual(
+        postedMessages.some((message) => (message as { type?: string }).type === 'saved'),
+        false,
+        'the completed A save must not acknowledge success in the current C webview'
+      );
+    } finally {
+      for (const dialog of dialogs) {
+        dialog.resolve(MESSAGES.CANCEL);
+      }
+      releaseWrite.resolve(undefined);
+      if (olderNavigation) {
+        await olderNavigation.catch(() => false);
+      }
+      if (newerNavigation) {
+        await newerNavigation.catch(() => false);
+      }
+      (writerModule.XMLWriter as any).writeProperties = originalWriteProperties;
+    }
+  });
+
+  test('a late captured Save success does not acknowledge the newer presentation', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA', Synonym: 'OriginalA' },
+      filePath: tempXmlA,
+    };
+    const nodeB: TreeNode = {
+      id: 'node-b',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogB', Synonym: 'OriginalB' },
+      filePath: tempXmlB,
+    };
+    const writerModule = await import('../../src/utils/XMLWriter');
+    const originalWriteProperties = writerModule.XMLWriter.writeProperties;
+    const originalShowInformationMessage = vscode.window.showInformationMessage;
+    const writeStarted = createDeferredValue<void>();
+    const releaseWrite = createDeferredValue<void>();
+    const informationMessages: unknown[] = [];
+    (vscode.window as any).showWarningMessage = async () => MESSAGES.DONT_SAVE;
+    (vscode.window as any).showInformationMessage = (message: unknown) => {
+      informationMessages.push(message);
+      return Promise.resolve(undefined);
+    };
+    (writerModule.XMLWriter as any).writeProperties = async (...args: unknown[]) => {
+      writeStarted.resolve(undefined);
+      await releaseWrite.promise;
+      return (originalWriteProperties as (...values: unknown[]) => Promise<unknown>).apply(
+        writerModule.XMLWriter,
+        args
+      );
+    };
+
+    let save: Promise<void> | undefined;
+    let newerContext: MessageHandlerContext | undefined;
+    let newerSaveGeneration: number | undefined;
+    try {
+      await provider.showProperties(nodeA);
+      provider.setIsDirty(true, { Synonym: 'SavedA' });
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      save = handleMessage(
+        {
+          type: 'save',
+          nodeId: nodeA.id,
+          sessionToken: ctx.currentSessionToken,
+          properties: { Synonym: 'SavedA' },
+        },
+        ctx
+      );
+      await writeStarted.promise;
+
+      await provider.showProperties(nodeB);
+      provider.setIsDirty(true, { Synonym: 'PendingB' });
+      newerContext = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      newerSaveGeneration = newerContext.beginSave?.();
+      assert.notStrictEqual(newerSaveGeneration, undefined, 'the current B session can start its own save window');
+      releaseWrite.resolve(undefined);
+      await save;
+
+      assert.strictEqual(nodeA.properties.Synonym, 'SavedA', 'the captured A mutation may finish');
+      assert.strictEqual((provider as any).currentNode, nodeB);
+      assert.strictEqual(provider.isDirty(), true, 'the late A acknowledgement must preserve B edits');
+      assert.strictEqual((provider as any).pendingProperties?.Synonym, 'PendingB');
+      assert.strictEqual(
+        postedMessages.some((message) => (message as { type?: string }).type === 'saved'),
+        false,
+        'the captured save must not acknowledge success in B'
+      );
+      assert.strictEqual(
+        informationMessages.includes(MESSAGES.SAVE_SUCCESS),
+        false,
+        'the captured save must not show a success notification after B becomes current'
+      );
+      assert.strictEqual((provider as any)._isSaving, true, 'the older A completion must not clear B save tracking');
+    } finally {
+      releaseWrite.resolve(undefined);
+      if (save) {
+        await save.catch(() => undefined);
+      }
+      if (newerSaveGeneration !== undefined) {
+        newerContext?.endSave?.(newerSaveGeneration, 0);
+      }
+      (writerModule.XMLWriter as any).writeProperties = originalWriteProperties;
+      (vscode.window as any).showWarningMessage = defaultShowWarningMessage;
+      (vscode.window as any).showInformationMessage = originalShowInformationMessage;
+    }
+  });
+
+  test('a late captured Save failure does not show an error in the newer presentation', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA', Synonym: 'OriginalA' },
+      filePath: tempXmlA,
+    };
+    const nodeB: TreeNode = {
+      id: 'node-b',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogB', Synonym: 'OriginalB' },
+      filePath: tempXmlB,
+    };
+    const writerModule = await import('../../src/utils/XMLWriter');
+    const originalWriteProperties = writerModule.XMLWriter.writeProperties;
+    const originalShowErrorMessage = vscode.window.showErrorMessage;
+    const writeStarted = createDeferredValue<void>();
+    const releaseWrite = createDeferredValue<void>();
+    const errorMessages: unknown[] = [];
+    (vscode.window as any).showWarningMessage = async () => MESSAGES.DONT_SAVE;
+    (vscode.window as any).showErrorMessage = (message: unknown) => {
+      errorMessages.push(message);
+      return Promise.resolve(undefined);
+    };
+    (writerModule.XMLWriter as any).writeProperties = async () => {
+      writeStarted.resolve(undefined);
+      await releaseWrite.promise;
+      throw new Error('Unable to write captured A');
+    };
+
+    let save: Promise<void> | undefined;
+    let newerContext: MessageHandlerContext | undefined;
+    let newerSaveGeneration: number | undefined;
+    try {
+      await provider.showProperties(nodeA);
+      provider.setIsDirty(true, { Synonym: 'SavedA' });
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      save = handleMessage(
+        {
+          type: 'save',
+          nodeId: nodeA.id,
+          sessionToken: ctx.currentSessionToken,
+          properties: { Synonym: 'SavedA' },
+        },
+        ctx
+      );
+      await writeStarted.promise;
+
+      await provider.showProperties(nodeB);
+      provider.setIsDirty(true, { Synonym: 'PendingB' });
+      newerContext = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      newerSaveGeneration = newerContext.beginSave?.();
+      assert.notStrictEqual(newerSaveGeneration, undefined, 'the current B session can start its own save window');
+      releaseWrite.resolve(undefined);
+      await save;
+
+      assert.strictEqual((provider as any).currentNode, nodeB);
+      assert.strictEqual(provider.isDirty(), true, 'the late A error must preserve B edits');
+      assert.strictEqual((provider as any).pendingProperties?.Synonym, 'PendingB');
+      assert.strictEqual(
+        errorMessages.length,
+        0,
+        'a failed captured A write must not show an error after B becomes current'
+      );
+      assert.strictEqual(
+        postedMessages.some((message) => (message as { type?: string }).type === 'update'),
+        false,
+        'a late rollback must not publish an A update into B'
+      );
+      assert.strictEqual((provider as any)._isSaving, true, 'the older A failure must not clear B save tracking');
+    } finally {
+      releaseWrite.resolve(undefined);
+      if (save) {
+        await save.catch(() => undefined);
+      }
+      if (newerSaveGeneration !== undefined) {
+        newerContext?.endSave?.(newerSaveGeneration, 0);
+      }
+      (writerModule.XMLWriter as any).writeProperties = originalWriteProperties;
+      (vscode.window as any).showWarningMessage = defaultShowWarningMessage;
+      (vscode.window as any).showErrorMessage = originalShowErrorMessage;
+    }
+  });
+
+  test('a Save error dialog cannot open output after navigation changes', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA', Synonym: 'OriginalA' },
+      filePath: tempXmlA,
+    };
+    const nodeB: TreeNode = {
+      id: 'node-b',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogB', Synonym: 'OriginalB' },
+      filePath: tempXmlB,
+    };
+    const writerModule = await import('../../src/utils/XMLWriter');
+    const loggerModule = await import('../../src/utils/logger');
+    const originalWriteProperties = writerModule.XMLWriter.writeProperties;
+    const originalShowErrorMessage = vscode.window.showErrorMessage;
+    const originalLoggerShow = loggerModule.Logger.show;
+    const errorDialog = createDeferredValue<unknown>();
+    const shownErrors: unknown[] = [];
+    let loggerShowCount = 0;
+    (vscode.window as any).showErrorMessage = (message: unknown) => {
+      shownErrors.push(message);
+      return errorDialog.promise;
+    };
+    (writerModule.XMLWriter as any).writeProperties = async () => {
+      throw new Error('Unable to write current A');
+    };
+    (loggerModule.Logger as any).show = () => {
+      loggerShowCount += 1;
+    };
+
+    let save: Promise<void> | undefined;
+    try {
+      await provider.showProperties(nodeA);
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      save = handleMessage(
+        {
+          type: 'save',
+          nodeId: nodeA.id,
+          sessionToken: ctx.currentSessionToken,
+          properties: { Synonym: 'SavedA' },
+        },
+        ctx
+      );
+      await save;
+
+      assert.strictEqual(shownErrors.length, 1, 'the current A session can show its write error');
+      await provider.showProperties(nodeB);
+      errorDialog.resolve('Show Output');
+      await errorDialog.promise;
+      await Promise.resolve();
+
+      assert.strictEqual(loggerShowCount, 0, 'a stale error-dialog choice must not reveal the output channel');
+    } finally {
+      errorDialog.resolve(undefined);
+      if (save) {
+        await save.catch(() => undefined);
+      }
+      (writerModule.XMLWriter as any).writeProperties = originalWriteProperties;
+      (vscode.window as any).showErrorMessage = originalShowErrorMessage;
+      (loggerModule.Logger as any).show = originalLoggerShow;
+    }
+  });
+
+  test('a Save preflight finishing after navigation does not begin saving on the new presentation', async () => {
+    const nodeA: TreeNode = {
+      id: 'node-a',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogA', Synonym: 'OriginalA' },
+      filePath: tempXmlA,
+    };
+    const nodeB: TreeNode = {
+      id: 'node-b',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: { Name: 'CatalogB', Synonym: 'OriginalB' },
+      filePath: tempXmlB,
+    };
+    const mutationPolicy = await import('../../src/extensionSupport/cfeProject/mutationPolicy');
+    const writerModule = await import('../../src/utils/XMLWriter');
+    const originalAssertAllowed = mutationPolicy.assertCfeGenericMutationAllowed;
+    const originalWriteProperties = writerModule.XMLWriter.writeProperties;
+    const originalBeginSave = provider.beginSave;
+    const preflightStarted = createDeferredValue<void>();
+    const releasePreflight = createDeferredValue<void>();
+    let beginSaveOnB = false;
+    (mutationPolicy as any).assertCfeGenericMutationAllowed = async () => {
+      preflightStarted.resolve(undefined);
+      await releasePreflight.promise;
+    };
+    (writerModule.XMLWriter as any).writeProperties = async () => undefined;
+    (provider as any).beginSave = () => {
+      if ((provider as any).currentNode === nodeB) {
+        beginSaveOnB = true;
+      }
+      return originalBeginSave.call(provider);
+    };
+
+    let save: Promise<void> | undefined;
+    try {
+      await provider.showProperties(nodeA);
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      save = handleMessage(
+        {
+          type: 'save',
+          nodeId: nodeA.id,
+          sessionToken: ctx.currentSessionToken,
+          properties: { Synonym: 'SavedA' },
+        },
+        ctx
+      );
+      await preflightStarted.promise;
+
+      await provider.showProperties(nodeB);
+      provider.setIsDirty(true, { Synonym: 'PendingB' });
+      assert.strictEqual(ctx.isCurrentSession?.(), false, 'the captured A context must report its lost presentation');
+      assert.strictEqual(ctx.beginSave?.(), undefined, 'an obsolete context cannot start a save window on B');
+      releasePreflight.resolve(undefined);
+      await save;
+
+      assert.strictEqual(
+        beginSaveOnB,
+        false,
+        'a captured A operation must not start the provider save window after B becomes current'
+      );
+      assert.strictEqual((provider as any).currentNode, nodeB);
+      assert.strictEqual(provider.isDirty(), true);
+      assert.strictEqual((provider as any).pendingProperties?.Synonym, 'PendingB');
+    } finally {
+      releasePreflight.resolve(undefined);
+      if (save) {
+        await save.catch(() => undefined);
+      }
+      (mutationPolicy as any).assertCfeGenericMutationAllowed = originalAssertAllowed;
+      (writerModule.XMLWriter as any).writeProperties = originalWriteProperties;
+      (provider as any).beginSave = originalBeginSave;
+    }
+  });
+
+  test('a Form parse finishing after panel disposal cannot recreate or update the panel', async () => {
+    const nodeA: TreeNode = {
+      id: 'Forms.Shared',
+      name: 'SharedA',
+      type: MetadataType.Form,
+      properties: {},
+      filePath: path.join(path.resolve('config-root-a'), 'Forms', 'Shared.xml'),
+    };
+    const parser = await import('../../src/formEditor/formXmlParser');
+    const originalParseFormXml = parser.parseFormXml;
+    const parseStarted = createDeferredValue<void>();
+    const parseResult = createDeferredValue<any>();
+    let navigation: Promise<boolean> | undefined;
+
+    try {
+      (parser as any).parseFormXml = async () => {
+        parseStarted.resolve(undefined);
+        return parseResult.promise;
+      };
+
+      navigation = provider.showProperties(nodeA);
+      await parseStarted.promise;
+      assert.strictEqual(panelCreateCount, 1);
+
+      panelDidDispose?.();
+      assert.strictEqual(provider.isOpen(), false);
+
+      parseResult.resolve(formParseResultWithHandler('DisposedHandler'));
+      await navigation;
+
+      assert.strictEqual(provider.isOpen(), false, 'a finished operation must not reopen a disposed panel');
+      assert.strictEqual(panelCreateCount, 1, 'no replacement panel should be created after disposal');
+      assert.ok(!mockHtml.includes('DisposedHandler'));
+    } finally {
+      parseResult.resolve(formParseResultWithHandler('CleanupDisposedHandler'));
+      if (navigation) {
+        await navigation.catch(() => false);
+      }
+      (parser as any).parseFormXml = originalParseFormXml;
+    }
   });
 });
