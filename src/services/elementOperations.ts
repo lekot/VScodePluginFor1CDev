@@ -19,9 +19,7 @@ import {
   getDesignerTemplateXml,
 } from './designerTemplateRepository';
 import { substituteDesignerTemplate } from './designerTemplateSubstitutor';
-import {
-  appendRegisterReferenceToRecorderDocument,
-} from './registerRecorderDocumentLinker';
+import { appendRegisterReferenceToRecorderDocumentXml, type RecorderRegisterKind } from './registerRecorderDocumentLinker';
 import {
   buildRootObjectConfigurationContent,
 } from './configurationXmlUpdater';
@@ -40,6 +38,8 @@ import {
   assertCfeGenericMutationAllowed,
 } from '../extensionSupport/cfeProject/mutationPolicy';
 import { CONFIGURATION_XML } from '../constants/fileNames';
+import { XmlParser } from '../parsers/xmlParser';
+import { getValueByLocalName } from '../parsers/xmlNavHelpers';
 import { isSamePath } from '../utils/configurationPathIdentity';
 import {
   appendPredefinedDesignerItem,
@@ -370,6 +370,38 @@ async function handleCreateEdtRootObject(
 
   const configPath = path.join(configurationRootPath, CONFIGURATION_XML);
   const configContent = await fs.promises.readFile(configPath, 'utf8');
+  const recorderDocument = rootTag === 'AccumulationRegister'
+    ? process.env.IBCMD_RECORDER_DOCUMENT?.trim()
+    : undefined;
+  if (recorderDocument) {
+    const recorderNameError = validateElementName(recorderDocument, []);
+    if (recorderNameError) {
+      throw new Error(`Некорректное имя документа-регистратора: ${recorderNameError}`);
+    }
+    if (!isRootObjectRegisteredInContent(configContent, 'Document', recorderDocument)) {
+      throw new Error(`Документ-регистратор ${recorderDocument} не зарегистрирован в Configuration.xml.`);
+    }
+    const edtSourceRootPath = path.dirname(typeFolderPath);
+    const recorderPath = path.join(edtSourceRootPath, 'Documents', `${recorderDocument}.xml`);
+    await assertPathWithinRoot(edtSourceRootPath, recorderPath);
+    await assertPathWithinRoot(configurationRootPath, recorderPath);
+    await assertCfeGenericMutationAllowed(recorderPath, 'update');
+    const recorderContent = await fs.promises.readFile(recorderPath, 'utf8');
+    const updatedRecorderContent = appendRegisterReferenceToRecorderDocumentXml(
+      recorderContent,
+      rootTag as RecorderRegisterKind,
+      name,
+    );
+    if (updatedRecorderContent !== recorderContent) {
+      steps.push({
+        type: 'writeFile',
+        targetPath: recorderPath,
+        content: updatedRecorderContent,
+        encoding: 'utf8',
+        expected: { state: 'file', hash: hashContent(recorderContent) },
+      });
+    }
+  }
   let updatedConfigContent = buildRootObjectConfigurationContent(configContent, {
     type: 'add',
     rootTag,
@@ -397,10 +429,32 @@ async function handleCreateEdtRootObject(
   };
 
   await runConfigurationPlan(configurationRootPath, plan);
+}
 
-  if (rootTag === 'AccumulationRegister') {
-    await appendRegisterReferenceToRecorderDocument(configurationRootPath, rootTag, name);
+function isRootObjectRegisteredInContent(xmlContent: string, rootTag: string, objectName: string): boolean {
+  const parsed = XmlParser.parseString(xmlContent);
+  const metadata = asXmlRecord(getValueByLocalName(parsed, 'MetaDataObject'));
+  const configuration = metadata && asXmlRecord(getValueByLocalName(metadata, 'Configuration'));
+  const childObjects = configuration && asXmlRecord(getValueByLocalName(configuration, 'ChildObjects'));
+  const entries = childObjects && getValueByLocalName(childObjects, rootTag);
+  if (entries === undefined) {
+    return false;
   }
+  return (Array.isArray(entries) ? entries : [entries]).some((entry) => {
+    const text = typeof entry === 'string'
+      ? entry
+      : entry && typeof entry === 'object' && !Array.isArray(entry)
+        ? (entry as Record<string, unknown>)['#text']
+        : undefined;
+    return typeof text === 'string' && text.trim() === objectName;
+  });
+}
+
+function asXmlRecord(value: unknown): Record<string, unknown> | undefined {
+  const item = Array.isArray(value) ? value[0] : value;
+  return item && typeof item === 'object' && !Array.isArray(item)
+    ? item as Record<string, unknown>
+    : undefined;
 }
 
 /** Branch: parentNode is a top-level metadata object (Catalog, Document, …) — create nested Attribute. */

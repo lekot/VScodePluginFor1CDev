@@ -39,9 +39,8 @@ const CFE_CONFIG_XML = `<?xml version="1.0" encoding="UTF-8"?>
 const RECORDER_DOCUMENT_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <Document uuid="11111111-2222-3333-4444-555555555555">
-    <Properties><Name>Recorder</Name></Properties>
+    <Properties><Name>Recorder</Name><RegisterRecords/></Properties>
     <ChildObjects/>
-    <RegisterRecords/>
   </Document>
 </MetaDataObject>`;
 
