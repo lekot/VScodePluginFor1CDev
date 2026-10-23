@@ -26,7 +26,9 @@ import { convert1cPackageToXsd, convertXsdTo1cPackage } from '../xdtoPackageEdit
 import { resolveXdtoPackageSchemaPath } from '../xdtoPackageEditor/xdtoPackagePaths';
 import { showXdtoPackageCompare } from '../xdtoPackageCompare/xdtoPackageCompareProvider';
 import { hashContent } from '../services/configurationSession/atomicFileStorage';
-import { runConfigurationMutation, runConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
+import { getConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
+import { runConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
+import { unwrapMutationReceipt } from '../services/configurationSession/mutationReceiptError';
 import type { MutationExpectation, MutationPlan } from '../services/configurationSession/mutationPlan';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { validateElementName } from '../utils/elementNameValidator';
@@ -149,20 +151,27 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         return;
       }
       try {
-        // Create module file on disk if it doesn't exist yet
         const fileExists = await fs.promises.access(fp).then(() => true, () => false);
         if (!fileExists) {
-          await runConfigurationMutation(fp, 'bslModule.create', async () => {
-            const stillMissing = await fs.promises.access(fp).then(() => false, () => true);
-            if (stillMissing) {
-              await fs.promises.mkdir(path.dirname(fp), { recursive: true });
-              await fs.promises.writeFile(fp, '', 'utf-8');
-              Logger.info(`Created module file: ${fp}`);
-            }
-          });
-          if (target.properties.isVirtual) {
-            target.properties.isVirtual = false;
+          const receipt = await getConfigurationMutationEngine().transformFile(
+            fp,
+            { kind: 'bslModule.create', resourcePath: fp, expectedRevision: null },
+            () => ({ content: '', result: undefined }),
+          );
+          const verifiedConcurrentCreate = receipt.status === 'conflict'
+            && receipt.code === 'STALE_TARGET_REVISION'
+            && typeof receipt.oldRevision === 'string'
+            && receipt.oldRevision.length > 0;
+          if (receipt.status !== 'committed' && !verifiedConcurrentCreate) {
+            unwrapMutationReceipt(receipt, `Не удалось создать модуль: ${fp}`);
           }
+          if (receipt.status === 'committed') {
+            Logger.info(`Created module file: ${fp}`);
+          }
+        }
+        await fs.promises.readFile(fp, 'utf-8');
+        if (target.properties.isVirtual) {
+          target.properties.isVirtual = false;
         }
         Logger.info(`Opening BSL module: ${fp}`);
         await vscode.window.showTextDocument(vscode.Uri.file(fp), { preview: false });

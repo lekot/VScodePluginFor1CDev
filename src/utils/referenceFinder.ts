@@ -4,6 +4,9 @@ import { XMLValidator } from 'fast-xml-parser';
 import { MetadataType } from '../models/treeNode';
 import { Logger } from './logger';
 import { METADATA_TYPE_TO_REFERENCE_KIND } from '../constants/metadataTypeReferenceKinds';
+import { hashContent } from '../services/configurationSession/atomicFileStorage';
+import { runConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
+import type { MutationPlan } from '../services/configurationSession/mutationPlan';
 
 // Alias for backward compatibility
 const METADATA_TYPE_TO_REF_KIND = METADATA_TYPE_TO_REFERENCE_KIND;
@@ -229,25 +232,23 @@ export async function replaceIdentityTokensInProject(
     return [];
   }
   const plans = await planIdentityTokenReplacements(configPath, replacements);
-
-  const written: PlannedReferenceWrite[] = [];
-  try {
-    for (const plan of plans) {
-      await fs.promises.writeFile(plan.filePath, plan.updatedContent, 'utf-8');
-      written.push(plan);
-    }
-  } catch (error) {
-    for (const plan of written.reverse()) {
-      try {
-        await fs.promises.writeFile(plan.filePath, plan.originalContent, 'utf-8');
-      } catch (rollbackError) {
-        Logger.error(`referenceFinder: rollback failed for ${plan.filePath}`, rollbackError);
-      }
-    }
-    throw error;
+  if (plans.length === 0) {
+    return [];
   }
 
-  return plans.map(({ filePath, replaceCount }) => ({ filePath, replaceCount }));
+  const results = plans.map(({ filePath, replaceCount }) => ({ filePath, replaceCount }));
+  const mutationPlan: MutationPlan<typeof results> = {
+    kind: 'reference.replaceIdentityTokens',
+    steps: plans.map((plan) => ({
+      type: 'writeFile' as const,
+      targetPath: plan.filePath,
+      content: plan.updatedContent,
+      encoding: 'utf8' as const,
+      expected: { state: 'file' as const, hash: hashContent(plan.originalContent) },
+    })),
+    result: results,
+  };
+  return runConfigurationPlan(configPath, mutationPlan);
 }
 
 async function collectReplacementPlans(

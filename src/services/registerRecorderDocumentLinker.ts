@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { XMLValidator } from 'fast-xml-parser';
 import { localName } from '../parsers/xmlNavHelpers';
+import { getConfigurationMutationEngine } from './configurationSession/ConfigurationMutationEngine';
+import { unwrapMutationReceipt } from './configurationSession/mutationReceiptError';
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -20,21 +22,22 @@ export function appendRegisterReferenceToRecorderDocumentXml(
   registerName: string,
 ): string {
   const ref = `${registerKind}.${registerName}`;
-  const itemPattern = new RegExp(
-    `<xr:Item\\b[^>]*>\\s*${escapeRegex(ref)}\\s*</xr:Item>`,
-  );
-  if (itemPattern.test(xml)) {
+  const sections: RecorderSectionLocation[] = [];
+  if (findDirectRecorderItemRanges(xml, ref, sections).length > 0) {
     return xml;
   }
 
   const itemLine = `\t\t\t<xr:Item xsi:type="xr:MDObjectRef">${ref}</xr:Item>`;
-  if (/<RegisterRecords\s*\/>/.test(xml)) {
-    return xml.replace(/<RegisterRecords\s*\/>/, `<RegisterRecords>\n${itemLine}\n\t\t</RegisterRecords>`);
+  const section = sections[0];
+  if (!section) {
+    throw new Error('Recorder document must contain exactly one Document/RegisterRecords section.');
   }
-  if (xml.includes('</RegisterRecords>')) {
-    return xml.replace('</RegisterRecords>', `${itemLine}\n\t\t</RegisterRecords>`);
+  if (section.selfClosing) {
+    const openingTag = xml.slice(section.start, section.end).replace(/\/\s*>$/, '>');
+    const tagName = /^<\s*([^\s/>]+)/.exec(openingTag)?.[1] ?? 'RegisterRecords';
+    return `${xml.slice(0, section.start)}${openingTag}\n${itemLine}\n\t\t</${tagName}>${xml.slice(section.end)}`;
   }
-  throw new Error('Recorder document has no RegisterRecords section to update.');
+  return `${xml.slice(0, section.closingStart)}${itemLine}\n\t\t${xml.slice(section.closingStart)}`;
 }
 
 /** Pure removal of one exact direct recorder reference, without changing other XML identities. */
@@ -54,6 +57,21 @@ export function removeRegisterReferenceFromRecorderDocumentXml(
   for (const range of itemRanges.reverse()) {
     result = `${result.slice(0, range.start)}${result.slice(range.end)}`;
   }
+  if (itemRanges.length > 0) {
+    const sections: RecorderSectionLocation[] = [];
+    findDirectRecorderItemRanges(result, '', sections);
+    for (const section of sections.reverse()) {
+      if (section.selfClosing) {
+        continue;
+      }
+      const openingEnd = findMarkupEnd(result, section.start) + 1;
+      if (result.slice(openingEnd, section.closingStart).trim() !== '') {
+        continue;
+      }
+      const selfClosingTag = result.slice(section.start, openingEnd).replace(/\s*>$/, '/>');
+      result = `${result.slice(0, section.start)}${selfClosingTag}${result.slice(section.end)}`;
+    }
+  }
   return result;
 }
 
@@ -71,7 +89,18 @@ interface XmlRange {
   readonly end: number;
 }
 
-function findDirectRecorderItemRanges(xml: string, reference: string): XmlRange[] {
+interface RecorderSectionLocation {
+  readonly start: number;
+  readonly end: number;
+  readonly closingStart: number;
+  readonly selfClosing: boolean;
+}
+
+function findDirectRecorderItemRanges(
+  xml: string,
+  reference: string,
+  sections?: RecorderSectionLocation[],
+): XmlRange[] {
   const stack: XmlElementFrame[] = [];
   const ranges: XmlRange[] = [];
   let recorderSectionCount = 0;
@@ -102,6 +131,9 @@ function findDirectRecorderItemRanges(xml: string, reference: string): XmlRange[
           ranges.push({ start: frame.start, end: end + 1 });
         }
       }
+      if (frame.isRecorderSection) {
+        sections?.push({ start: frame.start, end: end + 1, closingStart: start, selfClosing: false });
+      }
       continue;
     }
 
@@ -124,6 +156,9 @@ function findDirectRecorderItemRanges(xml: string, reference: string): XmlRange[
     const hasMetadataObjectReferenceType = isRecorderItem
       && hasAttributeValue(markup, 'xsi:type', 'xr:MDObjectRef');
     const selfClosing = /\/\s*>$/.test(markup);
+    if (isRecorderSection && selfClosing) {
+      sections?.push({ start, end: end + 1, closingStart: end + 1, selfClosing: true });
+    }
     if (!selfClosing) {
       stack.push({
         name,
@@ -219,31 +254,13 @@ export async function appendRegisterReferenceToRecorderDocument(
   registerName: string,
   recorderDocumentName?: string
 ): Promise<void> {
-  const docName = resolveRecorderDocumentName(recorderDocumentName);
-  if (!docName) {
-    return;
-  }
-  const docPath = path.join(configRootPath, 'Documents', `${docName}.xml`);
-  if (!fs.existsSync(docPath)) {
-    return;
-  }
-  const ref = `${registerKind}.${registerName}`;
-  let xml = await fs.promises.readFile(docPath, 'utf-8');
-  if (xml.includes(ref)) {
-    return;
-  }
-  const itemLine = `\t\t\t<xr:Item xsi:type="xr:MDObjectRef">${ref}</xr:Item>`;
-  if (xml.includes('<RegisterRecords/>')) {
-    xml = xml.replace(
-      '<RegisterRecords/>',
-      `<RegisterRecords>\n${itemLine}\n\t\t</RegisterRecords>`
-    );
-  } else if (xml.includes('</RegisterRecords>')) {
-    xml = xml.replace('</RegisterRecords>', `${itemLine}\n\t\t</RegisterRecords>`);
-  } else {
-    return;
-  }
-  await fs.promises.writeFile(docPath, xml, 'utf-8');
+  await mutateRecorderDocument(
+    configRootPath,
+    registerKind,
+    registerName,
+    recorderDocumentName,
+    'append',
+  );
 }
 
 /**
@@ -256,6 +273,22 @@ export async function removeRegisterReferenceFromRecorderDocument(
   registerName: string,
   recorderDocumentName?: string
 ): Promise<void> {
+  await mutateRecorderDocument(
+    configRootPath,
+    registerKind,
+    registerName,
+    recorderDocumentName,
+    'remove',
+  );
+}
+
+async function mutateRecorderDocument(
+  configRootPath: string,
+  registerKind: 'AccumulationRegister' | 'InformationRegister',
+  registerName: string,
+  recorderDocumentName: string | undefined,
+  operation: 'append' | 'remove',
+): Promise<void> {
   const docName = resolveRecorderDocumentName(recorderDocumentName);
   if (!docName) {
     return;
@@ -265,15 +298,34 @@ export async function removeRegisterReferenceFromRecorderDocument(
     return;
   }
   const ref = `${registerKind}.${registerName}`;
-  let xml = await fs.promises.readFile(docPath, 'utf-8');
-  if (!xml.includes(ref)) {
-    return;
-  }
-  const itemRe = new RegExp(
-    '\\s*<xr:Item[^>]*>\\s*' + escapeRegex(ref) + '\\s*</xr:Item>',
-    'g'
+  const receipt = await getConfigurationMutationEngine().transformFile(
+    docPath,
+    {
+      kind: `recorder.${operation}RegisterReference`,
+      resourcePath: docPath,
+    },
+    (state) => {
+      if (!state.exists) {
+        throw new Error(`Recorder document was deleted before its ${operation} could be committed: ${docPath}`);
+      }
+      if (operation === 'append') {
+        let updatedContent: string;
+        try {
+          updatedContent = appendRegisterReferenceToRecorderDocumentXml(state.content, registerKind, registerName);
+        } catch (error) {
+          if (error instanceof Error
+            && error.message === 'Recorder document must contain exactly one Document/RegisterRecords section.') {
+            return { content: state.content, result: undefined };
+          }
+          throw error;
+        }
+        return { content: updatedContent, result: undefined };
+      }
+      const updatedContent = state.content.includes(ref)
+        ? removeRegisterReferenceFromRecorderDocumentXml(state.content, registerKind, registerName)
+        : state.content;
+      return { content: updatedContent, result: undefined };
+    },
   );
-  xml = xml.replace(itemRe, '');
-  xml = xml.replace(/<RegisterRecords>\s*<\/RegisterRecords>/g, '<RegisterRecords/>');
-  await fs.promises.writeFile(docPath, xml, 'utf-8');
+  unwrapMutationReceipt(receipt, `Не удалось ${operation === 'append' ? 'добавить' : 'удалить'} ссылку регистра в ${docPath}`);
 }

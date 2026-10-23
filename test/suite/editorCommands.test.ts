@@ -20,6 +20,11 @@ import { RolesRightsEditorProvider } from '../../src/rolesEditor/rolesRightsEdit
 import { SubsystemCommandInterfaceProvider } from '../../src/subsystemCommandInterfaceEditor';
 import { XdtoPackageEditorProvider } from '../../src/xdtoPackageEditor';
 import { configureConfigurationMutationGateway } from '../../src/services/configurationSession/configurationMutationGateway';
+import {
+  ConfigurationMutationEngine,
+  getConfigurationMutationEngine,
+  setConfigurationMutationEngine,
+} from '../../src/services/configurationSession/ConfigurationMutationEngine';
 import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
 import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
@@ -230,6 +235,130 @@ suite('editorCommands', () => {
       gateway.dispose();
       await fs.rm(tmpRoot, { recursive: true, force: true });
       (vscode.window as any).showTextDocument = undefined;
+    }
+  });
+
+  test('openBslModule preserves and opens a module created concurrently only after a typed create conflict', async () => {
+    const handlers: Record<string, (node: any) => Promise<void> | void> = {};
+    (vscode.commands as any).registerCommand = (id: string, handler: any) => {
+      handlers[id] = handler;
+      return { dispose: () => undefined };
+    };
+
+    const opened: Array<{ uri: vscode.Uri; content: string; options: any }> = [];
+    const originalShowTextDocument = (vscode.window as any).showTextDocument;
+    (vscode.window as any).showTextDocument = async (uri: vscode.Uri, options?: any) => {
+      opened.push({ uri, content: await fs.readFile(uri.fsPath, 'utf8'), options });
+      return {} as any;
+    };
+
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), '1cv-bsl-race-'));
+    const bslPath = path.join(tmpRoot, 'nested', 'Module.bsl');
+    const foreignContent = '\uFEFF// created by another process\nПроцедура Foreign()\nКонецПроцедуры\n';
+    const previousEngine = getConfigurationMutationEngine();
+    setConfigurationMutationEngine(new ConfigurationMutationEngine());
+    const gatewayResults: unknown[] = [];
+    const gateway = configureConfigurationMutationGateway(async <T>(resourcePath: string, _kind: string, operation: () => Promise<T>): Promise<T> => {
+      if (path.resolve(resourcePath) === path.resolve(bslPath)) {
+        await fs.mkdir(path.dirname(bslPath), { recursive: true });
+        await fs.writeFile(bslPath, foreignContent, 'utf8');
+      }
+      const result = await operation();
+      gatewayResults.push(result);
+      return result;
+    });
+
+    try {
+      registerEditorCommandsForTest();
+      const node = {
+        id: 'raced-module',
+        name: 'raced-module',
+        type: MetadataType.CommonModule,
+        properties: { isVirtual: true },
+        filePath: bslPath,
+      };
+
+      await handlers['1c-metadata-tree.openBslModule'](node);
+
+      assert.strictEqual(await fs.readFile(bslPath, 'utf8'), foreignContent,
+        'the foreign creator bytes must survive the failed create-if-absent attempt');
+      assert.strictEqual(gatewayResults.length, 1, 'the create must be admitted through the mutation engine');
+      const receipt = gatewayResults[0] as { status?: string; code?: string; oldRevision?: string } | undefined;
+      assert.deepStrictEqual(
+        {
+          status: receipt?.status,
+          code: receipt?.code,
+          oldRevisionProvesExistence: Boolean(receipt?.oldRevision),
+        },
+        { status: 'conflict', code: 'STALE_TARGET_REVISION', oldRevisionProvesExistence: true },
+        'the injected concurrent creator must yield an existing typed conflict receipt',
+      );
+      assert.strictEqual(node.properties.isVirtual, false, 'virtual state changes only after the existing file is verified');
+      assert.strictEqual(opened.length, 1, 'the verified competing module can still be opened');
+      assert.strictEqual(opened[0]?.content, foreignContent);
+      assert.strictEqual(opened[0]?.options?.preview, false);
+    } finally {
+      gateway.dispose();
+      setConfigurationMutationEngine(previousEngine);
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      (vscode.window as any).showTextDocument = originalShowTextDocument;
+    }
+  });
+
+  test('openBslModule does not open or mark virtual when the create outcome is uncertain', async () => {
+    const handlers: Record<string, (node: any) => Promise<void> | void> = {};
+    (vscode.commands as any).registerCommand = (id: string, handler: any) => {
+      handlers[id] = handler;
+      return { dispose: () => undefined };
+    };
+
+    const originalShowTextDocument = (vscode.window as any).showTextDocument;
+    const originalShowErrorMessage = (vscode.window as any).showErrorMessage;
+    let openCalls = 0;
+    (vscode.window as any).showTextDocument = async () => {
+      openCalls++;
+      return {} as any;
+    };
+    (vscode.window as any).showErrorMessage = async () => undefined;
+
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), '1cv-bsl-indoubt-'));
+    const bslPath = path.join(tmpRoot, 'Module.bsl');
+    const previousEngine = getConfigurationMutationEngine();
+    setConfigurationMutationEngine(new ConfigurationMutationEngine());
+    let gatewayCalls = 0;
+    const gateway = configureConfigurationMutationGateway(async (resourcePath, kind) => {
+      gatewayCalls++;
+      return {
+        status: 'inDoubt',
+        code: 'IN_DOUBT',
+        kind,
+        resourcePath,
+        message: 'publication outcome is uncertain',
+      } as any;
+    });
+
+    try {
+      registerEditorCommandsForTest();
+      const node = {
+        id: 'uncertain-module',
+        name: 'uncertain-module',
+        type: MetadataType.CommonModule,
+        properties: { isVirtual: true },
+        filePath: bslPath,
+      };
+
+      await handlers['1c-metadata-tree.openBslModule'](node);
+
+      assert.strictEqual(gatewayCalls, 1, 'the uncertain mutation result must be injected through the gateway');
+      assert.strictEqual(openCalls, 0, 'recoveryRequired/inDoubt does not prove that an openable file exists');
+      assert.strictEqual(node.properties.isVirtual, true, 'uncertain outcome must not clear virtual state');
+      await assert.rejects(fs.access(bslPath), { code: 'ENOENT' });
+    } finally {
+      gateway.dispose();
+      setConfigurationMutationEngine(previousEngine);
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      (vscode.window as any).showTextDocument = originalShowTextDocument;
+      (vscode.window as any).showErrorMessage = originalShowErrorMessage;
     }
   });
 

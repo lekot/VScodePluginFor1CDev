@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { XMLValidator } from 'fast-xml-parser';
 import {
   findReferencesToElement,
   replaceReferencesInProject,
@@ -11,9 +12,43 @@ import {
   ReferenceScanError,
 } from '../../src/utils/referenceFinder';
 import { MetadataType } from '../../src/models/treeNode';
+import {
+  configureConfigurationMutationGateway,
+} from '../../src/services/configurationSession/configurationMutationGateway';
+import {
+  MutationPlanExecutor,
+  MutationPlanError,
+  type MutationPlan,
+} from '../../src/services/configurationSession/mutationPlan';
+import { hashContent } from '../../src/services/configurationSession/atomicFileStorage';
+import { MutationReceiptError } from '../../src/services/configurationSession/mutationReceiptError';
+import { installDirectConfigurationMutationEngineForTests } from '../helpers/directConfigurationMutationEngine';
+
+function isExistingPlanFailure(error: unknown): boolean {
+  return (error instanceof MutationPlanError
+      && ['PLAN_CONFLICT', 'PLAN_FAILED', 'RECOVERY_REQUIRED'].includes(error.code))
+    || (error instanceof MutationReceiptError
+      && ['conflict', 'rolledBack', 'recoveryRequired'].includes(error.status));
+}
 
 suite('referenceFinder', () => {
   let tmpDir: string;
+  let restoreTestEngine: (() => void) | undefined;
+  let disposePlanGateway: (() => void) | undefined;
+
+  suiteSetup(() => {
+    restoreTestEngine = installDirectConfigurationMutationEngineForTests();
+    disposePlanGateway = configureConfigurationMutationGateway(
+      async <T>(_resourcePath: string, _kind: string, operation: () => Promise<T>): Promise<T> => operation(),
+      async <T>(resourcePath: string, plan: MutationPlan<T>): Promise<T> =>
+        new MutationPlanExecutor(resourcePath).execute(plan),
+    ).dispose;
+  });
+
+  suiteTeardown(() => {
+    disposePlanGateway?.();
+    restoreTestEngine?.();
+  });
 
   setup(async () => {
     tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-ref-'));
@@ -75,6 +110,118 @@ suite('referenceFinder', () => {
     const content = await fs.promises.readFile(filePath, 'utf-8');
     assert.ok(content.includes('CatalogRef.NewName'));
     assert.ok(!content.includes('CatalogRef.OldName'));
+  });
+
+  test('identity replacement executes one exact-snapshot plan and protects a foreign writer during rollback', async () => {
+    const firstPath = path.join(tmpDir, '01-first.xml');
+    const secondPath = path.join(tmpDir, '02-second.xml');
+    const firstOriginal = `<?xml version="1.0" encoding="UTF-8"?>
+<root><Type>CatalogRef.OldName</Type><Nested><Type>CatalogRef.OldName</Type></Nested>
+<Adjacent>CatalogRef.OldNameExtra</Adjacent><Escaped>Keep &amp; CatalogRef.OldName</Escaped></root>`;
+    const secondOriginal = `<root><Wrapper><Ref>CatalogRef.OldName</Ref></Wrapper><Sibling>DocumentRef.OldName</Sibling></root>`;
+    const foreignFirst = '<Foreign>external &amp; newer bytes</Foreign>';
+    await fs.promises.writeFile(firstPath, firstOriginal, 'utf8');
+    await fs.promises.writeFile(secondPath, secondOriginal, 'utf8');
+    const replacements = new Map([
+      ['CatalogRef.OldName', 'CatalogRef.NewName'],
+      ['DocumentRef.OldName', 'DocumentRef.NewName'],
+    ]);
+
+    const purePlan = await planIdentityTokenReplacements(tmpDir, replacements, { validateXml: true });
+    assert.strictEqual(purePlan.length, 2, 'the pure planner discovers all matching XML targets');
+    assert.strictEqual(await fs.promises.readFile(firstPath, 'utf8'), firstOriginal,
+      'planning is side-effect free before the public compatibility adapter executes');
+    assert.strictEqual(await fs.promises.readFile(secondPath, 'utf8'), secondOriginal);
+    assert.strictEqual(XMLValidator.validate(purePlan.find((item) => item.filePath === firstPath)?.updatedContent ?? ''), true);
+    assert.ok(purePlan.find((item) => item.filePath === firstPath)?.updatedContent.includes('CatalogRef.OldNameExtra'),
+      'the adjacent identity remains distinct');
+    assert.ok(purePlan.find((item) => item.filePath === firstPath)?.updatedContent.includes('Keep &amp; CatalogRef.NewName'),
+      'escaped surrounding XML text remains intact');
+
+    let planCount = 0;
+    let firstTarget: string | undefined;
+    let secondTarget: string | undefined;
+    let foreignWriterRan = false;
+    let secondPublicationFailed = false;
+    const xmlRenameTargets: string[] = [];
+    let planSteps: MutationPlan<unknown>['steps'] = [];
+    const mutable = fs.promises as unknown as { rename: typeof fs.promises.rename };
+    const originalRename = mutable.rename;
+    const gateway = configureConfigurationMutationGateway(
+      async <T>(_resourcePath: string, _kind: string, operation: () => Promise<T>): Promise<T> => operation(),
+      async <T>(resourcePath: string, plan: MutationPlan<T>): Promise<T> => {
+        planCount++;
+        planSteps = plan.steps;
+        const writes = plan.steps.filter((step) => step.type === 'writeFile');
+        assert.strictEqual(writes.length, 2, 'all changed files are part of the same batch');
+        const expectedByTarget = new Map([
+          [path.resolve(firstPath), hashContent(firstOriginal)],
+          [path.resolve(secondPath), hashContent(secondOriginal)],
+        ]);
+        for (const step of writes) {
+          if (step.type !== 'writeFile') { continue; }
+          if (step.expected.state !== 'file') {
+            throw new Error('Replacement targets must capture an existing file snapshot.');
+          }
+          assert.strictEqual(step.expected.hash, expectedByTarget.get(path.resolve(step.targetPath)),
+            'each write compares against the exact source snapshot used by the pure planner');
+        }
+        firstTarget = await fs.promises.realpath(writes[0]!.targetPath);
+        secondTarget = await fs.promises.realpath(writes[1]!.targetPath);
+        mutable.rename = async (oldPath, newPath) => {
+          const target = await fs.promises.realpath(String(newPath)).catch(() => path.resolve(String(newPath)));
+          if (target.toLocaleLowerCase().endsWith('.xml')) {
+            xmlRenameTargets.push(target);
+          }
+          if (!foreignWriterRan && target.toLocaleLowerCase() === firstTarget!.toLocaleLowerCase()) {
+            await originalRename(oldPath, newPath);
+            foreignWriterRan = true;
+            await fs.promises.writeFile(target, foreignFirst, 'utf8');
+            return;
+          }
+          if (foreignWriterRan && !secondPublicationFailed && target.toLocaleLowerCase() === secondTarget!.toLocaleLowerCase()) {
+            secondPublicationFailed = true;
+            throw Object.assign(new Error('ENOSPC after first target publication'), { code: 'ENOSPC' });
+          }
+          await originalRename(oldPath, newPath);
+        };
+        try {
+          return await new MutationPlanExecutor(resourcePath).execute(plan);
+        } finally {
+          mutable.rename = originalRename;
+        }
+      },
+    );
+
+    try {
+      let failure: unknown;
+      try {
+        await replaceIdentityTokensInProject(tmpDir, replacements);
+      } catch (error) {
+        failure = error;
+      }
+      assert.deepStrictEqual(
+        {
+          planCount,
+          foreignWriterRan,
+          secondPublicationFailed,
+          existingPlanFailure: failure !== undefined && isExistingPlanFailure(failure),
+        },
+        { planCount: 1, foreignWriterRan: true, secondPublicationFailed: true, existingPlanFailure: true },
+        `the legacy API must enter one batch plan before the injected rollback race can run; failure=${failure instanceof Error ? `${failure.name}: ${failure.message}` : String(failure)}; XML publication targets=${xmlRenameTargets.join(' | ')}`,
+      );
+      assert.strictEqual(planCount, 1, 'the legacy API submits one configuration plan');
+      assert.strictEqual(planSteps.filter((step) => step.type === 'writeFile').length, 2);
+      assert.strictEqual(foreignWriterRan, true, 'the first planned target reached its publication point');
+      assert.strictEqual(secondPublicationFailed, true, 'the second target fails after the first target publication');
+      assert.strictEqual(await fs.promises.readFile(firstTarget!, 'utf8'), foreignFirst,
+        'rollback must not overwrite bytes written by another process after the first target committed');
+      assert.strictEqual(await fs.promises.readFile(secondTarget!, 'utf8'), secondTarget === await fs.promises.realpath(firstPath) ? firstOriginal : secondOriginal,
+        'the not-yet-published sibling retains its prior content');
+    } finally {
+      gateway.dispose();
+      mutable.rename = originalRename;
+    }
   });
 
   test('replaceReferencesInProject returns empty for type without Ref', async () => {

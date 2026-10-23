@@ -1,8 +1,9 @@
 import * as fs from 'fs';
-import * as path from 'path';
 import * as vscode from 'vscode';
 import { getDirective, getEventParams } from './formEventCatalog';
 import { findModuleTextDocument } from './formModuleDocuments';
+import { getConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
+import { unwrapMutationReceipt } from '../services/configurationSession/mutationReceiptError';
 
 const CRLF = '\r\n';
 
@@ -111,25 +112,25 @@ export async function createHandlerInModule(
   eventName: string,
   isFormLevel: boolean
 ): Promise<{ line: number }> {
-  const fileExists = await fs.promises.access(modulePath).then(() => true, () => false);
-  if (!fileExists) {
-    const dir = path.dirname(modulePath);
-    await fs.promises.mkdir(dir, { recursive: true });
-    await fs.promises.writeFile(modulePath, '\uFEFF', { encoding: 'utf8' });
-  }
-
-  const content = await fs.promises.readFile(modulePath, { encoding: 'utf8' });
-  const { stub, searchToken } = buildHandlerProcedureStub(
-    handlerName,
-    eventName,
-    isFormLevel,
-    content
+  const receipt = await getConfigurationMutationEngine().transformFile(
+    modulePath,
+    { kind: 'form.eventHandler.create', resourcePath: modulePath },
+    (state) => {
+      const existingContent = state.exists ? state.content : '\uFEFF';
+      const { stub, searchToken } = buildHandlerProcedureStub(
+        handlerName,
+        eventName,
+        isFormLevel,
+        existingContent,
+      );
+      const content = existingContent + stub;
+      const lines = content.split(/\r?\n/);
+      const zeroBasedIndex = lines.findIndex((line) => line.startsWith(searchToken));
+      return {
+        content,
+        result: { line: zeroBasedIndex >= 0 ? zeroBasedIndex + 1 : 1 },
+      };
+    },
   );
-  const combined = content + stub;
-  await fs.promises.writeFile(modulePath, combined, { encoding: 'utf8' });
-
-  const lines = combined.split(/\r?\n/);
-  const zeroBasedIndex = lines.findIndex((line) => line.startsWith(searchToken));
-  const lineNumber = zeroBasedIndex >= 0 ? zeroBasedIndex + 1 : 1;
-  return { line: lineNumber };
+  return unwrapMutationReceipt(receipt, `Не удалось создать обработчик ${handlerName} в модуле.`);
 }
