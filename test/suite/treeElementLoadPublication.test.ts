@@ -191,6 +191,7 @@ async function prepareSubsystem(configPath: string, xml: string): Promise<string
 
 function installElementParserBarrier(
   matches: (call: ElementParserCall) => boolean,
+  failureAfterRelease?: Error,
 ): ParserBarrier {
   const original = DesignerParser.loadChildrenForElement;
   const gate = deferred<void>();
@@ -209,6 +210,9 @@ function installElementParserBarrier(
         started.resolve(undefined);
       }
       await gate.promise;
+      if (failureAfterRelease) {
+        throw failureAfterRelease;
+      }
     }
     return original.apply(DesignerParser, args);
   };
@@ -287,8 +291,11 @@ suite('lazy element publication ownership (#381)', () => {
     return path.join(tempRoot, 'configuration');
   }
 
-  function installBarrier(matches: (call: ElementParserCall) => boolean): ParserBarrier {
-    const barrier = installElementParserBarrier(matches);
+  function installBarrier(
+    matches: (call: ElementParserCall) => boolean,
+    failureAfterRelease?: Error,
+  ): ParserBarrier {
+    const barrier = installElementParserBarrier(matches, failureAfterRelease);
     parserBarriers.add(barrier);
     return barrier;
   }
@@ -441,6 +448,52 @@ suite('lazy element publication ownership (#381)', () => {
 
     assertElementUnchanged(fixture, 'Published disposed');
     assert.strictEqual(provider.findNodeById('Attributes.Disposed'), null);
+    assertTreeLoadRejection(outcome, 'TREE_LOAD_DISPOSED');
+  });
+
+  test('late parser errors after root replacement preserve the replacement tree and cache', async () => {
+    const provider = createProvider();
+    const oldTree = createElementTree(createConfigPath(), 'late-error-old');
+    const replacement = createElementTree(oldTree.configPath, 'late-error-new');
+    await prepareCatalog(oldTree.configPath, createCatalogXml('Disk', 'LateError'));
+    publish(provider, [oldTree]);
+
+    const barrier = installBarrier(
+      (call) => call.configPath === oldTree.configPath && call.typeName === 'Catalogs',
+      new Error('delayed parser failure after root replacement'),
+    );
+    const pending = track(pendingOperations, Promise.resolve(provider.getChildren(oldTree.attributes)));
+    await barrier.started;
+    publish(provider, [replacement]);
+    barrier.release();
+    const outcome = await settle(pending);
+
+    assertElementUnchanged(oldTree, 'Published late-error-old');
+    assertElementUnchanged(replacement, 'Published late-error-new');
+    assert.strictEqual(provider.findNodeById('Attributes'), replacement.attributes);
+    assert.strictEqual(provider.findNodeById('Attributes.LateError'), null);
+    assertTreeLoadRejection(outcome, 'TREE_LOAD_SUPERSEDED');
+  });
+
+  test('late parser errors after disposal preserve the live tree and cache', async () => {
+    const provider = createProvider();
+    const fixture = createElementTree(createConfigPath(), 'late-error-disposed');
+    await prepareCatalog(fixture.configPath, createCatalogXml('Disk', 'LateErrorDisposed'));
+    publish(provider, [fixture]);
+
+    const barrier = installBarrier(
+      (call) => call.configPath === fixture.configPath && call.typeName === 'Catalogs',
+      new Error('delayed parser failure after provider disposal'),
+    );
+    const pending = track(pendingOperations, Promise.resolve(provider.getChildren(fixture.attributes)));
+    await barrier.started;
+    provider.dispose();
+    barrier.release();
+    const outcome = await settle(pending);
+
+    assertElementUnchanged(fixture, 'Published late-error-disposed');
+    assert.strictEqual(provider.findNodeById('Attributes'), fixture.attributes);
+    assert.strictEqual(provider.findNodeById('Attributes.LateErrorDisposed'), null);
     assertTreeLoadRejection(outcome, 'TREE_LOAD_DISPOSED');
   });
 
@@ -645,5 +698,51 @@ suite('lazy element publication ownership (#381)', () => {
     assert.deepStrictEqual(replacement.subsystem.children, [replacement.nestedSubsystem]);
     assert.strictEqual(provider.findNodeById('Subsystems.Main.CommandInterface'), null);
     assertTreeLoadRejection(outcome, 'TREE_LOAD_SUPERSEDED');
+  });
+
+  test('active subsystem publication preserves nested subsystems and projects a real command interface file', async () => {
+    const provider = createProvider();
+    const fixture = createSubsystemTree(createConfigPath(), 'active-subsystem');
+    await prepareSubsystem(fixture.configPath, createSubsystemXml('Loaded active subsystem'));
+    const commandInterfacePath = path.join(path.dirname(fixture.subsystem.filePath!), 'Ext', 'CommandInterface.xml');
+    await fs.promises.mkdir(path.dirname(commandInterfacePath), { recursive: true });
+    await fs.promises.writeFile(
+      commandInterfacePath,
+      '<?xml version="1.0" encoding="UTF-8"?><CommandInterface/>',
+      'utf8',
+    );
+    // Keep the subsystem slot lazy while selecting it so expansion exercises publication.
+    fixture.subsystem.properties.Content = {};
+    fixture.nestedSubsystem.properties.Content = {};
+    provider.setRootNodes(
+      [fixture.root],
+      new Map([[fixture.root, fakeTreeLoadContext(fixture.configPath, ConfigFormat.Designer)]]),
+    );
+
+    await provider.setSubsystemFilter(fixture.subsystem.id, fixture.subsystem.name, fixture.subsystem);
+    const children = await track(
+      pendingOperations,
+      Promise.resolve(provider.getChildren(fixture.subsystem)),
+    );
+    const commandInterface = children.find((child) => child.id === 'Subsystems.Main.CommandInterface');
+
+    const subsystemFilter = provider.getSubsystemFilter();
+    assert.strictEqual(subsystemFilter.subsystemId, fixture.subsystem.id);
+    assert.strictEqual(subsystemFilter.subsystemName, fixture.subsystem.name);
+    assert.ok(fs.existsSync(commandInterfacePath), 'the projection must be backed by the real Ext file');
+    assert.deepStrictEqual(children.map((child) => child.id), [
+      fixture.nestedSubsystem.id,
+      'Subsystems.Main.CommandInterface',
+    ]);
+    assert.strictEqual(fixture.subsystem.children?.[0], fixture.nestedSubsystem);
+    assert.strictEqual(fixture.nestedSubsystem.parent, fixture.subsystem);
+    assert.ok(commandInterface);
+    assert.strictEqual(commandInterface?.type, MetadataType.Unknown);
+    assert.strictEqual(commandInterface?.parent, fixture.subsystem);
+    assert.strictEqual(commandInterface?.filePath, commandInterfacePath);
+    assert.deepStrictEqual(commandInterface?.properties, { isVirtual: true });
+    assert.strictEqual(provider.findNodeById('Subsystems.Main.CommandInterface'), commandInterface);
+    assert.strictEqual(fixture.subsystem.properties.Synonym, 'Loaded active subsystem');
+    assert.strictEqual(fixture.subsystem.properties._lazy, undefined);
   });
 });
