@@ -39,6 +39,78 @@ async function createDirectorySymlink(target: string, linkPath: string): Promise
   await fs.promises.symlink(target, linkPath, type);
 }
 
+interface PlanPublicationInterception {
+  readonly triggered: boolean;
+  restore(): void;
+}
+
+async function canonicalTestPath(targetPath: fs.PathLike): Promise<string> {
+  const absolutePath = path.resolve(String(targetPath));
+  const parentPath = path.dirname(absolutePath);
+  const canonicalParent = await fs.promises.realpath(parentPath).catch(() => parentPath);
+  return path.join(canonicalParent, path.basename(absolutePath));
+}
+
+async function isSameCanonicalTestPath(left: fs.PathLike, right: fs.PathLike): Promise<boolean> {
+  return isSamePath(await canonicalTestPath(left), await canonicalTestPath(right));
+}
+
+function failPlanTempOpenOnAttempt(attempt: number, message: string): () => void {
+  const originalOpen = fs.promises.open;
+  let planTempOpens = 0;
+  fs.promises.open = async function (filePath: fs.PathLike, flags?: string | number, mode?: fs.Mode): Promise<fs.promises.FileHandle> {
+    if (path.basename(String(filePath)).startsWith('.cdt-plan-') && ++planTempOpens === attempt) {
+      throw new Error(message);
+    }
+    return mode === undefined
+      ? originalOpen(filePath, flags)
+      : originalOpen(filePath, flags, mode);
+  };
+  return () => { fs.promises.open = originalOpen; };
+}
+
+function installPlanPublicationInterception(
+  targetPath: string,
+  effects: {
+    readonly before?: () => Promise<void>;
+    readonly after?: () => Promise<void>;
+  },
+): PlanPublicationInterception {
+  const originalLink = fs.promises.link;
+  const originalRename = fs.promises.rename;
+  let triggered = false;
+  let restored = false;
+  const isTarget = (candidate: fs.PathLike): Promise<boolean> =>
+    isSameCanonicalTestPath(candidate, targetPath);
+  const publish = async (destination: fs.PathLike, effect: () => Promise<void>): Promise<void> => {
+    if (!triggered && await isTarget(destination)) {
+      triggered = true;
+      await effects.before?.();
+      await effect();
+      await effects.after?.();
+      return;
+    }
+    await effect();
+  };
+
+  fs.promises.link = async function (existingPath: fs.PathLike, newPath: fs.PathLike): Promise<void> {
+    return publish(newPath, () => originalLink.call(fs.promises, existingPath, newPath));
+  };
+  fs.promises.rename = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
+    return publish(destination, () => originalRename.call(fs.promises, source, destination));
+  };
+
+  return {
+    get triggered() { return triggered; },
+    restore() {
+      if (restored) {return;}
+      restored = true;
+      fs.promises.link = originalLink;
+      fs.promises.rename = originalRename;
+    },
+  };
+}
+
 suite('MutationPlanExecutor', () => {
   let tempDir: string;
 
@@ -110,6 +182,353 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
   });
 
+  test('#385: expected-missing XML publication preserves a creator that wins the final effect seam', async () => {
+    const target = path.join(tempDir, 'Concurrent.xml');
+    const plannedXml = '<Catalog><Name>Planned</Name></Catalog>';
+    const foreignXml = Buffer.from('<Catalog><Name>Foreign</Name></Catalog>', 'utf8');
+    const interception = installPlanPublicationInterception(target, {
+      before: async () => fs.promises.writeFile(target, foreignXml, { flag: 'wx' }),
+    });
+
+    try {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).execute({
+          kind: 'test.issue385XmlCreateRace',
+          steps: [{
+            type: 'writeFile', targetPath: target, content: plannedXml, encoding: 'utf8',
+            expected: { state: 'missing' },
+          }],
+          result: 'created',
+        }, 'issue385-xml-create-race'),
+        (error: unknown) => error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT',
+      );
+    } finally {
+      interception.restore();
+    }
+
+    assert.strictEqual(interception.triggered, true, 'the competing creator must run at final publication');
+    assert.deepStrictEqual(await fs.promises.readFile(target), foreignXml);
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+    assert.deepStrictEqual((await fs.promises.readdir(tempDir)).filter((name) => name.startsWith('.cdt-')), []);
+  });
+
+  test('#385: binary create conflict rolls back prior writes and ensures without deleting the foreign target', async () => {
+    const generatedDir = path.join(tempDir, 'Generated');
+    const firstXml = path.join(generatedDir, 'First.xml');
+    const secondXml = path.join(generatedDir, 'Second.xml');
+    const assetDir = path.join(tempDir, 'Assets', 'Nested');
+    const retainedPath = path.join(assetDir, 'retained.bin');
+    const racedBinary = path.join(assetDir, 'foreign.bin');
+    const retainedBytes = Buffer.from([7, 0, 7, 255]);
+    const plannedBinary = Buffer.from([1, 2, 3, 0, 255]);
+    const foreignBinary = Buffer.from([0, 255, 42, 0, 99]);
+    await fs.promises.mkdir(assetDir, { recursive: true });
+    await fs.promises.writeFile(retainedPath, retainedBytes);
+    const interception = installPlanPublicationInterception(racedBinary, {
+      before: async () => fs.promises.writeFile(racedBinary, foreignBinary, { flag: 'wx' }),
+    });
+
+    try {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).execute({
+          kind: 'test.issue385BinaryCreateRollback',
+          steps: [
+            { type: 'ensureDirectory', targetPath: generatedDir },
+            {
+              type: 'writeFile', targetPath: firstXml, content: '<First/>', encoding: 'utf8',
+              expected: { state: 'missing' },
+            },
+            { type: 'ensureDirectory', targetPath: generatedDir },
+            {
+              type: 'writeFile', targetPath: secondXml, content: '<Second/>', encoding: 'utf8',
+              expected: { state: 'missing' },
+            },
+            { type: 'ensureDirectory', targetPath: assetDir },
+            {
+              type: 'writeFile', targetPath: racedBinary, content: plannedBinary.toString('base64'),
+              encoding: 'base64', expected: { state: 'missing' },
+            },
+          ],
+          result: 'created',
+        }, 'issue385-binary-create-rollback'),
+        (error: unknown) => error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT',
+      );
+    } finally {
+      interception.restore();
+    }
+
+    assert.strictEqual(interception.triggered, true, 'the competing creator must run at final publication');
+    assert.strictEqual(fs.existsSync(generatedDir), false, 'earlier created directories must roll back');
+    assert.strictEqual(fs.existsSync(firstXml), false, 'earlier XML write must roll back');
+    assert.strictEqual(fs.existsSync(secondXml), false, 'later prior XML write must roll back');
+    assert.deepStrictEqual(await fs.promises.readdir(assetDir), ['foreign.bin', 'retained.bin']);
+    assert.deepStrictEqual(await fs.promises.readFile(racedBinary), foreignBinary);
+    assert.deepStrictEqual(await fs.promises.readFile(retainedPath), retainedBytes);
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+    assert.deepStrictEqual((await fs.promises.readdir(assetDir)).filter((name) => name.startsWith('.cdt-')), []);
+  });
+
+  test('#385: normal missing XML and binary creation and expected-file replacement remain supported', async () => {
+    const xmlPath = path.join(tempDir, 'Created.xml');
+    const binaryPath = path.join(tempDir, 'Created.bin');
+    const existingPath = path.join(tempDir, 'Existing.xml');
+    const xmlContent = '<Catalog><Name>Created</Name></Catalog>';
+    const binaryContent = Buffer.from([0, 255, 3, 0, 128]);
+    await fs.promises.writeFile(existingPath, '<Original/>', 'utf8');
+
+    const result = await new MutationPlanExecutor(tempDir).execute({
+      kind: 'test.issue385CreateAndReplaceControl',
+      steps: [
+        {
+          type: 'writeFile', targetPath: xmlPath, content: xmlContent, encoding: 'utf8',
+          expected: { state: 'missing' },
+        },
+        {
+          type: 'writeFile', targetPath: binaryPath, content: binaryContent.toString('base64'),
+          encoding: 'base64', expected: { state: 'missing' },
+        },
+        {
+          type: 'writeFile', targetPath: existingPath, content: '<Replacement/>', encoding: 'utf8',
+          expected: { state: 'file', hash: hashContent('<Original/>') },
+        },
+      ],
+      result: 'committed',
+    }, 'issue385-create-and-replace-control');
+
+    assert.strictEqual(result, 'committed');
+    assert.strictEqual(await fs.promises.readFile(xmlPath, 'utf8'), xmlContent);
+    assert.deepStrictEqual(await fs.promises.readFile(binaryPath), binaryContent);
+    assert.strictEqual(await fs.promises.readFile(existingPath, 'utf8'), '<Replacement/>');
+    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+  });
+
+  test('#385: a crashed expected-missing create with identical foreign bytes is not rolled back by hash alone', async () => {
+    const operationId = 'issue385-identical-foreign-crash';
+    const operationPath = path.join(tempDir, '.cdt-journal', operationId);
+    const target = path.join(tempDir, 'ConcurrentAfterCrash.xml');
+    const foreignContent = '<Catalog><Name>Same bytes</Name></Catalog>';
+    const plan = {
+      kind: 'test.issue385IdenticalForeignCrash',
+      steps: [{
+        type: 'writeFile', targetPath: target, content: foreignContent, encoding: 'utf8',
+        expected: { state: 'missing' },
+      }],
+      result: null,
+    };
+    await fs.promises.mkdir(path.join(operationPath, 'backups'), { recursive: true });
+    await fs.promises.writeFile(path.join(operationPath, 'owner.json'), JSON.stringify({
+      pid: 2147483647,
+      createdAt: Date.now() - 60000,
+    }), 'utf8');
+    await fs.promises.writeFile(path.join(operationPath, 'journal.json'), JSON.stringify({
+      version: 1,
+      operationId,
+      plan,
+      state: 'applying',
+      appliedSteps: 0,
+      snapshots: [{ targetPath: target, state: 'missing', contentsBackedUp: false }],
+    }), 'utf8');
+    // A competing writer wins after the expected-missing snapshot but before recovery observes the effect.
+    await fs.promises.writeFile(target, foreignContent, { flag: 'wx' });
+
+    await assert.rejects(
+      new MutationPlanExecutor(tempDir).recover(),
+      (error: unknown) => error instanceof MutationPlanError && error.code === 'RECOVERY_REQUIRED',
+    );
+
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), foreignContent);
+    assert.strictEqual(fs.existsSync(operationPath), true, 'ambiguous ownership must retain the WAL for recovery');
+  });
+
+  test('#385: malformed rollbackAppliedSteps values fail closed without changing the target or WAL', async () => {
+    const invalidMarkers = [
+      { name: 'non-number', state: 'rollback-required', appliedSteps: 0, rollbackAppliedSteps: '0' },
+      { name: 'fractional', state: 'rollback-required', appliedSteps: 0, rollbackAppliedSteps: 0.5 },
+      { name: 'negative', state: 'rollback-required', appliedSteps: 0, rollbackAppliedSteps: -1 },
+      { name: 'past-plan', state: 'rollback-required', appliedSteps: 0, rollbackAppliedSteps: 2 },
+      { name: 'different-prefix', state: 'rollback-required', appliedSteps: 1, rollbackAppliedSteps: 0 },
+      { name: 'wrong-state', state: 'applying', appliedSteps: 0, rollbackAppliedSteps: 0 },
+    ] as const;
+
+    for (const [index, invalid] of invalidMarkers.entries()) {
+      const root = path.join(tempDir, `issue385-invalid-bound-${index}`);
+      const operationId = `invalid-bound-${index}`;
+      const operationPath = path.join(root, '.cdt-journal', operationId);
+      const target = path.join(root, 'same-bytes.xml');
+      const plannedContent = '<Catalog><Name>Same bytes</Name></Catalog>';
+      const plan = {
+        kind: 'test.issue385InvalidRollbackBound',
+        steps: [{
+          type: 'writeFile', targetPath: target, content: plannedContent, encoding: 'utf8',
+          expected: { state: 'missing' },
+        }],
+        result: null,
+      };
+      await fs.promises.mkdir(path.join(operationPath, 'backups'), { recursive: true });
+      await fs.promises.writeFile(target, plannedContent, { flag: 'wx' });
+      await fs.promises.utimes(target, new Date('2001-01-01T00:00:00Z'), new Date('2001-01-01T00:00:00Z'));
+      await fs.promises.writeFile(path.join(operationPath, 'owner.json'), JSON.stringify({
+        pid: 2147483647,
+        createdAt: Date.now() - 60000,
+      }), 'utf8');
+      const journalRaw = JSON.stringify({
+        version: 1,
+        operationId,
+        plan,
+        state: invalid.state,
+        appliedSteps: invalid.appliedSteps,
+        rollbackAppliedSteps: invalid.rollbackAppliedSteps,
+        snapshots: [{ targetPath: target, state: 'missing', contentsBackedUp: false }],
+      });
+      const journalPath = path.join(operationPath, 'journal.json');
+      await fs.promises.writeFile(journalPath, journalRaw, 'utf8');
+      const targetBefore = await fs.promises.stat(target);
+
+      await assert.rejects(
+        new MutationPlanExecutor(root).recover(),
+        (error: unknown) => error instanceof MutationPlanError && error.code === 'RECOVERY_REQUIRED',
+        `${invalid.name} marker must be rejected`,
+      );
+
+      const targetAfter = await fs.promises.stat(target);
+      assert.strictEqual(await fs.promises.readFile(target, 'utf8'), plannedContent, `${invalid.name} target bytes`);
+      assert.strictEqual(targetAfter.ino, targetBefore.ino, `${invalid.name} target identity`);
+      assert.strictEqual(targetAfter.mtimeMs, targetBefore.mtimeMs, `${invalid.name} target timestamp`);
+      assert.strictEqual(await fs.promises.readFile(journalPath, 'utf8'), journalRaw, `${invalid.name} WAL must remain byte-for-byte unchanged`);
+    }
+  });
+
+  test('#385: retry after a failed conflict rollback uses only its durable known prefix', async () => {
+    const priorPath = path.join(tempDir, 'Prior.xml');
+    const foreignPath = path.join(tempDir, 'Foreign.xml');
+    const foreignContent = '<Catalog><Name>Identical payload</Name></Catalog>';
+    const operationId = 'issue385-conflict-rollback-retry';
+    let foreignStat: fs.Stats | undefined;
+    let failedPrefixRemoval = false;
+    const originalRm = fs.promises.rm;
+    const interception = installPlanPublicationInterception(foreignPath, {
+      before: async () => {
+        await fs.promises.writeFile(foreignPath, foreignContent, { flag: 'wx' });
+        foreignStat = await fs.promises.stat(foreignPath);
+      },
+    });
+    fs.promises.rm = async function (targetPath: fs.PathLike, options?: fs.RmOptions): Promise<void> {
+      if (!failedPrefixRemoval && await isSameCanonicalTestPath(targetPath, priorPath)) {
+        failedPrefixRemoval = true;
+        const error = new Error('Injected rollback removal failure') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        throw error;
+      }
+      return originalRm.call(fs.promises, targetPath, options);
+    };
+
+    let executionError: unknown;
+    try {
+      await new MutationPlanExecutor(tempDir).execute({
+        kind: 'test.issue385ConflictRollbackRetry',
+        steps: [
+          {
+            type: 'writeFile', targetPath: priorPath, content: '<Prior/>', encoding: 'utf8',
+            expected: { state: 'missing' },
+          },
+          {
+            type: 'writeFile', targetPath: foreignPath, content: foreignContent, encoding: 'utf8',
+            expected: { state: 'missing' },
+          },
+        ],
+        result: null,
+      }, operationId);
+    } catch (error) {
+      executionError = error;
+    } finally {
+      interception.restore();
+      fs.promises.rm = originalRm;
+    }
+
+    assert.strictEqual(interception.triggered, true, 'the competitor must win the atomic publication seam');
+    assert.strictEqual(failedPrefixRemoval, true, 'the first rollback attempt must fail on a previously applied path');
+    assert.ok(executionError instanceof MutationPlanError);
+    assert.strictEqual((executionError as MutationPlanError).code, 'RECOVERY_REQUIRED');
+
+    const operationPath = path.join(tempDir, '.cdt-journal', operationId);
+    const journalPath = path.join(operationPath, 'journal.json');
+    const journal = JSON.parse(await fs.promises.readFile(journalPath, 'utf8')) as {
+      state: string;
+      appliedSteps: number;
+      rollbackAppliedSteps?: number;
+    };
+    assert.strictEqual(journal.state, 'rollback-required');
+    assert.strictEqual(journal.appliedSteps, 1);
+    assert.strictEqual(journal.rollbackAppliedSteps, 1, 'the known pre-conflict prefix must survive the failed rollback');
+    assert.strictEqual(await fs.promises.readFile(foreignPath, 'utf8'), foreignContent);
+    assert.ok(foreignStat);
+
+    await new MutationPlanExecutor(tempDir).recover();
+
+    assert.strictEqual(fs.existsSync(priorPath), false, 'retry must roll back the known successful prefix');
+    assert.strictEqual(await fs.promises.readFile(foreignPath, 'utf8'), foreignContent);
+    const foreignAfter = await fs.promises.stat(foreignPath);
+    assert.strictEqual(foreignAfter.ino, foreignStat!.ino, 'same-byte foreign creator identity must be preserved');
+    assert.strictEqual(foreignAfter.mtimeMs, foreignStat!.mtimeMs, 'same-byte foreign creator timestamp must be preserved');
+    assert.strictEqual(fs.existsSync(operationPath), false, 'completed retry should remove the resolved journal');
+  });
+
+  test('#385: a failure after expected-missing publication remains ambiguous through recovery', async () => {
+    const target = path.join(tempDir, 'PublishedBeforeFailure.xml');
+    const content = '<Catalog><Name>Published</Name></Catalog>';
+    const operationId = 'issue385-after-publication-failure';
+    const interception = installPlanPublicationInterception(target, {
+      after: async () => {
+        const error = new Error('Injected failure after publication') as NodeJS.ErrnoException;
+        error.code = 'EIO';
+        throw error;
+      },
+    });
+
+    try {
+      await assert.rejects(
+        new MutationPlanExecutor(tempDir).execute({
+          kind: 'test.issue385PostPublicationFailure',
+          steps: [{
+            type: 'writeFile', targetPath: target, content, encoding: 'utf8',
+            expected: { state: 'missing' },
+          }],
+          result: null,
+        }, operationId),
+        (error: unknown) => error instanceof MutationPlanError && error.code === 'RECOVERY_REQUIRED',
+      );
+    } finally {
+      interception.restore();
+    }
+
+    const operationPath = path.join(tempDir, '.cdt-journal', operationId);
+    const journalPath = path.join(operationPath, 'journal.json');
+    const journal = JSON.parse(await fs.promises.readFile(journalPath, 'utf8')) as {
+      state: string;
+      appliedSteps: number;
+      rollbackAppliedSteps?: number;
+    };
+    assert.strictEqual(interception.triggered, true);
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), content);
+    assert.strictEqual(journal.state, 'rollback-required');
+    assert.strictEqual(journal.appliedSteps, 0);
+    assert.strictEqual(journal.rollbackAppliedSteps, undefined, 'generic post-effect failure must not claim a proven conflict prefix');
+    const journalBeforeRecovery = await fs.promises.readFile(journalPath);
+    const targetBeforeRecovery = await fs.promises.stat(target);
+
+    await assert.rejects(
+      new MutationPlanExecutor(tempDir).recover(),
+      (error: unknown) => error instanceof MutationPlanError && error.code === 'RECOVERY_REQUIRED',
+    );
+
+    const targetAfterRecovery = await fs.promises.stat(target);
+    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), content);
+    assert.strictEqual(targetAfterRecovery.ino, targetBeforeRecovery.ino);
+    assert.strictEqual(targetAfterRecovery.mtimeMs, targetBeforeRecovery.mtimeMs);
+    assert.deepStrictEqual(await fs.promises.readFile(journalPath), journalBeforeRecovery);
+    assert.strictEqual(fs.existsSync(operationPath), true, 'uncertain ownership must retain its WAL');
+  });
+
   test('#264: subtree reset removes old-only children and creates a deterministic mixed binary/XML tree', async () => {
     const targetDir = path.join(tempDir, 'Resources');
     const oldNested = path.join(targetDir, 'Forms', 'Nested');
@@ -175,14 +594,7 @@ suite('MutationPlanExecutor', () => {
     await fs.promises.writeFile(path.join(targetDir, 'Forms', 'Form.xml'), '<OldForm/>', 'utf8');
     await fs.promises.writeFile(path.join(nestedDir, 'Preview.bin'), Buffer.from([9, 8, 7]));
     const originalFingerprint = await calculateDirectoryFingerprint(targetDir);
-    const originalRename = fs.promises.rename;
-    let atomicFileWrites = 0;
-    fs.promises.rename = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
-      if (path.basename(String(source)).startsWith('.cdt-plan-') && ++atomicFileWrites === 2) {
-        throw new Error('injected late atomic write failure');
-      }
-      return originalRename.call(fs.promises, source, destination);
-    };
+    const restoreOpen = failPlanTempOpenOnAttempt(2, 'injected late atomic write failure');
 
     try {
       await assert.rejects(
@@ -211,7 +623,7 @@ suite('MutationPlanExecutor', () => {
         (error: MutationPlanError) => error.code === 'PLAN_FAILED',
       );
     } finally {
-      fs.promises.rename = originalRename;
+      restoreOpen();
     }
 
     assert.strictEqual(await calculateDirectoryFingerprint(targetDir), originalFingerprint);
@@ -226,10 +638,10 @@ suite('MutationPlanExecutor', () => {
     const targetDir = path.join(tempDir, 'Resources');
     await fs.promises.mkdir(path.join(targetDir, 'Forms'), { recursive: true });
     await fs.promises.writeFile(path.join(targetDir, 'old.xml'), '<Old/>', 'utf8');
-    const originalRename = fs.promises.rename;
+    const originalLink = fs.promises.link;
     let foreignFileAdded = false;
-    fs.promises.rename = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
-      await originalRename.call(fs.promises, source, destination);
+    fs.promises.link = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
+      await originalLink.call(fs.promises, source, destination);
       if (!foreignFileAdded && path.basename(String(source)).startsWith('.cdt-plan-')) {
         foreignFileAdded = true;
         await fs.promises.writeFile(path.join(targetDir, 'foreign.xml'), '<Foreign/>', 'utf8');
@@ -261,7 +673,7 @@ suite('MutationPlanExecutor', () => {
         (error: MutationPlanError) => error.code === 'RECOVERY_REQUIRED',
       );
     } finally {
-      fs.promises.rename = originalRename;
+      fs.promises.link = originalLink;
     }
 
     assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'foreign.xml'), 'utf8'), '<Foreign/>');
@@ -306,13 +718,7 @@ suite('MutationPlanExecutor', () => {
     await fs.promises.writeFile(path.join(targetDir, 'old.xml'), '<Old/>', 'utf8');
     await fs.promises.writeFile(path.join(nestedDir, 'Preview.bin'), Buffer.from([0, 255, 4]));
     const originalFingerprint = await calculateDirectoryFingerprint(targetDir);
-    const originalRename = fs.promises.rename;
-    fs.promises.rename = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
-      if (path.basename(String(destination)) === 'C.xml') {
-        throw new Error('injected late write failure');
-      }
-      return originalRename.call(fs.promises, source, destination);
-    };
+    const restoreOpen = failPlanTempOpenOnAttempt(5, 'injected late write failure');
 
     try {
       await assert.rejects(
@@ -335,7 +741,7 @@ suite('MutationPlanExecutor', () => {
         (error: MutationPlanError) => error.code === 'PLAN_FAILED',
       );
     } finally {
-      fs.promises.rename = originalRename;
+      restoreOpen();
     }
 
     assert.strictEqual(await calculateDirectoryFingerprint(targetDir), originalFingerprint);
@@ -353,13 +759,7 @@ suite('MutationPlanExecutor', () => {
     await fs.promises.writeFile(path.join(targetDir, 'old.xml'), '<Old/>', 'utf8');
     await fs.promises.writeFile(path.join(nestedDir, 'keep.bin'), Buffer.from([7, 0, 7]));
     const originalFingerprint = await calculateDirectoryFingerprint(targetDir);
-    const originalRename = fs.promises.rename;
-    fs.promises.rename = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
-      if (path.basename(String(destination)) === 'C.xml') {
-        throw new Error('injected late write failure');
-      }
-      return originalRename.call(fs.promises, source, destination);
-    };
+    const restoreOpen = failPlanTempOpenOnAttempt(4, 'injected late write failure');
 
     try {
       await assert.rejects(
@@ -380,7 +780,7 @@ suite('MutationPlanExecutor', () => {
         (error: MutationPlanError) => error.code === 'PLAN_FAILED',
       );
     } finally {
-      fs.promises.rename = originalRename;
+      restoreOpen();
     }
 
     assert.strictEqual(await calculateDirectoryFingerprint(targetDir), originalFingerprint);
@@ -493,11 +893,9 @@ suite('MutationPlanExecutor', () => {
     const failurePath = path.join(tempDir, 'C.xml');
     await fs.promises.mkdir(sourceDir, { recursive: true });
     await fs.promises.writeFile(childPath, '<Old/>', 'utf8');
+    const restoreOpen = failPlanTempOpenOnAttempt(2, 'injected late write failure');
     const originalRename = fs.promises.rename;
     fs.promises.rename = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
-      if (path.basename(String(destination)) === path.basename(failurePath)) {
-        throw new Error('injected failure after directory move');
-      }
       await originalRename.call(fs.promises, source, destination);
       if (
         path.basename(String(source)) === path.basename(sourceDir)
@@ -530,6 +928,7 @@ suite('MutationPlanExecutor', () => {
         (error: MutationPlanError) => error.code === 'RECOVERY_REQUIRED',
       );
     } finally {
+      restoreOpen();
       fs.promises.rename = originalRename;
     }
 
@@ -540,7 +939,7 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), true);
   });
 
-  test('#264: crash recovery handles recorded and unrecorded writes after repeated ensure', async () => {
+  test('#264/#385: recovery rolls back recorded writes and preserves ambiguous unrecorded creates', async () => {
     for (const crashPoint of ['after-repeat-ensure', 'after-next-write-before-counter'] as const) {
       const root = path.join(tempDir, crashPoint);
       await fs.promises.mkdir(root, { recursive: true });
@@ -597,12 +996,31 @@ suite('MutationPlanExecutor', () => {
         await fs.promises.writeFile(cPath, '<C/>', 'utf8');
       }
 
-      await new MutationPlanExecutor(root).recover();
-
-      assert.strictEqual(await calculateDirectoryFingerprint(targetDir), originalFingerprint, `rollback failed at ${crashPoint}`);
-      assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'old.xml'), 'utf8'), '<Old/>');
-      assert.strictEqual(fs.existsSync(path.join(targetDir, 'OldEmpty')), true);
-      assert.strictEqual(fs.existsSync(path.join(root, '.cdt-journal')), false);
+      const executor = new MutationPlanExecutor(root);
+      if (crashPoint === 'after-next-write-before-counter') {
+        const operationPath = path.join(root, '.cdt-journal', `interrupted-${crashPoint}`);
+        const journalPath = path.join(operationPath, 'journal.json');
+        const journalBeforeRecovery = await fs.promises.readFile(journalPath);
+        const targetBeforeRecovery = await fs.promises.stat(cPath);
+        await assert.rejects(
+          executor.recover(),
+          (error: unknown) => error instanceof MutationPlanError
+            && error.code === 'RECOVERY_REQUIRED'
+            && error.message.includes('Cannot prove ownership'),
+        );
+        assert.strictEqual(await fs.promises.readFile(cPath, 'utf8'), '<C/>');
+        const targetAfterRecovery = await fs.promises.stat(cPath);
+        assert.strictEqual(targetAfterRecovery.ino, targetBeforeRecovery.ino);
+        assert.strictEqual(targetAfterRecovery.mtimeMs, targetBeforeRecovery.mtimeMs);
+        assert.deepStrictEqual(await fs.promises.readFile(journalPath), journalBeforeRecovery);
+        assert.strictEqual(fs.existsSync(operationPath), true, 'ambiguous create must retain its journal');
+      } else {
+        await executor.recover();
+        assert.strictEqual(await calculateDirectoryFingerprint(targetDir), originalFingerprint, `rollback failed at ${crashPoint}`);
+        assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'old.xml'), 'utf8'), '<Old/>');
+        assert.strictEqual(fs.existsSync(path.join(targetDir, 'OldEmpty')), true);
+        assert.strictEqual(fs.existsSync(path.join(root, '.cdt-journal')), false);
+      }
     }
   });
 
@@ -611,19 +1029,15 @@ suite('MutationPlanExecutor', () => {
     await fs.promises.mkdir(path.join(targetDir, 'OldEmpty'), { recursive: true });
     await fs.promises.writeFile(path.join(targetDir, 'old.xml'), '<Old/>', 'utf8');
     const originalFingerprint = await calculateDirectoryFingerprint(targetDir);
-    const originalRename = fs.promises.rename;
+    const originalLink = fs.promises.link;
+    const restoreOpen = failPlanTempOpenOnAttempt(3, 'injected late write failure');
     let externalEditAdded = false;
-    fs.promises.rename = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
+    fs.promises.link = async function (source: fs.PathLike, destination: fs.PathLike): Promise<void> {
+      await originalLink.call(fs.promises, source, destination);
       if (path.basename(String(destination)) === 'B.xml' && !externalEditAdded) {
-        await originalRename.call(fs.promises, source, destination);
         externalEditAdded = true;
         await fs.promises.writeFile(path.join(targetDir, 'foreign.xml'), '<Foreign/>', 'utf8');
-        return;
       }
-      if (path.basename(String(destination)) === 'C.xml') {
-        throw new Error('injected late write failure');
-      }
-      return originalRename.call(fs.promises, source, destination);
     };
 
     try {
@@ -643,7 +1057,8 @@ suite('MutationPlanExecutor', () => {
         (error: MutationPlanError) => error.code === 'RECOVERY_REQUIRED',
       );
     } finally {
-      fs.promises.rename = originalRename;
+      restoreOpen();
+      fs.promises.link = originalLink;
     }
 
     assert.strictEqual(await fs.promises.readFile(path.join(targetDir, 'foreign.xml'), 'utf8'), '<Foreign/>');
@@ -864,11 +1279,11 @@ suite('MutationPlanExecutor', () => {
     };
 
     for (const scenario of [
-      { operationId: 'before-read-only-assertions', appliedSteps: 0, targetWritten: false },
-      { operationId: 'after-source-file-assertion', appliedSteps: 1, targetWritten: false },
-      { operationId: 'after-source-directory-assertion', appliedSteps: 2, targetWritten: false },
-      { operationId: 'write-before-counter', appliedSteps: 2, targetWritten: true },
-      { operationId: 'write-recorded', appliedSteps: 3, targetWritten: true },
+      { operationId: 'before-read-only-assertions', appliedSteps: 0, targetWritten: false, recoveryRequired: false },
+      { operationId: 'after-source-file-assertion', appliedSteps: 1, targetWritten: false, recoveryRequired: false },
+      { operationId: 'after-source-directory-assertion', appliedSteps: 2, targetWritten: false, recoveryRequired: false },
+      { operationId: 'write-recorded', appliedSteps: 3, targetWritten: true, recoveryRequired: false },
+      { operationId: 'write-before-counter', appliedSteps: 2, targetWritten: true, recoveryRequired: true },
     ]) {
       await fs.promises.rm(target, { force: true });
       if (scenario.targetWritten) {
@@ -890,43 +1305,65 @@ suite('MutationPlanExecutor', () => {
         snapshots,
       }), 'utf8');
 
-      await assert.doesNotReject(() => new MutationPlanExecutor(tempDir).recover(),
-        `${scenario.operationId} must recover without a false RECOVERY_REQUIRED`);
-      assert.strictEqual(fs.existsSync(target), false,
-        `${scenario.operationId} must roll back a later duplicate write when it occurred`);
+      if (scenario.recoveryRequired) {
+        const journalPath = path.join(operationPath, 'journal.json');
+        const journalBeforeRecovery = await fs.promises.readFile(journalPath);
+        const targetBeforeRecovery = await fs.promises.stat(target);
+        await assert.rejects(
+          new MutationPlanExecutor(tempDir).recover(),
+          (error: unknown) => error instanceof MutationPlanError
+            && error.code === 'RECOVERY_REQUIRED'
+            && error.message.includes('Cannot prove ownership'),
+        );
+        assert.strictEqual(await fs.promises.readFile(target, 'utf8'), targetContent);
+        const targetAfterRecovery = await fs.promises.stat(target);
+        assert.strictEqual(targetAfterRecovery.ino, targetBeforeRecovery.ino);
+        assert.strictEqual(targetAfterRecovery.mtimeMs, targetBeforeRecovery.mtimeMs);
+        assert.deepStrictEqual(await fs.promises.readFile(journalPath), journalBeforeRecovery);
+        assert.strictEqual(fs.existsSync(operationPath), true);
+      } else {
+        await assert.doesNotReject(() => new MutationPlanExecutor(tempDir).recover(),
+          `${scenario.operationId} must recover without a false RECOVERY_REQUIRED`);
+        assert.strictEqual(fs.existsSync(target), false,
+          `${scenario.operationId} must roll back a later duplicate write when it occurred`);
+        assert.strictEqual(fs.existsSync(operationPath), false);
+      }
       assert.strictEqual(await fs.promises.readFile(source, 'utf8'), sourceContent);
       assert.strictEqual((await fs.promises.stat(source)).mtimeMs, sourceMtime);
-      assert.strictEqual(fs.existsSync(operationPath), false);
+      assert.strictEqual(fs.existsSync(operationPath), scenario.recoveryRequired);
     }
 
     const externalRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mutation-plan-outside-'));
-    const externalSource = path.join(externalRoot, 'source.xml');
     const externalDirectory = path.join(externalRoot, 'sourceDirectory');
-    await fs.promises.writeFile(externalSource, sourceContent, 'utf8');
     await fs.promises.mkdir(externalDirectory, { recursive: true });
     await fs.promises.writeFile(path.join(externalDirectory, 'Main.xml'), '<artifact/>', 'utf8');
     const externalDirectoryFingerprint = await calculateDirectoryFingerprint(externalDirectory);
+    const boundaryRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'mutation-plan-boundary-root-'));
+    const boundarySource = path.join(boundaryRoot, 'source.xml');
+    const boundaryTarget = path.join(boundaryRoot, 'duplicate.xml');
+    await fs.promises.writeFile(boundarySource, sourceContent, 'utf8');
     try {
       await assert.rejects(
-        () => new MutationPlanExecutor(tempDir).execute({
+        () => new MutationPlanExecutor(boundaryRoot).execute({
           kind: 'test.readOnlySourceAssertionsBoundary',
           steps: [
-            { type: 'assertFile', targetPath: source, expected: { state: 'file', hash: hashContent(sourceContent) } },
+            { type: 'assertFile', targetPath: boundarySource, expected: { state: 'file', hash: hashContent(sourceContent) } },
             {
               type: 'assertDirectory',
               targetPath: externalDirectory,
               expected: { state: 'directory', fingerprint: externalDirectoryFingerprint },
             },
-            { type: 'writeFile', targetPath: target, content: targetContent, encoding: 'utf8', expected: { state: 'missing' } },
+            { type: 'writeFile', targetPath: boundaryTarget, content: targetContent, encoding: 'utf8', expected: { state: 'missing' } },
           ],
           result: undefined,
         }),
         (error: unknown) => Boolean(error && typeof error === 'object'
           && (error as { code?: string }).code === 'PATH_OUTSIDE_ROOT'),
       );
-      assert.strictEqual(fs.existsSync(target), false, 'out-of-root assertion must fail before any write');
+      assert.strictEqual(fs.existsSync(boundaryTarget), false, 'out-of-root assertion must fail before any write');
     } finally {
       await fs.promises.rm(externalRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      await fs.promises.rm(boundaryRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -4124,12 +4561,13 @@ suite('MutationPlanExecutor', () => {
     const executor = new MutationPlanExecutor(tempDir);
     await assert.rejects(
       executor.recover(),
-      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('Post-state diverged'),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('Cannot prove ownership'),
     );
 
     // Critical invariant: foreign file must NOT be deleted as missing!
     assert.strictEqual(fs.existsSync(foreignFile), true);
     assert.strictEqual(await fs.promises.readFile(foreignFile, 'utf8'), 'user-created-this');
+    assert.strictEqual(fs.existsSync(interruptedOp), true, 'ambiguous create ownership must retain its journal');
   });
 
   test('#216: recover() fails closed when external process re-creates deleted path post-crash', async () => {
@@ -4292,7 +4730,7 @@ suite('MutationPlanExecutor', () => {
     assert.strictEqual(fs.existsSync(interruptedOp), false, 'interrupted operation directory must be removed');
   });
 
-  test('#216 (PR #225 review comment 3): recover() rolls back when crash occurred after step applied but before journal write (appliedSteps=0)', async () => {
+  test('#216/#385: recovery preserves an unrecorded expected-missing create when ownership is ambiguous', async () => {
     const filePath = path.join(tempDir, 'file-unrecorded-step.xml');
     // Step 0 was writeFile, and it completed on disk before crash!
     await fs.promises.writeFile(filePath, 'step-0-applied-content', 'utf8');
@@ -4326,11 +4764,20 @@ suite('MutationPlanExecutor', () => {
     }), 'utf8');
 
     const executor = new MutationPlanExecutor(tempDir);
-    // Must recognize valid post-state of step 0 and rollback cleanly instead of throwing RECOVERY_REQUIRED!
-    await executor.recover();
+    const journalPath = path.join(interruptedOp, 'journal.json');
+    const journalBeforeRecovery = await fs.promises.readFile(journalPath);
+    const targetBeforeRecovery = await fs.promises.stat(filePath);
+    await assert.rejects(
+      executor.recover(),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('Cannot prove ownership'),
+    );
 
-    assert.strictEqual(fs.existsSync(filePath), false, 'filePath must be rolled back to pre-state (missing)');
-    assert.strictEqual(fs.existsSync(interruptedOp), false, 'operation directory must be removed after successful recovery');
+    assert.strictEqual(await fs.promises.readFile(filePath, 'utf8'), 'step-0-applied-content');
+    const targetAfterRecovery = await fs.promises.stat(filePath);
+    assert.strictEqual(targetAfterRecovery.ino, targetBeforeRecovery.ino);
+    assert.strictEqual(targetAfterRecovery.mtimeMs, targetBeforeRecovery.mtimeMs);
+    assert.deepStrictEqual(await fs.promises.readFile(journalPath), journalBeforeRecovery);
+    assert.strictEqual(fs.existsSync(interruptedOp), true, 'ambiguous target ownership must retain the WAL');
   });
 
   test('#216 (PR #225 review comment 3): recover() fails closed when crash occurred with appliedSteps=0 and file is in third state', async () => {
@@ -4370,7 +4817,7 @@ suite('MutationPlanExecutor', () => {
     // Must fail closed on third state!
     await assert.rejects(
       executor.recover(),
-      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('Post-state diverged'),
+      (err: MutationPlanError) => err.code === 'RECOVERY_REQUIRED' && err.message.includes('Cannot prove ownership'),
     );
 
     assert.strictEqual(await fs.promises.readFile(filePath, 'utf8'), 'unexpected-third-state-content');

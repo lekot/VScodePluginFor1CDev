@@ -14,6 +14,7 @@ import { hashContent } from './atomicFileStorage';
 import { Logger } from '../../utils/logger';
 import { filesystemErrorCode, logCleanupFailure } from './journalCleanupDiagnostics';
 import type { RootLeaseCleanupFailure } from './journalCleanupDiagnostics';
+import { assertValidRollbackAppliedSteps } from './rollbackJournalBoundary';
 import {
   assertRootLeaseOwned,
   cleanupCurrentRootLeaseHeartbeatTemps,
@@ -111,6 +112,7 @@ interface MutationJournal<T = unknown> {
   readonly plan: MutationPlan<T>;
   state: 'prepared' | 'applying' | 'rollback-required' | 'committed';
   appliedSteps: number;
+  rollbackAppliedSteps?: number;
   readonly snapshots: readonly PathSnapshot[];
 }
 
@@ -129,6 +131,13 @@ interface ActiveRootLease {
 
 interface RootLeaseCleanupOutcome {
   readonly failures: readonly RootLeaseCleanupFailure[];
+}
+
+class AmbiguousMutationEffectError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AmbiguousMutationEffectError';
+  }
 }
 
 /** Executes serializable filesystem plans with a write-ahead journal and reverse recovery. */
@@ -563,15 +572,34 @@ export class MutationPlanExecutor {
         );
       }
       journal.state = 'rollback-required';
-      await this.writeJournal(operationPath, journal).catch(() => undefined);
       const isPreEffectConflict =
         (error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT')
         || error instanceof PathBoundaryError;
+      if (isPreEffectConflict) {
+        journal.rollbackAppliedSteps = journal.appliedSteps;
+      } else {
+        delete journal.rollbackAppliedSteps;
+      }
+      await this.writeJournal(operationPath, journal).catch(() => undefined);
+
+      if (error instanceof AmbiguousMutationEffectError) {
+        throw new MutationPlanError(
+          'RECOVERY_REQUIRED',
+          `Mutation outcome is ambiguous and requires recovery: ${errorMessage(error)}`,
+        );
+      }
+
       const snapshotsToRestore = isPreEffectConflict
         ? snapshotsForAppliedSteps(plan, snapshots, journal.appliedSteps)
         : snapshots;
       try {
-        await this.restoreSnapshots(operationPath, snapshotsToRestore, plan, journal.appliedSteps);
+        await this.restoreSnapshots(
+          operationPath,
+          snapshotsToRestore,
+          plan,
+          journal.appliedSteps,
+          isPreEffectConflict,
+        );
         await this.removeOperationDir(operationPath);
       } catch (rollbackError) {
         throw new MutationPlanError(
@@ -824,6 +852,7 @@ export class MutationPlanExecutor {
           if (journal.version !== 1 || !Array.isArray(journal.snapshots)) {
             throw new Error('Unsupported or corrupt mutation journal.');
           }
+          assertValidRollbackAppliedSteps(journal);
         } catch (error) {
           throw new MutationPlanError(
             'RECOVERY_REQUIRED',
@@ -854,7 +883,17 @@ export class MutationPlanExecutor {
         // It must be restored and removed rather than blocking with PLAN_CONFLICT.
         if (journal.state === 'rollback-required') {
           await lease.assertOwned();
-          await this.restoreSnapshots(operationPath, journal.snapshots, journal.plan, journal.appliedSteps);
+          const hasKnownRollbackPrefix = typeof journal.rollbackAppliedSteps === 'number';
+          const snapshotsToRestore = hasKnownRollbackPrefix
+            ? snapshotsForAppliedSteps(journal.plan, journal.snapshots, journal.rollbackAppliedSteps!)
+            : journal.snapshots;
+          await this.restoreSnapshots(
+            operationPath,
+            snapshotsToRestore,
+            journal.plan,
+            hasKnownRollbackPrefix ? journal.rollbackAppliedSteps : journal.appliedSteps,
+            hasKnownRollbackPrefix,
+          );
           await lease.assertOwned();
           await this.removeOperationDir(operationPath);
           continue;
@@ -1087,7 +1126,20 @@ export class MutationPlanExecutor {
         );
       }
       await assertExpectation(canonical, expected);
-      await fs.promises.rename(tempPath, canonical);
+      if (expected.state === 'missing') {
+        try {
+          await fs.promises.link(tempPath, canonical);
+        } catch (error) {
+          if (isAlreadyExistsError(error)) {
+            throw new MutationPlanError('PLAN_CONFLICT', `Target was created concurrently: ${canonical}.`);
+          }
+          throw new AmbiguousMutationEffectError(
+            `Could not confirm atomic creation of ${canonical}: ${errorMessage(error)}`,
+          );
+        }
+      } else {
+        await fs.promises.rename(tempPath, canonical);
+      }
     } finally {
       await handle?.close().catch(() => undefined);
       await fs.promises.rm(tempPath, { force: true }).catch(() => undefined);
@@ -1105,8 +1157,9 @@ export class MutationPlanExecutor {
     snapshots: readonly PathSnapshot[],
     plan?: MutationPlan<unknown>,
     appliedSteps?: number,
+    appliedStepsAreAuthoritative = false,
   ): Promise<void> {
-    const effectiveSteps = (plan && typeof appliedSteps === 'number')
+    const effectiveSteps = (plan && typeof appliedSteps === 'number' && !appliedStepsAreAuthoritative)
       ? await resolveEffectiveAppliedSteps(this.rootPath, snapshots, plan, appliedSteps)
       : appliedSteps;
 
@@ -1648,6 +1701,25 @@ async function resolveEffectiveAppliedSteps(
     // Read-only CAS checks have no post-state to infer. Treat them as consumed so
     // recovery can continue to the next effect without inspecting/restoring source.
     return appliedSteps + 1;
+  }
+
+  if (nextStep.type === 'writeFile' && nextStep.expected.state === 'missing') {
+    const { canonicalTarget } = await assertPathWithinRoot(rootPath, nextStep.targetPath);
+    try {
+      await fs.promises.lstat(canonicalTarget);
+    } catch (error) {
+      if (isMissingError(error)) {
+        return appliedSteps;
+      }
+      throw new MutationPlanError(
+        'RECOVERY_REQUIRED',
+        `Cannot confirm ownership of an interrupted create at ${canonicalTarget}: ${errorMessage(error)}`,
+      );
+    }
+    throw new MutationPlanError(
+      'RECOVERY_REQUIRED',
+      `Cannot prove ownership of an unrecorded expected-missing create at ${canonicalTarget}. Recovery aborted to protect external changes.`,
+    );
   }
 
   const unrecordedPaths = stepPaths(nextStep);
