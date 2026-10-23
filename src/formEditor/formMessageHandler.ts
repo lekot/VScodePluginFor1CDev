@@ -477,25 +477,33 @@ function handlePropertyChangeWithEngine(
     return;
   }
   const engine = getOrCreateCommandEngine(ctx, model);
-  const elementIds = msg.elementIds as string[] | undefined;
-  if (elementIds && elementIds.length > 0) {
-    for (const elementId of elementIds) {
-      const result = engine.execute({
-        type: 'propertyChange',
-        payload: {
-          elementId,
-          section: msg.section as string | undefined,
-          key: msg.key as string,
-          value: msg.value,
-        },
-      });
-      if (!result.ok) {
-        postError(ctx.webviewPanel, result.error);
-        return;
-      }
+
+  if (Array.isArray(msg.elementIds)) {
+    const elementIds = [...new Set(msg.elementIds as string[])];
+    if (elementIds.length === 0) {
+      return;
+    }
+
+    const before = JSON.stringify(model);
+    const result = engine.executeBatch(elementIds.map((elementId) => ({
+      type: 'propertyChange' as const,
+      payload: {
+        elementId,
+        section: msg.section as string | undefined,
+        key: msg.key as string,
+        value: msg.value,
+      },
+    })));
+    if (!result.ok) {
+      postError(ctx.webviewPanel, result.error);
+      return;
+    }
+    if (JSON.stringify(model) !== before) {
+      setDirtyState(ctx, true);
     }
     return;
   }
+
   const result = engine.execute({
     type: 'propertyChange',
     payload: {

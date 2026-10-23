@@ -6,6 +6,9 @@ import {
   applyPropertyChange,
   type CommandResult,
 } from './formModelCommands';
+import { findElementById } from './formTreeOperations';
+
+type FormCommandType = FormEditorCommand['type'] | 'batch';
 
 export type PropertyChangeCommand = {
   type: 'propertyChange';
@@ -34,7 +37,7 @@ export type FormEditorCommand =
   | MoveElementSiblingCommand;
 
 type HistoryEntry = {
-  commandType: FormEditorCommand['type'];
+  commandType: FormCommandType;
   before: FormModel;
   after: FormModel;
 };
@@ -45,7 +48,7 @@ export type FormCommandEngineSnapshot = {
   undoDepth: number;
   redoDepth: number;
   dirty: boolean;
-  lastCommandType?: FormEditorCommand['type'];
+  lastCommandType?: FormCommandType;
 };
 
 export class FormCommandEngine {
@@ -71,6 +74,38 @@ export class FormCommandEngine {
       before,
       after: cloneModel(this.model),
     });
+    this.redoStack.length = 0;
+    return { ok: true };
+  }
+
+  public executeBatch(commands: readonly FormEditorCommand[]): CommandResult {
+    if (commands.length === 0) {
+      return { ok: true };
+    }
+
+    const before = cloneModel(this.model);
+    const draft = cloneModel(this.model);
+    for (const command of commands) {
+      if (command.type === 'propertyChange') {
+        const targetResult = validatePropertyChangeTarget(draft, command.payload);
+        if (!targetResult.ok) {
+          return targetResult;
+        }
+      }
+
+      const result = executeFormEditorCommand(draft, command);
+      if (!result.ok) {
+        return result;
+      }
+    }
+
+    const after = cloneModel(draft);
+    if (JSON.stringify(before) === JSON.stringify(after)) {
+      return { ok: true };
+    }
+
+    restoreModel(this.model, after);
+    this.undoStack.push({ commandType: 'batch', before, after: cloneModel(this.model) });
     this.redoStack.length = 0;
     return { ok: true };
   }
@@ -132,6 +167,38 @@ function executeFormEditorCommand(model: FormModel, command: FormEditorCommand):
       return applyDeleteElements(model, command.payload.elementIds);
     case 'moveElementSibling':
       return applyMoveElementSibling(model, command.payload.elementId, command.payload.direction);
+  }
+}
+
+function validatePropertyChangeTarget(
+  model: FormModel,
+  payload: Extract<FormEditorCommand, { type: 'propertyChange' }>['payload']
+): CommandResult {
+  const elementId = payload.elementId;
+  if (!elementId) {
+    return { ok: false, error: 'Не указан элемент для изменения свойства.' };
+  }
+
+  switch (payload.section) {
+    case undefined:
+    case 'childItems':
+      return findElementById(model.childItemsRoot, elementId)
+        ? { ok: true }
+        : { ok: false, error: `Элемент формы "${elementId}" не найден.` };
+    case 'events':
+      return findElementById(model.childItemsRoot, elementId) && payload.key
+        ? { ok: true }
+        : { ok: false, error: `Элемент событий формы "${elementId}" не найден.` };
+    case 'attributes':
+      return model.attributes.some((attribute) => attribute.id === elementId || attribute.name === elementId)
+        ? { ok: true }
+        : { ok: false, error: `Реквизит формы "${elementId}" не найден.` };
+    case 'commands':
+      return model.commands.some((command) => command.id === elementId || command.name === elementId)
+        ? { ok: true }
+        : { ok: false, error: `Команда формы "${elementId}" не найдена.` };
+    default:
+      return { ok: false, error: `Неизвестный раздел формы "${payload.section}".` };
   }
 }
 

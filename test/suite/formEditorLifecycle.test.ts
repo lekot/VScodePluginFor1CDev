@@ -27,6 +27,22 @@ function makeModel(width = '100'): FormModel {
   };
 }
 
+function propertyText(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(propertyText).join('').trim();
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if (record['#text'] !== undefined) {
+      return propertyText(record['#text']);
+    }
+  }
+  return String(value);
+}
+
 async function makeConfigurationFixture(prefix: string): Promise<string> {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
   await fs.promises.writeFile(
@@ -113,6 +129,84 @@ suite('FormEditorProvider editable document lifecycle', () => {
     assert.strictEqual((provider as any).documentModel.has(key), false, 'last document owner releases the model');
     subscription.dispose();
     provider.dispose();
+  });
+
+  test('saves and reverts an enabled multi-select batch through one native dirty event per edit', async () => {
+    const previousEngineFlag = process.env.FORM_COMMAND_ENGINE_ENABLED;
+    process.env.FORM_COMMAND_ENGINE_ENABLED = 'true';
+    const tempDir = await makeConfigurationFixture('form-editor-batch-lifecycle-');
+    const provider = new FormEditorProvider();
+    const uri = vscode.Uri.file(path.join(tempDir, 'Form.xml'));
+    const document = await provider.openCustomDocument(uri);
+    const key = uri.toString();
+    const model = makeModel('100');
+    model.childItemsRoot.push({
+      id: 'field-2',
+      name: 'Field2',
+      tag: 'InputField',
+      properties: { Width: '200' },
+      childItems: [],
+    });
+    (provider as any).documentModel.set(key, model);
+    const view = makePanel();
+    let changes = 0;
+    const subscription = provider.onDidChangeCustomDocument(() => { changes += 1; });
+    let changesAfterFirstBatch = 0;
+    let dirtyAfterFirstBatch = false;
+    let dirtyAfterSave = true;
+    let changesAfterLaterBatch = 0;
+    let dirtyAfterLaterBatch = false;
+    let reverted: FormModel | undefined;
+    try {
+      await provider.resolveCustomEditor(document, view.panel);
+      await view.receive({
+        type: 'propertyChange',
+        elementIds: ['field-1', 'field-2'],
+        key: 'Width',
+        value: '250',
+      });
+      changesAfterFirstBatch = changes;
+      dirtyAfterFirstBatch = (provider as any).dirtyDocuments.has(key);
+
+      await provider.saveCustomDocument(document, cancellation);
+      dirtyAfterSave = (provider as any).dirtyDocuments.has(key);
+      const saved = await fs.promises.readFile(uri.fsPath, 'utf8');
+      assert.strictEqual((saved.match(/<Width>250<\/Width>/g) ?? []).length, 2);
+
+      await view.receive({
+        type: 'propertyChange',
+        elementIds: ['field-1', 'field-2'],
+        key: 'Width',
+        value: '300',
+      });
+      changesAfterLaterBatch = changes;
+      dirtyAfterLaterBatch = (provider as any).dirtyDocuments.has(key);
+      await provider.revertCustomDocument(document, cancellation);
+
+      reverted = (provider as any).documentModel.get(key) as FormModel;
+      assert.strictEqual(changesAfterFirstBatch, 1, 'the batch publishes one native document change');
+      assert.strictEqual(dirtyAfterFirstBatch, true);
+      assert.strictEqual(dirtyAfterSave, false, 'Save clears the committed batch');
+      assert.strictEqual(changesAfterLaterBatch, 2, 'the later batch publishes one more document change');
+      assert.strictEqual(dirtyAfterLaterBatch, true);
+      assert.deepStrictEqual(
+        reverted!.childItemsRoot.map((item) => propertyText(item.properties?.Width)),
+        ['250', '250'],
+        'Revert restores the last saved batch for every selected element',
+      );
+      assert.strictEqual((provider as any).dirtyDocuments.has(key), false);
+    } finally {
+      subscription.dispose();
+      view.dispose();
+      document.dispose();
+      provider.dispose();
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+      if (previousEngineFlag === undefined) {
+        delete process.env.FORM_COMMAND_ENGINE_ENABLED;
+      } else {
+        process.env.FORM_COMMAND_ENGINE_ENABLED = previousEngineFlag;
+      }
+    }
   });
 
   test('persists and restores a hot-exit backup', async () => {
