@@ -1272,11 +1272,26 @@ suite('Tree type-index load ownership runtime', () => {
       'rolesEditor/metadataLoader.ts',
     ]);
 
+    const elementParserOwners = sourceFiles
+      .filter((filePath) => /MetadataParser\.loadElementChildren\s*\(/.test(fs.readFileSync(filePath, 'utf8')))
+      .map((filePath) => path.relative(sourceRoot, filePath).replace(/\\/g, '/'))
+      .sort();
+    assert.deepStrictEqual(elementParserOwners, [
+      'providers/treeTypeLoadCoordinator.ts',
+      'rolesEditor/metadataLoader.ts',
+    ]);
+
     const rawParserOwners = sourceFiles
       .filter((filePath) => /(?:DesignerParser|EdtParser)\.parseTypeIndex\s*\(/.test(fs.readFileSync(filePath, 'utf8')))
       .map((filePath) => path.relative(sourceRoot, filePath).replace(/\\/g, '/'))
       .sort();
     assert.deepStrictEqual(rawParserOwners, ['agent/agentRoleRights.ts', 'parsers/metadataParser.ts']);
+
+    const rawElementParserOwners = sourceFiles
+      .filter((filePath) => /(?:DesignerParser|EdtParser)\.(?:loadChildrenForElement|loadTabularSectionColumnChildren)\s*\(/.test(fs.readFileSync(filePath, 'utf8')))
+      .map((filePath) => path.relative(sourceRoot, filePath).replace(/\\/g, '/'))
+      .sort();
+    assert.deepStrictEqual(rawElementParserOwners, ['parsers/metadataParser.ts']);
 
     for (const loaderFile of ['providers/treeReferenceLoader.ts', 'providers/objectTypeLoader.ts']) {
       const source = fs.readFileSync(path.join(sourceRoot, loaderFile), 'utf8');
