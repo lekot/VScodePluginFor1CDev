@@ -19,6 +19,10 @@ import { hashText } from '../../../src/compareMerge/bsl/bslRoutineLogicalScanner
 import { MutationPlanError } from '../../../src/services/configurationSession/mutationPlan';
 import type { ConfigurationMutationEngine } from '../../../src/services/configurationSession/ConfigurationMutationEngine';
 import type { ConfigurationId } from '../../../src/services/configurationSession/types';
+import {
+  canonicalMutationTestPath,
+  installMutationPlanPublicationInterception,
+} from '../../helpers/mutationPlanPublicationInterception';
 import { createMergeMutationTestRuntime } from './mergeMutationTestSupport';
 
 const fsPromises = require('fs/promises') as any;
@@ -85,33 +89,32 @@ suite('Compare merge mutation engine (#264)', () => {
     const runtime = await runtimeFor(fixture.rootPath, coordinators);
     const foreignXml = '<Object><Name>External edit</Name></Object>';
     const canonicalRoot = await fs.realpath(fixture.rootPath);
-    const canonicalBinaryTarget = path.join(canonicalRoot, path.relative(fixture.rootPath, fixture.binaryTargetPath));
-    const canonicalXmlTarget = path.join(canonicalRoot, path.relative(fixture.rootPath, fixture.xmlTargetPath));
-    const canonicalLateTarget = path.join(
-      canonicalRoot,
-      path.relative(fixture.rootPath, path.join(fixture.folderTargetPath, 'incoming.xml')),
-    );
-    const originalRename = fsPromises.rename;
+    const canonicalBinaryTarget = await canonicalMutationTestPath(fixture.binaryTargetPath);
+    const canonicalXmlTarget = await canonicalMutationTestPath(fixture.xmlTargetPath);
+    const canonicalLateTarget = await canonicalMutationTestPath(path.join(fixture.folderTargetPath, 'incoming.xml'));
     let externalEditWritten = false;
     let binaryWriteApplied = false;
     let lateFaultInjected = false;
 
-    try {
-      fsPromises.rename = async (sourcePath: string, targetPath: string) => {
-        if (targetPath === canonicalBinaryTarget && !binaryWriteApplied) {
-          await originalRename(sourcePath, targetPath);
+    const publication = installMutationPlanPublicationInterception([
+      {
+        targetPath: canonicalBinaryTarget,
+        after: async () => {
           binaryWriteApplied = true;
           await fs.writeFile(canonicalXmlTarget, foreignXml, 'utf8');
           externalEditWritten = true;
-          return;
-        }
-        if (targetPath === canonicalLateTarget && !lateFaultInjected) {
+        },
+      },
+      {
+        targetPath: canonicalLateTarget,
+        before: async () => {
           lateFaultInjected = true;
           throw new Error('injected late plan write failure');
-        }
-        return originalRename(sourcePath, targetPath);
-      };
+        },
+      },
+    ]);
 
+    try {
       const result = await executeWithRuntime(fixture, runtime);
 
       assert.strictEqual(externalEditWritten, true, 'external edit hook ran after the binary write');
@@ -127,7 +130,7 @@ suite('Compare merge mutation engine (#264)', () => {
       );
       assert.strictEqual(await readText(fixture.xmlTargetPath), foreignXml);
     } finally {
-      fsPromises.rename = originalRename;
+      publication.restore();
     }
   });
 

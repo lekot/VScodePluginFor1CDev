@@ -9,6 +9,11 @@ import { FormEditorProvider } from '../../src/formEditor/formEditorProvider';
 import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import type { MutationPlan } from '../../src/services/configurationSession/mutationPlan';
+import {
+  canonicalMutationTestPath,
+  installMutationPlanTempOpenFailure,
+  installMutationPlanPublicationInterception,
+} from '../helpers/mutationPlanPublicationInterception';
 
 
 const cancellation = { isCancellationRequested: false } as vscode.CancellationToken;
@@ -524,13 +529,15 @@ suite('FormEditor Coupled In-Memory Edit & Save Coordination (#353)', () => {
     const destModulePath = path.join(tempDir, 'Catalogs', 'Goods', 'Forms', 'ConcurrentCopy', 'Ext', 'Form', 'Module.bsl');
     const previousCommit = '\uFEFF' + validFormXml.replace('<Width>100</Width>', '<Width>456</Width>');
     const gateway = await import('../../src/services/configurationSession/configurationMutationGateway');
-    const originalRename = fs.promises.rename;
-    (fs.promises as any).rename = async (sourcePath: fs.PathLike, targetPath: fs.PathLike) => {
-      if (path.basename(String(targetPath)).toLowerCase() === 'module.bsl') {
-        throw new Error('injected destination Module.bsl rename failure');
-      }
-      return originalRename.call(fs.promises, sourcePath, targetPath);
-    };
+    const tempOpenFailure = installMutationPlanTempOpenFailure(
+      await canonicalMutationTestPath(destModulePath),
+      'injected destination Module.bsl temp open failure',
+    );
+    const publication = installMutationPlanPublicationInterception([{
+      targetPath: await canonicalMutationTestPath(destFormPath),
+      operation: 'rename',
+      after: async () => tempOpenFailure.arm(),
+    }]);
     const adapter = gateway.configureConfigurationMutationGateway(async (_path, _kind, operation) => {
       await fs.promises.mkdir(path.dirname(destFormPath), { recursive: true });
       await fs.promises.writeFile(destFormPath, previousCommit, 'utf8');
@@ -538,13 +545,15 @@ suite('FormEditor Coupled In-Memory Edit & Save Coordination (#353)', () => {
     });
     try {
       await assert.rejects(provider.saveCustomDocumentAs(document, vscode.Uri.file(destFormPath), cancellation));
+      assert.strictEqual(tempOpenFailure.triggered, true, 'the Module.bsl temp-open failure must be injected');
       assert.strictEqual(await fs.promises.readFile(destFormPath, 'utf8'), previousCommit, 'rollback restores the state observed after acquiring the mutation lock');
       assert.strictEqual(fs.existsSync(destModulePath), false, 'failed multi-file Save As does not leave a partial module');
       assert.strictEqual((provider as any).dirtyDocuments.has(key), true, 'source remains dirty after failed Save As');
       assert.strictEqual(await fs.promises.readFile(formXmlPath, 'utf8'), Buffer.concat([Buffer.from('\uFEFF'), Buffer.from(validFormXml)]).toString('utf8'), 'Save As never changes the source form');
       assert.strictEqual(await fs.promises.readFile(modulePath, 'utf8'), '// initial module\r\n', 'Save As never changes the source module');
     } finally {
-      (fs.promises as any).rename = originalRename;
+      publication.restore();
+      tempOpenFailure.restore();
       adapter.dispose();
       view.dispose();
       document.dispose();
@@ -581,13 +590,15 @@ suite('FormEditor Coupled In-Memory Edit & Save Coordination (#353)', () => {
       format: ConfigFormat.Designer,
       capabilities: { read: true, write: true, process: true },
     });
-    const originalRename = fs.promises.rename;
-    (fs.promises as any).rename = async (sourcePath: fs.PathLike, targetPath: fs.PathLike) => {
-      if (path.basename(String(targetPath)).toLowerCase() === 'module.bsl') {
-        throw new Error('injected destination Module.bsl rename failure');
-      }
-      return originalRename.call(fs.promises, sourcePath, targetPath);
-    };
+    const tempOpenFailure = installMutationPlanTempOpenFailure(
+      await canonicalMutationTestPath(destModulePath),
+      'injected destination Module.bsl temp open failure',
+    );
+    const publication = installMutationPlanPublicationInterception([{
+      targetPath: await canonicalMutationTestPath(destFormPath),
+      operation: 'rename',
+      after: async () => tempOpenFailure.arm(),
+    }]);
 
     let releaseDestinationWriter!: () => void;
     let markDestinationWriterStarted!: () => void;
@@ -658,8 +669,9 @@ suite('FormEditor Coupled In-Memory Edit & Save Coordination (#353)', () => {
       assert.strictEqual(writerOutcome.status, 'committed', 'the destination writer commits before Save As owns the FIFO');
       await assert.rejects(
         waitFor(saveAsPromise, 'Save As completion'),
-        /Mutation was rolled back: injected destination Module\.bsl rename failure/,
+        /Mutation was rolled back: injected destination Module\.bsl temp open failure/,
       );
+      assert.strictEqual(tempOpenFailure.triggered, true, 'the Module.bsl temp-open failure must be injected');
       assert.strictEqual(await fs.promises.readFile(destFormPath, 'utf8'), previousCommit, 'rollback preserves the earlier queued writer commit');
       assert.strictEqual(fs.existsSync(destModulePath), false, 'failed Save As does not leave a partial module');
     } finally {
@@ -673,7 +685,8 @@ suite('FormEditor Coupled In-Memory Edit & Save Coordination (#353)', () => {
       if (teardownTimer) {
         clearTimeout(teardownTimer);
       }
-      (fs.promises as any).rename = originalRename;
+      publication.restore();
+      tempOpenFailure.restore();
       view.dispose();
       document.dispose();
       provider.dispose();

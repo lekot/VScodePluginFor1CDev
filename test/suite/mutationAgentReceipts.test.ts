@@ -26,6 +26,7 @@ import {
   type MutationPlan,
 } from '../../src/services/configurationSession/mutationPlan';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
+import { installMutationPlanPublicationInterception } from '../helpers/mutationPlanPublicationInterception';
 import { XMLWriter, XmlReadError, XmlWriteError } from '../../src/utils/XMLWriter';
 import { xmlBuilder } from '../../src/utils/xml/xmlCore';
 
@@ -444,14 +445,10 @@ suite('Mutation receipts through XMLWriter, Agent CRUD and MCP (#296)', () => {
 
   test('real Agent create keeps an external write on recoveryRequired and warns exactly once', async () => {
     const operations = new AgentOperations(tempDir);
-    const rootIdentity = await fs.promises.realpath(tempDir);
     const externalDirectory = path.join(tempDir, 'Catalogs');
+    const externalTarget = path.join(externalDirectory, 'ExternalCatalog.xml');
     const externalFilePath = path.join(externalDirectory, 'external.txt');
     const externalContent = '<External>preserve this write</External>';
-    const promiseFs = fs.promises as unknown as {
-      rename: (source: string, destination: string) => Promise<void>;
-    };
-    const originalRename = promiseFs.rename;
     const executorPrototype = MutationPlanExecutor.prototype as unknown as {
       execute<T>(plan: MutationPlan<T>, operationId?: string): Promise<T>;
     };
@@ -473,35 +470,28 @@ suite('Mutation receipts through XMLWriter, Agent CRUD and MCP (#296)', () => {
       }
     };
 
-    promiseFs.rename = async (source, destination) => {
-      const destinationPath = String(destination);
-      const destinationParent = await fs.promises.realpath(path.dirname(destinationPath)).catch(() => '');
-      if (
-        !configCommitFailed &&
-        path.basename(destinationPath).toLowerCase() === 'configuration.xml' &&
-        destinationParent.toLowerCase() === rootIdentity.toLowerCase()
-      ) {
-        configCommitFailed = true;
-        throw new Error('Simulated late configuration commit failure');
-      }
-
-      await originalRename.call(fs.promises, source, destination);
-      const canonicalCatalogs = await fs.promises.realpath(externalDirectory).catch(() => '');
-      if (
-        !externalWriteCompleted &&
-        path.basename(destinationPath).toLowerCase() === 'externalcatalog.xml' &&
-        destinationParent.toLowerCase() === canonicalCatalogs.toLowerCase()
-      ) {
-        externalWriteCompleted = true;
-        await fs.promises.writeFile(externalFilePath, externalContent, 'utf8');
-      }
-    };
+    const publication = installMutationPlanPublicationInterception([
+      {
+        targetPath: externalTarget,
+        after: async () => {
+          externalWriteCompleted = true;
+          await fs.promises.writeFile(externalFilePath, externalContent, 'utf8');
+        },
+      },
+      {
+        targetPath: path.join(tempDir, 'Configuration.xml'),
+        before: async () => {
+          configCommitFailed = true;
+          throw new Error('Simulated late configuration commit failure');
+        },
+      },
+    ]);
 
     let result: AgentResult<unknown> | undefined;
     try {
       result = await operations.createObject({ type: 'Catalog', name: 'ExternalCatalog' });
     } finally {
-      promiseFs.rename = originalRename;
+      publication.restore();
       executorPrototype.execute = originalExecute;
     }
 
