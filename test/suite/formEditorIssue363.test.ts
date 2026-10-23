@@ -7,6 +7,7 @@ import { resetVscodeTestState } from '../helpers/vscodeModuleStub';
 import * as vscode from 'vscode';
 import { FormEditorDocument, FormEditorProvider } from '../../src/formEditor/formEditorProvider';
 import { loadFormModel } from '../../src/formEditor/formFileIo';
+import type { FormModel } from '../../src/formEditor/formModel';
 import { ConfigurationSession } from '../../src/services/configurationSession/ConfigurationSession';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import type { MutationPlan } from '../../src/services/configurationSession/mutationPlan';
@@ -578,39 +579,146 @@ suite('Form editor lifecycle regressions for issue #363', () => {
     }
   });
 
-  test('keeps an edit made during a blocked Form write dirty after the older snapshot commits', async function (this: Mocha.Context) {
+  test('keeps a single later edit dirty when an older Form snapshot commits with the command engine disabled', async function (this: Mocha.Context) {
     this.timeout(7000);
     const fixture = await createFixture();
     const { provider, document, key } = await openForm(fixture);
     const view = makePanel();
-    await provider.resolveCustomEditor(document, view.panel);
-    await view.receive({ type: 'propertyChange', elementId: 'field-1', key: 'Width', value: '777' });
-    const session = createSession(fixture.rootPath, 'issue363-edit-during-save');
-    const saveQueued = deferred();
-    const adapter = installSessionGateway(session, (kind) => {
-      if (kind === 'ui.form.save') {
-        saveQueued.resolve();
-      }
-    });
-    const blocker = await blockSessionWriter(session);
+    const previousEngineFlag = process.env.FORM_COMMAND_ENGINE_ENABLED;
+    let session: ConfigurationSession | undefined;
+    let adapter: { dispose(): void } | undefined;
+    let blocker: Awaited<ReturnType<typeof blockSessionWriter>> | undefined;
+    let subscription: vscode.Disposable | undefined;
+    let documentChanges = 0;
+    let changesAfterInitialEdit = 0;
+    let changesAfterLaterEdit = 0;
     try {
+      delete process.env.FORM_COMMAND_ENGINE_ENABLED;
+      await provider.resolveCustomEditor(document, view.panel);
+      subscription = provider.onDidChangeCustomDocument(() => { documentChanges += 1; });
+      await view.receive({ type: 'propertyChange', elementId: 'field-1', key: 'Width', value: '777' });
+      changesAfterInitialEdit = documentChanges;
+
+      session = createSession(fixture.rootPath, 'issue363-single-edit-during-save');
+      const saveQueued = deferred();
+      adapter = installSessionGateway(session, (kind) => {
+        if (kind === 'ui.form.save') {
+          saveQueued.resolve();
+        }
+      });
+      blocker = await blockSessionWriter(session);
       await blocker.started;
+
       const save = provider.saveCustomDocument(document, cancellation);
       await saveQueued.promise;
       await view.receive({ type: 'propertyChange', elementId: 'field-1', key: 'Width', value: '888' });
+      changesAfterLaterEdit = documentChanges;
       blocker.release();
       await Promise.all([save, blocker.outcome]);
+
       assert.match(await fs.promises.readFile(fixture.formPath, 'utf8'), /<Width>777<\/Width>/);
-      assert.strictEqual((provider as any).documentModel.get(key).childItemsRoot[0].properties.Width, '888');
-      assert.strictEqual((provider as any).dirtyDocuments.has(key), true, 'the later edit remains dirty');
+      const providerInternals = provider as unknown as {
+        documentModel: Map<string, FormModel>;
+        dirtyDocuments: Set<string>;
+      };
+      const latest = providerInternals.documentModel.get(key);
+      assert.ok(latest);
+      assert.strictEqual(latest.childItemsRoot[0].properties?.Width, '888');
+      assert.strictEqual(providerInternals.dirtyDocuments.has(key), true, 'the later single edit remains dirty');
+      assert.strictEqual(changesAfterInitialEdit, 1, 'the initial single edit publishes one document generation');
+      assert.strictEqual(changesAfterLaterEdit, 2, 'the later single edit advances the document generation once');
     } finally {
-      blocker.release();
-      adapter.dispose();
-      await session.dispose();
+      blocker?.release();
+      adapter?.dispose();
+      if (session) {
+        await session.dispose();
+      }
+      subscription?.dispose();
       view.dispose();
       document.dispose();
       provider.dispose();
       await fs.promises.rm(fixture.rootPath, { recursive: true, force: true });
+      if (previousEngineFlag === undefined) {
+        delete process.env.FORM_COMMAND_ENGINE_ENABLED;
+      } else {
+        process.env.FORM_COMMAND_ENGINE_ENABLED = previousEngineFlag;
+      }
+    }
+  });
+
+  test('keeps a later multi-select edit dirty when an older Form snapshot commits', async function (this: Mocha.Context) {
+    this.timeout(7000);
+    const fixture = await createFixture();
+    const { provider, document, key } = await openForm(fixture);
+    const view = makePanel();
+    const previousEngineFlag = process.env.FORM_COMMAND_ENGINE_ENABLED;
+    let session: ConfigurationSession | undefined;
+    let adapter: { dispose(): void } | undefined;
+    let blocker: Awaited<ReturnType<typeof blockSessionWriter>> | undefined;
+    let subscription: vscode.Disposable | undefined;
+    let documentChanges = 0;
+    let changesAfterInitialBatch = 0;
+    let changesAfterLaterBatch = 0;
+    try {
+      process.env.FORM_COMMAND_ENGINE_ENABLED = 'true';
+      await provider.resolveCustomEditor(document, view.panel);
+      subscription = provider.onDidChangeCustomDocument(() => { documentChanges += 1; });
+      session = createSession(fixture.rootPath, 'issue363-edit-during-save');
+      const saveQueued = deferred();
+      adapter = installSessionGateway(session, (kind) => {
+        if (kind === 'ui.form.save') {
+          saveQueued.resolve();
+        }
+      });
+      blocker = await blockSessionWriter(session);
+      await blocker.started;
+
+      await view.receive({
+        type: 'propertyChange',
+        elementIds: ['field-1', 'field-2'],
+        key: 'Width',
+        value: '777',
+      });
+      changesAfterInitialBatch = documentChanges;
+      const save = provider.saveCustomDocument(document, cancellation);
+      await saveQueued.promise;
+      await view.receive({
+        type: 'propertyChange',
+        elementIds: ['field-1', 'field-2'],
+        key: 'Width',
+        value: '888',
+      });
+      changesAfterLaterBatch = documentChanges;
+      blocker.release();
+      await Promise.all([save, blocker.outcome]);
+      const savedXml = await fs.promises.readFile(fixture.formPath, 'utf8');
+      assert.strictEqual((savedXml.match(/<Width>777<\/Width>/g) ?? []).length, 2);
+      const providerInternals = provider as unknown as {
+        documentModel: Map<string, FormModel>;
+        dirtyDocuments: Set<string>;
+      };
+      const latest = providerInternals.documentModel.get(key);
+      assert.ok(latest);
+      assert.deepStrictEqual(latest.childItemsRoot.map((item) => String(item.properties?.Width)), ['888', '888']);
+      assert.strictEqual(providerInternals.dirtyDocuments.has(key), true, 'the later edit remains dirty');
+      assert.strictEqual(changesAfterInitialBatch, 1, 'the initial multi-select edit publishes once');
+      assert.strictEqual(changesAfterLaterBatch, 2, 'the later multi-select edit increments the document generation once');
+    } finally {
+      blocker?.release();
+      adapter?.dispose();
+      if (session) {
+        await session.dispose();
+      }
+      subscription?.dispose();
+      view.dispose();
+      document.dispose();
+      provider.dispose();
+      await fs.promises.rm(fixture.rootPath, { recursive: true, force: true });
+      if (previousEngineFlag === undefined) {
+        delete process.env.FORM_COMMAND_ENGINE_ENABLED;
+      } else {
+        process.env.FORM_COMMAND_ENGINE_ENABLED = previousEngineFlag;
+      }
     }
   });
 

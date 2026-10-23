@@ -4,6 +4,8 @@ import * as os from 'os';
 import * as path from 'path';
 import type { FormModel } from '../../src/formEditor/formModel';
 import { FormCommandEngine } from '../../src/formEditor/formCommandEngine';
+import type { FormEditorCommand } from '../../src/formEditor/formCommandEngine';
+import type { CommandResult } from '../../src/formEditor/formModelCommands';
 import { handleMessage, type MessageHandlerContext } from '../../src/formEditor/formMessageHandler';
 import * as vscode from 'vscode';
 
@@ -15,6 +17,31 @@ function makeModel(): FormModel {
     commands: [],
     formEvents: [],
   };
+}
+
+function makeSelectableModel(): FormModel {
+  return {
+    ...makeModel(),
+    childItemsRoot: [
+      { tag: 'InputField', id: 'field-1', name: 'Field1', properties: { Width: '100' }, childItems: [] },
+      { tag: 'InputField', id: 'field-2', name: 'Field2', properties: { Width: '200' }, childItems: [] },
+    ],
+  };
+}
+
+function propertyChange(elementId: string, value: string, section?: string): FormEditorCommand {
+  return {
+    type: 'propertyChange',
+    payload: { elementId, key: 'Width', value, section },
+  };
+}
+
+function executeBatch(engine: FormCommandEngine, commands: readonly FormEditorCommand[]): CommandResult {
+  return engine.executeBatch(commands);
+}
+
+function widths(model: FormModel): string[] {
+  return model.childItemsRoot.map((item) => String(item.properties?.Width));
 }
 
 suite('FormCommandEngine iteration-1', () => {
@@ -52,6 +79,136 @@ suite('FormCommandEngine iteration-1', () => {
     assert.strictEqual(redoResult.ok, true);
     assert.strictEqual(model.childItemsRoot.length, 1);
     assert.strictEqual(engine.getSnapshot().canUndo, true);
+  });
+
+  test('executes a valid command batch as one undoable history entry', () => {
+    const model = makeSelectableModel();
+    const engine = new FormCommandEngine(model);
+    engine.execute({ type: 'addElement', payload: { tag: 'Group', name: 'Undone' } });
+    assert.strictEqual(engine.undo().ok, true, 'prepare an existing redo entry');
+    assert.strictEqual(engine.getSnapshot().redoDepth, 1);
+
+    const result = executeBatch(engine, [propertyChange('field-1', '110'), propertyChange('field-2', '220')]);
+
+    assert.deepStrictEqual(result, { ok: true });
+    assert.deepStrictEqual(widths(model), ['110', '220']);
+    const committed = engine.getSnapshot();
+    assert.strictEqual(committed.undoDepth, 1, 'the whole batch creates one undo entry');
+    assert.strictEqual(committed.redoDepth, 0, 'a successful batch clears redo history');
+    assert.strictEqual(committed.lastCommandType as string | undefined, 'batch');
+
+    assert.strictEqual(engine.undo().ok, true, 'one undo reverses every command in the batch');
+    assert.deepStrictEqual(widths(model), ['100', '200']);
+    assert.strictEqual(engine.getSnapshot().undoDepth, 0);
+    assert.strictEqual(engine.getSnapshot().redoDepth, 1);
+
+    assert.strictEqual(engine.redo().ok, true, 'one redo reapplies every command in the batch');
+    assert.deepStrictEqual(widths(model), ['110', '220']);
+    assert.strictEqual(engine.getSnapshot().undoDepth, 1);
+    assert.strictEqual(engine.getSnapshot().redoDepth, 0);
+  });
+
+  test('rolls back a batch that encounters an unknown element after a valid command', () => {
+    const model = makeSelectableModel();
+    const engine = new FormCommandEngine(model);
+    engine.execute({ type: 'addElement', payload: { tag: 'Group', name: 'Undone' } });
+    assert.strictEqual(engine.undo().ok, true, 'prepare existing history to verify it remains unchanged');
+    const beforeModel = JSON.parse(JSON.stringify(model)) as FormModel;
+    const beforeHistory = engine.getSnapshot();
+
+    const result = executeBatch(engine, [propertyChange('field-1', '999'), propertyChange('missing-id', '888')]);
+
+    assert.strictEqual(result.ok, false, 'unknown target is a batch failure');
+    assert.deepStrictEqual(model, beforeModel, 'failure restores all targets changed earlier in the batch');
+    assert.deepStrictEqual(engine.getSnapshot(), beforeHistory, 'failure preserves undo and redo history');
+  });
+
+  test('batch targets nested children and the selected attributes or commands section', () => {
+    const model = makeSelectableModel();
+    model.childItemsRoot.push({
+      tag: 'UsualGroup',
+      id: 'group-1',
+      name: 'NestedGroup',
+      properties: {},
+      childItems: [
+        { tag: 'InputField', id: 'nested-field', name: 'NestedField', properties: { Width: '10' }, childItems: [] },
+      ],
+    });
+    model.attributes.push({ name: 'Attribute1', id: 'attribute-1', properties: { Width: '20' } });
+    model.commands.push({ name: 'Command1', id: 'command-1', properties: { Width: '30' } });
+    const engine = new FormCommandEngine(model);
+    const beforeModel = JSON.parse(JSON.stringify(model)) as FormModel;
+
+    const result = executeBatch(engine, [
+      propertyChange('nested-field', '11'),
+      propertyChange('attribute-1', '21', 'attributes'),
+      propertyChange('command-1', '31', 'commands'),
+    ]);
+
+    assert.deepStrictEqual(result, { ok: true });
+    assert.strictEqual(model.childItemsRoot[2].childItems[0].properties.Width, '11');
+    assert.strictEqual(model.attributes[0].properties.Width, '21');
+    assert.strictEqual(model.commands[0].properties.Width, '31');
+    assert.strictEqual(engine.getSnapshot().undoDepth, 1, 'all sections share one batch history entry');
+
+    assert.strictEqual(engine.undo().ok, true);
+    assert.deepStrictEqual(model, beforeModel, 'one undo restores nested, attribute, and command targets');
+  });
+
+  test('batch rejects targets that do not belong to the explicitly selected section', () => {
+    const invalidTargets = [
+      { section: 'attributes', elementId: 'nested-field' },
+      { section: 'attributes', elementId: 'command-1' },
+      { section: 'commands', elementId: 'attribute-1' },
+      { section: 'commands', elementId: 'nested-field' },
+    ];
+
+    for (const invalidTarget of invalidTargets) {
+      const model = makeSelectableModel();
+      model.childItemsRoot.push({
+        tag: 'UsualGroup',
+        id: 'group-1',
+        name: 'NestedGroup',
+        properties: {},
+        childItems: [
+          { tag: 'InputField', id: 'nested-field', name: 'NestedField', properties: { Width: '10' }, childItems: [] },
+        ],
+      });
+      model.attributes.push({ name: 'Attribute1', id: 'attribute-1', properties: { Width: '20' } });
+      model.commands.push({ name: 'Command1', id: 'command-1', properties: { Width: '30' } });
+      const engine = new FormCommandEngine(model);
+      const beforeModel = JSON.parse(JSON.stringify(model)) as FormModel;
+      const beforeHistory = engine.getSnapshot();
+
+      const result = executeBatch(engine, [
+        propertyChange('field-1', '101'),
+        propertyChange(invalidTarget.elementId, '999', invalidTarget.section),
+      ]);
+
+      assert.strictEqual(result.ok, false, `${invalidTarget.section} must reject ${invalidTarget.elementId}`);
+      assert.deepStrictEqual(model, beforeModel, 'section mismatch rolls back earlier commands in the batch');
+      assert.deepStrictEqual(engine.getSnapshot(), beforeHistory, 'section mismatch leaves history unchanged');
+    }
+  });
+
+  test('empty and no-op batches leave the model and history unchanged', () => {
+    const model = makeSelectableModel();
+    const engine = new FormCommandEngine(model);
+    engine.execute({ type: 'addElement', payload: { tag: 'Group', name: 'Undone' } });
+    assert.strictEqual(engine.undo().ok, true, 'prepare existing redo history');
+    const beforeModel = JSON.parse(JSON.stringify(model)) as FormModel;
+    const beforeHistory = engine.getSnapshot();
+    assert.strictEqual(beforeHistory.redoDepth, 1);
+
+    assert.deepStrictEqual(executeBatch(engine, []), { ok: true });
+    assert.deepStrictEqual(engine.getSnapshot(), beforeHistory, 'empty batch has no history effect');
+
+    assert.deepStrictEqual(executeBatch(engine, [
+      propertyChange('field-1', '101'),
+      propertyChange('field-1', '100'),
+    ]), { ok: true });
+    assert.deepStrictEqual(model, beforeModel, 'same-value change leaves model unchanged');
+    assert.deepStrictEqual(engine.getSnapshot(), beforeHistory, 'no-op batch has no history effect');
   });
 
   test('dirty flag changes after execute and resets after undo', () => {
