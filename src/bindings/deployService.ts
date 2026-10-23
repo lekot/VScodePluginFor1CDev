@@ -2,21 +2,15 @@
  * WOW plan §2D #39–42 — последовательная раскатка выгрузки в привязанные ИБ (ibcmd config import).
  * WOW plan §2E #44–45 — режимы раскатки: copy (снимок во временный каталог), block (readonly дерева конфигурации).
  */
-
-import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { normalizeConfigRelativePath } from './bindingPathUtils';
-import type { ConfigurationBinding } from './models/configurationBinding';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
+import type { ConfigurationBinding } from './models/configurationBinding';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import type { InfobaseStorageService } from '../infobases/infobaseStorageService';
-import type { IbcmdInfobaseOperationResult } from '../services/ibcmd/ibcmdInfobaseOperationResult';
 import { appendIbcmdOutputLine, runInfobaseConfigImportFromDirectory, runInfobaseConfigIncrementalImport, runInfobaseConfigExportObjects } from '../infobases/infobaseConfigCommands';
 import { InfobaseConfigurationOperationCancelledError, runInfobaseConfigurationOperation } from '../infobases/infobaseConfigurationOperationQueue';
 import { runConfigurationMutation as defaultRunConfigurationMutation, isConfigurationMutationGatewayConfigured } from '../services/configurationSession/configurationMutationGateway';
-import { resolveInfobaseCanonicalIdentity } from '../infobases/infobaseCanonicalIdentity';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { collectFilesForSelection, resolveIbcmdObjectId } from '../services/ibcmd/objectFileCollector';
 import { detectDeployGuards } from './deployPreflightGuards';
@@ -24,524 +18,79 @@ import { validateDeployRelativeFiles } from '../services/ibcmd/deployPathValidat
 import { expandBslSiblings } from './bslExpansion';
 import { checkRecentDeploy, computeFilesContentSignature, recordDeploy } from './deployDedupCache';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
-import type { ProcessTreeTerminationOutcome } from '../services/ibcmd/processTreeTermination';
-import { DeployLockedObjectsPlanner, type DeploySupportPlannerRequest, type DeploySupportPreflight, type DeploySupportPreflightErrorCode, filterOutLockedObjectFiles } from './deployLockedObjectsFilter';
+import { filterOutLockedObjectFiles } from './deployLockedObjectsFilter';
 import { MESSAGES } from '../constants/messages';
-import type { TreeNode } from '../models/treeNode';
-import type { ConfigurationId } from '../services/configurationSession/types';
-import type { SupportApplicationFacade } from '../support/supportApplicationServiceRegistry';
-import type { MasterSupportState, SupportStatusResult } from '../support/supportTypes';
-import { assertExistingPathWithinRootSync, PathBoundaryError, validateWorkspaceRelativePath } from '../services/configurationSession/pathBoundary';
+import {
+  readDeployMode,
+  readDeployPrecheckXmlBeforeImportSetting,
+  configurationTreeReadonlyGlob,
+  applyReadonlyIncludeForDeploy,
+} from './deployReadonlyLease';
+import {
+  createConfigurationSnapshot,
+  cleanupConfigurationSnapshot,
+  DeploySnapshotCancelledError,
+} from './deploySnapshot';
+import { resolveConfigurationXmlDirectory, resolveDeployTargetsForBinding } from './deployResolution';
+import {
+  appendSupportFilePlan,
+  gateConfigurationXmlRetry,
+  isDeploySupportRejected,
+  isSupportGateFailure,
+  planDeploySupport,
+  supportSkipMessage,
+  synchronizePendingSupportForTarget,
+} from './deploySupportGate';
+import {
+  appendDeployRunSummaryLine,
+  appendSkippedAfterUncertainOperation,
+  partialDeployMessage,
+  rejectDeployBeforeIbcmd,
+  stableUniqueFiles,
+  summarizeDeployRun,
+  targetSupportGateFailure,
+  toInDoubtDeployItem,
+} from './deployResultProjection';
+import type {
+  DeployChangedFilesParams,
+  DeployItemResult,
+  DeployProgressSink,
+  DeployRunSummary,
+  DeploySelectedObjectsParams,
+  DeployServiceDeps,
+  DeploySupportContext,
+  PullSelectedObjectsParams,
+} from './deployContracts';
 
-export type DeployItemStatus = 'success' | 'error' | 'inDoubt' | 'skipped';
-
-export interface DeployItemResult {
-  readonly infobaseId: string;
-  readonly name: string;
-  readonly status: DeployItemStatus;
-  readonly message: string;
-  readonly errorCode?: DeployItemErrorCode;
-  readonly skippedFiles?: readonly string[];
-  /** True when an import may have changed the target despite an uncertain outcome. */
-  readonly effectPossible?: boolean;
-  readonly termination?: ProcessTreeTerminationOutcome;
-}
-
-export interface DeployRunSummary {
-  readonly results: DeployItemResult[];
-  readonly successCount: number;
-  readonly errorCount: number;
-  /** Imports whose effects may have occurred but could not be confirmed. */
-  readonly inDoubtCount: number;
-  /** Предпролётные пропуски, веб-базы, отмена и т.п. */
-  readonly skippedCount: number;
-  /** At least one target omitted concrete requested files from its result. */
-  readonly hasPartial: boolean;
-  /** Пользователь отменил во время цепочки — дальнейшие базы не запускались. */
-  readonly cancelledMidChain: boolean;
-}
-
-export interface DeployProgressSink {
-  report(value: { message?: string; increment?: number }): void;
-}
-
-export type DeploySupportErrorCode =
-  | DeploySupportPreflightErrorCode
-  | 'SUPPORT_DEPLOY_TARGET_NOT_REPLICATED' | 'SUPPORT_BINDING_INVALID' | 'SUPPORT_TARGET_UNSUPPORTED'
-  | 'SUPPORT_FILE_MISSING' | 'SUPPORT_NOT_MANAGED' | 'SUPPORT_REPLICATION_FAILED'
-  | 'SUPPORT_REPLICATION_INCOMPLETE' | 'SUPPORT_TARGET_SELECTION_REJECTED';
-
-export type DeployItemErrorCode = DeploySupportErrorCode | 'DEPLOY_OPERATION_IN_DOUBT';
-
-/** Exact support facade/identity pair supplied by UI and Agent composition roots. */
-export interface DeploySupportContext {
-  readonly configurationId: ConfigurationId;
-  readonly facade: Pick<SupportApplicationFacade, 'getStatus' | 'getMasterStatus' | 'sync'>;
-}
-
-export type DeployMode = 'copy' | 'block';
-
-/** Режим из настроек `1cMetadataTree.deploy.mode` (по умолчанию copy, дизайн §16.5). */
-export function readDeployMode(): DeployMode {
-  const v = vscode.workspace.getConfiguration('1cMetadataTree').get<string>('deploy.mode', 'copy');
-  return v === 'block' ? 'block' : 'copy';
-}
-
-/** Optional XML precheck gate before deploy import (default off). */
-export function readDeployPrecheckXmlBeforeImportSetting(): boolean {
-  return vscode.workspace.getConfiguration('1cMetadataTree').get<boolean>('deploy.precheckXmlBeforeImport') === true;
-}
-
-/**
- * VS Code 1.88+: `files.readonlyInclude` для временной блокировки редактирования (дизайн §16.5).
- */
-export function vscodeSupportsDeployReadonlyLock(): boolean {
-  const m = /^(\d+)\.(\d+)/.exec(vscode.version);
-  if (!m) {
-    return false;
-  }
-  const major = Number.parseInt(m[1]!, 10);
-  const minor = Number.parseInt(m[2]!, 10);
-  return major > 1 || (major === 1 && minor >= 88);
-}
-
-/**
- * Glob относительно корня workspace folder: дерево выгрузки (папка с Configuration.xml).
- * Если Configuration.xml в корне папки — `**` (вся папка workspace).
- */
-export function configurationTreeReadonlyGlob(configRelativePath: string): string {
-  const norm = normalizeConfigRelativePath(configRelativePath);
-  const dir = path.posix.dirname(norm);
-  if (!dir || dir === '.') {
-    return '**';
-  }
-  return `${dir}/**`;
-}
-
-interface FolderLockState {
-  readonly baselinePatterns: Set<string>;
-  readonly hadWorkspaceFolderValue: boolean;
-  readonly activePatterns: Map<string, number>;
-  pendingOps: number;
-  mutationQueue: Promise<void>;
-}
-
-const activeFolderLocks = new Map<string, FolderLockState>();
-
-function cleanupFolderLockIfIdle(normRoot: string, state: FolderLockState): void {
-  if (state.pendingOps === 0 && state.activePatterns.size === 0 && activeFolderLocks.get(normRoot) === state) {
-    activeFolderLocks.delete(normRoot);
-  }
-}
-
-export function resetReadonlyIncludeDeployLocksForTests(): void {
-  activeFolderLocks.clear();
-}
-
-export async function applyReadonlyIncludeForDeploy(
-  workspaceFolderRoot: string,
-  globPattern: string,
-): Promise<{ dispose: () => Promise<void> } | undefined> {
-  if (!vscodeSupportsDeployReadonlyLock()) {
-    return undefined;
-  }
-  const scope = vscode.Uri.file(workspaceFolderRoot);
-  const cfg = vscode.workspace.getConfiguration('files', scope);
-  const normRoot = path.normalize(workspaceFolderRoot);
-
-  let lockState = activeFolderLocks.get(normRoot);
-  if (!lockState) {
-    const baseline = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
-    const baselinePatterns = new Set<string>();
-    if (baseline) {
-      for (const [k, v] of Object.entries(baseline)) {
-        if (v) {
-          baselinePatterns.add(k);
-        }
-      }
-    }
-    lockState = {
-      baselinePatterns,
-      hadWorkspaceFolderValue: baseline !== undefined && Object.keys(baseline).length > 0,
-      activePatterns: new Map<string, number>(),
-      pendingOps: 0,
-      mutationQueue: Promise.resolve(),
-    };
-    activeFolderLocks.set(normRoot, lockState);
-  }
-
-
-  const targetState = lockState!;
-  targetState.pendingOps++;
-
-  const updateOp = async () => {
-    try {
-      const currentCount = targetState.activePatterns.get(globPattern) ?? 0;
-      targetState.activePatterns.set(globPattern, currentCount + 1);
-
-    const liveConfig = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
-    const merged: Record<string, boolean> = { ...(liveConfig ?? {}) };
-    for (const pat of targetState.activePatterns.keys()) {
-      merged[pat] = true;
-    }
-    await cfg.update('readonlyInclude', merged, vscode.ConfigurationTarget.WorkspaceFolder);
-    } finally {
-      targetState.pendingOps--;
-      cleanupFolderLockIfIdle(normRoot, targetState);
-    }
-  };
-  const currentOp = targetState.mutationQueue.then(updateOp, updateOp);
-  targetState.mutationQueue = currentOp.then(() => undefined, () => undefined);
-
-  try {
-    await currentOp;
-  } catch {
-    targetState.pendingOps++;
-    const rollbackOp = async () => {
-      try {
-        const count = targetState.activePatterns.get(globPattern) ?? 1;
-        if (count <= 1) {
-          targetState.activePatterns.delete(globPattern);
-        } else {
-          targetState.activePatterns.set(globPattern, count - 1);
-        }
-      } finally {
-        targetState.pendingOps--;
-        cleanupFolderLockIfIdle(normRoot, targetState);
-      }
-    };
-    const nextRollback = targetState.mutationQueue.then(rollbackOp, rollbackOp);
-    targetState.mutationQueue = nextRollback.then(() => undefined, () => undefined);
-    await nextRollback;
-    return undefined;
-  }
-  let disposed = false;
-  return {
-    async dispose() {
-      if (disposed) {
-        return;
-      }
-      disposed = true;
-      try {
-        targetState.pendingOps++;
-        const disposeOp = async () => {
-          try {
-            const count = targetState.activePatterns.get(globPattern) ?? 1;
-          if (count <= 1) {
-            targetState.activePatterns.delete(globPattern);
-          } else {
-            targetState.activePatterns.set(globPattern, count - 1);
-          }
-          const currentLive = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
-          const nextConfig: Record<string, boolean> = { ...(currentLive ?? {}) };
-
-          if (!targetState.activePatterns.has(globPattern) && !targetState.baselinePatterns.has(globPattern)) {
-            delete nextConfig[globPattern];
-          }
-
-          for (const pat of targetState.activePatterns.keys()) {
-            nextConfig[pat] = true;
-          }
-
-          if (targetState.activePatterns.size === 0) {
-            if (Object.keys(nextConfig).length === 0 && !targetState.hadWorkspaceFolderValue) {
-              await cfg.update('readonlyInclude', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
-            } else {
-              await cfg.update('readonlyInclude', nextConfig, vscode.ConfigurationTarget.WorkspaceFolder);
-            }
-          } else {
-            await cfg.update('readonlyInclude', nextConfig, vscode.ConfigurationTarget.WorkspaceFolder);
-          }
-        } finally {
-          targetState.pendingOps--;
-          cleanupFolderLockIfIdle(normRoot, targetState);
-        }
-        };
-
-        const op = targetState.mutationQueue.then(disposeOp, disposeOp);
-        targetState.mutationQueue = op.then(() => undefined, () => undefined);
-        await op;
-      } catch {
-        /* не мешаем завершению раскатки */
-      }
-    },
-  };
-}
-
-const DEPLOY_SNAPSHOT_COPY_CONCURRENCY = 8;
-
-export class DeploySnapshotCancelledError extends Error {
-  readonly code = 'DEPLOY_SNAPSHOT_CANCELLED';
-
-  constructor() {
-    super('Deploy snapshot creation cancelled');
-    this.name = 'DeploySnapshotCancelledError';
-  }
-}
-
-export interface DeploySnapshotOptions {
-  readonly concurrency?: number;
-  /** Test seam; production uses fs.promises.copyFile. */
-  readonly copyFile?: (source: string, destination: string) => Promise<void>;
-}
-
-interface DeploySnapshotPlan {
-  readonly directories: Array<{ source: string; relativePath: string }>;
-  readonly files: Array<{ source: string; relativePath: string }>;
-  readonly symlinks: Array<{ source: string; relativePath: string }>;
-}
-
-function throwIfSnapshotCancelled(token: Pick<vscode.CancellationToken, 'isCancellationRequested'>): void {
-  if (token.isCancellationRequested) {
-    throw new DeploySnapshotCancelledError();
-  }
-}
-
-async function buildDeploySnapshotPlan(
-  sourceDir: string,
-  token: Pick<vscode.CancellationToken, 'isCancellationRequested'>,
-): Promise<DeploySnapshotPlan> {
-  const directories: DeploySnapshotPlan['directories'] = [];
-  const files: DeploySnapshotPlan['files'] = [];
-  const symlinks: DeploySnapshotPlan['symlinks'] = [];
-  const pending = [{ source: sourceDir, relativePath: '' }];
-
-  while (pending.length > 0) {
-    throwIfSnapshotCancelled(token);
-    const current = pending.pop()!;
-    const stat = await fs.promises.lstat(current.source);
-    if (stat.isSymbolicLink()) {
-      symlinks.push(current);
-      continue;
-    }
-    if (stat.isDirectory()) {
-      directories.push(current);
-      const entries = await fs.promises.readdir(current.source, { withFileTypes: true });
-      for (let index = entries.length - 1; index >= 0; index -= 1) {
-        const entry = entries[index]!;
-        pending.push({
-          source: path.join(current.source, entry.name),
-          relativePath: path.join(current.relativePath, entry.name),
-        });
-      }
-      continue;
-    }
-    if (stat.isFile()) {
-      files.push(current);
-    }
-  }
-
-  return { directories, files, symlinks };
-}
-
-async function mapDeploySnapshotLimit<T>(
-  items: readonly T[],
-  concurrency: number,
-  worker: (item: T) => Promise<void>,
-): Promise<void> {
-  const limit = Math.max(1, Math.min(Math.floor(concurrency), items.length || 1));
-  let nextIndex = 0;
-  let failed = false;
-  let firstError: unknown;
-  async function run(): Promise<void> {
-    while (nextIndex < items.length && !failed) {
-      const index = nextIndex;
-      nextIndex += 1;
-      try {
-        await worker(items[index]!);
-      } catch (error) {
-        if (!failed) {
-          failed = true;
-          firstError = error;
-        }
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: limit }, run));
-  if (failed) {
-    throw firstError;
-  }
-}
-
-/** Async, bounded and cancellation-aware deploy snapshot. */
-export async function createConfigurationSnapshot(
-  sourceDir: string,
-  token: Pick<vscode.CancellationToken, 'isCancellationRequested'>,
-  options: DeploySnapshotOptions = {},
-): Promise<string> {
-  const plan = await buildDeploySnapshotPlan(sourceDir, token);
-  throwIfSnapshotCancelled(token);
-
-  const parent = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cv-deploy-snap-'));
-  const destination = path.join(parent, 'cfg');
-  try {
-    for (const directory of plan.directories) {
-      throwIfSnapshotCancelled(token);
-      await fs.promises.mkdir(path.join(destination, directory.relativePath), { recursive: true });
-    }
-    for (const link of plan.symlinks) {
-      throwIfSnapshotCancelled(token);
-      const target = await fs.promises.readlink(link.source);
-      await fs.promises.symlink(target, path.join(destination, link.relativePath));
-    }
-    const copyFile = options.copyFile ?? fs.promises.copyFile.bind(fs.promises);
-    await mapDeploySnapshotLimit(
-      plan.files,
-      options.concurrency ?? DEPLOY_SNAPSHOT_COPY_CONCURRENCY,
-      async (file) => {
-        throwIfSnapshotCancelled(token);
-        await copyFile(file.source, path.join(destination, file.relativePath));
-        throwIfSnapshotCancelled(token);
-      },
-    );
-    return destination;
-  } catch (error) {
-    await fs.promises.rm(parent, { recursive: true, force: true }).catch(() => undefined);
-    throw error;
-  }
-}
-
-/**
- * Резолв каталога выгрузки: родительский каталог Configuration.xml (как в интерактивном import).
- */
-export function resolveConfigurationXmlDirectory(
-  workspaceFolderRoot: string,
-  configRelativePath: string,
-): { ok: true; sourceDir: string; configXml: string } | { ok: false; message: string } {
-  if (!configRelativePath.trim()) {
-    return { ok: false, message: 'Не задан относительный путь к Configuration.xml.' };
-  }
-  let rel: string;
-  try {
-    rel = validateWorkspaceRelativePath(configRelativePath);
-  } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : String(error) };
-  }
-  const configXml = path.resolve(workspaceFolderRoot, rel);
-  const base = path.basename(configXml);
-  if (base.toLowerCase() !== 'configuration.xml') {
-    return {
-      ok: false,
-      message: 'Ожидался путь к файлу Configuration.xml в привязке.',
-    };
-  }
-  try {
-    if (!fs.existsSync(configXml)) {
-      return {
-        ok: false,
-        message: `Файл конфигурации не найден: ${configXml}`,
-      };
-    }
-    const contained = assertExistingPathWithinRootSync(workspaceFolderRoot, configXml);
-    return {
-      ok: true,
-      sourceDir: path.dirname(contained.canonicalTarget),
-      configXml: contained.canonicalTarget,
-    };
-  } catch (error) {
-    const detail = error instanceof PathBoundaryError ? error.message : `Не удалось проверить путь: ${configXml}`;
-    return { ok: false, message: detail };
-  }
-}
-
-/** Подписи целей для диалога подтверждения (порядок = порядок раскатки). */
-export function listDeployTargetLabels(binding: ConfigurationBinding, catalog: readonly InfobaseEntry[]): string[] {
-  const catalogById = new Map(catalog.map((e) => [e.id, e] as const));
-  const orderedIds = binding.infobaseIds;
-  const activeIds =
-    binding.massDeployment === true ? orderedIds : orderedIds.length > 0 ? [orderedIds[0]!] : [];
-  const lines: string[] = [];
-  for (const id of activeIds) {
-    const entry = catalogById.get(id);
-    if (!entry) {
-      lines.push(`• (${id}) — не найдена в каталоге`);
-    } else if (entry.type === 'web') {
-      lines.push(`• ${entry.name} — веб-база, будет пропущена`);
-    } else {
-      lines.push(`• ${entry.name}`);
-    }
-  }
-  return lines;
-}
-
-/** Список ИБ для ibcmd import с учётом massDeployment и фильтра веб-баз (для UI и DeployService). */
-export function resolveDeployTargetsForBinding(
-  binding: ConfigurationBinding,
-  catalogById: ReadonlyMap<string, InfobaseEntry>,
-): { entries: InfobaseEntry[]; skipped: DeployItemResult[] } {
-  const skipped: DeployItemResult[] = [];
-  const orderedIds = binding.infobaseIds;
-  const activeIds =
-    binding.massDeployment === true ? orderedIds : orderedIds.length > 0 ? [orderedIds[0]!] : [];
-
-  const entries: InfobaseEntry[] = [];
-  for (const id of activeIds) {
-    const entry = catalogById.get(id);
-    if (!entry) {
-      skipped.push({
-        infobaseId: id,
-        name: id,
-        status: 'skipped',
-        message: 'База не найдена в каталоге Infobase Manager.',
-      });
-      continue;
-    }
-    if (entry.type === 'web') {
-      skipped.push({
-        infobaseId: id,
-        name: entry.name,
-        status: 'skipped',
-        message: 'Веб-база: загрузка конфигурации через ibcmd не поддерживается.',
-      });
-      continue;
-    }
-    entries.push(entry);
-  }
-  return { entries, skipped };
-}
-
-export interface DeploySelectedObjectsParams {
-  binding: ConfigurationBinding;
-  workspaceFolderRoot: string;
-  storage: InfobaseStorageService;
-  catalog: readonly InfobaseEntry[];
-  selectedNodes: readonly TreeNode[];
-  progress: DeployProgressSink;
-  token: vscode.CancellationToken;
-  support?: DeploySupportContext;
-  onOutput?: (chunk: string) => void;
-}
-
-export interface DeployChangedFilesParams {
-  binding: ConfigurationBinding;
-  workspaceFolderRoot: string;
-  storage: InfobaseStorageService;
-  catalog: readonly InfobaseEntry[];
-  relativeFiles: readonly string[];
-  progress: DeployProgressSink;
-  token: vscode.CancellationToken;
-  support?: DeploySupportContext;
-  onOutput?: (chunk: string) => void;
-}
-
-export interface PullSelectedObjectsParams {
-  binding: ConfigurationBinding;
-  workspaceFolderRoot: string;
-  storage: InfobaseStorageService;
-  entry: InfobaseEntry;
-  selectedNodes: readonly TreeNode[];
-  progress: DeployProgressSink;
-  token: vscode.CancellationToken;
-  onOutput?: (chunk: string) => void;
-  runConfigurationMutation?: <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
-}
-
-export interface DeployServiceDeps {
-  runXmlPreflight?: typeof runIbcmdXmlImportPreflight;
-  runIncrementalImport?: typeof runInfobaseConfigIncrementalImport;
-  runConfigurationExportObjects?: typeof runInfobaseConfigExportObjects;
-  runConfigurationMutation?: <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
-}
+export type {
+  DeployChangedFilesParams,
+  DeployItemErrorCode,
+  DeployItemResult,
+  DeployItemStatus,
+  DeployMode,
+  DeployProgressSink,
+  DeployRunSummary,
+  DeploySelectedObjectsParams,
+  DeployServiceDeps,
+  DeploySupportContext,
+  DeploySupportErrorCode,
+  PullSelectedObjectsParams,
+} from './deployContracts';
+export {
+  applyReadonlyIncludeForDeploy,
+  configurationTreeReadonlyGlob,
+  readDeployMode,
+  readDeployPrecheckXmlBeforeImportSetting,
+  resetReadonlyIncludeDeployLocksForTests,
+  vscodeSupportsDeployReadonlyLock,
+} from './deployReadonlyLease';
+export { DeploySnapshotCancelledError, createConfigurationSnapshot } from './deploySnapshot';
+export type { DeploySnapshotOptions } from './deploySnapshot';
+export {
+  listDeployTargetLabels,
+  resolveConfigurationXmlDirectory,
+  resolveDeployTargetsForBinding,
+} from './deployResolution';
 
 export class DeployService {
   constructor(private readonly deps: DeployServiceDeps = {}) {}
@@ -839,12 +388,7 @@ export class DeployService {
       return s;
     } finally {
       if (snapshotDir) {
-        const parent = path.dirname(snapshotDir);
-        try {
-          await fs.promises.rm(parent, { recursive: true, force: true });
-        } catch {
-          /* временный каталог не критичен */
-        }
+        await cleanupConfigurationSnapshot(snapshotDir);
       }
       await readonlyGuard?.dispose();
     }
@@ -1477,430 +1021,4 @@ export class DeployService {
     appendDeployRunSummaryLine(s);
     return s;
   }
-}
-
-function toInDoubtDeployItem(
-  entry: InfobaseEntry,
-  operation: IbcmdInfobaseOperationResult,
-  skippedFiles?: readonly string[],
-): DeployItemResult {
-  return {
-    infobaseId: entry.id,
-    name: entry.name,
-    status: 'inDoubt',
-    message: operation.userMessage,
-    errorCode: 'DEPLOY_OPERATION_IN_DOUBT',
-    effectPossible: true,
-    ...(operation.termination ? { termination: operation.termination } : {}),
-    ...(skippedFiles ? { skippedFiles } : {}),
-  };
-}
-
-function appendSkippedAfterUncertainOperation(
-  results: DeployItemResult[],
-  entries: readonly InfobaseEntry[],
-  currentIndex: number,
-): void {
-  for (let index = currentIndex + 1; index < entries.length; index += 1) {
-    const entry = entries[index]!;
-    results.push({
-      infobaseId: entry.id,
-      name: entry.name,
-      status: 'skipped',
-      message: 'Пропущено: результат операции на предыдущей базе неопределён.',
-    });
-  }
-}
-
-type TargetSupportGate =
-  | { readonly accepted: true }
-  | {
-      readonly accepted: false;
-      readonly errorCode: DeploySupportErrorCode;
-      readonly message: string;
-    };
-
-async function planDeploySupport(
-  support: DeploySupportContext | undefined,
-  mode: DeploySupportPlannerRequest['mode'],
-  relativeFiles: readonly string[],
-): Promise<DeploySupportPreflight | undefined> {
-  if (!support) {
-    return undefined;
-  }
-  return new DeployLockedObjectsPlanner(support.facade).plan({
-    configurationId: support.configurationId,
-    mode,
-    relativeFiles,
-  });
-}
-
-async function gateConfigurationXmlRetry(
-  support: DeploySupportContext | undefined,
-  entry: InfobaseEntry,
-  plannedPreflight: DeploySupportPreflight | undefined,
-  retryFiles: readonly string[],
-): Promise<TargetSupportGate> {
-  if (!support) {
-    return { accepted: true };
-  }
-  const freshPreflight = await planDeploySupport(support, 'files', retryFiles);
-  if (!freshPreflight) {
-    return supportGateFailure(
-      'SUPPORT_OPERATION_FAILED',
-      'Не удалось сформировать свежий support-план для повтора с Configuration.xml.',
-    );
-  }
-  if (isDeploySupportRejected(freshPreflight)) {
-    return supportGateFailure(
-      freshPreflight.errorCode,
-      `Повтор с Configuration.xml запрещён: support replan отклонён. ${freshPreflight.diagnostics.join(' ')}`,
-    );
-  }
-  if (
-    plannedPreflight?.kind === 'ready'
-    && (
-      freshPreflight.kind !== 'ready'
-      || freshPreflight.generationId !== plannedPreflight.generationId
-    )
-  ) {
-    return supportGateFailure(
-      'SUPPORT_OPERATION_FAILED',
-      'Повтор с Configuration.xml запрещён: generation master поддержки изменилась; сформируйте план раскатки повторно.',
-    );
-  }
-  if (freshPreflight.kind === 'ready' && freshPreflight.lockedSupportSubjectIds.length > 0) {
-    return supportGateFailure(
-      'SUPPORT_OPERATION_FAILED',
-      'Повтор с Configuration.xml запрещён: свежий support-план содержит заблокированные объекты.',
-    );
-  }
-  return synchronizePendingSupportForTarget(
-    support,
-    entry,
-    false,
-    freshPreflight,
-  );
-}
-
-/**
- * Called only from an outer shared target queue lease. The facade sync uses an
- * `ids` selection containing that exact canonical key; the queue's
- * AsyncLocalStorage reentrancy therefore keeps support apply and ibcmd under
- * one lease without reacquisition or all-target expansion.
- */
-async function synchronizePendingSupportForTarget(
-  support: DeploySupportContext | undefined,
-  entry: InfobaseEntry,
-  forceSync: boolean,
-  expectedPreflight: DeploySupportPreflight | undefined,
-): Promise<TargetSupportGate> {
-  if (!support) {
-    return { accepted: true };
-  }
-  if (!expectedPreflight || isDeploySupportRejected(expectedPreflight)) {
-    return supportGateFailure(
-      'SUPPORT_OPERATION_FAILED',
-      'Раскатка запрещена: отсутствует согласованный immutable support-план.',
-    );
-  }
-
-  let masterStatus;
-  try {
-    masterStatus = await support.facade.getMasterStatus({
-      configurationId: support.configurationId,
-    });
-  } catch {
-    return supportGateFailure(
-      'SUPPORT_OPERATION_FAILED',
-      'Не удалось получить master-состояние поддержки перед раскаткой.',
-    );
-  }
-  if (masterStatus.status !== 'available') {
-    return supportGateFailure(
-      'SUPPORT_OPERATION_FAILED',
-      `Master-состояние поддержки недоступно: ${masterStatus.errorCode}.`,
-    );
-  }
-  if (!samePlannedMaster(expectedPreflight, masterStatus.master)) {
-    return supportGateFailure(
-      'SUPPORT_OPERATION_FAILED',
-      'Состояние master поддержки изменилось после deploy preflight; сформируйте план раскатки повторно.',
-    );
-  }
-  if (masterStatus.master.kind === 'unknown') {
-    return supportGateFailure(
-      masterStatus.master.errorCode,
-      `Раскатка запрещена: состояние ParentConfigurations.bin неизвестно (${masterStatus.master.errorCode}).`,
-    );
-  }
-  if (masterStatus.master.kind === 'unmanaged') {
-    return { accepted: true };
-  }
-  const plannedGenerationId = masterStatus.master.snapshot.generationId;
-
-  let identity;
-  try {
-    identity = await resolveInfobaseCanonicalIdentity(entry);
-  } catch {
-    return supportGateFailure(
-      'SUPPORT_REPLICATION_FAILED',
-      'Не удалось вычислить canonical identity целевой ИБ для support/deploy lease.',
-    );
-  }
-  if (!forceSync && !isTargetSupportPending(expectedPreflight.status, identity.canonicalTargetId)) {
-    return { accepted: true };
-  }
-
-  let syncOutcome;
-  try {
-    syncOutcome = await support.facade.sync({
-      configurationId: support.configurationId,
-      targets: { kind: 'ids', targetIds: [identity.canonicalTargetId] },
-      verification: 'fast',
-    });
-  } catch {
-    return supportGateFailure(
-      'SUPPORT_REPLICATION_FAILED',
-      'Синхронизация поддержки перед раскаткой завершилась с ошибкой.',
-    );
-  }
-  if (syncOutcome.status !== 'synchronized') {
-    const code = supportSyncErrorCode(syncOutcome);
-    return supportGateFailure(
-      code,
-      `Поддержка не синхронизирована с целевой ИБ: ${code}.`,
-    );
-  }
-  if (syncOutcome.preflight.scope !== 'replicated' || syncOutcome.run.scope !== 'replicated') {
-    return supportGateFailure(
-      'SUPPORT_DEPLOY_TARGET_NOT_REPLICATED',
-      'Support sync неожиданно завершился в masterOnly scope; раскатка в целевую ИБ запрещена.',
-    );
-  }
-  const target = syncOutcome.run.targets.find(
-    (item) => item.canonicalTargetId === identity.canonicalTargetId,
-  );
-  if (
-    syncOutcome.master.generationId !== plannedGenerationId
-    || syncOutcome.run.desiredGenerationId !== plannedGenerationId
-    || !target
-    || target.desiredGenerationId !== plannedGenerationId
-    || !(
-      (target.state === 'applied' && target.acknowledgedGenerationId === plannedGenerationId)
-      || (target.state === 'verified' && target.verifiedGenerationId === plannedGenerationId)
-    )
-  ) {
-    return supportGateFailure(
-      'SUPPORT_REPLICATION_INCOMPLETE',
-      'Support sync не подтвердил planned generation на master/run/target; сформируйте план раскатки повторно.',
-    );
-  }
-  return { accepted: true };
-}
-
-function supportSyncErrorCode(
-  outcome: Exclude<
-    Awaited<ReturnType<SupportApplicationFacade['sync']>>,
-    { readonly status: 'synchronized' }
-  >,
-): DeploySupportErrorCode {
-  if (outcome.status === 'incomplete' || outcome.status === 'operationRejected') {
-    return outcome.errorCode;
-  }
-  if (outcome.status === 'preflightRejected') {
-    return outcome.preflight.errorCode;
-  }
-  return outcome.errorCode;
-}
-
-function samePlannedMaster(
-  expected: Exclude<DeploySupportPreflight, RejectedDeploySupportPreflight>,
-  actual: MasterSupportState,
-): boolean {
-  if (expected.kind === 'unmanaged') {
-    return actual.kind === 'unmanaged'
-      && actual.reason === expected.reason
-      && expected.status.master.kind === 'unmanaged'
-      && expected.status.master.reason === expected.reason;
-  }
-  return actual.kind === 'ready'
-    && actual.snapshot.generationId === expected.generationId
-    && expected.status.master.kind === 'ready'
-    && expected.status.master.snapshot.generationId === expected.generationId;
-}
-
-function isTargetSupportPending(
-  status: SupportStatusResult,
-  canonicalTargetId: string,
-): boolean {
-  if (status.master.kind !== 'ready') {
-    return false;
-  }
-  const generationId = status.master.snapshot.generationId;
-  const run = status.lastRun;
-  if (
-    !run
-    || run.desiredGenerationId !== generationId
-    || run.scope !== 'replicated'
-  ) {
-    return true;
-  }
-  const target = run.targets.find((item) => item.canonicalTargetId === canonicalTargetId);
-  if (!target) {
-    return true;
-  }
-  return !(
-    target.desiredGenerationId === generationId
-    && (
-      (target.state === 'applied' && target.acknowledgedGenerationId === generationId)
-      || (target.state === 'verified' && target.verifiedGenerationId === generationId)
-    )
-  );
-}
-
-function supportGateFailure(
-  errorCode: DeploySupportErrorCode,
-  message: string,
-): TargetSupportGate {
-  return { accepted: false, errorCode, message };
-}
-
-function isSupportGateFailure(
-  value: unknown,
-): value is Extract<TargetSupportGate, { readonly accepted: false }> {
-  return typeof value === 'object'
-    && value !== null
-    && 'accepted' in value
-    && (value as { readonly accepted?: unknown }).accepted === false;
-}
-
-function targetSupportGateFailure(
-  entry: InfobaseEntry,
-  gate: Extract<TargetSupportGate, { readonly accepted: false }>,
-): DeployItemResult {
-  appendIbcmdOutputLine(`[support-preflight] ${entry.name}: ${gate.message}`);
-  return {
-    infobaseId: entry.id,
-    name: entry.name,
-    status: 'error',
-    message: gate.message,
-    errorCode: gate.errorCode,
-  };
-}
-
-type RejectedDeploySupportPreflight = Extract<
-  DeploySupportPreflight,
-  { readonly kind: 'unknown' | 'fullDeployUnsafe' }
->;
-
-function isDeploySupportRejected(
-  preflight: DeploySupportPreflight | undefined,
-): preflight is RejectedDeploySupportPreflight {
-  return preflight?.kind === 'unknown' || preflight?.kind === 'fullDeployUnsafe';
-}
-
-function rejectDeployBeforeIbcmd(
-  preflight: RejectedDeploySupportPreflight,
-): DeployRunSummary {
-  const message = `Раскатка отклонена до запуска ibcmd: ${preflight.errorCode}. ${preflight.diagnostics.join(' ')}`;
-  const summary = summarizeDeployRun(
-    [{
-      infobaseId: '',
-      name: '',
-      status: 'error',
-      message,
-      errorCode: preflight.errorCode,
-    }],
-    false,
-  );
-  appendIbcmdOutputLine(`[support-preflight] ${message}`);
-  appendDeployRunSummaryLine(summary);
-  return summary;
-}
-
-function appendSupportFilePlan(preflight: DeploySupportPreflight | undefined): void {
-  if (!preflight || isDeploySupportRejected(preflight)) {
-    return;
-  }
-  if (preflight.supportFileRouted) {
-    appendIbcmdOutputLine(
-      '[support-preflight] Ext/ParentConfigurations.bin исключён из ibcmd import files и маршрутизирован через support facade.',
-    );
-  }
-  if (preflight.skippedLockedFiles.length > 0) {
-    appendIbcmdOutputLine(
-      `[support-preflight] Заблокированные master-файлы пропущены: ${preflight.skippedLockedFiles.length}.`,
-    );
-  }
-}
-
-function supportSkipMessage(preflight: DeploySupportPreflight | undefined): string {
-  if (!preflight || isDeploySupportRejected(preflight)) {
-    return 'Файлы для раскатки отсутствуют.';
-  }
-  const parts: string[] = [];
-  if (preflight.skippedLockedFiles.length > 0) {
-    parts.push(`заблокировано поддержкой: ${preflight.skippedLockedFiles.length}`);
-  }
-  if (preflight.supportFileRouted) {
-    parts.push('ParentConfigurations.bin обработан support facade');
-  }
-  return `ibcmd не запускался (${parts.join('; ') || 'после preflight файлов не осталось'}).`;
-}
-
-function stableUniqueFiles(files: readonly string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const file of files) {
-    const key = file.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/').toLocaleLowerCase();
-    if (!seen.has(key)) {
-      seen.add(key);
-      result.push(file);
-    }
-  }
-  return result;
-}
-
-function partialDeployMessage(message: string, skippedFileCount: number): string {
-  return `Частично применено: ${message} Пропущено файлов: ${skippedFileCount}.`;
-}
-
-function summarizeDeployRun(results: DeployItemResult[], cancelledMidChain: boolean): DeployRunSummary {
-  let successCount = 0;
-  let errorCount = 0;
-  let inDoubtCount = 0;
-  let skippedCount = 0;
-  let hasPartial = false;
-  for (const r of results) {
-    if ((r.skippedFiles?.length ?? 0) > 0) {
-      hasPartial = true;
-    }
-    if (r.status === 'success') {
-      successCount += 1;
-    } else if (r.status === 'error') {
-      errorCount += 1;
-    } else if (r.status === 'inDoubt') {
-      inDoubtCount += 1;
-    } else {
-      skippedCount += 1;
-    }
-  }
-  return { results, successCount, errorCount, inDoubtCount, skippedCount, hasPartial, cancelledMidChain };
-}
-
-/** Итог раскатки в Output (дизайн UC-12 §12.5). */
-function appendDeployRunSummaryLine(summary: DeployRunSummary): void {
-  const tail = summary.cancelledMidChain ? ' Часть баз пропущена (отмена).' : '';
-  const parts: string[] = [`${summary.successCount} успешно`];
-  if (summary.errorCount > 0) {
-    parts.push(`${summary.errorCount} с ошибками`);
-  }
-  if (summary.inDoubtCount > 0) {
-    parts.push(`${summary.inDoubtCount} с неопределённым результатом`);
-  }
-  if (summary.skippedCount > 0) {
-    parts.push(`${summary.skippedCount} пропущено`);
-  }
-  appendIbcmdOutputLine(`[раскатка] Итого: ${parts.join(', ')}.${tail}`);
 }

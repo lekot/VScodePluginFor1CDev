@@ -11,7 +11,7 @@
       "reason": "Static form templates and definitions (#201)"
     },
     "src/bindings/deployService.ts": {
-      "maxLines": 1919,
+      "maxLines": 1025,
       "reason": "Deploy service orchestration (#201)"
     },
     "src/compareMerge/configurationCompareService.ts": {
