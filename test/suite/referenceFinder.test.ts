@@ -112,6 +112,21 @@ suite('referenceFinder', () => {
     assert.ok(!content.includes('CatalogRef.OldName'));
   });
 
+  test('replaceIdentityTokensInProject leaves matching-type XML unchanged when no token matches', async () => {
+    const filePath = path.join(tmpDir, 'NoMatchingIdentity.xml');
+    const originalContent = '<root><Ref>CatalogRef.AnotherCatalog</Ref><Comment>keep this</Comment></root>';
+    await fs.promises.writeFile(filePath, originalContent, 'utf8');
+
+    const result = await replaceIdentityTokensInProject(
+      tmpDir,
+      new Map([['CatalogRef.OldName', 'CatalogRef.NewName']]),
+    );
+
+    assert.deepStrictEqual(result, [], 'the public API returns no writes when planning finds no matching token');
+    assert.strictEqual(await fs.promises.readFile(filePath, 'utf8'), originalContent,
+      'a no-match scan must not publish or reformat the XML file');
+  });
+
   test('identity replacement executes one exact-snapshot plan and protects a foreign writer during rollback', async () => {
     const firstPath = path.join(tmpDir, '01-first.xml');
     const secondPath = path.join(tmpDir, '02-second.xml');

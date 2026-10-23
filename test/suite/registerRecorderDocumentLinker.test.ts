@@ -277,6 +277,45 @@ suite('registerRecorderDocumentLinker', () => {
     assert.ok(result.includes('<Value marker="A &amp; B">Nested &lt;payload&gt;</Value>'));
   });
 
+  test('append and remove handle long tag whitespace, quoted delimiters, and nested self-closing lookalikes', () => {
+    const whitespace = ' '.repeat(4096);
+    const xml = `<MetaDataObject xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<Document><Properties><Name>Recorder</Name><RegisterRecords marker="quoted > delimiter"${whitespace}/>
+<ExtensionPayload><RegisterRecords/><Value>keep &amp; preserve</Value></ExtensionPayload>
+</Properties><ChildObjects/></Document></MetaDataObject>`;
+
+    const appended = appendRegisterReferenceToRecorderDocumentXml(xml, 'CalculationRegister', 'LongTag');
+    assert.strictEqual(XMLValidator.validate(appended), true,
+      'the direct self-closing section expands into well-formed XML despite long attribute whitespace');
+    assert.match(appended, /<RegisterRecords marker="quoted > delimiter"[^>]*>\s*<xr:Item xsi:type="xr:MDObjectRef">CalculationRegister\.LongTag<\/xr:Item>/,
+      'the direct self-closing RegisterRecords section receives the new identity');
+    assert.match(appended, /<ExtensionPayload><RegisterRecords\/><Value>keep &amp; preserve<\/Value><\/ExtensionPayload>/,
+      'a nested self-closing lookalike and escaped payload remain unchanged');
+
+    const removed = removeRegisterReferenceFromRecorderDocumentXml(appended, 'CalculationRegister', 'LongTag');
+    assert.strictEqual(XMLValidator.validate(removed), true, 'compacting the emptied direct section preserves valid XML');
+    assert.match(removed, /<RegisterRecords marker="quoted > delimiter"\/>/,
+      'removing the only direct item returns its section to self-closing form');
+    assert.match(removed, /<ExtensionPayload><RegisterRecords\/><Value>keep &amp; preserve<\/Value><\/ExtensionPayload>/,
+      'compaction leaves the nested lookalike and escaped payload intact');
+  });
+
+  test('pure recorder XML helpers reject malformed markup without returning a partial rewrite', () => {
+    const unterminatedComment = '<Document><Properties><RegisterRecords/><!-- unfinished';
+    assert.throws(
+      () => appendRegisterReferenceToRecorderDocumentXml(unterminatedComment, 'AccumulationRegister', 'Malformed'),
+      /unterminated markup section/,
+      'append must stop when it cannot find the comment terminator while scanning markup',
+    );
+
+    const mismatchedElements = '<Document><Properties><RegisterRecords><xr:Item>AccumulationRegister.Bad</RegisterRecords></Properties></Document>';
+    assert.throws(
+      () => removeRegisterReferenceFromRecorderDocumentXml(mismatchedElements, 'AccumulationRegister', 'Bad'),
+      /XML is malformed/,
+      'remove validates the complete XML document before calculating changes',
+    );
+  });
+
   test('pure removal removes only the direct recorder item, preserving nested lookalikes and adjacent references', () => {
     const xml = `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 <Document><Properties><Name>Recorder</Name>

@@ -367,6 +367,69 @@ ${childObjects}
     }
   });
 
+  for (const scenario of [
+    {
+      name: 'invalid recorder name',
+      recorderName: '../OutsideRecorder',
+      configuration: BASE_CONFIG_XML('      <Document>Recorder</Document>'),
+      expectedMessage: 'Некорректное имя документа-регистратора',
+    },
+    {
+      name: 'Configuration.xml without a Document list',
+      recorderName: 'Recorder',
+      configuration: BASE_CONFIG_XML(''),
+      expectedMessage: 'не зарегистрирован в Configuration.xml',
+    },
+  ] as const) {
+    test(`EDT register creation rejects ${scenario.name} before planning or writing`, async () => {
+      const previousRecorder = process.env.IBCMD_RECORDER_DOCUMENT;
+      const sourceRegisters = path.join(tmpDir, 'src', 'AccumulationRegisters');
+      const configurationBefore = scenario.configuration;
+      await fs.promises.mkdir(sourceRegisters, { recursive: true });
+      fs.writeFileSync(configXmlPath(), configurationBefore, 'utf8');
+
+      let planCount = 0;
+      const gateway = configureConfigurationMutationGateway(
+        async <T>(_resourcePath: string, _kind: string, operation: () => Promise<T>): Promise<T> => operation(),
+        async <T>(resourcePath: string, plan: MutationPlan<T>): Promise<T> => {
+          planCount++;
+          return new MutationPlanExecutor(resourcePath).execute(plan);
+        },
+      );
+
+      try {
+        process.env.IBCMD_RECORDER_DOCUMENT = scenario.recorderName;
+        let failure: unknown;
+        try {
+          await createElement(
+            createTypeNode(MetadataType.AccumulationRegister, configNode, sourceRegisters),
+            'RejectedRegister',
+          );
+        } catch (error) {
+          failure = error;
+        }
+
+        assert.ok(failure instanceof Error, `${scenario.name} must reject creation`);
+        assert.ok(failure.message.includes(scenario.expectedMessage),
+          `${scenario.name} must report its validation failure: ${failure.message}`);
+        assert.strictEqual(planCount, 0, `${scenario.name} must be rejected before plan execution`);
+        assert.strictEqual(await fs.promises.readFile(configXmlPath(), 'utf8'), configurationBefore,
+          'Configuration.xml must remain unchanged');
+        assert.strictEqual(await fileExists(path.join(sourceRegisters, 'RejectedRegister.xml')), false,
+          'the register file must not be created');
+        assert.strictEqual(await fileExists(path.join(tmpDir, 'src', 'Documents', 'OutsideRecorder.xml')), false,
+          'an invalid recorder name must not escape the source Documents directory');
+      } finally {
+        gateway.dispose();
+        if (previousRecorder === undefined) {
+          delete process.env.IBCMD_RECORDER_DOCUMENT;
+        } else {
+          process.env.IBCMD_RECORDER_DOCUMENT = previousRecorder;
+        }
+      }
+    });
+  }
+
   test('EDT recorder contributor failure occurs before the main plan commits', async () => {
     const previousRecorder = process.env.IBCMD_RECORDER_DOCUMENT;
     const sourceDocuments = path.join(tmpDir, 'src', 'Documents');

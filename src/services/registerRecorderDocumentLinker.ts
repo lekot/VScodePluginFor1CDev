@@ -68,7 +68,7 @@ export function removeRegisterReferenceFromRecorderDocumentXml(
       if (result.slice(openingEnd, section.closingStart).trim() !== '') {
         continue;
       }
-      const selfClosingTag = result.slice(section.start, openingEnd).replace(/\s*>$/, '/>');
+      const selfClosingTag = `${result.slice(section.start, openingEnd - 1).trimEnd()}/>`;
       result = `${result.slice(0, section.start)}${selfClosingTag}${result.slice(section.end)}`;
     }
   }
