@@ -295,6 +295,9 @@ window.addEventListener('keydown', (event: KeyboardEvent) => {
   }
 });
 window.addEventListener('message', (event: MessageEvent<PropertiesInboundMessage>) => {
+  if (event.origin !== window.location.origin) {
+    return;
+  }
   handleExtensionMessage(event.data);
 });
 

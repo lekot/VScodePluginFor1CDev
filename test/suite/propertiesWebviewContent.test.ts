@@ -8,6 +8,7 @@ import {
   detectPropertyType,
   renderPropertyInput,
   renderPropertiesBySections,
+  renderStyleItemPreview,
   getWebviewScript,
   getWebviewContent,
   getEmptyStateContent,
@@ -15,6 +16,7 @@ import {
   getFormSelectionWebviewContent,
 } from '../../src/providers/propertiesWebviewContent';
 import type { FormSelectionPayload } from '../../src/formEditor/formMessageHandler';
+import type { ResolvedPicture } from '../../src/services/picture/commonPictureResolver';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -80,10 +82,11 @@ interface PropertiesBrowserFixture {
   saveButton: WebviewTestButton;
   bottomSaveButton: WebviewTestButton;
   messages: unknown[];
-  dispatch(message: unknown): void;
+  dispatch(message: unknown, options?: { origin?: string }): void;
 }
 
 function createPropertiesBrowserFixture(initialProperties: Record<string, string>): PropertiesBrowserFixture {
+  const browserOrigin = 'vscode-webview://properties.test';
   const inputs = Object.entries(initialProperties).map(([property, value]) => new WebviewTestInput(property, value));
   const saveButton = new WebviewTestButton();
   const bottomSaveButton = new WebviewTestButton();
@@ -107,7 +110,10 @@ function createPropertiesBrowserFixture(initialProperties: Record<string, string
         return inputs.find((input) => input.dataset.property === property) ?? null;
       },
     },
-    window: { addEventListener: (type: string, listener: unknown) => windowListeners.set(type, listener) },
+    window: {
+      location: { origin: browserOrigin },
+      addEventListener: (type: string, listener: unknown) => windowListeners.set(type, listener),
+    },
     HTMLInputElement: WebviewTestInput,
     HTMLSelectElement: class extends WebviewTestInput {},
     HTMLTextAreaElement: class extends WebviewTestInput {},
@@ -115,7 +121,7 @@ function createPropertiesBrowserFixture(initialProperties: Record<string, string
     HTMLElement: WebviewTestElement,
     console: { log: () => undefined },
     alert: () => undefined,
-    location: { reload: () => undefined },
+    location: { origin: browserOrigin, reload: () => undefined },
   };
   vm.runInNewContext(getWebviewScript(false), sandbox);
 
@@ -124,10 +130,15 @@ function createPropertiesBrowserFixture(initialProperties: Record<string, string
     saveButton,
     bottomSaveButton,
     messages,
-    dispatch: (message) => {
+    dispatch: (message, options) => {
       const listener = windowListeners.get('message');
       assert.strictEqual(typeof listener, 'function', 'browser message handler is installed');
-      (listener as (event: { data: unknown }) => void)({ data: message });
+      const origin = options ? options.origin : browserOrigin;
+      const event: { data: unknown; origin?: string } = { data: message };
+      if (origin !== undefined) {
+        event.origin = origin;
+      }
+      (listener as (event: { data: unknown; origin?: string }) => void)(event);
     },
   };
 }
@@ -647,6 +658,60 @@ suite('propertiesWebviewContent — getWebviewContent', () => {
     const html = getWebviewContent(node);
     assert.ok(html.includes('Content-Security-Policy'));
   });
+
+  test('legacy token overload keeps session identity and renders supplied picture', () => {
+    const node = makeNode({
+      type: MetadataType.CommonPicture,
+      name: 'HeaderIcon',
+      properties: { Name: 'HeaderIcon' },
+      filePath: '/test/HeaderIcon.xml',
+    });
+    const picture: ResolvedPicture = {
+      success: true,
+      dataUri: 'data:image/png;base64,AA==',
+      format: 'PNG',
+      isZip: true,
+      entryName: 'icon.png',
+    };
+
+    const html = getWebviewContent(node, 'session-legacy', { picture });
+
+    assert.match(html, /"sessionToken":"session-legacy"/);
+    assert.match(html, /data:image\/png;base64,AA==/);
+    assert.match(html, /Вариант: icon\.png/);
+    assert.match(html, /PNG \(ZIP архив\)/);
+    assert.doesNotMatch(html, /class="open-pic-btn"/, 'pathless resolved images have no host open-file action');
+  });
+
+  test('StyleItem host page renders safe font preview from nested XML values', () => {
+    const node = makeNode({
+      type: MetadataType.StyleItem,
+      name: 'AccentFont',
+      properties: {
+        Type: 'Font',
+        Value: {
+          Font: {
+            '@_faceName': 'Unsafe; font-family: attacker',
+            '@_height': 11,
+            '@_bold': 'true',
+            '@_italic': 1,
+            '@_underline': 'true',
+            '@_strikeout': '1',
+          },
+        },
+      },
+      filePath: '/test/AccentFont.xml',
+    });
+
+    const html = getWebviewContent(node);
+
+    assert.match(html, /style-font-sample/);
+    assert.match(html, /font-family: inherit/);
+    assert.match(html, /font-weight: bold/);
+    assert.match(html, /font-style: italic/);
+    assert.match(html, /text-decoration: underline/);
+    assert.doesNotMatch(html, /font-family: Unsafe/);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -822,6 +887,64 @@ suite('propertiesWebviewContent — getFormSelectionWebviewContent', () => {
     assert.match(html, /["']gotoEventHandler["']/);
     assert.match(html, /["']createEventHandler["']/);
   });
+
+  test('Form selections render complex values and both catalog and assigned event actions', () => {
+    const selection = makeSelection({
+      tag: 'Form',
+      id: 'form-root',
+      name: 'MainForm',
+      properties: { Type: { v8: 'Form' }, CommandInterface: ['Open', 'Close'] },
+      events: { OnCreateAtServer: 'OnCreateAtServerHandler', CustomOnRefresh: '' },
+    });
+
+    const html = getFormSelectionWebviewContent(selection, 23);
+
+    assert.match(html, /data-form-value-kind="json"/);
+    assert.match(html, /<textarea/);
+    assert.match(html, /OnCreateAtServerHandler/);
+    assert.match(html, /goto-event-handler-btn/);
+    assert.match(html, /data-event="CustomOnRefresh"/);
+    assert.match(html, /create-event-handler-btn/);
+    assert.match(html, /data-form-selection-revision="23"/);
+  });
+});
+
+suite('propertiesWebviewContent — StyleItem formats', () => {
+  test('Color XML numeric text falls back safely while Designer RGB notation becomes CSS RGB', () => {
+    const unsafeTextNode = makeNode({
+      type: MetadataType.StyleItem,
+      properties: { Type: 'Color', Value: { '#text': 17 } },
+    });
+    const unsafeHtml = renderStyleItemPreview(unsafeTextNode);
+    assert.match(unsafeHtml, /style-preview-value">17</);
+    assert.match(unsafeHtml, /background-color: var\(--vscode-editor-foreground\)/);
+
+    const designerRgbNode = makeNode({
+      type: MetadataType.StyleItem,
+      properties: { Type: 'Color', Value: 'd0p0:RGB(12, 34, 56)' },
+    });
+    const rgbHtml = renderStyleItemPreview(designerRgbNode);
+    assert.match(rgbHtml, /background-color: rgb\(12, 34, 56\)/);
+    assert.match(rgbHtml, /d0p0:RGB\(12, 34, 56\)/);
+  });
+
+  test('Border values render escaped structured data and unknown style types have no preview', () => {
+    const borderNode = makeNode({
+      type: MetadataType.StyleItem,
+      properties: { Type: 'Border', Value: { line: '<solid>', width: 2 } },
+    });
+    const borderHtml = renderStyleItemPreview(borderNode);
+    assert.match(borderHtml, /style-border-sample/);
+    assert.match(borderHtml, /&lt;solid&gt;/);
+    assert.doesNotMatch(borderHtml, /<solid>/);
+
+    const unsupportedNode = makeNode({
+      type: MetadataType.StyleItem,
+      properties: { Type: 'Gradient', Value: '#fff' },
+    });
+    assert.strictEqual(renderStyleItemPreview(unsupportedNode), '');
+    assert.strictEqual(renderStyleItemPreview(makeNode({ type: MetadataType.Catalog })), '');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -928,6 +1051,31 @@ suite('propertiesWebviewContent — Issue #165 Sticky Header & Dirty Indicator',
 });
 
 suite('propertiesWebviewContent — browser update message semantics', () => {
+  test('ignores messages from a foreign origin without changing UI or document state', () => {
+    const fixture = createPropertiesBrowserFixture({ Type: 'String(10)' });
+    fixture.dispatch(
+      { type: 'typeUpdated', property: 'Type', value: 'String(20)', nodeId: 'node-1', sessionToken: 'session-1' },
+      { origin: 'https://attacker.example' },
+    );
+
+    assert.deepStrictEqual(dirtyMessages(fixture), []);
+    assert.strictEqual(fixture.inputs[0].value, 'String(10)');
+    assert.strictEqual(fixture.inputs[0].classList.contains('changed'), false);
+    assert.strictEqual(fixture.saveButton.disabled, true);
+  });
+
+  test('ignores messages without an origin', () => {
+    const fixture = createPropertiesBrowserFixture({ Type: 'String(10)' });
+    fixture.dispatch(
+      { type: 'typeUpdated', property: 'Type', value: 'String(20)', nodeId: 'node-1', sessionToken: 'session-1' },
+      {},
+    );
+
+    assert.deepStrictEqual(dirtyMessages(fixture), []);
+    assert.strictEqual(fixture.inputs[0].value, 'String(10)');
+    assert.strictEqual(fixture.saveButton.disabled, true);
+  });
+
   test('typeUpdated with the original value keeps Save disabled and the document clean', () => {
     const fixture = createPropertiesBrowserFixture({ Type: 'String(10)' });
     fixture.dispatch({ type: 'typeUpdated', property: 'Type', value: 'String(10)', nodeId: 'node-1', sessionToken: 'session-1' });
