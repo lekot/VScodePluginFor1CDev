@@ -410,6 +410,48 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     assert.strictEqual(staleFromOtherContext, false, 'stale payload from other form must be ignored');
     assert.strictEqual(activeContext, true, 'payload for active form context must be accepted');
   });
+
+  test('form selection matching rejects wrong entity identity and supports the name fallback', () => {
+    const ctx = {
+      currentFormSelection: {
+        source: 'form-editor',
+        docUri: 'file:///form-a/Ext/Form.xml',
+        entityType: 'element',
+        name: 'InputName',
+        properties: { Width: '100' },
+        events: {},
+        selectedIds: [],
+      },
+      currentFormSelectionRevision: 11,
+    } as unknown as MessageHandlerContext;
+    const baseMessage = {
+      type: 'editFormSelectionType' as const,
+      propertyName: 'Type',
+      selectionRevision: '11',
+      docUri: 'file:///form-a/Ext/Form.xml',
+    };
+
+    assert.strictEqual(isMatchingCurrentFormSelection({
+      ...baseMessage,
+      entityType: 'attribute',
+      entityName: 'InputName',
+    }, ctx), false, 'the payload must identify the selected entity kind');
+    assert.strictEqual(isMatchingCurrentFormSelection({
+      ...baseMessage,
+      entityType: 'element',
+      entityId: 'other-element',
+    }, ctx), false, 'the payload must identify the selected entity');
+    assert.strictEqual(isMatchingCurrentFormSelection({
+      ...baseMessage,
+      entityType: 'element',
+      entityName: 'InputName',
+    }, ctx), true, 'form messages may use the selected entity name when no id is available');
+    assert.strictEqual(isMatchingCurrentFormSelection({
+      ...baseMessage,
+      entityType: 'element',
+      entityName: 'InputName',
+    }, { currentFormSelection: null, currentFormSelectionRevision: 11 } as MessageHandlerContext), false);
+  });
 });
 
 suite('PropertiesProvider isOpen / updateIfOpen Test Suite', () => {
@@ -3288,6 +3330,1052 @@ suite('PropertiesProvider — Issue #379 async navigation ownership', () => {
         await navigation.catch(() => false);
       }
       (parser as any).parseFormXml = originalParseFormXml;
+    }
+  });
+
+  test('display-only type parsing supports the advertised primitive and reference names', () => {
+    const primitiveCases = [
+      ['Number(15,2)', 'number', { digits: 15, fractionDigits: 2, allowedSign: 'Any' }],
+      ['String(80)', 'string', { length: 80, allowedLength: 'Variable' }],
+      ['Boolean', 'boolean', undefined],
+      ['date', 'date', { dateFractions: 'Date' }],
+      ['DateTime', 'date', { dateFractions: 'DateTime' }],
+      ['Time', 'date', { dateFractions: 'Time' }],
+    ] as const;
+    for (const [display, kind, qualifiers] of primitiveCases) {
+      const parsed = parseDisplayTypeString(display);
+      assert.strictEqual(parsed?.category, 'primitive', `${display} should be editable`);
+      assert.strictEqual(parsed?.types[0].kind, kind);
+      assert.deepStrictEqual(parsed?.types[0].qualifiers, qualifiers);
+    }
+
+    const referenceAliases = [
+      'CatalogRef',
+      'DocumentRef',
+      'EnumRef',
+      'ChartOfCharacteristicTypesRef',
+      'ChartOfAccountsRef',
+      'ChartOfCalculationTypesRef',
+      'DefinedType',
+    ] as const;
+    for (const referenceKind of referenceAliases) {
+      const parsed = parseDisplayTypeString(`${referenceKind}.ObjectName`);
+      const entry = parsed?.types[0];
+      assert.strictEqual(parsed?.category, 'reference', `${referenceKind} should be a reference type`);
+      assert.ok(entry?.kind === 'reference', `${referenceKind} should produce a reference entry`);
+      if (entry?.kind === 'reference') {
+        assert.deepStrictEqual(entry.referenceType, { referenceKind, objectName: 'ObjectName' });
+      }
+    }
+
+    for (const unsupported of ['', 'Not set', 'String(x)', 'CatalogRef.']) {
+      assert.strictEqual(parseDisplayTypeString(unsupported), null, `${unsupported} should stay non-editable`);
+    }
+  });
+
+  test('editFormSelectionType edits display, object, and XML types in the active form selection', async () => {
+    const formChanges: Array<Record<string, unknown>> = [];
+    provider.dispose();
+    provider = new PropertiesProvider(
+      mockContext,
+      new MetadataTreeDataProvider(),
+      new TypeEditorProvider(mockContext),
+      (payload) => formChanges.push(payload)
+    );
+    const selectionCases = [
+      { id: 'display', type: 'CatalogRef.Products', expectedEditorXml: 'cfg:CatalogRef.Products' },
+      { id: 'object', type: { 'v8:Type': 'xs:string' }, expectedEditorXml: 'xs:string' },
+      { id: 'xml', type: '<Type><v8:Type>xs:date</v8:Type></Type>', expectedEditorXml: 'xs:date' },
+    ];
+    const typeEditor = (provider as any).typeEditorProvider;
+    const originalShow = typeEditor.show;
+    const editorInputs: string[] = [];
+    typeEditor.show = async (xml: string, referenceableObjects: unknown[]) => {
+      editorInputs.push(xml);
+      assert.deepStrictEqual(referenceableObjects, []);
+      return { category: 'primitive', types: [{ kind: 'boolean' }] };
+    };
+
+    let edit: Promise<void> | undefined;
+    const expectedChanges: Array<Record<string, unknown>> = [];
+    try {
+      for (const [index, entry] of selectionCases.entries()) {
+        const selection = {
+          source: 'form-editor' as const,
+          docUri: 'file:///forms/Sales/Ext/Form.xml',
+          entityType: 'attribute' as const,
+          id: `item-${entry.id}`,
+          name: entry.id,
+          tag: 'InputField',
+          properties: { Type: entry.type },
+          events: {},
+          selectedIds: [`item-${entry.id}`],
+        };
+        await provider.showFormSelectionProperties(selection);
+        const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+        edit = handleMessage({
+          type: 'editFormSelectionType',
+          propertyName: 'Type',
+          selectionRevision: String(ctx.currentFormSelectionRevision),
+          docUri: selection.docUri,
+          entityType: entry.id === 'xml' ? undefined : selection.entityType,
+          entityId: entry.id === 'xml' ? undefined : selection.id,
+        }, ctx);
+        await edit;
+        edit = undefined;
+
+        assert.ok(editorInputs[index].includes(entry.expectedEditorXml));
+        assert.ok(String(selection.properties.Type).includes('xs:boolean'));
+        expectedChanges.push({
+          docUri: selection.docUri,
+          entityType: selection.entityType,
+          entityId: selection.id,
+          entityName: selection.name,
+          scope: 'property',
+          key: 'Type',
+          value: selection.properties.Type,
+        });
+      }
+
+      assert.strictEqual(editorInputs.length, selectionCases.length);
+      assert.deepStrictEqual(formChanges, expectedChanges);
+    } finally {
+      if (edit) {
+        await edit.catch(() => undefined);
+      }
+      typeEditor.show = originalShow;
+    }
+  });
+
+  test('stale or unbound Form type edit messages do not open the editor', async () => {
+    const selection = {
+      source: 'form-editor' as const,
+      docUri: 'file:///forms/stale/Ext/Form.xml',
+      entityType: 'attribute' as const,
+      id: 'item-stale',
+      name: 'Stale',
+      properties: { Type: '<Type><v8:Type>xs:string</v8:Type></Type>' },
+      events: {},
+      selectedIds: ['item-stale'],
+    };
+    provider.dispose();
+    provider = new PropertiesProvider(
+      mockContext,
+      new MetadataTreeDataProvider(),
+      new TypeEditorProvider(mockContext),
+      () => undefined
+    );
+    const typeEditor = (provider as any).typeEditorProvider;
+    const originalShow = typeEditor.show;
+    const originalPostMessage = (provider as any).postMessage;
+    const postedMessages: unknown[] = [];
+    let editorShowCount = 0;
+    typeEditor.show = async () => {
+      editorShowCount += 1;
+      return { category: 'primitive', types: [{ kind: 'boolean' }] };
+    };
+    (provider as any).postMessage = (message: unknown) => postedMessages.push(message);
+
+    let edit: Promise<void> | undefined;
+    try {
+      await provider.showFormSelectionProperties(selection);
+      const activeContext = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      edit = handleMessage({
+        type: 'editFormSelectionType',
+        propertyName: 'Type',
+        selectionRevision: String(activeContext.currentFormSelectionRevision + 1),
+        docUri: selection.docUri,
+        entityType: selection.entityType,
+        entityId: selection.id,
+      }, activeContext);
+      await edit;
+      edit = undefined;
+
+      await provider.showFormSelectionProperties(undefined);
+      const emptyContext = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      edit = handleMessage({
+        type: 'editFormSelectionType',
+        propertyName: 'Type',
+        selectionRevision: String(emptyContext.currentFormSelectionRevision),
+        docUri: selection.docUri,
+        entityType: selection.entityType,
+        entityId: selection.id,
+      }, emptyContext);
+      await edit;
+
+      assert.strictEqual(editorShowCount, 0);
+      assert.deepStrictEqual(postedMessages, []);
+      assert.strictEqual(selection.properties.Type, '<Type><v8:Type>xs:string</v8:Type></Type>');
+    } finally {
+      if (edit) {
+        await edit.catch(() => undefined);
+      }
+      typeEditor.show = originalShow;
+      (provider as any).postMessage = originalPostMessage;
+    }
+  });
+
+  test('editFormSelectionType stops after display-type serialization loses the active session', async () => {
+    const formChanges: Array<Record<string, unknown>> = [];
+    provider.dispose();
+    provider = new PropertiesProvider(
+      mockContext,
+      new MetadataTreeDataProvider(),
+      new TypeEditorProvider(mockContext),
+      (payload) => formChanges.push(payload)
+    );
+    const selectionA = {
+      source: 'form-editor' as const,
+      docUri: 'file:///forms/A/Ext/Form.xml',
+      entityType: 'attribute' as const,
+      id: 'item-a',
+      name: 'A',
+      properties: { Type: 'CatalogRef.Products' },
+      events: {},
+      selectedIds: ['item-a'],
+    };
+    const selectionB = {
+      source: 'form-editor' as const,
+      docUri: 'file:///forms/B/Ext/Form.xml',
+      entityType: 'attribute' as const,
+      id: 'item-b',
+      name: 'B',
+      properties: { Type: 'Boolean' },
+      events: {},
+      selectedIds: ['item-b'],
+    };
+    const typeEditor = (provider as any).typeEditorProvider;
+    const originalShow = typeEditor.show;
+    let editorShowCount = 0;
+    typeEditor.show = async () => {
+      editorShowCount += 1;
+      return { category: 'primitive', types: [{ kind: 'boolean' }] };
+    };
+
+    let edit: Promise<void> | undefined;
+    let navigation: Promise<void> | undefined;
+    try {
+      await provider.showFormSelectionProperties(selectionA);
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      edit = handleMessage({
+        type: 'editFormSelectionType',
+        propertyName: 'Type',
+        selectionRevision: String(ctx.currentFormSelectionRevision),
+        docUri: selectionA.docUri,
+        entityType: selectionA.entityType,
+        entityId: selectionA.id,
+      }, ctx);
+
+      navigation = provider.showFormSelectionProperties(selectionB);
+      await navigation;
+      await edit;
+
+      assert.strictEqual(ctx.isCurrentSession?.(), false, 'navigation must retire the captured A context');
+      assert.strictEqual(editorShowCount, 0, 'a stale conversion must stop before opening the editor');
+      assert.strictEqual(formChanges.length, 0, 'A must not publish a type change after B is selected');
+      assert.strictEqual(selectionA.properties.Type, 'CatalogRef.Products');
+      assert.strictEqual((provider as any).currentFormSelection, selectionB);
+    } finally {
+      if (navigation) {
+        await navigation.catch(() => undefined);
+      }
+      if (edit) {
+        await edit.catch(() => undefined);
+      }
+      typeEditor.show = originalShow;
+    }
+  });
+
+  test('a late Form TypeEditor result cannot update a newer form selection', async () => {
+    const formChanges: Array<Record<string, unknown>> = [];
+    provider.dispose();
+    provider = new PropertiesProvider(
+      mockContext,
+      new MetadataTreeDataProvider(),
+      new TypeEditorProvider(mockContext),
+      (payload) => formChanges.push(payload)
+    );
+    const selectionA = {
+      source: 'form-editor' as const,
+      docUri: 'file:///forms/A/Ext/Form.xml',
+      entityType: 'attribute' as const,
+      id: 'item-a',
+      name: 'A',
+      properties: { Type: 'String(40)' },
+      events: {},
+      selectedIds: ['item-a'],
+    };
+    const selectionB = {
+      source: 'form-editor' as const,
+      docUri: 'file:///forms/B/Ext/Form.xml',
+      entityType: 'attribute' as const,
+      id: 'item-b',
+      name: 'B',
+      properties: { Type: 'Boolean' },
+      events: {},
+      selectedIds: ['item-b'],
+    };
+    const typeEditor = (provider as any).typeEditorProvider;
+    const originalShow = typeEditor.show;
+    const editorStarted = createDeferredValue<void>();
+    const editorResult = createDeferredValue<any>();
+    typeEditor.show = () => {
+      editorStarted.resolve(undefined);
+      return editorResult.promise;
+    };
+
+    let edit: Promise<void> | undefined;
+    let navigation: Promise<void> | undefined;
+    try {
+      await provider.showFormSelectionProperties(selectionA);
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      edit = handleMessage({
+        type: 'editFormSelectionType',
+        propertyName: 'Type',
+        selectionRevision: String(ctx.currentFormSelectionRevision),
+        docUri: selectionA.docUri,
+        entityType: selectionA.entityType,
+        entityId: selectionA.id,
+      }, ctx);
+      await editorStarted.promise;
+
+      navigation = provider.showFormSelectionProperties(selectionB);
+      await navigation;
+      editorResult.resolve({ category: 'primitive', types: [{ kind: 'boolean' }] });
+      await edit;
+
+      assert.strictEqual(ctx.isCurrentSession?.(), false);
+      assert.strictEqual(formChanges.length, 0, 'the completed A editor must not publish into B');
+      assert.strictEqual(selectionA.properties.Type, 'String(40)');
+      assert.strictEqual((provider as any).currentFormSelection, selectionB);
+    } finally {
+      editorResult.resolve(null);
+      if (navigation) {
+        await navigation.catch(() => undefined);
+      }
+      if (edit) {
+        await edit.catch(() => undefined);
+      }
+      typeEditor.show = originalShow;
+    }
+  });
+
+  test('a Form selection change during result serialization suppresses the captured update', async () => {
+    const formChanges: Array<Record<string, unknown>> = [];
+    provider.dispose();
+    provider = new PropertiesProvider(
+      mockContext,
+      new MetadataTreeDataProvider(),
+      new TypeEditorProvider(mockContext),
+      (payload) => formChanges.push(payload)
+    );
+    const selectionA = {
+      source: 'form-editor' as const,
+      docUri: 'file:///forms/serialize-a/Ext/Form.xml',
+      entityType: 'attribute' as const,
+      id: 'item-a',
+      name: 'A',
+      properties: { Type: '<Type><v8:Type>xs:string</v8:Type></Type>' },
+      events: {},
+      selectedIds: ['item-a'],
+    };
+    const selectionB = {
+      source: 'form-editor' as const,
+      docUri: 'file:///forms/serialize-b/Ext/Form.xml',
+      entityType: 'attribute' as const,
+      id: 'item-b',
+      name: 'B',
+      properties: { Type: '<Type><v8:Type>xs:boolean</v8:Type></Type>' },
+      events: {},
+      selectedIds: ['item-b'],
+    };
+    const typeEditor = (provider as any).typeEditorProvider;
+    const originalShow = typeEditor.show;
+    const editorStarted = createDeferredValue<void>();
+    const editorResult = createDeferredValue<any>();
+    typeEditor.show = () => {
+      editorStarted.resolve(undefined);
+      return editorResult.promise;
+    };
+
+    let edit: Promise<void> | undefined;
+    let navigation: Promise<void> | undefined;
+    try {
+      await provider.showFormSelectionProperties(selectionA);
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      edit = handleMessage({
+        type: 'editFormSelectionType',
+        propertyName: 'Type',
+        selectionRevision: String(ctx.currentFormSelectionRevision),
+        docUri: selectionA.docUri,
+        entityType: selectionA.entityType,
+        entityId: selectionA.id,
+      }, ctx);
+      await editorStarted.promise;
+
+      editorResult.resolve({ category: 'primitive', types: [{ kind: 'boolean' }] });
+      queueMicrotask(() => {
+        navigation = provider.showFormSelectionProperties(selectionB);
+      });
+      await edit;
+      if (navigation) {
+        await navigation;
+      }
+
+      assert.strictEqual(ctx.isCurrentSession?.(), false);
+      assert.deepStrictEqual(formChanges, [], 'a result serialized after navigation must not publish into B');
+      assert.strictEqual(selectionA.properties.Type, '<Type><v8:Type>xs:string</v8:Type></Type>');
+      assert.strictEqual((provider as any).currentFormSelection, selectionB);
+    } finally {
+      editorResult.resolve(null);
+      if (navigation) {
+        await navigation.catch(() => undefined);
+      }
+      if (edit) {
+        await edit.catch(() => undefined);
+      }
+      typeEditor.show = originalShow;
+    }
+  });
+
+  test('legacy Form message contexts discard an editor result after the selection changes', async () => {
+    const selectionA = {
+      source: 'form-editor' as const,
+      docUri: 'file:///forms/legacy-a/Ext/Form.xml',
+      entityType: 'attribute' as const,
+      id: 'item-a',
+      name: 'A',
+      properties: { Type: '<Type/>' },
+      events: {},
+      selectedIds: ['item-a'],
+    };
+    const selectionB = {
+      source: 'form-editor' as const,
+      docUri: 'file:///forms/legacy-b/Ext/Form.xml',
+      entityType: 'attribute' as const,
+      id: 'item-b',
+      name: 'B',
+      properties: { Type: 'Boolean' },
+      events: {},
+      selectedIds: ['item-b'],
+    };
+    const editorStarted = createDeferredValue<void>();
+    const editorResult = createDeferredValue<any>();
+    const formChanges: unknown[] = [];
+    let webviewUpdateCount = 0;
+    const ctx: MessageHandlerContext = {
+      currentNode: undefined,
+      currentFormSelection: selectionA,
+      currentFormSelectionRevision: 5,
+      isSaving: false,
+      treeDataProvider: {} as any,
+      typeEditorProvider: {
+        show: async () => {
+          editorStarted.resolve(undefined);
+          return editorResult.promise;
+        },
+      } as any,
+      objectTypeEditorProvider: {} as any,
+      onFormPropertyChanged: (payload) => formChanges.push(payload),
+      postMessage: () => undefined,
+      updateWebviewContent: () => { webviewUpdateCount += 1; },
+      setIsSaving: () => undefined,
+    };
+    const edit = handleMessage({
+      type: 'editFormSelectionType',
+      propertyName: 'Type',
+      selectionRevision: '5',
+      docUri: selectionA.docUri,
+      entityType: selectionA.entityType,
+      entityId: selectionA.id,
+    }, ctx);
+
+    try {
+      await editorStarted.promise;
+      ctx.currentFormSelection = selectionB;
+      ctx.currentFormSelectionRevision = 6;
+      editorResult.resolve({ category: 'primitive', types: [{ kind: 'boolean' }] });
+      await edit;
+
+      assert.strictEqual(ctx.isCurrentSession, undefined, 'legacy callers may not provide the newer session predicate');
+      assert.deepStrictEqual(formChanges, []);
+      assert.strictEqual(webviewUpdateCount, 0);
+      assert.strictEqual(selectionA.properties.Type, '<Type/>');
+      assert.strictEqual(ctx.currentFormSelection, selectionB);
+    } finally {
+      editorResult.resolve(null);
+      await edit.catch(() => undefined);
+    }
+  });
+
+  test('editFormSelectionType reports invalid types and treats editor cancellation as no edit', async () => {
+    const formChanges: Array<Record<string, unknown>> = [];
+    provider.dispose();
+    provider = new PropertiesProvider(
+      mockContext,
+      new MetadataTreeDataProvider(),
+      new TypeEditorProvider(mockContext),
+      (payload) => formChanges.push(payload)
+    );
+    const selection = {
+      source: 'form-editor' as const,
+      docUri: 'file:///forms/Empty/Ext/Form.xml',
+      entityType: 'attribute' as const,
+      id: 'item-empty',
+      name: 'Empty',
+      properties: {} as Record<string, unknown>,
+      events: {},
+      selectedIds: ['item-empty'],
+    };
+    const typeEditor = (provider as any).typeEditorProvider;
+    const originalShow = typeEditor.show;
+    const originalPostMessage = (provider as any).postMessage;
+    const messages: unknown[] = [];
+    let editorShowCount = 0;
+    let failEditor = false;
+    typeEditor.show = async () => {
+      editorShowCount += 1;
+      if (failEditor) {
+        throw new Error('Type editor unavailable');
+      }
+      return null;
+    };
+    (provider as any).postMessage = (message: unknown) => messages.push(message);
+
+    let edit: Promise<void> | undefined;
+    try {
+      await provider.showFormSelectionProperties(selection);
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      edit = handleMessage({
+        type: 'editFormSelectionType',
+        propertyName: 'Type',
+        selectionRevision: String(ctx.currentFormSelectionRevision),
+        docUri: selection.docUri,
+        entityType: selection.entityType,
+        entityId: selection.id,
+      }, ctx);
+      await edit;
+      edit = undefined;
+
+      assert.deepStrictEqual(messages, [{ type: 'error', message: 'Type property is empty' }]);
+      assert.strictEqual(editorShowCount, 0);
+      selection.properties.Type = 'Not set';
+      edit = handleMessage({
+        type: 'editFormSelectionType',
+        propertyName: 'Type',
+        selectionRevision: String(ctx.currentFormSelectionRevision),
+        docUri: selection.docUri,
+        entityType: selection.entityType,
+        entityId: selection.id,
+      }, ctx);
+      await edit;
+      edit = undefined;
+      assert.deepStrictEqual(messages, [
+        { type: 'error', message: 'Type property is empty' },
+        { type: 'error', message: 'Type cannot be edited: could not parse type' },
+      ]);
+      assert.strictEqual(editorShowCount, 0);
+
+      selection.properties.Type = { 'v8:Type': 'cfg:BadRef.Invalid' };
+      edit = handleMessage({
+        type: 'editFormSelectionType',
+        propertyName: 'Type',
+        selectionRevision: String(ctx.currentFormSelectionRevision),
+        docUri: selection.docUri,
+        entityType: selection.entityType,
+        entityId: selection.id,
+      }, ctx);
+      await edit;
+      edit = undefined;
+      assert.deepStrictEqual(messages, [
+        { type: 'error', message: 'Type property is empty' },
+        { type: 'error', message: 'Type cannot be edited: could not parse type' },
+        { type: 'error', message: 'Failed to open type editor: invalid type data' },
+      ]);
+      assert.strictEqual(editorShowCount, 0);
+
+      selection.properties.Type = 42;
+      edit = handleMessage({
+        type: 'editFormSelectionType',
+        propertyName: 'Type',
+        selectionRevision: String(ctx.currentFormSelectionRevision),
+        docUri: selection.docUri,
+        entityType: selection.entityType,
+        entityId: selection.id,
+      }, ctx);
+      await edit;
+      edit = undefined;
+      assert.deepStrictEqual(messages, [
+        { type: 'error', message: 'Type property is empty' },
+        { type: 'error', message: 'Type cannot be edited: could not parse type' },
+        { type: 'error', message: 'Failed to open type editor: invalid type data' },
+        { type: 'error', message: 'Type property has unexpected format' },
+      ]);
+      assert.strictEqual(editorShowCount, 0);
+
+      selection.properties.Type = '<Type><v8:Type>xs:string</v8:Type></Type>';
+      edit = handleMessage({
+        type: 'editFormSelectionType',
+        propertyName: 'Type',
+        selectionRevision: String(ctx.currentFormSelectionRevision),
+        docUri: selection.docUri,
+        entityType: selection.entityType,
+        entityId: selection.id,
+      }, ctx);
+      await edit;
+
+      assert.strictEqual(editorShowCount, 1);
+      assert.strictEqual(formChanges.length, 0, 'cancelling the editor must not publish or mutate a type');
+      assert.strictEqual(selection.properties.Type, '<Type><v8:Type>xs:string</v8:Type></Type>');
+      assert.deepStrictEqual(messages, [
+        { type: 'error', message: 'Type property is empty' },
+        { type: 'error', message: 'Type cannot be edited: could not parse type' },
+        { type: 'error', message: 'Failed to open type editor: invalid type data' },
+        { type: 'error', message: 'Type property has unexpected format' },
+      ]);
+
+      failEditor = true;
+      edit = handleMessage({
+        type: 'editFormSelectionType',
+        propertyName: 'Type',
+        selectionRevision: String(ctx.currentFormSelectionRevision),
+        docUri: selection.docUri,
+        entityType: selection.entityType,
+        entityId: selection.id,
+      }, ctx);
+      await edit;
+      assert.deepStrictEqual(messages, [
+        { type: 'error', message: 'Type property is empty' },
+        { type: 'error', message: 'Type cannot be edited: could not parse type' },
+        { type: 'error', message: 'Failed to open type editor: invalid type data' },
+        { type: 'error', message: 'Type property has unexpected format' },
+        { type: 'error', message: 'Failed to edit type: Type editor unavailable' },
+      ]);
+      assert.strictEqual(formChanges.length, 0);
+    } finally {
+      if (edit) {
+        await edit.catch(() => undefined);
+      }
+      typeEditor.show = originalShow;
+      (provider as any).postMessage = originalPostMessage;
+    }
+  });
+
+  test('type and source edit messages fail safely without a selected node or editable type', async () => {
+    const typeEditor = (provider as any).typeEditorProvider;
+    const originalShow = typeEditor.show;
+    const originalPostMessage = (provider as any).postMessage;
+    const messages: unknown[] = [];
+    let editorShowCount = 0;
+    typeEditor.show = async () => {
+      editorShowCount += 1;
+      return null;
+    };
+    (provider as any).postMessage = (message: unknown) => messages.push(message);
+
+    let editType: Promise<void> | undefined;
+    let editSource: Promise<void> | undefined;
+    try {
+      await provider.showFormSelectionProperties(undefined);
+      const emptyContext = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      editType = handleMessage({ type: 'editType', propertyName: 'Type' }, emptyContext);
+      editSource = handleMessage({ type: 'editSource', propertyName: 'Source' }, emptyContext);
+      await Promise.all([editType, editSource]);
+      editType = undefined;
+      editSource = undefined;
+      assert.deepStrictEqual(messages, [
+        { type: 'error', message: 'No element selected' },
+        { type: 'error', message: 'No element selected' },
+      ]);
+
+      const nodeWithoutType: TreeNode = {
+        id: 'Attributes.MissingType',
+        name: 'MissingType',
+        type: MetadataType.Attribute,
+        properties: { Name: 'MissingType' },
+      };
+      await provider.showProperties(nodeWithoutType);
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      editType = handleMessage({
+        type: 'editType',
+        propertyName: 'Type',
+        nodeId: nodeWithoutType.id,
+        sessionToken: ctx.currentSessionToken,
+      }, ctx);
+      await editType;
+      editType = undefined;
+
+      const messageCount = messages.length;
+      editType = handleMessage({
+        type: 'editType',
+        propertyName: 'Type',
+        nodeId: 'Attributes.OtherNode',
+        sessionToken: ctx.currentSessionToken,
+      }, ctx);
+      await editType;
+      editType = undefined;
+
+      assert.strictEqual(editorShowCount, 0);
+      assert.deepStrictEqual(messages.slice(2), [{ type: 'error', message: 'Type property is empty' }]);
+      assert.strictEqual(messages.length, messageCount, 'a mismatched node identity must be ignored');
+    } finally {
+      if (editType) {
+        await editType.catch(() => undefined);
+      }
+      if (editSource) {
+        await editSource.catch(() => undefined);
+      }
+      typeEditor.show = originalShow;
+      (provider as any).postMessage = originalPostMessage;
+    }
+  });
+
+  test('editType converts object-backed Type values and publishes the correlated update', async () => {
+    const node: TreeNode = {
+      id: 'Attributes.TypeObject',
+      name: 'TypeObject',
+      type: MetadataType.Attribute,
+      properties: { Name: 'TypeObject', Type: { 'v8:Type': 'xs:string' } },
+    };
+    const treeDataProvider = (provider as any).treeDataProvider;
+    const typeEditor = (provider as any).typeEditorProvider;
+    const originalLookup = treeDataProvider.getReferenceableObjectsForTypeEditor;
+    const originalShow = typeEditor.show;
+    const originalPostMessage = (provider as any).postMessage;
+    const editorInputs: string[] = [];
+    const referenceableObjects = [{ id: 'Catalogs.Products', name: 'Products' }];
+    const messages: unknown[] = [];
+    treeDataProvider.getReferenceableObjectsForTypeEditor = async () => referenceableObjects;
+    typeEditor.show = async (xml: string, references: unknown[]) => {
+      editorInputs.push(xml);
+      assert.strictEqual(references, referenceableObjects);
+      return { category: 'primitive', types: [{ kind: 'date', qualifiers: { dateFractions: 'Date' } }] };
+    };
+    (provider as any).postMessage = (message: unknown) => messages.push(message);
+
+    let edit: Promise<void> | undefined;
+    try {
+      await provider.showProperties(node);
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      edit = handleMessage({
+        type: 'editType',
+        propertyName: 'Type',
+        nodeId: node.id,
+        sessionToken: ctx.currentSessionToken,
+      }, ctx);
+      await edit;
+      edit = undefined;
+
+      assert.strictEqual(editorInputs.length, 1);
+      assert.ok(editorInputs[0].includes('xs:string'));
+      const objectUpdate = messages.find((message) => (message as { type?: string }).type === 'typeUpdated') as
+        | { value: string; nodeId?: string; sessionToken?: string }
+        | undefined;
+      assert.ok(objectUpdate, 'a completed edit should publish typeUpdated');
+      assert.strictEqual(objectUpdate.nodeId, node.id);
+      assert.strictEqual(objectUpdate.sessionToken, ctx.currentSessionToken);
+      assert.ok(objectUpdate.value.includes('xs:date'));
+      assert.deepStrictEqual(node.properties.Type, { 'v8:Type': 'xs:string' }, 'editing does not mutate saved node data');
+
+      const displayNode: TreeNode = {
+        id: 'Attributes.DisplayType',
+        name: 'DisplayType',
+        type: MetadataType.Attribute,
+        properties: { Name: 'DisplayType', Type: 'DocumentRef.Orders' },
+      };
+      await provider.showProperties(displayNode);
+      const displayCtx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      edit = handleMessage({
+        type: 'editType',
+        propertyName: 'Type',
+        nodeId: displayNode.id,
+        sessionToken: displayCtx.currentSessionToken,
+      }, displayCtx);
+      await edit;
+      edit = undefined;
+
+      assert.strictEqual(editorInputs.length, 2);
+      assert.ok(editorInputs[1].includes('cfg:DocumentRef.Orders'));
+      const typeUpdates = messages.filter((message) => (message as { type?: string }).type === 'typeUpdated') as
+        Array<{ value: string; nodeId?: string; sessionToken?: string }>;
+      assert.strictEqual(typeUpdates.length, 2);
+      assert.strictEqual(typeUpdates[1].nodeId, displayNode.id);
+      assert.strictEqual(typeUpdates[1].sessionToken, displayCtx.currentSessionToken);
+      assert.ok(typeUpdates[1].value.includes('xs:date'));
+
+      const legacyNode: TreeNode = {
+        id: 'Attributes.LegacyTypeKey',
+        name: 'LegacyTypeKey',
+        type: MetadataType.Attribute,
+        properties: { Name: 'LegacyTypeKey', 'v8:Type': '<Type><v8:Type>xs:boolean</v8:Type></Type>' },
+      };
+      await provider.showProperties(legacyNode);
+      const legacyCtx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      edit = handleMessage({
+        type: 'editType',
+        propertyName: 'Type',
+        nodeId: legacyNode.id,
+        sessionToken: legacyCtx.currentSessionToken,
+      }, legacyCtx);
+      await edit;
+      edit = undefined;
+
+      assert.strictEqual(editorInputs.length, 3);
+      assert.ok(editorInputs[2].includes('xs:boolean'), 'the legacy v8:Type field should feed the editor');
+      const allTypeUpdates = messages.filter((message) => (message as { type?: string }).type === 'typeUpdated') as
+        Array<{ value: string; nodeId?: string; sessionToken?: string }>;
+      assert.strictEqual(allTypeUpdates.length, 3);
+      assert.strictEqual(allTypeUpdates[2].nodeId, legacyNode.id);
+      assert.strictEqual(allTypeUpdates[2].sessionToken, legacyCtx.currentSessionToken);
+    } finally {
+      if (edit) {
+        await edit.catch(() => undefined);
+      }
+      treeDataProvider.getReferenceableObjectsForTypeEditor = originalLookup;
+      typeEditor.show = originalShow;
+      (provider as any).postMessage = originalPostMessage;
+    }
+  });
+
+  test('editType reports unsupported display and malformed object values without opening the editor', async () => {
+    const node: TreeNode = {
+      id: 'Attributes.UnsupportedType',
+      name: 'UnsupportedType',
+      type: MetadataType.Attribute,
+      properties: { Name: 'UnsupportedType', Type: 'String(unbounded)' },
+    };
+    const typeEditor = (provider as any).typeEditorProvider;
+    const originalShow = typeEditor.show;
+    const originalPostMessage = (provider as any).postMessage;
+    let editorShowCount = 0;
+    const messages: unknown[] = [];
+    typeEditor.show = async () => {
+      editorShowCount += 1;
+      return null;
+    };
+    (provider as any).postMessage = (message: unknown) => messages.push(message);
+
+    let edit: Promise<void> | undefined;
+    try {
+      await provider.showProperties(node);
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      edit = handleMessage({
+        type: 'editType',
+        propertyName: 'Type',
+        nodeId: node.id,
+        sessionToken: ctx.currentSessionToken,
+      }, ctx);
+      await edit;
+      edit = undefined;
+
+      assert.strictEqual(editorShowCount, 0);
+      assert.deepStrictEqual(messages, [{
+        type: 'error',
+        message: 'Type cannot be edited: could not parse type. Re-open the attribute and try again.',
+      }]);
+
+      const malformedObjectNode: TreeNode = {
+        id: 'Attributes.MalformedTypeObject',
+        name: 'MalformedTypeObject',
+        type: MetadataType.Attribute,
+        properties: { Name: 'MalformedTypeObject', Type: { 'v8:Type': 'cfg:BadRef.Object' } },
+      };
+      await provider.showProperties(malformedObjectNode);
+      const malformedContext = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      edit = handleMessage({
+        type: 'editType',
+        propertyName: 'Type',
+        nodeId: malformedObjectNode.id,
+        sessionToken: malformedContext.currentSessionToken,
+      }, malformedContext);
+      await edit;
+
+      assert.strictEqual(editorShowCount, 0);
+      assert.deepStrictEqual(messages, [
+        {
+          type: 'error',
+          message: 'Type cannot be edited: could not parse type. Re-open the attribute and try again.',
+        },
+        { type: 'error', message: 'Failed to open type editor: invalid type data' },
+      ]);
+      assert.strictEqual(node.properties.Type, 'String(unbounded)');
+    } finally {
+      if (edit) {
+        await edit.catch(() => undefined);
+      }
+      typeEditor.show = originalShow;
+      (provider as any).postMessage = originalPostMessage;
+    }
+  });
+
+  test('editType treats editor cancellation as normal and reports unexpected editor failures', async () => {
+    const node: TreeNode = {
+      id: 'Attributes.TypeEditorOutcome',
+      name: 'TypeEditorOutcome',
+      type: MetadataType.Attribute,
+      properties: { Name: 'TypeEditorOutcome', Type: '<Type><v8:Type>xs:string</v8:Type></Type>' },
+    };
+    const treeDataProvider = (provider as any).treeDataProvider;
+    const typeEditor = (provider as any).typeEditorProvider;
+    const originalLookup = treeDataProvider.getReferenceableObjectsForTypeEditor;
+    const originalShow = typeEditor.show;
+    const originalPostMessage = (provider as any).postMessage;
+    const messages: unknown[] = [];
+    let behavior: 'return-null' | 'cancel' | 'fail' = 'return-null';
+    treeDataProvider.getReferenceableObjectsForTypeEditor = async () => [];
+    typeEditor.show = async () => {
+      if (behavior === 'cancel') {
+        throw new Error('Type editor cancelled');
+      }
+      if (behavior === 'fail') {
+        throw new Error('Editor unavailable');
+      }
+      return null;
+    };
+    (provider as any).postMessage = (message: unknown) => messages.push(message);
+
+    let edit: Promise<void> | undefined;
+    try {
+      await provider.showProperties(node);
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      for (const outcome of ['return-null', 'cancel', 'fail'] as const) {
+        behavior = outcome;
+        edit = handleMessage({
+          type: 'editType',
+          propertyName: 'Type',
+          nodeId: node.id,
+          sessionToken: ctx.currentSessionToken,
+        }, ctx);
+        await edit;
+        edit = undefined;
+        assert.deepStrictEqual(
+          messages,
+          outcome === 'fail'
+            ? [{ type: 'error', message: 'Failed to edit type: Editor unavailable' }]
+            : [],
+          `${outcome} should follow the type-editor cancellation contract`
+        );
+      }
+      assert.strictEqual(node.properties.Type, '<Type><v8:Type>xs:string</v8:Type></Type>');
+    } finally {
+      if (edit) {
+        await edit.catch(() => undefined);
+      }
+      treeDataProvider.getReferenceableObjectsForTypeEditor = originalLookup;
+      typeEditor.show = originalShow;
+      (provider as any).postMessage = originalPostMessage;
+    }
+  });
+
+  test('editSource serializes object-backed Source values before publishing the editor result', async () => {
+    const node: TreeNode = {
+      id: 'EventSubscriptions.SourceObject',
+      name: 'SourceObject',
+      type: MetadataType.EventSubscription,
+      properties: { Name: 'SourceObject', Source: { 'v8:Type': 'cfg:CatalogObject.Products' } },
+    };
+    const treeDataProvider = (provider as any).treeDataProvider;
+    const objectTypeEditor = (provider as any).objectTypeEditorProvider;
+    const originalLookup = treeDataProvider.getObjectableObjectsForEditor;
+    const originalShow = objectTypeEditor.show;
+    const originalPostMessage = (provider as any).postMessage;
+    const editorInputs: string[] = [];
+    const messages: unknown[] = [];
+    treeDataProvider.getObjectableObjectsForEditor = async () => [];
+    objectTypeEditor.show = async (xml: string) => {
+      editorInputs.push(xml);
+      return { types: [{ objectKind: 'DocumentObject', objectName: 'Orders' }] };
+    };
+    (provider as any).postMessage = (message: unknown) => messages.push(message);
+
+    let edit: Promise<void> | undefined;
+    try {
+      await provider.showProperties(node);
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      edit = handleMessage({
+        type: 'editSource',
+        propertyName: 'Source',
+        nodeId: node.id,
+        sessionToken: ctx.currentSessionToken,
+      }, ctx);
+      await edit;
+
+      assert.strictEqual(editorInputs.length, 1);
+      assert.ok(editorInputs[0].includes('cfg:CatalogObject.Products'));
+      const update = messages.find((message) => (message as { type?: string }).type === 'sourceUpdated') as
+        | { value: string; nodeId?: string; sessionToken?: string }
+        | undefined;
+      assert.ok(update, 'a completed edit should publish sourceUpdated');
+      assert.strictEqual(update.nodeId, node.id);
+      assert.strictEqual(update.sessionToken, ctx.currentSessionToken);
+      assert.ok(update.value.includes('cfg:DocumentObject.Orders'));
+      assert.deepStrictEqual(node.properties.Source, { 'v8:Type': 'cfg:CatalogObject.Products' });
+    } finally {
+      if (edit) {
+        await edit.catch(() => undefined);
+      }
+      treeDataProvider.getObjectableObjectsForEditor = originalLookup;
+      objectTypeEditor.show = originalShow;
+      (provider as any).postMessage = originalPostMessage;
+    }
+  });
+
+  test('editSource treats cancellation as normal and reports unexpected editor failures', async () => {
+    const node: TreeNode = {
+      id: 'EventSubscriptions.SourceEditorOutcome',
+      name: 'SourceEditorOutcome',
+      type: MetadataType.EventSubscription,
+      properties: { Name: 'SourceEditorOutcome' },
+    };
+    const treeDataProvider = (provider as any).treeDataProvider;
+    const objectTypeEditor = (provider as any).objectTypeEditorProvider;
+    const originalLookup = treeDataProvider.getObjectableObjectsForEditor;
+    const originalShow = objectTypeEditor.show;
+    const originalPostMessage = (provider as any).postMessage;
+    const messages: unknown[] = [];
+    const editorInputs: string[] = [];
+    let behavior: 'return-null' | 'fail' = 'return-null';
+    treeDataProvider.getObjectableObjectsForEditor = async () => [];
+    objectTypeEditor.show = async (xml: string) => {
+      editorInputs.push(xml);
+      if (behavior === 'fail') {
+        throw new Error('Source editor unavailable');
+      }
+      return null;
+    };
+    (provider as any).postMessage = (message: unknown) => messages.push(message);
+
+    let edit: Promise<void> | undefined;
+    try {
+      await provider.showProperties(node);
+      const ctx = (provider as any).buildHandlerContext() as MessageHandlerContext;
+      for (const outcome of ['return-null', 'fail'] as const) {
+        behavior = outcome;
+        edit = handleMessage({
+          type: 'editSource',
+          propertyName: 'Source',
+          nodeId: node.id,
+          sessionToken: ctx.currentSessionToken,
+        }, ctx);
+        await edit;
+        edit = undefined;
+        assert.deepStrictEqual(
+          messages,
+          outcome === 'fail'
+            ? [{ type: 'error', message: 'Failed to edit source: Source editor unavailable' }]
+            : [],
+          `${outcome} should follow the source-editor cancellation contract`
+        );
+      }
+      assert.deepStrictEqual(editorInputs, ['', ''], 'an unconfigured Source starts with an empty editor value');
+      assert.strictEqual(node.properties.Source, undefined);
+    } finally {
+      if (edit) {
+        await edit.catch(() => undefined);
+      }
+      treeDataProvider.getObjectableObjectsForEditor = originalLookup;
+      objectTypeEditor.show = originalShow;
+      (provider as any).postMessage = originalPostMessage;
     }
   });
 });
