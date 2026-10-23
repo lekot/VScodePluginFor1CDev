@@ -123,8 +123,8 @@ suite('Properties identity safety — issue #263', () => {
     assert.match(html, /data-property="Name"[\s\S]*disabled/);
     assert.match(html, /class="rename-element-btn"/);
     assert.match(html, /Переименовать элемент/);
-    assert.match(fullHtml, /querySelectorAll\('\.rename-element-btn'\)/);
-    assert.match(fullHtml, /type: 'renameElement'/);
+    assert.match(fullHtml, /querySelectorAll\(["']\.rename-element-btn["']\)/);
+    assert.match(fullHtml, /type\s*:\s*["']renameElement["']/);
   });
 
   test('rename action forwards the selected TreeNode to the existing command', async () => {

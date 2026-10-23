@@ -264,6 +264,50 @@ suite('Webview CSP security policy', () => {
     assert.ok(html.includes('&lt;/script&gt;&lt;script&gt;alert'));
   });
 
+  test('properties bootstrap safely carries hostile identity as JSON data', () => {
+    const nodeId = 'node</script><script>alert(1)</script>&\u2028\u2029';
+    const sessionToken = 'token</script><script>steal()</script>&\u2028\u2029';
+    const html = getWebviewContent({
+      id: nodeId,
+      name: 'Hostile identity',
+      type: MetadataType.Catalog,
+      properties: { Name: 'Hostile identity' },
+      filePath: '/test/Hostile.xml',
+    }, { sessionToken });
+    const bootstrap = html.match(
+      /<script type="application\/json" id="properties-bootstrap" nonce="([^"]+)">([\s\S]*?)<\/script>/,
+    );
+    assert.ok(bootstrap, 'Identity must be carried by the non-executable data bootstrap');
+    assert.doesNotMatch(bootstrap[2], /[<>&\u2028\u2029]/);
+    assert.deepStrictEqual(JSON.parse(bootstrap[2]), { nodeId, sessionToken });
+    assert.doesNotMatch(html, /<\/script><script>alert/);
+  });
+
+  test('properties browser entrypoints have only neutral type-only imports', () => {
+    const browserFiles = [
+      'src/providers/propertiesWebview/browser/propertiesEntry.ts',
+      'src/providers/propertiesWebview/browser/formSelectionEntry.ts',
+      'src/providers/propertiesWebview/browserContracts.ts',
+    ];
+    for (const relPath of browserFiles) {
+      const source = fs.readFileSync(path.join(repoRoot, relPath), 'utf8');
+      assert.doesNotMatch(
+        source,
+        /^\s*import\s+(?!type\b)/m,
+        relPath + ' must not have runtime imports',
+      );
+      assert.doesNotMatch(
+        source,
+        /from\s+['"](?:vscode|node:|fs['"]|path['"]|crypto['"])/,
+        relPath + ' must not depend on Node.js or VS Code',
+      );
+    }
+    for (const relPath of browserFiles.slice(0, 2)) {
+      const source = fs.readFileSync(path.join(repoRoot, relPath), 'utf8');
+      assert.match(source, /import type[\s\S]*from ['"]\.\.\/browserContracts['"]/);
+    }
+  });
+
   test('renderSecureWebview replaces ${csp}, ${nonce}, ${webview.cspSource} and custom substitutions with strict defaults', () => {
     const template = `<!DOCTYPE html>
 <html>

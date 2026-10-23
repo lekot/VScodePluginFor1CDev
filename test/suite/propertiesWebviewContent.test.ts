@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as vm from 'vm';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import {
   escapeHtml,
@@ -30,6 +31,112 @@ function makeNode(overrides: Partial<TreeNode> & Pick<TreeNode, 'type'>): TreeNo
 
 function makeConfigParent(): TreeNode {
   return { id: 'cfg', name: 'Configuration', type: MetadataType.Configuration, properties: {} };
+}
+
+class WebviewTestClassList {
+  private readonly names = new Set<string>();
+
+  public add(...names: string[]): void {
+    for (const name of names) this.names.add(name);
+  }
+
+  public remove(...names: string[]): void {
+    for (const name of names) this.names.delete(name);
+  }
+
+  public contains(name: string): boolean {
+    return this.names.has(name);
+  }
+}
+
+class WebviewTestElement {
+  public readonly classList = new WebviewTestClassList();
+  public readonly dataset: Record<string, string> = {};
+  public readonly listeners = new Map<string, unknown>();
+
+  public addEventListener(type: string, listener: unknown): void {
+    this.listeners.set(type, listener);
+  }
+}
+
+class WebviewTestInput extends WebviewTestElement {
+  public value: string;
+  public readonly type = 'text';
+  public readonly disabled = false;
+
+  public constructor(property: string, value: string) {
+    super();
+    this.value = value;
+    this.dataset.property = property;
+  }
+}
+
+class WebviewTestButton extends WebviewTestElement {
+  public disabled = true;
+}
+
+interface PropertiesBrowserFixture {
+  inputs: WebviewTestInput[];
+  saveButton: WebviewTestButton;
+  bottomSaveButton: WebviewTestButton;
+  messages: unknown[];
+  dispatch(message: unknown): void;
+}
+
+function createPropertiesBrowserFixture(initialProperties: Record<string, string>): PropertiesBrowserFixture {
+  const inputs = Object.entries(initialProperties).map(([property, value]) => new WebviewTestInput(property, value));
+  const saveButton = new WebviewTestButton();
+  const bottomSaveButton = new WebviewTestButton();
+  const dirtyIndicator = Object.assign(new WebviewTestElement(), { textContent: '', style: { display: '' } });
+  const bootstrap = { textContent: JSON.stringify({ nodeId: 'node-1', sessionToken: 'session-1' }) };
+  const elements = new Map<string, unknown>([
+    ['properties-bootstrap', bootstrap],
+    ['save-btn', saveButton],
+    ['bottom-save-btn', bottomSaveButton],
+    ['dirty-indicator', dirtyIndicator],
+  ]);
+  const messages: unknown[] = [];
+  const windowListeners = new Map<string, unknown>();
+  const sandbox = {
+    acquireVsCodeApi: () => ({ postMessage: (message: unknown) => messages.push(JSON.parse(JSON.stringify(message)) as unknown) }),
+    document: {
+      getElementById: (id: string) => elements.get(id) ?? null,
+      querySelectorAll: (selector: string) => selector === '.property-input' ? inputs : [],
+      querySelector: (selector: string) => {
+        const property = selector.match(/data-property="((?:\\.|[^"])*)"/)?.[1];
+        return inputs.find((input) => input.dataset.property === property) ?? null;
+      },
+    },
+    window: { addEventListener: (type: string, listener: unknown) => windowListeners.set(type, listener) },
+    HTMLInputElement: WebviewTestInput,
+    HTMLSelectElement: class extends WebviewTestInput {},
+    HTMLTextAreaElement: class extends WebviewTestInput {},
+    HTMLButtonElement: WebviewTestButton,
+    HTMLElement: WebviewTestElement,
+    console: { log: () => undefined },
+    alert: () => undefined,
+    location: { reload: () => undefined },
+  };
+  vm.runInNewContext(getWebviewScript(false), sandbox);
+
+  return {
+    inputs,
+    saveButton,
+    bottomSaveButton,
+    messages,
+    dispatch: (message) => {
+      const listener = windowListeners.get('message');
+      assert.strictEqual(typeof listener, 'function', 'browser message handler is installed');
+      (listener as (event: { data: unknown }) => void)({ data: message });
+    },
+  };
+}
+
+function dirtyMessages(fixture: PropertiesBrowserFixture): Array<{ type: string; isDirty: boolean; properties: Record<string, unknown> }> {
+  return fixture.messages.filter((message): message is { type: string; isDirty: boolean; properties: Record<string, unknown> } =>
+    typeof message === 'object' && message !== null && 'type' in message && 'isDirty' in message
+      && 'properties' in message && message.type === 'dirtyChange' && typeof message.isDirty === 'boolean'
+      && typeof message.properties === 'object' && message.properties !== null);
 }
 
 // ---------------------------------------------------------------------------
@@ -447,17 +554,17 @@ suite('propertiesWebviewContent — getWebviewScript', () => {
   test('editable mode returns JavaScript code', () => {
     const script = getWebviewScript(false);
     assert.ok(script.includes('acquireVsCodeApi'));
-    assert.ok(script.includes('vscode.postMessage'));
+    assert.ok(script.includes('postMessage'));
   });
 
   test('editable mode handles save action', () => {
     const script = getWebviewScript(false);
-    assert.ok(script.includes("type: 'save'"));
+    assert.match(script, /type\s*:\s*["']save["']/);
   });
 
   test('editable mode handles cancel action', () => {
     const script = getWebviewScript(false);
-    assert.ok(script.includes("type: 'cancel'"));
+    assert.match(script, /type\s*:\s*["']cancel["']/);
   });
 
   test('editable mode initializes state object', () => {
@@ -704,6 +811,17 @@ suite('propertiesWebviewContent — getFormSelectionWebviewContent', () => {
     const html = getFormSelectionWebviewContent(selection, 1);
     assert.ok(!html.includes('<script>alert'));
   });
+
+  test('form selection keeps its data attributes and browser message protocol', () => {
+    const html = getFormSelectionWebviewContent(makeSelection(), 19);
+    assert.match(html, /data-form-scope="property"/);
+    assert.match(html, /data-form-key="Width"/);
+    assert.match(html, /data-form-selection-revision="19"/);
+    assert.match(html, /["']propertyChanged["']/);
+    assert.match(html, /["']editFormSelectionType["']/);
+    assert.match(html, /["']gotoEventHandler["']/);
+    assert.match(html, /["']createEventHandler["']/);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -765,14 +883,14 @@ suite('propertiesWebviewContent — Issue #165 Sticky Header & Dirty Indicator',
 
   test('webview script includes dirtyChange message dispatch', () => {
     const script = getWebviewScript(false);
-    assert.ok(script.includes("'dirtyChange'") || script.includes('"dirtyChange"'), 'Script must send dirtyChange message');
+    assert.match(script, /["']dirtyChange["']/, 'Script must send dirtyChange message');
     assert.ok(script.includes('isDirty'), 'Script dirtyChange payload must include isDirty');
   });
 
   test('webview script handles Ctrl+S / Cmd+S keyboard shortcut', () => {
     const script = getWebviewScript(false);
     assert.ok(
-      script.includes('ctrlKey') && script.includes('metaKey') && script.includes("'s'"),
+      script.includes('ctrlKey') && script.includes('metaKey') && /["']s["']/.test(script),
       'Script must listen for Ctrl+S / Cmd+S'
     );
   });
@@ -780,8 +898,95 @@ suite('propertiesWebviewContent — Issue #165 Sticky Header & Dirty Indicator',
   test('webview script dispatches dirtyChange on every edit when dirty, not only when isDirty boolean toggles', () => {
     const script = getWebviewScript(false);
     assert.ok(
-      script.includes('dirtyStateChanged || isDirty') || script.includes('isDirty || dirtyStateChanged'),
+      /dirtyStateChanged\s*\|\|\s*isDirty/.test(script) || /isDirty\s*\|\|\s*dirtyStateChanged/.test(script),
       'Script must dispatch dirtyChange whenever isDirty is true so subsequent edits are captured'
     );
+  });
+
+  test('editable browser script reads identity from the host data bootstrap instead of embedding it', () => {
+    const hostileNode: TreeNode = {
+      ...makeNode({ type: MetadataType.Catalog, filePath: '/test/Catalog.xml' }),
+      id: 'node</script><script>alert(1)</script>&\u2028\u2029',
+    };
+    const hostileToken = 'token</script><script>steal()</script>&\u2028\u2029';
+    const html = getWebviewContent(hostileNode, { sessionToken: hostileToken });
+    const bootstrapMatch = html.match(
+      /<script type="application\/json" id="properties-bootstrap" nonce="([^"]+)">([\s\S]*?)<\/script>/,
+    );
+    assert.ok(bootstrapMatch, 'Editable page must provide an identity data bootstrap');
+    assert.doesNotMatch(bootstrapMatch[2], /[<>&\u2028\u2029]/, 'Bootstrap JSON must be safe inside script data');
+    assert.deepStrictEqual(JSON.parse(bootstrapMatch[2]), {
+      nodeId: hostileNode.id,
+      sessionToken: hostileToken,
+    });
+
+    const script = getWebviewScript(false, hostileNode, hostileToken);
+    assert.ok(script.includes('properties-bootstrap'));
+    assert.ok(!script.includes(hostileNode.id), 'Node identity must not be compiled into browser JavaScript');
+    assert.ok(!script.includes(hostileToken), 'Session token must not be compiled into browser JavaScript');
+  });
+});
+
+suite('propertiesWebviewContent — browser update message semantics', () => {
+  test('typeUpdated with the original value keeps Save disabled and the document clean', () => {
+    const fixture = createPropertiesBrowserFixture({ Type: 'String(10)' });
+    fixture.dispatch({ type: 'typeUpdated', property: 'Type', value: 'String(10)', nodeId: 'node-1', sessionToken: 'session-1' });
+
+    assert.deepStrictEqual(dirtyMessages(fixture), []);
+    assert.strictEqual(fixture.saveButton.disabled, true);
+    assert.strictEqual(fixture.bottomSaveButton.disabled, true);
+    assert.strictEqual(fixture.inputs[0].classList.contains('changed'), false);
+  });
+
+  test('typeUpdated for a property without an input does not add it to current properties', () => {
+    const fixture = createPropertiesBrowserFixture({ Name: 'Catalog' });
+    fixture.dispatch({ type: 'typeUpdated', property: 'MissingType', value: 'String(10)', nodeId: 'node-1', sessionToken: 'session-1' });
+
+    assert.deepStrictEqual(dirtyMessages(fixture), []);
+    assert.strictEqual(fixture.saveButton.disabled, true);
+    fixture.dispatch({ type: 'sourceUpdated', property: 'Source', value: '<v8:Type>String</v8:Type>', nodeId: 'node-1', sessionToken: 'session-1' });
+    const sourceUpdates = dirtyMessages(fixture);
+    const sourceUpdate = sourceUpdates[sourceUpdates.length - 1];
+    assert.ok(sourceUpdate);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(sourceUpdate.properties, 'MissingType'), false);
+  });
+
+  test('typeUpdated with an actual value change marks the field and enables Save', () => {
+    const fixture = createPropertiesBrowserFixture({ Type: 'String(10)' });
+    fixture.dispatch({ type: 'typeUpdated', property: 'Type', value: 'String(20)', nodeId: 'node-1', sessionToken: 'session-1' });
+
+    const updates = dirtyMessages(fixture);
+    assert.strictEqual(updates.length, 1);
+    assert.strictEqual(updates[0].isDirty, true);
+    assert.strictEqual(updates[0].properties.Type, 'String(20)');
+    assert.strictEqual(fixture.saveButton.disabled, false);
+    assert.strictEqual(fixture.bottomSaveButton.disabled, false);
+    assert.strictEqual(fixture.inputs[0].classList.contains('changed'), true);
+  });
+
+  test('repeated typeUpdated messages preserve the latest value and prior dirty state', () => {
+    const fixture = createPropertiesBrowserFixture({ Type: 'String(10)' });
+    fixture.dispatch({ type: 'typeUpdated', property: 'Type', value: 'String(20)', nodeId: 'node-1', sessionToken: 'session-1' });
+    fixture.dispatch({ type: 'typeUpdated', property: 'Type', value: 'String(30)', nodeId: 'node-1', sessionToken: 'session-1' });
+    fixture.dispatch({ type: 'typeUpdated', property: 'Type', value: 'String(10)', nodeId: 'node-1', sessionToken: 'session-1' });
+
+    const updates = dirtyMessages(fixture);
+    assert.strictEqual(updates.length, 3);
+    assert.strictEqual(updates[1].properties.Type, 'String(30)');
+    assert.strictEqual(updates[2].properties.Type, 'String(10)');
+    assert.strictEqual(updates[2].isDirty, true, 'a repeated typeUpdated does not clear an already dirty field');
+    assert.strictEqual(fixture.saveButton.disabled, false);
+  });
+
+  test('sourceUpdated still marks a raw source property dirty without a matching input', () => {
+    const fixture = createPropertiesBrowserFixture({ Name: 'Catalog' });
+    const source = '<v8:Type>String</v8:Type>';
+    fixture.dispatch({ type: 'sourceUpdated', property: 'Source', value: source, nodeId: 'node-1', sessionToken: 'session-1' });
+
+    const updates = dirtyMessages(fixture);
+    assert.strictEqual(updates.length, 1);
+    assert.strictEqual(updates[0].isDirty, true);
+    assert.strictEqual(updates[0].properties.Source, source);
+    assert.strictEqual(fixture.saveButton.disabled, false);
   });
 });
