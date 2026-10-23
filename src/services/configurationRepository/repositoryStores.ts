@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -19,6 +20,15 @@ const DEFAULT_STATE: RepositoryObservedState = Object.freeze({
 
 const mutationTails = new Map<string, Promise<void>>();
 const repositoryTargetMutationTails = new Map<string, Promise<void>>();
+const repositoryTargetMutationOwnership = new AsyncLocalStorage<{
+  readonly keys: ReadonlySet<string>;
+  active: boolean;
+}>();
+interface RepositoryTargetMutationWitness {
+  revision: number;
+  references: number;
+}
+const repositoryTargetMutationWitnesses = new Map<string, RepositoryTargetMutationWitness>();
 
 export function repositoryTargetMutationKey(target: RepositoryTarget): string {
   return JSON.stringify([
@@ -34,18 +44,59 @@ export async function withRepositoryTargetMutationLock<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   const key = repositoryTargetMutationKey(target);
+  const current = repositoryTargetMutationOwnership.getStore();
+  if (current?.active) {
+    if (current.keys.has(key)) {
+      return operation();
+    }
+    throw new Error('Repository target mutation lock cannot be expanded from an active owner.');
+  }
   const previous = repositoryTargetMutationTails.get(key) ?? Promise.resolve();
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   repositoryTargetMutationTails.set(key, gate);
   await previous;
+  const ownership = { keys: new Set([key]), active: true };
   try {
-    return await operation();
+    return await repositoryTargetMutationOwnership.run(ownership, operation);
   } finally {
+    ownership.active = false;
     release();
     if (repositoryTargetMutationTails.get(key) === gate) {
       repositoryTargetMutationTails.delete(key);
     }
+  }
+}
+
+/** Retains a target revision only while a repository service operation needs an owner witness. */
+export async function withRepositoryTargetMutationWitness<T>(
+  target: RepositoryTarget,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const key = repositoryTargetMutationKey(target);
+  const witness = repositoryTargetMutationWitnesses.get(key) ?? { revision: 0, references: 0 };
+  witness.references += 1;
+  repositoryTargetMutationWitnesses.set(key, witness);
+  try {
+    return await operation();
+  } finally {
+    witness.references -= 1;
+    if (witness.references === 0 && repositoryTargetMutationWitnesses.get(key) === witness) {
+      repositoryTargetMutationWitnesses.delete(key);
+    }
+  }
+}
+
+/** Returns the active in-process revision of target-owned repository data. */
+export function getRepositoryTargetMutationRevision(target: RepositoryTarget): number {
+  return repositoryTargetMutationWitnesses.get(repositoryTargetMutationKey(target))?.revision ?? 0;
+}
+
+function noteRepositoryTargetMutation(target: RepositoryTarget): void {
+  const key = repositoryTargetMutationKey(target);
+  const witness = repositoryTargetMutationWitnesses.get(key);
+  if (witness) {
+    witness.revision += 1;
   }
 }
 
@@ -117,16 +168,18 @@ export class RepositoryBindingStore implements RepositoryBindingStorage {
   constructor(private readonly filePath: string) {}
 
   async get(target: RepositoryTarget): Promise<RepositoryBinding | undefined> {
-    const file = await this.readFile();
-    const key = repositoryTargetKey(target);
-    const binding = file.bindings.find((candidate) => candidate.targetKey === key);
-    return binding
-      ? Object.freeze({
-          repositoryPath: binding.repositoryPath,
-          repositoryUser: binding.repositoryUser,
-          executionInfobaseId: binding.executionInfobaseId,
-        })
-      : undefined;
+    return withRepositoryTargetMutationLock(target, async () => {
+      const file = await this.readFile();
+      const key = repositoryTargetKey(target);
+      const binding = file.bindings.find((candidate) => candidate.targetKey === key);
+      return binding
+        ? Object.freeze({
+            repositoryPath: binding.repositoryPath,
+            repositoryUser: binding.repositoryUser,
+            executionInfobaseId: binding.executionInfobaseId,
+          })
+        : undefined;
+    });
   }
 
   async list(): Promise<readonly RepositoryStoredBinding[]> {
@@ -140,7 +193,7 @@ export class RepositoryBindingStore implements RepositoryBindingStorage {
     if (!repositoryPath || !repositoryUser || !executionInfobaseId) {
       throw new Error('Путь, пользователь Хранилища и исполняющая файловая ИБ обязательны.');
     }
-    await withMutationLock(this.filePath, async () => {
+    await withRepositoryTargetMutationLock(target, () => withMutationLock(this.filePath, async () => {
       const file = await this.readFile();
       const targetKey = repositoryTargetKey(target);
       const next: RepositoryStoredBinding = {
@@ -155,11 +208,12 @@ export class RepositoryBindingStore implements RepositoryBindingStorage {
       const bindings = file.bindings.filter((candidate) => candidate.targetKey !== targetKey);
       bindings.push(next);
       await this.writeFile({ schemaVersion: BINDINGS_SCHEMA_VERSION, bindings });
-    });
+      noteRepositoryTargetMutation(target);
+    }));
   }
 
   async delete(target: RepositoryTarget): Promise<boolean> {
-    return withMutationLock(this.filePath, async () => {
+    return withRepositoryTargetMutationLock(target, () => withMutationLock(this.filePath, async () => {
       const file = await this.readFile();
       const targetKey = repositoryTargetKey(target);
       const bindings = file.bindings.filter((candidate) => candidate.targetKey !== targetKey);
@@ -167,8 +221,9 @@ export class RepositoryBindingStore implements RepositoryBindingStorage {
         return false;
       }
       await this.writeFile({ schemaVersion: BINDINGS_SCHEMA_VERSION, bindings });
+      noteRepositoryTargetMutation(target);
       return true;
-    });
+    }));
   }
 
   private async readFile(): Promise<BindingsFile> {
@@ -235,31 +290,37 @@ export class RepositoryStateStore implements RepositoryStateStorage {
   constructor(private readonly filePath: string) {}
 
   async get(target: RepositoryTarget): Promise<RepositoryObservedState> {
-    const file = await this.readFile();
-    return file.states[repositoryTargetKey(target)] ?? DEFAULT_STATE;
+    return withRepositoryTargetMutationLock(target, async () => {
+      const file = await this.readFile();
+      return file.states[repositoryTargetKey(target)] ?? DEFAULT_STATE;
+    });
   }
 
   async getStored(target: RepositoryTarget): Promise<RepositoryObservedState | undefined> {
-    const file = await this.readFile();
-    return file.states[repositoryTargetKey(target)];
+    return withRepositoryTargetMutationLock(target, async () => {
+      const file = await this.readFile();
+      return file.states[repositoryTargetKey(target)];
+    });
   }
 
   async set(target: RepositoryTarget, state: RepositoryObservedState): Promise<void> {
     const normalized = normalizeObservedState(state);
-    await withMutationLock(this.filePath, async () => {
+    await withRepositoryTargetMutationLock(target, () => withMutationLock(this.filePath, async () => {
       const file = await this.readFile();
       const states = { ...file.states, [repositoryTargetKey(target)]: normalized };
       await this.writeFile({ schemaVersion: STATE_SCHEMA_VERSION, states });
-    });
+      noteRepositoryTargetMutation(target);
+    }));
   }
 
   async clear(target: RepositoryTarget): Promise<void> {
-    await withMutationLock(this.filePath, async () => {
+    await withRepositoryTargetMutationLock(target, () => withMutationLock(this.filePath, async () => {
       const file = await this.readFile();
       const states = { ...file.states };
       delete states[repositoryTargetKey(target)];
       await this.writeFile({ schemaVersion: STATE_SCHEMA_VERSION, states });
-    });
+      noteRepositoryTargetMutation(target);
+    }));
   }
 
   private async readFile(): Promise<StateFile> {
@@ -294,15 +355,22 @@ export class RepositorySecretStore {
   constructor(private readonly secretStorage: vscode.SecretStorage) {}
 
   async get(target: RepositoryTarget): Promise<string | undefined> {
-    return (await this.secretStorage.get(repositorySecretKey(target))) ?? undefined;
+    return withRepositoryTargetMutationLock(target, async () =>
+      (await this.secretStorage.get(repositorySecretKey(target))) ?? undefined);
   }
 
   async set(target: RepositoryTarget, password: string): Promise<void> {
-    await this.secretStorage.store(repositorySecretKey(target), password);
+    await withRepositoryTargetMutationLock(target, async () => {
+      await this.secretStorage.store(repositorySecretKey(target), password);
+      noteRepositoryTargetMutation(target);
+    });
   }
 
   async delete(target: RepositoryTarget): Promise<void> {
-    await this.secretStorage.delete(repositorySecretKey(target));
+    await withRepositoryTargetMutationLock(target, async () => {
+      await this.secretStorage.delete(repositorySecretKey(target));
+      noteRepositoryTargetMutation(target);
+    });
   }
 }
 

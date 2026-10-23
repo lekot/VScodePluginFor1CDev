@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import * as vscode from 'vscode';
 import {
   buildConfigurationRepositoryBatchArgs,
 } from '../../src/services/configurator/configuratorBatchArgs';
@@ -13,7 +14,12 @@ import {
   ConfigurationRepositoryService,
   type ConfigurationRepositoryServiceDeps,
 } from '../../src/services/configurationRepository/configurationRepositoryService';
-import { InfobaseConfigurationOperationQueue } from '../../src/infobases/infobaseConfigurationOperationQueue';
+import {
+  InfobaseConfigurationOperationQueue,
+  type InfobaseConfigurationOperationLease,
+  type InfobaseConfigurationQueueCancellation,
+  type InfobaseConfigurationQueueIdentity,
+} from '../../src/infobases/infobaseConfigurationOperationQueue';
 import { resolveInfobaseCanonicalIdentity } from '../../src/infobases/infobaseCanonicalIdentity';
 import { MetadataType, type TreeNode } from '../../src/models/treeNode';
 import {
@@ -31,6 +37,7 @@ import {
 import {
   RepositoryBindingStore,
   RepositoryStateStore,
+  repositoryTargetMutationKey,
   repositoryTargetKey,
 } from '../../src/services/configurationRepository/repositoryStores';
 import {
@@ -41,6 +48,13 @@ import {
 } from '../../src/services/configurationRepository/workspaceRepositoryStores';
 import { XmlParser } from '../../src/parsers/xmlParser';
 import type { IbcmdInfobaseOperationResult } from '../../src/services/ibcmd/ibcmdInfobaseOperationResult';
+import type {
+  ConfigurationRepositoryTransportOutcome,
+  ConfigurationRepositoryTransportRequest,
+  RepositoryBinding,
+  RepositoryServiceResult,
+  RepositoryTarget,
+} from '../../src/services/configurationRepository/types';
 import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
 import type { ReloadReason } from '../../src/types/reloadContracts';
 import { createRequestConfigurationReload } from '../../src/reload/requestConfigurationReload';
@@ -887,8 +901,9 @@ suite('Configuration Repository phase 1', () => {
       getWorkspaceFolders: () => [workspaceRoot],
       globalStorageRoot: globalRoot,
     });
+    const repositoryPassword = 'owner-store-test-secret';
     const secretStore = {
-      get: async () => undefined,
+      get: async () => repositoryPassword,
       set: async () => undefined,
       delete: async () => undefined,
     };
@@ -904,7 +919,7 @@ suite('Configuration Repository phase 1', () => {
     const originalDelete = RepositoryBindingStore.prototype.delete;
     RepositoryBindingStore.prototype.delete = async function (deleteTarget) {
       if (path.resolve((this as unknown as { filePath: string }).filePath) === path.resolve(ownerBindingPath)) {
-        throw Object.assign(new Error('owner store denied deletion'), { code: 'EPERM' });
+        throw Object.assign(new Error(`owner store denied deletion for password=${repositoryPassword}`), { code: 'EPERM' });
       }
       return originalDelete.call(this, deleteTarget);
     };
@@ -913,6 +928,7 @@ suite('Configuration Repository phase 1', () => {
       const result = await service.disconnect(target, neverCancelled());
       assert.strictEqual(result.status, 'inDoubt', 'a post-ack owner-store failure must be reported to the caller');
       assert.match(result.message, /owner store denied deletion/u);
+      assert.strictEqual(result.message.includes(repositoryPassword), false, 'owner-store diagnostics must redact the repository password');
       assert.ok(await ownerStore.get(target), 'failed deletion must leave the binding available for retry');
     } finally {
       RepositoryBindingStore.prototype.delete = originalDelete;
@@ -1124,7 +1140,7 @@ suite('Configuration Repository phase 1', () => {
       assert.strictEqual((await harness.stateStore.get(harness.target)).connection, 'connected');
       assert.strictEqual(await harness.secrets.get('repositoryPassword'), 'secret');
 
-      harness.transport.run = async (request: any) => {
+      harness.transport.run = async (request: ConfigurationRepositoryTransportRequest) => {
         harness.calls.push(request);
         if (request.objectListPath) {
           harness.objectXml = await fs.readFile(request.objectListPath, 'utf8');
@@ -1141,6 +1157,853 @@ suite('Configuration Repository phase 1', () => {
       assert.strictEqual(unlocked.status, 'acknowledged');
       assert.strictEqual((await harness.stateStore.get(harness.target)).locks['Справочник.Products'], 'unlocked');
     } finally {
+      await harness.dispose();
+    }
+  });
+
+  test('acknowledged operations preserve a replacement binding, secret and state owner', async () => {
+    const successfulIbcmd: IbcmdInfobaseOperationResult = {
+      status: 'success',
+      exitCode: 0,
+      userMessage: 'ok',
+      logExcerpt: '',
+    };
+    const operationCases: Array<{
+      readonly name: string;
+      readonly operation: ConfigurationRepositoryTransportRequest['operation'];
+      readonly invoke: (harness: Awaited<ReturnType<typeof createServiceHarness>>) => Promise<RepositoryServiceResult>;
+      readonly exportKind?: 'objects' | 'configuration';
+    }> = [
+      { name: 'lock', operation: 'lock', invoke: (harness) => harness.service.lock(harness.catalog, neverCancelled()) },
+      { name: 'unlock', operation: 'unlock', invoke: (harness) => harness.service.unlock(harness.catalog, neverCancelled()) },
+      { name: 'commit', operation: 'commit', invoke: (harness) => harness.service.commit(harness.catalog, neverCancelled()) },
+      {
+        name: 'updateObject', operation: 'updateObject',
+        invoke: (harness) => harness.service.updateObject(harness.catalog, neverCancelled()),
+        exportKind: 'objects',
+      },
+      {
+        name: 'updateConfiguration', operation: 'updateConfiguration',
+        invoke: (harness) => harness.service.updateConfiguration(harness.catalog, neverCancelled()),
+        exportKind: 'configuration',
+      },
+    ];
+    const invariantFailures: string[] = [];
+
+    for (const operationCase of operationCases) {
+      const transportEntered = deferred<void>();
+      const releaseTransport = deferred<ConfigurationRepositoryTransportOutcome>();
+      let objectExportCount = 0;
+      let configurationExportCount = 0;
+      const harness = await createServiceHarness(
+        () => acknowledgedOutcome(operationCase.operation),
+        undefined,
+        {
+          importFiles: async () => successfulIbcmd,
+          exportObjects: async () => { objectExportCount += 1; return successfulIbcmd; },
+          exportConfiguration: async () => { configurationExportCount += 1; return successfulIbcmd; },
+        },
+      );
+      let operationPromise: Promise<RepositoryServiceResult> | undefined;
+      try {
+        await harness.bindingStore.set(harness.target, {
+          repositoryPath: 'repo-before',
+          repositoryUser: 'user-before',
+          executionInfobaseId: harness.entry.id,
+        });
+        await harness.secrets.set('repositoryPassword', 'password-before');
+        await harness.stateStore.set(harness.target, {
+          connection: 'connected',
+          locks: { 'Catalog.Before': 'unlocked' },
+          source: 'configuratorAcknowledgement',
+        });
+        harness.transport.run = async () => {
+          transportEntered.resolve(undefined);
+          return releaseTransport.promise;
+        };
+
+        operationPromise = operationCase.invoke(harness);
+        const transportStarted = await settlesWithin(transportEntered.promise, 1000);
+        if (!transportStarted) {
+          invariantFailures.push(`${operationCase.name}: transport did not start`);
+          releaseTransport.resolve(acknowledgedOutcome(operationCase.operation));
+          await operationPromise;
+          continue;
+        }
+
+        const replacementBinding = {
+          repositoryPath: `repo-external-${operationCase.name}`,
+          repositoryUser: `user-external-${operationCase.name}`,
+          executionInfobaseId: harness.entry.id,
+        };
+        const replacementState = {
+          connection: 'disconnected' as const,
+          locks: { 'Catalog.External': 'heldByCurrentCredentials' as const },
+          lastConfirmedAt: 'external-owner-state',
+          source: 'unknown' as const,
+        };
+        await Promise.all([
+          harness.bindingStore.set(harness.target, replacementBinding),
+          harness.secrets.set('repositoryPassword', `password-external-${operationCase.name}`),
+          harness.stateStore.set(harness.target, replacementState),
+        ]);
+        releaseTransport.resolve(acknowledgedOutcome(operationCase.operation));
+        const result = await operationPromise;
+
+        if (result.status !== 'inDoubt') {
+          invariantFailures.push(`${operationCase.name}: expected inDoubt, got ${result.status}`);
+        }
+        if (JSON.stringify(await harness.bindingStore.get(harness.target)) !== JSON.stringify(replacementBinding)) {
+          invariantFailures.push(`${operationCase.name}: replacement binding was not preserved`);
+        }
+        if (await harness.secrets.get('repositoryPassword') !== `password-external-${operationCase.name}`) {
+          invariantFailures.push(`${operationCase.name}: replacement secret was not preserved`);
+        }
+        if (JSON.stringify(await harness.stateStore.get(harness.target)) !== JSON.stringify(replacementState)) {
+          invariantFailures.push(`${operationCase.name}: replacement state was overwritten by a stale ACK`);
+        }
+        if (operationCase.exportKind === 'objects' && objectExportCount !== 0) {
+          invariantFailures.push(`${operationCase.name}: stale IB export ran after owner changed`);
+        }
+        if (operationCase.exportKind === 'configuration' && configurationExportCount !== 0) {
+          invariantFailures.push(`${operationCase.name}: stale IB export ran after owner changed`);
+        }
+      } finally {
+        releaseTransport.resolve(acknowledgedOutcome(operationCase.operation));
+        if (operationPromise) {
+          await Promise.allSettled([operationPromise]);
+        }
+        await harness.dispose();
+      }
+    }
+
+    assert.deepStrictEqual(invariantFailures, [], invariantFailures.join('\n'));
+  });
+
+  test('inDoubt repository outcome quarantines its IB without marking a replacement owner unknown', async () => {
+    const harness = await createServiceHarness(() => ({
+      status: 'inDoubt' as const,
+      operation: 'lock' as const,
+      errorCode: 'CONFIGURATOR_ACKNOWLEDGEMENT_LOST',
+      message: 'acknowledgement was lost',
+      log: '',
+    }));
+    const transportEntered = deferred<void>();
+    const releaseTransport = deferred<ConfigurationRepositoryTransportOutcome>();
+    let operationPromise: Promise<RepositoryServiceResult> | undefined;
+    try {
+      await harness.bindingStore.set(harness.target, {
+        repositoryPath: 'repo-before', repositoryUser: 'user-before', executionInfobaseId: harness.entry.id,
+      });
+      await harness.secrets.set('repositoryPassword', 'password-before');
+      await harness.stateStore.set(harness.target, {
+        connection: 'connected', locks: { 'Catalog.Before': 'unlocked' }, source: 'configuratorAcknowledgement',
+      });
+      harness.transport.run = async () => {
+        transportEntered.resolve(undefined);
+        return releaseTransport.promise;
+      };
+
+      operationPromise = harness.service.lock(harness.catalog, neverCancelled());
+      assert.strictEqual(await settlesWithin(transportEntered.promise, 1000), true, 'lock transport must start');
+      const replacementBinding = {
+        repositoryPath: 'repo-external', repositoryUser: 'external-user', executionInfobaseId: harness.entry.id,
+      };
+      const replacementState = {
+        connection: 'disconnected' as const,
+        locks: { 'Catalog.External': 'unlocked' as const },
+        lastConfirmedAt: 'external-owner-state',
+        source: 'unknown' as const,
+      };
+      await Promise.all([
+        harness.bindingStore.set(harness.target, replacementBinding),
+        harness.secrets.set('repositoryPassword', 'password-external'),
+        harness.stateStore.set(harness.target, replacementState),
+      ]);
+      releaseTransport.resolve({
+        status: 'inDoubt',
+        operation: 'lock',
+        errorCode: 'CONFIGURATOR_ACKNOWLEDGEMENT_LOST',
+        message: 'acknowledgement was lost',
+        log: '',
+      });
+      const result = await operationPromise;
+
+      assert.strictEqual(result.status, 'inDoubt');
+      assert.deepStrictEqual(await harness.bindingStore.get(harness.target), replacementBinding);
+      assert.strictEqual(await harness.secrets.get('repositoryPassword'), 'password-external');
+      assert.deepStrictEqual(await harness.stateStore.get(harness.target), replacementState);
+      assert.strictEqual(
+        harness.queue.getQuarantines([await resolveInfobaseCanonicalIdentity(harness.entry)]).length,
+        1,
+        'transport uncertainty must still quarantine the physical IB',
+      );
+    } finally {
+      releaseTransport.resolve({
+        status: 'inDoubt',
+        operation: 'lock',
+        errorCode: 'CONFIGURATOR_ACKNOWLEDGEMENT_LOST',
+        message: 'cleanup outcome',
+        log: '',
+      });
+      if (operationPromise) {
+        await Promise.allSettled([operationPromise]);
+      }
+      await harness.dispose();
+    }
+  });
+
+  test('workspace store migration during the operation snapshot remains a valid owner baseline', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-workspace-witness-'));
+    const globalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-workspace-global-'));
+    const configRoot = path.join(workspaceRoot, 'Configuration');
+    const entry = infobase(path.join(workspaceRoot, '1Cv8.1CD'));
+    const target = createRepositoryTarget(configRoot);
+    const options = { getWorkspaceFolders: () => [workspaceRoot], globalStorageRoot: globalRoot };
+    const bindingStore = new WorkspaceRepositoryBindingStore(options);
+    const stateStore = new WorkspaceRepositoryStateStore(options);
+    const legacyBindingStore = new RepositoryBindingStore(path.join(globalRoot, 'configuration-repository-bindings.json'));
+    const legacyStateStore = new RepositoryStateStore(path.join(globalRoot, 'configuration-repository-state.json'));
+    const secretValues = new Map<string, string>();
+    const secretStore = {
+      get: async (secretTarget: RepositoryTarget) => secretValues.get(secretTarget.key),
+      set: async (secretTarget: RepositoryTarget, value: string) => { secretValues.set(secretTarget.key, value); },
+      delete: async (secretTarget: RepositoryTarget) => { secretValues.delete(secretTarget.key); },
+    };
+    const queue = new InfobaseConfigurationOperationQueue();
+    const service = new ConfigurationRepositoryService({
+      bindingStore,
+      secretStore: secretStore as any,
+      stateStore,
+      infobaseStorage: { getById: async (id: string) => id === entry.id ? entry : undefined } as any,
+      transport: { run: async (request: ConfigurationRepositoryTransportRequest) => acknowledgedOutcome(request.operation) } as any,
+      queue,
+      requestConfigurationReload: async () => undefined,
+    });
+
+    try {
+      await Promise.all([
+        fs.mkdir(configRoot, { recursive: true }),
+        fs.writeFile(entry.filePath, '', 'utf8'),
+      ]);
+      await legacyBindingStore.set(target, {
+        repositoryPath: 'legacy-repo', repositoryUser: 'legacy-user', executionInfobaseId: entry.id,
+      });
+      await legacyStateStore.set(target, {
+        connection: 'connected', locks: { 'Catalog.Legacy': 'unlocked' }, source: 'configuratorAcknowledgement',
+      });
+      await secretStore.set(target, 'legacy-password');
+
+      const result = await service.connect(target, entry, {
+        repositoryPath: 'workspace-repo', repositoryUser: 'workspace-user',
+        repositoryPassword: 'workspace-password', executionInfobaseId: entry.id,
+      }, neverCancelled());
+
+      assert.strictEqual(result.status, 'acknowledged');
+      assert.deepStrictEqual(await bindingStore.get(target), {
+        repositoryPath: 'workspace-repo', repositoryUser: 'workspace-user', executionInfobaseId: entry.id,
+      });
+      assert.strictEqual(await secretStore.get(target), 'workspace-password');
+      assert.strictEqual((await stateStore.get(target)).connection, 'connected');
+      assert.strictEqual(await legacyBindingStore.get(target), undefined, 'snapshot migration must remove the former global copy');
+      assert.strictEqual(await legacyStateStore.getStored(target), undefined, 'snapshot migration must remove the former global state copy');
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      await fs.rm(globalRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('same target connections on different IBs cannot let failed A roll back acknowledged B', async () => {
+    const harness = await createRepositoryRaceHarness();
+    const enteredA = deferred<void>();
+    const enteredB = deferred<void>();
+    const releaseA = deferred<ConfigurationRepositoryTransportOutcome>();
+    const releaseB = deferred<ConfigurationRepositoryTransportOutcome>();
+    let activeTransports = 0;
+    let maxActiveTransports = 0;
+    harness.transport.run = async (request: ConfigurationRepositoryTransportRequest) => {
+      harness.calls.push(request);
+      activeTransports += 1;
+      maxActiveTransports = Math.max(maxActiveTransports, activeTransports);
+      try {
+        if (request.binding.repositoryPath === 'repo-a') {
+          enteredA.resolve(undefined);
+          return await releaseA.promise;
+        }
+        enteredB.resolve(undefined);
+        return await releaseB.promise;
+      } finally {
+        activeTransports -= 1;
+      }
+    };
+
+    const connectA = harness.service.connect(harness.targetA, harness.entryA, {
+      repositoryPath: 'repo-a', repositoryUser: 'user-a', repositoryPassword: 'password-a',
+      executionInfobaseId: harness.entryA.id,
+    }, neverCancelled());
+    await enteredA.promise;
+    const connectB = harness.service.connect(harness.targetA, harness.entryB, {
+      repositoryPath: 'repo-b', repositoryUser: 'user-b', repositoryPassword: 'password-b',
+      executionInfobaseId: harness.entryB.id,
+    }, neverCancelled());
+
+    try {
+      const bEnteredBeforeACompleted = await settlesWithin(enteredB.promise, 250);
+      if (bEnteredBeforeACompleted) {
+        releaseB.resolve(acknowledgedOutcome('bind'));
+        await connectB;
+      }
+
+      releaseA.resolve({
+        status: 'failed' as const,
+        operation: 'bind' as const,
+        errorCode: 'CONFIGURATOR_REPOSITORY_OPERATION_FAILED',
+        message: 'repository A rejected the bind',
+        retryable: false,
+        log: '',
+      });
+      const resultA = await connectA;
+      if (!bEnteredBeforeACompleted) {
+        await enteredB.promise;
+        releaseB.resolve(acknowledgedOutcome('bind'));
+      }
+      const resultB = await connectB;
+
+      assert.strictEqual(resultA.status, 'failed');
+      assert.strictEqual(resultB.status, 'acknowledged');
+      assert.strictEqual(maxActiveTransports, 1, 'operations for one target must not reach Configurator concurrently');
+      assert.deepStrictEqual(await harness.bindingStore.get(harness.targetA), {
+        repositoryPath: 'repo-b', repositoryUser: 'user-b', executionInfobaseId: harness.entryB.id,
+      });
+      assert.strictEqual(await harness.secrets.get(harness.targetA), 'password-b');
+      assert.strictEqual((await harness.stateStore.get(harness.targetA)).connection, 'connected');
+    } finally {
+      releaseA.resolve({
+        status: 'failed' as const,
+        operation: 'bind' as const,
+        errorCode: 'CONFIGURATOR_REPOSITORY_OPERATION_FAILED',
+        message: 'cleanup failure result',
+        retryable: false,
+        log: '',
+      });
+      releaseB.resolve(acknowledgedOutcome('bind'));
+      await Promise.allSettled([connectA, connectB]);
+      await harness.dispose();
+    }
+  });
+
+  test('rebind to another IB serializes with disconnect and preserves the new binding owner', async () => {
+    const harness = await createRepositoryRaceHarness();
+    const disconnectEntered = deferred<void>();
+    const rebindEntered = deferred<void>();
+    const releaseDisconnect = deferred<ConfigurationRepositoryTransportOutcome>();
+    const releaseRebind = deferred<ConfigurationRepositoryTransportOutcome>();
+    let activeTransports = 0;
+    let maxActiveTransports = 0;
+    harness.transport.run = async (request: ConfigurationRepositoryTransportRequest) => {
+      harness.calls.push(request);
+      if (request.operation === 'bind' && request.binding.repositoryPath === 'repo-b') {
+        activeTransports += 1;
+        maxActiveTransports = Math.max(maxActiveTransports, activeTransports);
+        try {
+          rebindEntered.resolve(undefined);
+          return await releaseRebind.promise;
+        } finally {
+          activeTransports -= 1;
+        }
+      }
+      if (request.operation === 'unbind') {
+        activeTransports += 1;
+        maxActiveTransports = Math.max(maxActiveTransports, activeTransports);
+        try {
+          disconnectEntered.resolve(undefined);
+          return await releaseDisconnect.promise;
+        } finally {
+          activeTransports -= 1;
+        }
+      }
+      return acknowledgedOutcome(request.operation);
+    };
+
+    const pendingOperations: Promise<unknown>[] = [];
+    try {
+      const initial = await harness.service.connect(harness.targetA, harness.entryA, {
+        repositoryPath: 'repo-a', repositoryUser: 'user-a', repositoryPassword: 'password-a',
+        executionInfobaseId: harness.entryA.id,
+      }, neverCancelled());
+      assert.strictEqual(initial.status, 'acknowledged');
+
+      const disconnect = harness.service.disconnect(harness.targetA, neverCancelled());
+      pendingOperations.push(disconnect);
+      await disconnectEntered.promise;
+      const rebind = harness.service.connect(harness.targetA, harness.entryB, {
+        repositoryPath: 'repo-b', repositoryUser: 'user-b', repositoryPassword: 'password-b',
+        executionInfobaseId: harness.entryB.id,
+      }, neverCancelled());
+      pendingOperations.push(rebind);
+
+      const rebindEnteredBeforeDisconnectCompleted = await settlesWithin(rebindEntered.promise, 250);
+      if (rebindEnteredBeforeDisconnectCompleted) {
+        releaseRebind.resolve(acknowledgedOutcome('bind'));
+        await rebind;
+      }
+
+      releaseDisconnect.resolve(acknowledgedOutcome('unbind'));
+      const disconnected = await disconnect;
+      if (!rebindEnteredBeforeDisconnectCompleted) {
+        await rebindEntered.promise;
+        releaseRebind.resolve(acknowledgedOutcome('bind'));
+      }
+      const rebound = await rebind;
+
+      assert.strictEqual(disconnected.status, 'acknowledged');
+      assert.strictEqual(rebound.status, 'acknowledged');
+      assert.strictEqual(maxActiveTransports, 1, 'disconnect and rebind for one target must be serialized across IB changes');
+      assert.deepStrictEqual(await harness.bindingStore.get(harness.targetA), {
+        repositoryPath: 'repo-b', repositoryUser: 'user-b', executionInfobaseId: harness.entryB.id,
+      });
+      assert.strictEqual(await harness.secrets.get(harness.targetA), 'password-b');
+      assert.strictEqual((await harness.stateStore.get(harness.targetA)).connection, 'connected');
+    } finally {
+      releaseDisconnect.resolve(acknowledgedOutcome('unbind'));
+      releaseRebind.resolve(acknowledgedOutcome('bind'));
+      await Promise.allSettled(pendingOperations);
+      await harness.dispose();
+    }
+  });
+
+  test('disconnect resolved on IB-A cannot unbind a queued rebind on IB-B through the stale lease', async () => {
+    const harness = await createRepositoryRaceHarness();
+    const enteredA = deferred<void>();
+    const enteredB = deferred<void>();
+    const releaseA = deferred<ConfigurationRepositoryTransportOutcome>();
+    const bLeaseRequested = deferred<void>();
+    const bCandidateWriteStarted = deferred<void>();
+    const releaseBCandidateWrite = deferred<void>();
+    const disconnectResolvedInfobase = deferred<string>();
+    const secondALeaseRequested = deferred<void>();
+    const unbindRequests: ConfigurationRepositoryTransportRequest[] = [];
+    const infobaseLookups: string[] = [];
+    const infobaseAKey = (await resolveInfobaseCanonicalIdentity(harness.entryA)).canonicalTargetId;
+    const infobaseBKey = (await resolveInfobaseCanonicalIdentity(harness.entryB)).canonicalTargetId;
+    const originalRunComposite = harness.queue.runComposite.bind(harness.queue);
+    const originalBindingSet = harness.bindingStore.set.bind(harness.bindingStore);
+    const originalGetById = harness.storage.getById.bind(harness.storage);
+    let physicalARequests = 0;
+
+    harness.queue.runComposite = async <T>(
+      identities: readonly InfobaseConfigurationQueueIdentity[],
+      operation: (lease: InfobaseConfigurationOperationLease) => Promise<T>,
+      cancellation?: InfobaseConfigurationQueueCancellation,
+    ): Promise<T> => {
+      const keys = identities.map(queueIdentityKey);
+      if (keys.includes(infobaseBKey)) {
+        bLeaseRequested.resolve(undefined);
+      }
+      if (keys.includes(infobaseAKey)) {
+        physicalARequests += 1;
+        if (physicalARequests === 2) {
+          secondALeaseRequested.resolve(undefined);
+        }
+      }
+      return originalRunComposite(identities, operation, cancellation);
+    };
+    harness.bindingStore.set = async (target: RepositoryTarget, binding: RepositoryBinding) => {
+      if (target.configRoot === harness.targetA.configRoot && binding.executionInfobaseId === harness.entryB.id) {
+        bCandidateWriteStarted.resolve(undefined);
+        await releaseBCandidateWrite.promise;
+      }
+      return originalBindingSet(target, binding);
+    };
+    harness.storage.getById = async (id: string) => {
+      infobaseLookups.push(id);
+      if (id === harness.entryA.id) {
+        disconnectResolvedInfobase.resolve(id);
+      }
+      return originalGetById(id);
+    };
+    harness.transport.run = async (request: ConfigurationRepositoryTransportRequest) => {
+      harness.calls.push(request);
+      if (request.operation === 'bind' && request.binding.repositoryPath === 'repo-a') {
+        enteredA.resolve(undefined);
+        return releaseA.promise;
+      }
+      if (request.operation === 'bind' && request.binding.repositoryPath === 'repo-b') {
+        enteredB.resolve(undefined);
+        return acknowledgedOutcome('bind');
+      }
+      if (request.operation === 'unbind') {
+        unbindRequests.push(request);
+      }
+      return acknowledgedOutcome(request.operation);
+    };
+
+    let connectA: Promise<RepositoryServiceResult> | undefined;
+    let connectB: Promise<RepositoryServiceResult> | undefined;
+    let disconnect: Promise<RepositoryServiceResult> | undefined;
+    try {
+      connectA = harness.service.connect(harness.targetA, harness.entryA, {
+        repositoryPath: 'repo-a', repositoryUser: 'user-a', repositoryPassword: 'password-a',
+        executionInfobaseId: harness.entryA.id,
+      }, neverCancelled());
+      await enteredA.promise;
+
+      connectB = harness.service.connect(harness.targetA, harness.entryB, {
+        repositoryPath: 'repo-b', repositoryUser: 'user-b', repositoryPassword: 'password-b',
+        executionInfobaseId: harness.entryB.id,
+      }, neverCancelled());
+      const bAdmissionObserved = await settlesWithin(
+        Promise.race([bLeaseRequested.promise, bCandidateWriteStarted.promise]),
+        250,
+      );
+      assert.strictEqual(bAdmissionObserved, true, 'rebind B must be queued or reach its guarded candidate write while A is active');
+
+      disconnect = harness.service.disconnect(harness.targetA, neverCancelled());
+      const disconnectResolvedInTime = await settlesWithin(disconnectResolvedInfobase.promise, 250);
+      const resolvedInfobaseId = disconnectResolvedInTime ? await disconnectResolvedInfobase.promise : undefined;
+      assert.strictEqual(resolvedInfobaseId, harness.entryA.id, 'disconnect must capture the old execution IB before acquiring its lease');
+      assert.strictEqual((await harness.bindingStore.get(harness.targetA))?.executionInfobaseId, harness.entryA.id);
+      const disconnectLeaseObserved = await settlesWithin(secondALeaseRequested.promise, 250);
+
+      releaseBCandidateWrite.resolve(undefined);
+      const bEnteredBeforeACompleted = await settlesWithin(enteredB.promise, 250);
+      releaseA.resolve(acknowledgedOutcome('bind'));
+      const resultA = await connectA;
+      if (!bEnteredBeforeACompleted) {
+        await enteredB.promise;
+      }
+      const resultB = await connectB;
+      const disconnectResult = await disconnect;
+      const staleUnbind = unbindRequests.find((request) =>
+        request.infobase.id === harness.entryA.id
+        && request.binding.executionInfobaseId === harness.entryB.id);
+
+      assert.strictEqual(disconnectLeaseObserved, true, 'disconnect must request its lease after resolving the old execution IB');
+      assert.strictEqual(resultA.status, 'acknowledged');
+      assert.strictEqual(resultB.status, 'acknowledged');
+      assert.strictEqual(staleUnbind, undefined, 'an IB-A lease must never execute unbind with the newer IB-B binding');
+
+      if (disconnectResult.status === 'inDoubt') {
+        assert.strictEqual(unbindRequests.length, 0, 'a stale disconnect conflict must be reported before transport');
+        assert.deepStrictEqual(await harness.bindingStore.get(harness.targetA), {
+          repositoryPath: 'repo-b', repositoryUser: 'user-b', executionInfobaseId: harness.entryB.id,
+        });
+        assert.strictEqual(await harness.secrets.get(harness.targetA), 'password-b');
+        assert.strictEqual((await harness.stateStore.get(harness.targetA)).connection, 'connected');
+      } else {
+        assert.strictEqual(disconnectResult.status, 'acknowledged', 'disconnect may re-admit only after resolving IB-B');
+        assert.strictEqual(unbindRequests.length, 1);
+        assert.strictEqual(unbindRequests[0]?.infobase.id, harness.entryB.id);
+        assert.strictEqual(unbindRequests[0]?.binding.executionInfobaseId, harness.entryB.id);
+        assert.ok(infobaseLookups.includes(harness.entryB.id), 'a new admission must resolve the new execution IB');
+        assert.strictEqual(await harness.bindingStore.get(harness.targetA), undefined);
+        assert.strictEqual(await harness.secrets.get(harness.targetA), undefined);
+      }
+    } finally {
+      releaseBCandidateWrite.resolve(undefined);
+      releaseA.resolve(acknowledgedOutcome('bind'));
+      harness.queue.runComposite = originalRunComposite;
+      harness.bindingStore.set = originalBindingSet;
+      harness.storage.getById = originalGetById;
+      await Promise.allSettled([
+        ...(connectA ? [connectA] : []),
+        ...(connectB ? [connectB] : []),
+        ...(disconnect ? [disconnect] : []),
+      ]);
+      await harness.dispose();
+    }
+  });
+
+  test('different repository targets sharing one physical IB keep independent bindings and states', async () => {
+    const harness = await createRepositoryRaceHarness();
+    const enteredA = deferred<void>();
+    const enteredB = deferred<void>();
+    const releaseA = deferred<ConfigurationRepositoryTransportOutcome>();
+    const releaseB = deferred<ConfigurationRepositoryTransportOutcome>();
+    let activeTransports = 0;
+    let maxActiveTransports = 0;
+    harness.transport.run = async (request: ConfigurationRepositoryTransportRequest) => {
+      harness.calls.push(request);
+      activeTransports += 1;
+      maxActiveTransports = Math.max(maxActiveTransports, activeTransports);
+      try {
+        if (request.target.key === harness.targetA.key) {
+          enteredA.resolve(undefined);
+          return await releaseA.promise;
+        }
+        enteredB.resolve(undefined);
+        return await releaseB.promise;
+      } finally {
+        activeTransports -= 1;
+      }
+    };
+
+    const connectA = harness.service.connect(harness.targetA, harness.entryA, {
+      repositoryPath: 'repo-target-a', repositoryUser: 'user-a', repositoryPassword: 'password-a',
+      executionInfobaseId: harness.entryA.id,
+    }, neverCancelled());
+    await enteredA.promise;
+    const connectB = harness.service.connect(harness.targetB, harness.entryA, {
+      repositoryPath: 'repo-target-b', repositoryUser: 'user-b', repositoryPassword: 'password-b',
+      executionInfobaseId: harness.entryA.id,
+    }, neverCancelled());
+
+    try {
+      const bEnteredBeforeACompleted = await settlesWithin(enteredB.promise, 250);
+      releaseA.resolve(acknowledgedOutcome('bind'));
+      const resultA = await connectA;
+      if (!bEnteredBeforeACompleted) {
+        await enteredB.promise;
+      }
+      releaseB.resolve(acknowledgedOutcome('bind'));
+      const resultB = await connectB;
+
+      assert.strictEqual(resultA.status, 'acknowledged');
+      assert.strictEqual(resultB.status, 'acknowledged');
+      assert.strictEqual(maxActiveTransports, 1, 'repository operations sharing a physical IB must be serialized');
+      assert.notStrictEqual(harness.targetA.key, harness.targetB.key);
+      assert.deepStrictEqual(await harness.bindingStore.get(harness.targetA), {
+        repositoryPath: 'repo-target-a', repositoryUser: 'user-a', executionInfobaseId: harness.entryA.id,
+      });
+      assert.deepStrictEqual(await harness.bindingStore.get(harness.targetB), {
+        repositoryPath: 'repo-target-b', repositoryUser: 'user-b', executionInfobaseId: harness.entryA.id,
+      });
+      assert.strictEqual(await harness.secrets.get(harness.targetA), 'password-a');
+      assert.strictEqual(await harness.secrets.get(harness.targetB), 'password-b');
+      assert.strictEqual((await harness.stateStore.get(harness.targetA)).connection, 'connected');
+      assert.strictEqual((await harness.stateStore.get(harness.targetB)).connection, 'connected');
+    } finally {
+      releaseA.resolve(acknowledgedOutcome('bind'));
+      releaseB.resolve(acknowledgedOutcome('bind'));
+      await Promise.allSettled([connectA, connectB]);
+      await harness.dispose();
+    }
+  });
+
+  test('CF and CFE targets at one root retain distinct canonical queue identities', async () => {
+    const harness = await createRepositoryRaceHarness();
+    const cfeTarget = createRepositoryTarget(harness.targetA.configRoot, 'cfe', 'SalesExtension');
+    const cfQueueKey = repositoryTargetMutationKey(harness.targetA);
+    const cfeQueueKey = repositoryTargetMutationKey(cfeTarget);
+    const enteredCf = deferred<void>();
+    const enteredCfe = deferred<void>();
+    const releaseCf = deferred<ConfigurationRepositoryTransportOutcome>();
+    const releaseCfe = deferred<ConfigurationRepositoryTransportOutcome>();
+    let activeTransports = 0;
+    let maxActiveTransports = 0;
+    harness.transport.run = async (request: ConfigurationRepositoryTransportRequest) => {
+      harness.calls.push(request);
+      activeTransports += 1;
+      maxActiveTransports = Math.max(maxActiveTransports, activeTransports);
+      try {
+        if (request.target.configKind === 'cf') {
+          enteredCf.resolve(undefined);
+          return await releaseCf.promise;
+        }
+        enteredCfe.resolve(undefined);
+        return await releaseCfe.promise;
+      } finally {
+        activeTransports -= 1;
+      }
+    };
+
+    const connectCf = harness.service.connect(harness.targetA, harness.entryA, {
+      repositoryPath: 'repo-cf', repositoryUser: 'cf-user', repositoryPassword: 'cf-secret',
+      executionInfobaseId: harness.entryA.id,
+    }, neverCancelled());
+    await enteredCf.promise;
+    const connectCfe = harness.service.connect(cfeTarget, harness.entryB, {
+      repositoryPath: 'repo-cfe', repositoryUser: 'cfe-user', repositoryPassword: 'cfe-secret',
+      executionInfobaseId: harness.entryB.id,
+    }, neverCancelled());
+
+    try {
+      const cfeEnteredWhileCfActive = await settlesWithin(enteredCfe.promise, 250);
+      releaseCf.resolve(acknowledgedOutcome('bind'));
+      const resultCf = await connectCf;
+      if (!cfeEnteredWhileCfActive) {
+        await enteredCfe.promise;
+      }
+      releaseCfe.resolve(acknowledgedOutcome('bind'));
+      const resultCfe = await connectCfe;
+
+      assert.notStrictEqual(harness.targetA.key, cfeTarget.key);
+      assert.notStrictEqual(cfQueueKey, cfeQueueKey);
+      assert.notStrictEqual(cfQueueKey, harness.targetA.key, 'service queue identity must use the canonical target tuple');
+      assert.strictEqual(cfeEnteredWhileCfActive, true, 'different CF/CFE targets on different IBs may run concurrently');
+      assert.strictEqual(resultCf.status, 'acknowledged');
+      assert.strictEqual(resultCfe.status, 'acknowledged');
+      assert.strictEqual(maxActiveTransports, 2);
+      assert.deepStrictEqual(await harness.bindingStore.get(harness.targetA), {
+        repositoryPath: 'repo-cf', repositoryUser: 'cf-user', executionInfobaseId: harness.entryA.id,
+      });
+      assert.deepStrictEqual(await harness.bindingStore.get(cfeTarget), {
+        repositoryPath: 'repo-cfe', repositoryUser: 'cfe-user', executionInfobaseId: harness.entryB.id,
+      });
+      assert.strictEqual(await harness.secrets.get(harness.targetA), 'cf-secret');
+      assert.strictEqual(await harness.secrets.get(cfeTarget), 'cfe-secret');
+      assert.strictEqual((await harness.stateStore.get(harness.targetA)).connection, 'connected');
+      assert.strictEqual((await harness.stateStore.get(cfeTarget)).connection, 'connected');
+    } finally {
+      releaseCf.resolve(acknowledgedOutcome('bind'));
+      releaseCfe.resolve(acknowledgedOutcome('bind'));
+      await Promise.allSettled([connectCf, connectCfe]);
+      await harness.dispose();
+    }
+  });
+
+  test('cancelling a queued bind for the same target leaves the active owner and transport untouched', async () => {
+    const harness = await createRepositoryRaceHarness();
+    const enteredA = deferred<void>();
+    const enteredB = deferred<void>();
+    const releaseA = deferred<ConfigurationRepositoryTransportOutcome>();
+    harness.transport.run = async (request: ConfigurationRepositoryTransportRequest) => {
+      harness.calls.push(request);
+      if (request.binding.repositoryPath === 'repo-a') {
+        enteredA.resolve(undefined);
+        return await releaseA.promise;
+      }
+      enteredB.resolve(undefined);
+      return acknowledgedOutcome(request.operation);
+    };
+
+    const connectA = harness.service.connect(harness.targetA, harness.entryA, {
+      repositoryPath: 'repo-a', repositoryUser: 'user-a', repositoryPassword: 'password-a',
+      executionInfobaseId: harness.entryA.id,
+    }, neverCancelled());
+    await enteredA.promise;
+    const cancellation = new vscode.CancellationTokenSource();
+    const connectB = harness.service.connect(harness.targetA, harness.entryB, {
+      repositoryPath: 'repo-b', repositoryUser: 'user-b', repositoryPassword: 'password-b',
+      executionInfobaseId: harness.entryB.id,
+    }, cancellation.token);
+
+    try {
+      const bEnteredBeforeCancellation = await settlesWithin(enteredB.promise, 250);
+      cancellation.cancel();
+      releaseA.resolve(acknowledgedOutcome('bind'));
+      const resultA = await connectA;
+      const resultB = await connectB;
+
+      assert.strictEqual(bEnteredBeforeCancellation, false, 'the conflicting target lease must keep the bind queued until cancellation');
+      assert.strictEqual(resultA.status, 'acknowledged');
+      assert.strictEqual(resultB.status, 'cancelled');
+      assert.strictEqual(harness.calls.some((request) => request.binding.repositoryPath === 'repo-b'), false);
+      assert.deepStrictEqual(await harness.bindingStore.get(harness.targetA), {
+        repositoryPath: 'repo-a', repositoryUser: 'user-a', executionInfobaseId: harness.entryA.id,
+      });
+      assert.strictEqual(await harness.secrets.get(harness.targetA), 'password-a');
+      assert.strictEqual((await harness.stateStore.get(harness.targetA)).connection, 'connected');
+    } finally {
+      releaseA.resolve(acknowledgedOutcome('bind'));
+      await Promise.allSettled([connectA, connectB]);
+      cancellation.dispose();
+      await harness.dispose();
+    }
+  });
+
+  test('failed bind does not roll back an externally replaced binding, secret or state', async () => {
+    const harness = await createRepositoryRaceHarness();
+    const entered = deferred<void>();
+    const release = deferred<ConfigurationRepositoryTransportOutcome>();
+    harness.transport.run = async (request: ConfigurationRepositoryTransportRequest) => {
+      harness.calls.push(request);
+      entered.resolve(undefined);
+      return await release.promise;
+    };
+
+    const operation = harness.service.connect(harness.targetA, harness.entryA, {
+      repositoryPath: 'candidate-repository', repositoryUser: 'candidate-user', repositoryPassword: 'candidate-secret',
+      executionInfobaseId: harness.entryA.id,
+    }, neverCancelled());
+    await entered.promise;
+    const externalBinding = {
+      repositoryPath: 'external-repository',
+      repositoryUser: 'external-user',
+      executionInfobaseId: harness.entryB.id,
+    };
+    const externalState = {
+      connection: 'connected' as const,
+      locks: { 'Справочник.External': 'heldByCurrentCredentials' as const },
+      lastConfirmedAt: 'external-owner-state',
+      source: 'configuratorAcknowledgement' as const,
+    };
+
+    try {
+      await harness.bindingStore.set(harness.targetA, externalBinding);
+      await harness.secrets.set(harness.targetA, 'external-secret');
+      await harness.stateStore.set(harness.targetA, externalState);
+      release.resolve({
+        status: 'failed' as const,
+        operation: 'bind' as const,
+        errorCode: 'CONFIGURATOR_REPOSITORY_OPERATION_FAILED',
+        message: 'candidate bind rejected',
+        retryable: false,
+        log: '',
+      });
+      const result = await operation;
+
+      assert.strictEqual(result.status, 'inDoubt', 'changed candidate ownership must be reported as an unresolved local conflict');
+      assert.deepStrictEqual(await harness.bindingStore.get(harness.targetA), externalBinding);
+      assert.strictEqual(await harness.secrets.get(harness.targetA), 'external-secret');
+      assert.deepStrictEqual(await harness.stateStore.get(harness.targetA), externalState);
+      assert.strictEqual(result.message.includes('external-secret'), false, 'secret values must stay out of diagnostics');
+    } finally {
+      release.resolve({
+        status: 'failed' as const,
+        operation: 'bind' as const,
+        errorCode: 'CONFIGURATOR_REPOSITORY_OPERATION_FAILED',
+        message: 'cleanup failure result',
+        retryable: false,
+        log: '',
+      });
+      await Promise.allSettled([operation]);
+      await harness.dispose();
+    }
+  });
+
+  test('late bind acknowledgement does not replace state after an external candidate owner change', async () => {
+    const harness = await createRepositoryRaceHarness();
+    const entered = deferred<void>();
+    const release = deferred<ConfigurationRepositoryTransportOutcome>();
+    harness.transport.run = async (request: ConfigurationRepositoryTransportRequest) => {
+      harness.calls.push(request);
+      entered.resolve(undefined);
+      return await release.promise;
+    };
+
+    const operation = harness.service.connect(harness.targetA, harness.entryA, {
+      repositoryPath: 'candidate-repository', repositoryUser: 'candidate-user', repositoryPassword: 'candidate-secret',
+      executionInfobaseId: harness.entryA.id,
+    }, neverCancelled());
+    await entered.promise;
+    const externalBinding = {
+      repositoryPath: 'external-repository',
+      repositoryUser: 'external-user',
+      executionInfobaseId: harness.entryB.id,
+    };
+    const externalState = {
+      connection: 'disconnected' as const,
+      locks: { 'Справочник.External': 'unknown' as const },
+      lastConfirmedAt: 'external-owner-state',
+      source: 'unknown' as const,
+    };
+
+    try {
+      await harness.bindingStore.set(harness.targetA, externalBinding);
+      await harness.secrets.set(harness.targetA, 'external-secret');
+      await harness.stateStore.set(harness.targetA, externalState);
+      release.resolve(acknowledgedOutcome('bind'));
+      const result = await operation;
+
+      assert.strictEqual(result.status, 'inDoubt', 'late ACK cannot certify a candidate that no longer owns the target');
+      assert.deepStrictEqual(await harness.bindingStore.get(harness.targetA), externalBinding);
+      assert.strictEqual(await harness.secrets.get(harness.targetA), 'external-secret');
+      assert.deepStrictEqual(await harness.stateStore.get(harness.targetA), externalState);
+      assert.strictEqual(result.message.includes('external-secret'), false, 'secret values must stay out of diagnostics');
+    } finally {
+      release.resolve(acknowledgedOutcome('bind'));
+      await Promise.allSettled([operation]);
       await harness.dispose();
     }
   });
@@ -1320,6 +2183,119 @@ suite('Configuration Repository phase 1', () => {
   });
 });
 
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(() => true, () => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function createRepositoryRaceHarness() {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-race-'));
+  const configRootA = path.join(rootPath, 'config-a');
+  const configRootB = path.join(rootPath, 'config-b');
+  const targetA = createRepositoryTarget(configRootA);
+  const targetB = createRepositoryTarget(configRootB);
+  const entryA = { ...infobase(path.join(rootPath, 'ib-a', '1Cv8.1CD')), id: 'race-ib-a', name: 'Race IB A' };
+  const entryB = { ...infobase(path.join(rootPath, 'ib-b', '1Cv8.1CD')), id: 'race-ib-b', name: 'Race IB B' };
+  await Promise.all([
+    fs.mkdir(configRootA, { recursive: true }),
+    fs.mkdir(configRootB, { recursive: true }),
+    fs.mkdir(path.dirname(entryA.filePath), { recursive: true }),
+    fs.mkdir(path.dirname(entryB.filePath), { recursive: true }),
+  ]);
+  await Promise.all([
+    fs.writeFile(entryA.filePath, '', 'utf8'),
+    fs.writeFile(entryB.filePath, '', 'utf8'),
+  ]);
+
+  const bindingStore = new RepositoryBindingStore(path.join(rootPath, 'bindings.json'));
+  const stateStore = new RepositoryStateStore(path.join(rootPath, 'state.json'));
+  const secretValues = new Map<string, string>();
+  const secretStore = {
+    get: async (target: RepositoryTarget) => secretValues.get(target.key),
+    set: async (target: RepositoryTarget, value: string) => { secretValues.set(target.key, value); },
+    delete: async (target: RepositoryTarget) => { secretValues.delete(target.key); },
+  };
+  const entries = new Map([[entryA.id, entryA], [entryB.id, entryB]]);
+  const calls: ConfigurationRepositoryTransportRequest[] = [];
+  const transport: {
+    run(request: ConfigurationRepositoryTransportRequest): Promise<ConfigurationRepositoryTransportOutcome>;
+  } = {
+    run: async (request: ConfigurationRepositoryTransportRequest) => {
+      calls.push(request);
+      return acknowledgedOutcome(request.operation);
+    },
+  };
+  const storage = {
+    getById: async (id: string) => entries.get(id),
+    readPasswordSecret: async () => undefined,
+  };
+  const queue = new InfobaseConfigurationOperationQueue();
+  const service = new ConfigurationRepositoryService({
+    bindingStore,
+    secretStore: secretStore as any,
+    stateStore,
+    infobaseStorage: storage as any,
+    transport: transport as unknown as ConfigurationRepositoryTransport,
+    queue,
+    requestConfigurationReload: async () => undefined,
+  });
+
+  return {
+    rootPath,
+    targetA,
+    targetB,
+    entryA,
+    entryB,
+    bindingStore,
+    stateStore,
+    storage,
+    secrets: {
+      get: async (target: RepositoryTarget) => secretValues.get(target.key),
+      set: async (target: RepositoryTarget, value: string) => { secretValues.set(target.key, value); },
+      delete: async (target: RepositoryTarget) => { secretValues.delete(target.key); },
+    },
+    transport,
+    calls,
+    queue,
+    service,
+    dispose: async () => fs.rm(rootPath, { recursive: true, force: true }),
+  };
+}
+
+function createRepositoryTarget(
+  configRoot: string,
+  configKind: 'cf' | 'cfe' = 'cf',
+  extensionName?: string,
+): RepositoryTarget {
+  return {
+    configRoot,
+    configKind,
+    ...(extensionName ? { extensionName } : {}),
+    key: repositoryTargetKey({ configRoot, configKind, extensionName }),
+  };
+}
+
+function queueIdentityKey(identity: InfobaseConfigurationQueueIdentity): string {
+  return typeof identity === 'string' ? identity : identity.canonicalTargetId;
+}
+
 function node(
   type: MetadataType,
   name: string,
@@ -1356,14 +2332,16 @@ function neverCancelled() {
   };
 }
 
-function acknowledgedOutcome(operation: 'bind' | 'lock' | 'unlock' | 'commit' | 'unbind' | 'updateObject' | 'updateConfiguration') {
+function acknowledgedOutcome(
+  operation: 'bind' | 'lock' | 'unlock' | 'commit' | 'unbind' | 'updateObject' | 'updateConfiguration',
+): ConfigurationRepositoryTransportOutcome {
   return { status: 'acknowledged' as const, operation, log: '' };
 }
 
 async function createServiceHarness(
   outcome: (operation: string) => unknown,
   requestConfigurationReload: (configRoot: string, reason: ReloadReason) => Promise<void> = async () => undefined,
-  extraDeps: Partial<Pick<ConfigurationRepositoryServiceDeps, 'importFiles'>> = {},
+  extraDeps: Partial<Pick<ConfigurationRepositoryServiceDeps, 'importFiles' | 'exportObjects' | 'exportConfiguration'>> = {},
 ) {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-service-'));
   await fs.mkdir(path.join(rootPath, 'Catalogs'), { recursive: true });
@@ -1413,7 +2391,11 @@ async function createServiceHarness(
     service,
     bindingStore,
     stateStore,
-    secrets: { get: async (key: string) => secretValues.get(key) },
+    secrets: {
+      get: async (key: string) => secretValues.get(key),
+      set: async (key: string, value: string) => { secretValues.set(key, value); },
+      delete: async (key: string) => { secretValues.delete(key); },
+    },
     transport,
     calls,
     get objectXml() { return objectXml; },
