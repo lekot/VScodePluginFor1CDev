@@ -1,0 +1,19 @@
+
+        body {
+          font-family: var(--vscode-font-family);
+          font-size: var(--vscode-font-size);
+          color: var(--vscode-foreground);
+          background-color: var(--vscode-editor-background);
+          padding: 16px;
+        }
+        .empty-state {
+          text-align: center;
+          padding: 40px;
+          color: var(--vscode-descriptionForeground);
+        }
+        .empty-state h3 {
+          margin: 0 0 12px 0;
+        }
+        .empty-state p {
+          margin: 0;
+        }

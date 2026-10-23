@@ -101,11 +101,11 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
 
     // Verify property-input event listeners are attached
     assert.ok(
-      script.includes("addEventListener('change', handlePropertyChange)"),
+      /addEventListener\(["']change["'],handlePropertyChange\)/.test(script),
       'Webview script should attach change event listener to property inputs'
     );
     assert.ok(
-      script.includes("addEventListener('input', handlePropertyChange)"),
+      /addEventListener\(["']input["'],handlePropertyChange\)/.test(script),
       'Webview script should attach input event listener to property inputs'
     );
 
@@ -153,13 +153,13 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
 
     // Verify save button event listener
     assert.ok(
-      script.includes("addEventListener('click', handleSave)"),
+      /addEventListener\(["']click["'],handleSave\)/.test(script),
       'Webview script should attach click event listener to save button'
     );
 
     // Verify save message is sent
     assert.ok(
-      script.includes("type: 'save'"),
+      /type\s*:\s*["']save["']/.test(script),
       'Webview script should send save message to extension'
     );
   });
@@ -201,13 +201,13 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
 
     // Verify cancel button event listener
     assert.ok(
-      script.includes("addEventListener('click', handleCancel)"),
+      /addEventListener\(["']click["'],handleCancel\)/.test(script),
       'Webview script should attach click event listener to cancel button'
     );
 
     // Verify cancel message is sent
     assert.ok(
-      script.includes("type: 'cancel'"),
+      /type\s*:\s*["']cancel["']/.test(script),
       'Webview script should send cancel message to extension'
     );
   });
@@ -505,8 +505,8 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
         // Property: Save and Cancel handlers should exist for any property set
         const hasSaveHandler = script.includes('handleSave');
         const hasCancelHandler = script.includes('handleCancel');
-        const hasSaveMessage = script.includes("type: 'save'");
-        const hasCancelMessage = script.includes("type: 'cancel'");
+        const hasSaveMessage = /type\s*:\s*["']save["']/.test(script);
+        const hasCancelMessage = /type\s*:\s*["']cancel["']/.test(script);
 
         return hasSaveHandler && hasCancelHandler && hasSaveMessage && hasCancelMessage;
       }),

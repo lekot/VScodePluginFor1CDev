@@ -62,10 +62,6 @@
       "maxLines": 1184,
       "reason": "EDT XML format parser (#201)"
     },
-    "src/providers/propertiesWebviewContent.ts": {
-      "maxLines": 1848,
-      "reason": "Properties webview HTML and UI rendering (#201)"
-    },
     "src/providers/treeDataProvider.ts": {
       "maxLines": 2121,
       "reason": "Monolithic tree provider, slated for decomposition in #201 Step 3"

@@ -1,0 +1,63 @@
+
+        body {
+          font-family: var(--vscode-font-family);
+          font-size: var(--vscode-font-size);
+          color: var(--vscode-foreground);
+          background-color: var(--vscode-editor-background);
+          padding: 16px;
+        }
+        .header { margin-bottom: 16px; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 10px; }
+        .header h2 { margin: 0 0 6px 0; }
+        .header p { margin: 0; color: var(--vscode-descriptionForeground); }
+        .hint { margin: 12px 0; color: var(--vscode-descriptionForeground); }
+        .property-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .property-label { min-width: 180px; font-weight: 600; }
+        .property-input {
+          flex: 1;
+          padding: 4px 8px;
+          background: var(--vscode-input-background);
+          color: var(--vscode-input-foreground);
+          border: 1px solid var(--vscode-input-border);
+        }
+        .property-input-textarea {
+          min-height: 72px;
+          resize: vertical;
+          font-family: var(--vscode-editor-font-family);
+        }
+        .property-input.error {
+          border-color: var(--vscode-inputValidation-errorBorder);
+        }
+        .edit-form-type-btn {
+          border: none;
+          padding: 4px 8px;
+          background: var(--vscode-button-secondaryBackground);
+          color: var(--vscode-button-secondaryForeground);
+          cursor: pointer;
+        }
+        .edit-form-type-btn:hover {
+          background: var(--vscode-button-secondaryHoverBackground);
+        }
+        .event-action-btn {
+          border: none;
+          padding: 2px 6px;
+          background: var(--vscode-button-secondaryBackground);
+          color: var(--vscode-button-secondaryForeground);
+          cursor: pointer;
+          font-size: 14px;
+          line-height: 1;
+          border-radius: 2px;
+          flex-shrink: 0;
+        }
+        .event-action-btn:hover {
+          background: var(--vscode-button-secondaryHoverBackground);
+        }
+        .property-section-title {
+          margin: 16px 0 8px 0;
+          color: var(--vscode-descriptionForeground);
+          border-bottom: 1px solid var(--vscode-panel-border);
+          padding-bottom: 4px;
+        }
+        .empty-state p {
+          margin: 6px 0;
+          color: var(--vscode-descriptionForeground);
+        }

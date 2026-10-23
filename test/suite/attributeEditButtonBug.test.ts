@@ -110,7 +110,7 @@ suite('Bug Condition Exploration: Attribute Edit Button Missing', () => {
       'Webview script should contain edit button click handler'
     );
     assert.ok(
-      script.includes("type: 'editType'") || script.includes('type: "editType"'),
+      /type\s*:\s*["']editType["']/.test(script),
       'Webview script should send editType message'
     );
   });
