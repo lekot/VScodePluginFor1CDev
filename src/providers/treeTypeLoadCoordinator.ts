@@ -1,10 +1,11 @@
+import { isDeepStrictEqual } from 'util';
 import type { TreeLoadContext } from '../types/treeLoadContext';
 import {
   TreeLoadError,
   type TreeTypeLoadResult,
 } from '../types/treeTypeLoadResult';
 import { MetadataParser } from '../parsers/metadataParser';
-import { MetadataType, type TreeNode } from '../models/treeNode';
+import { MetadataType, type TreeNode, type TreeNodeProperties } from '../models/treeNode';
 import { ensureR6PlaceholdersForInstanceNode } from '../utils/treeNormalization';
 import { configurationPathKey } from '../utils/configurationPathIdentity';
 import { TreeCacheService } from './treeCacheService';
@@ -22,6 +23,16 @@ interface NodeLoadState {
   version: number;
   inFlight?: Promise<TreeTypeLoadResult>;
 }
+
+interface DetachedElementInput {
+  readonly element: TreeNode;
+  readonly propertiesAtAdmission: WeakMap<TreeNode, TreeNodeProperties>;
+}
+
+export type ElementChildrenProjection = (
+  element: TreeNode,
+  parsedChildren: TreeNode[],
+) => readonly TreeNode[];
 
 interface ScopeRootSnapshot {
   readonly root: TreeNode;
@@ -60,6 +71,162 @@ function loadError(code: ConstructorParameters<typeof TreeLoadError>[0], message
   return new TreeLoadError(code, message, cause);
 }
 
+function cloneReaderValue(value: unknown, seen = new WeakMap<object, unknown>()): unknown {
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  const existing = seen.get(value);
+  if (existing) {
+    return existing;
+  }
+  if (value instanceof Date) {
+    const copy = new Date(value.getTime());
+    seen.set(value, copy);
+    return copy;
+  }
+  if (value instanceof Error) {
+    const copy = new Error(value.message);
+    Object.setPrototypeOf(copy, Object.getPrototypeOf(value));
+    seen.set(value, copy);
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor) {
+        continue;
+      }
+      if ('value' in descriptor) {
+        descriptor.value = cloneReaderValue(descriptor.value, seen);
+      }
+      Object.defineProperty(copy, key, descriptor);
+    }
+    return copy;
+  }
+  if (Array.isArray(value)) {
+    const copy: unknown[] = [];
+    seen.set(value, copy);
+    for (const item of value) {
+      copy.push(cloneReaderValue(item, seen));
+    }
+    return copy;
+  }
+  if (value instanceof Map) {
+    const copy = new Map<unknown, unknown>();
+    seen.set(value, copy);
+    for (const [key, item] of value) {
+      copy.set(cloneReaderValue(key, seen), cloneReaderValue(item, seen));
+    }
+    return copy;
+  }
+  if (value instanceof Set) {
+    const copy = new Set<unknown>();
+    seen.set(value, copy);
+    for (const item of value) {
+      copy.add(cloneReaderValue(item, seen));
+    }
+    return copy;
+  }
+
+  const prototype = Object.getPrototypeOf(value) as object | null;
+  const copy = Object.create(prototype) as Record<string, unknown>;
+  seen.set(value, copy);
+  for (const [key, item] of Object.entries(value)) {
+    copy[key] = cloneReaderValue(item, seen);
+  }
+  return copy;
+}
+
+function cloneNodeShell(
+  source: TreeNode,
+  propertiesAtAdmission: WeakMap<TreeNode, TreeNodeProperties>,
+): TreeNode {
+  const sourceProperties = source.properties;
+  const detached: TreeNode = {
+    ...source,
+    properties: cloneReaderValue(sourceProperties) as TreeNodeProperties,
+    children: [],
+    parent: undefined,
+    nestedPath: source.nestedPath
+      ? cloneReaderValue(source.nestedPath) as TreeNode['nestedPath']
+      : undefined,
+  };
+  propertiesAtAdmission.set(detached, cloneReaderValue(sourceProperties) as TreeNodeProperties);
+  return detached;
+}
+
+function cloneElementSubtree(
+  source: TreeNode,
+  propertiesAtAdmission: WeakMap<TreeNode, TreeNodeProperties>,
+  clones: WeakMap<TreeNode, TreeNode>,
+): TreeNode {
+  const existing = clones.get(source);
+  if (existing) {
+    return existing;
+  }
+  const detached = cloneNodeShell(source, propertiesAtAdmission);
+  clones.set(source, detached);
+  detached.children = source.children?.map((child) => {
+    const childClone = cloneElementSubtree(child, propertiesAtAdmission, clones);
+    childClone.parent = detached;
+    return childClone;
+  });
+  return detached;
+}
+
+function createDetachedElementInput(element: TreeNode): DetachedElementInput {
+  const propertiesAtAdmission = new WeakMap<TreeNode, TreeNodeProperties>();
+  const detached = cloneElementSubtree(element, propertiesAtAdmission, new WeakMap<TreeNode, TreeNode>());
+  let liveParent = element.parent;
+  let detachedChild = detached;
+  while (liveParent) {
+    const detachedParent = cloneNodeShell(liveParent, propertiesAtAdmission);
+    detachedParent.children = [detachedChild];
+    detachedChild.parent = detachedParent;
+    detachedChild = detachedParent;
+    liveParent = liveParent.parent;
+  }
+  return { element: detached, propertiesAtAdmission };
+}
+
+function publishReaderPropertyChanges(
+  liveElement: TreeNode,
+  detachedInput: DetachedElementInput,
+): void {
+  let live: TreeNode | undefined = liveElement;
+  let detached: TreeNode | undefined = detachedInput.element;
+  while (live && detached) {
+    const initialProperties = detachedInput.propertiesAtAdmission.get(detached);
+    if (initialProperties) {
+      const keys = new Set([...Object.keys(initialProperties), ...Object.keys(detached.properties)]);
+      const initial = initialProperties as Record<string, unknown>;
+      const parsed = detached.properties as Record<string, unknown>;
+      const current = live.properties as Record<string, unknown>;
+      for (const key of keys) {
+        const wasPresent = Object.prototype.hasOwnProperty.call(initial, key);
+        const isPresent = Object.prototype.hasOwnProperty.call(parsed, key);
+        const initialValue = initial[key];
+        const parsedValue = parsed[key];
+        if (wasPresent === isPresent && isDeepStrictEqual(initialValue, parsedValue)) {
+          continue;
+        }
+
+        const liveHasValue = Object.prototype.hasOwnProperty.call(current, key);
+        if (liveHasValue !== wasPresent || !isDeepStrictEqual(current[key], initialValue)) {
+          continue;
+        }
+        if (isPresent) {
+          current[key] = cloneReaderValue(parsedValue);
+        } else {
+          delete current[key];
+        }
+      }
+    }
+    if (live.type === MetadataType.Configuration) {
+      break;
+    }
+    live = live.parent;
+    detached = detached.parent;
+  }
+}
+
 export class TreeTypeLoadCoordinator {
   private publishedRoots: TreeNode[] = [];
   private rootRecords = new Map<TreeNode, RootRecord>();
@@ -70,6 +237,7 @@ export class TreeTypeLoadCoordinator {
   constructor(
     private readonly cache: TreeCacheService,
     private readonly onPublished: (typeFolder: TreeNode) => void,
+    private readonly projectElementChildren: ElementChildrenProjection,
   ) {}
 
   setRoots(roots: readonly TreeNode[], contexts: ReadonlyMap<TreeNode, TreeLoadContext>): void {
@@ -206,11 +374,7 @@ export class TreeTypeLoadCoordinator {
       return Promise.resolve({ status: 'loaded', children: typeFolder.children ?? [] });
     }
 
-    let state = this.nodeStates.get(typeFolder);
-    if (!state) {
-      state = { version: 0 };
-      this.nodeStates.set(typeFolder, state);
-    }
+    const state = this.getNodeState(typeFolder);
     if (state.inFlight) {
       return state.inFlight;
     }
@@ -226,12 +390,57 @@ export class TreeTypeLoadCoordinator {
     return pending;
   }
 
-  invalidateNode(node: TreeNode): void {
-    let state = this.nodeStates.get(node);
-    if (!state) {
-      state = { version: 0 };
-      this.nodeStates.set(node, state);
+  loadElementChildren(element: TreeNode): Promise<TreeTypeLoadResult> {
+    if (this.disposed) {
+      return Promise.resolve({
+        status: 'disposed',
+        error: loadError('TREE_LOAD_DISPOSED', 'Загрузчик дерева уже остановлен.'),
+      });
     }
+
+    const root = this.cache.getConfigurationRoot(element);
+    if (!root || !this.publishedRoots.includes(root) || !this.cache.contains(element)) {
+      return Promise.resolve({
+        status: 'superseded',
+        error: loadError('TREE_LOAD_SUPERSEDED', 'Запрос загрузки относится к устаревшему дереву конфигурации.'),
+      });
+    }
+    const record = this.rootRecords.get(root);
+    if (!record) {
+      return Promise.resolve({
+        status: 'failed',
+        error: loadError('CONFIGURATION_CONTEXT_UNAVAILABLE', 'Для конфигурации не зарегистрирован контекст чтения.'),
+      });
+    }
+    if (record.status !== 'active') {
+      return Promise.resolve({
+        status: 'superseded',
+        error: loadError('TREE_LOAD_SUPERSEDED', 'Конфигурация обновляется; запрос загрузки устарел.'),
+      });
+    }
+    if (element.properties._lazy !== true) {
+      return Promise.resolve({ status: 'loaded', children: element.children ?? [] });
+    }
+
+    const state = this.getNodeState(element);
+    if (state.inFlight) {
+      return state.inFlight;
+    }
+
+    const detachedInput = createDetachedElementInput(element);
+    const nodeVersion = state.version;
+    const pending = this.parseAndPublishElementChildren(element, detachedInput, record, state, nodeVersion);
+    state.inFlight = pending;
+    void pending.finally(() => {
+      if (state.inFlight === pending) {
+        state.inFlight = undefined;
+      }
+    });
+    return pending;
+  }
+
+  invalidateNode(node: TreeNode): void {
+    const state = this.getNodeState(node);
     state.version += 1;
     state.inFlight = undefined;
   }
@@ -322,6 +531,79 @@ export class TreeTypeLoadCoordinator {
         ),
       };
     }
+  }
+
+  private async parseAndPublishElementChildren(
+    element: TreeNode,
+    detachedInput: DetachedElementInput,
+    record: RootRecord,
+    state: NodeLoadState,
+    nodeVersion: number,
+  ): Promise<TreeTypeLoadResult> {
+    let parsedChildren: TreeNode[];
+    try {
+      parsedChildren = await MetadataParser.loadElementChildren(
+        record.context.configPath,
+        record.context.format,
+        detachedInput.element,
+      );
+    } catch (cause) {
+      if (this.disposed) {
+        return {
+          status: 'disposed',
+          error: loadError('TREE_LOAD_DISPOSED', 'Загрузчик дерева уже остановлен.'),
+        };
+      }
+      if (!this.isCurrent(record, element, state, nodeVersion)) {
+        return {
+          status: 'superseded',
+          error: loadError('TREE_LOAD_SUPERSEDED', 'Ошибка загрузки относится к устаревшему дереву конфигурации.'),
+        };
+      }
+      return {
+        status: 'failed',
+        error: loadError('TREE_LOAD_FAILED', `Не удалось загрузить элементы «${element.name}».`, cause),
+      };
+    }
+
+    const projectedChildren = this.projectElementChildren(element, parsedChildren);
+    if (this.disposed) {
+      return {
+        status: 'disposed',
+        error: loadError('TREE_LOAD_DISPOSED', 'Загрузчик дерева уже остановлен.'),
+      };
+    }
+    if (!this.isCurrent(record, element, state, nodeVersion)) {
+      return {
+        status: 'superseded',
+        error: loadError('TREE_LOAD_SUPERSEDED', 'Результат загрузки относится к устаревшему дереву конфигурации.'),
+      };
+    }
+
+    publishReaderPropertyChanges(element, detachedInput);
+    const children = [...projectedChildren];
+    for (const previousChild of element.children ?? []) {
+      if (!children.includes(previousChild)) {
+        this.cache.removeNode(previousChild);
+      }
+    }
+    for (const child of children) {
+      child.parent = element;
+      this.cache.buildCache(child);
+    }
+    element.children = children;
+    delete element.properties._lazy;
+    this.onPublished(element);
+    return { status: 'loaded', children };
+  }
+
+  private getNodeState(node: TreeNode): NodeLoadState {
+    let state = this.nodeStates.get(node);
+    if (!state) {
+      state = { version: 0 };
+      this.nodeStates.set(node, state);
+    }
+    return state;
   }
 
   private isCurrent(

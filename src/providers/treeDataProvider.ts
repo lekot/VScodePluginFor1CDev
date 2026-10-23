@@ -4,7 +4,6 @@ import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import type { ReferenceableGroup } from '../types/typeDefinitions';
-import { MetadataParser } from '../parsers/metadataParser';
 import { MESSAGES } from '../constants/messages';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import {
@@ -145,6 +144,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.typeLoadCoordinator = new TreeTypeLoadCoordinator(
       this.cache,
       () => this.clearTypeEditorReferenceableCache(),
+      (element, loaded) => this.projectElementChildren(element, loaded),
     );
     Logger.info('MetadataTreeDataProvider initialized');
   }
@@ -1213,10 +1213,33 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return false;
   }
 
+  private projectElementChildren(element: TreeNode, loaded: TreeNode[]): readonly TreeNode[] {
+    const existingSubsystems = (element.children ?? []).filter(
+      (child) => child.type === MetadataType.Subsystem,
+    );
+    const children = existingSubsystems.length > 0
+      ? [...existingSubsystems, ...loaded]
+      : [...loaded];
+    if (element.type === MetadataType.Subsystem && element.filePath) {
+      const commandInterfacePath = path.join(path.dirname(element.filePath), 'Ext', 'CommandInterface.xml');
+      if (fs.existsSync(commandInterfacePath)) {
+        children.push({
+          id: `${element.id}.CommandInterface`,
+          name: 'Командный интерфейс',
+          type: MetadataType.Unknown,
+          parent: element,
+          properties: { isVirtual: true },
+          filePath: commandInterfacePath,
+        });
+      }
+    }
+    return children;
+  }
+
   /**
    * Parsers may leave a tabular section instance with no children when there are no columns yet.
    * Without the synthetic «Реквизиты» node the item is a leaf and the user cannot add the first column.
-   * {@link MetadataParser.loadElementChildren} already fixes this for `_lazy` sections; mirror here for eager nodes.
+   * The element-load projection already fixes this for `_lazy` sections; mirror here for eager nodes.
    */
   private ensureTabularSectionColumnsIfNeeded(node: TreeNode): void {
     if (
@@ -1320,46 +1343,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       // Lazy load: element node with _lazy and no children yet (Attributes, Forms, Ext, etc.)
       if (this.isLazyElementNode(activeElement)) {
         const configRoot = this.cache.getConfigurationRoot(activeElement);
-        const ctx = configRoot ? this.cache.getLoadContext(configRoot) : undefined;
-        if (!ctx) {return Promise.resolve([]);}
-        const format = ctx.format;
-        if (format == null) {
-          return Promise.resolve([]);
-        }
         this.cancelTypeContentsCacheWarmup();
-        return MetadataParser.loadElementChildren(ctx.configPath, format, activeElement).then(
-          (loaded) => {
-            const existingSubsystems = (activeElement.children ?? []).filter(
-              (c) => c.type === MetadataType.Subsystem
-            );
-            const toRemove = (activeElement.children ?? []).filter(
-              (c) => c.type !== MetadataType.Subsystem
-            );
-            for (const child of toRemove) {
-              this.cache.removeNode(child);
-            }
-            const children = existingSubsystems.length > 0 ? [...existingSubsystems, ...loaded] : loaded;
-            for (const c of loaded) {
-              c.parent = activeElement;
-              this.cache.buildCache(c);
-            }
-            if (activeElement.type === MetadataType.Subsystem && activeElement.filePath) {
-              const ciPath = path.join(path.dirname(activeElement.filePath), 'Ext', 'CommandInterface.xml');
-              if (fs.existsSync(ciPath)) {
-                const ciNode: TreeNode = {
-                  id: `${activeElement.id}.CommandInterface`,
-                  name: 'Командный интерфейс',
-                  type: MetadataType.Unknown,
-                  parent: activeElement,
-                  properties: { isVirtual: true },
-                  filePath: ciPath,
-                };
-                children.push(ciNode);
-                this.cache.buildCache(ciNode);
-              }
-            }
-            activeElement.children = children;
-            delete activeElement.properties._lazy;
+        return this.typeLoadCoordinator.loadElementChildren(activeElement).then(
+          (result) => {
+            const children = unwrapTreeTypeLoadResult(result);
             Logger.info('Tree cache size after lazy element load', {
               element: activeElement.id,
               nodeCount: this.cache.size,

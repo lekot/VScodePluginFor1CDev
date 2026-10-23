@@ -361,6 +361,7 @@ export const coreSuiteFiles: string[] = [
   'suite/treePosixRootIdentity.test.js',
   'suite/treeResolvedContext.test.js',
   'suite/treeTypeLoadCoordinator.test.js',
+  'suite/treeElementLoadPublication.test.js',
   'suite/workspaceRegistryCoordinator.test.js',
   'suite/webviewCspSecurity.test.js',
   'suite/smokeFileCleanup.test.js',
