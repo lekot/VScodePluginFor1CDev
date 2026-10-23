@@ -11,6 +11,7 @@ import {
   type InfobaseCanonicalIdentity,
 } from '../../infobases/infobaseCanonicalIdentity';
 import {
+  InfobaseConfigurationOperationCancelledError,
   sharedInfobaseConfigurationOperationQueue,
   type InfobaseConfigurationOperationQueue,
 } from '../../infobases/infobaseConfigurationOperationQueue';
@@ -22,8 +23,11 @@ import {
 } from './configurationRepositoryTransport';
 import {
   RepositorySecretStore,
+  repositoryTargetMutationKey,
   type RepositoryBindingStorage,
   type RepositoryStateStorage,
+  withRepositoryTargetMutationLock,
+  withRepositoryTargetMutationWitness,
 } from './repositoryStores';
 import {
   resolveRepositoryObject,
@@ -34,6 +38,7 @@ import {
 } from './repositoryObjectsFileWriter';
 import type {
   ConfigurationRepositoryOperation,
+  ConfigurationRepositoryTransportRequest,
   ConfigurationRepositoryTransportOutcome,
   RepositoryBinding,
   RepositoryCancellation,
@@ -44,6 +49,12 @@ import type {
 } from './types';
 import type { RepositoryStateProjection } from './repositoryTreeDecorations';
 import type { RequestConfigurationReload } from '../../reload/requestConfigurationReload';
+import {
+  RepositoryBindingOwner,
+  type RepositoryBindingSnapshot,
+  type RepositoryOwnerAcknowledgementOptions,
+  type RepositoryOwnerStage,
+} from './repositoryBindingOwner';
 
 export interface ConfigurationRepositoryServiceDeps {
   readonly bindingStore: RepositoryBindingStorage;
@@ -62,20 +73,43 @@ export interface ConfigurationRepositoryServiceDeps {
   readonly onStateChanged?: (target: RepositoryTarget) => void;
 }
 
-interface RepositoryBindingSnapshot {
-  readonly binding?: RepositoryBinding;
-  readonly password?: string;
-  readonly state: RepositoryObservedState;
-}
+type RepositoryTransportServiceRequest = Omit<
+  ConfigurationRepositoryTransportRequest,
+  'binding' | 'infobaseCredentials' | 'cancellation'
+> & {
+  readonly binding: RepositoryBinding & { readonly repositoryPassword?: string };
+  readonly infobase: InfobaseEntry;
+  readonly cancellation: vscode.CancellationToken;
+};
+
+type RepositoryOperationOwner =
+  | {
+      readonly status: 'ready';
+      readonly snapshot: RepositoryBindingSnapshot;
+      readonly binding: RepositoryBinding & { readonly repositoryPassword?: string };
+    }
+  | { readonly status: 'result'; readonly result: RepositoryServiceResult };
+
+type RepositoryAcknowledgementStep =
+  | { readonly status: 'ready'; readonly owner: RepositoryBindingSnapshot }
+  | { readonly status: 'result'; readonly result: RepositoryServiceResult };
 
 /** Orchestrates repository operations while keeping transport/state/tree concerns separate. */
 export class ConfigurationRepositoryService {
   private readonly transport: ConfigurationRepositoryTransport;
   private readonly queue: InfobaseConfigurationOperationQueue;
+  private readonly bindingOwner: RepositoryBindingOwner;
 
   constructor(private readonly deps: ConfigurationRepositoryServiceDeps) {
     this.transport = deps.transport ?? new ConfigurationRepositoryTransport(deps.transportDeps);
     this.queue = deps.queue ?? sharedInfobaseConfigurationOperationQueue;
+    this.bindingOwner = new RepositoryBindingOwner({
+      bindingStore: deps.bindingStore,
+      secretStore: deps.secretStore,
+      stateStore: deps.stateStore,
+      stateProjection: deps.stateProjection,
+      onStateChanged: deps.onStateChanged,
+    });
   }
 
   targetForNode(node: TreeNode): RepositoryTarget | undefined {
@@ -87,15 +121,17 @@ export class ConfigurationRepositoryService {
   }
 
   async getObservedState(target: RepositoryTarget): Promise<RepositoryObservedState> {
-    const binding = await this.deps.bindingStore.get(target);
-    if (!binding) {
-      const state = Object.freeze({ connection: 'disconnected' as const, locks: Object.freeze({}), source: 'unknown' as const });
+    return withRepositoryTargetMutationLock(target, async () => {
+      const binding = await this.deps.bindingStore.get(target);
+      if (!binding) {
+        const state = Object.freeze({ connection: 'disconnected' as const, locks: Object.freeze({}), source: 'unknown' as const });
+        this.deps.stateProjection?.set(target.key, state);
+        return state;
+      }
+      const state = await this.deps.stateStore.get(target);
       this.deps.stateProjection?.set(target.key, state);
       return state;
-    }
-    const state = await this.deps.stateStore.get(target);
-    this.deps.stateProjection?.set(target.key, state);
-    return state;
+    });
   }
 
   async getBinding(target: RepositoryTarget): Promise<RepositoryBinding | undefined> {
@@ -123,34 +159,61 @@ export class ConfigurationRepositoryService {
       return this.failure(target, [], 'Хранилище конфигурации поддерживается только для файловой ИБ.');
     }
     const candidateBinding = Object.freeze({ ...binding, executionInfobaseId: infobase.id });
-    return this.runQueued(infobase, target, 'bind', undefined, async (identity) => {
-      let snapshot: RepositoryBindingSnapshot | undefined;
-      try {
-        snapshot = await this.captureBindingSnapshot(target);
-        await this.persistCandidateBinding(target, candidateBinding);
-      } catch (error) {
-        const restoreError = snapshot ? await this.tryRestoreBindingSnapshot(target, snapshot) : undefined;
+    return this.runQueued(infobase, target, 'bind', undefined, token, async (identity) => {
+      const preparation = await this.bindingOwner.prepareCandidate(target, candidateBinding);
+      if (preparation.status === 'failed') {
         return this.failure(
           target,
           [],
-          `Не удалось сохранить привязку Хранилища до запуска Конфигуратора: ${error instanceof Error ? error.message : String(error)}`
-          + (restoreError ? ` Предыдущая привязка восстановлена не полностью: ${restoreError}` : ''),
+          'Не удалось сохранить привязку Хранилища до запуска Конфигуратора.'
+          + (preparation.restoreFailed ? ' Предыдущая привязка восстановлена не полностью.' : ''),
         );
       }
-      if (!snapshot) {
-        return this.failure(target, [], 'Не удалось сохранить снимок прежней привязки Хранилища.');
+      const { previous: snapshot, candidate: candidateOwner } = preparation;
+      let transportStage: RepositoryOwnerStage<ConfigurationRepositoryTransportOutcome>;
+      try {
+        transportStage = await this.startOwnedTransport(target, candidateOwner, {
+          operation: 'bind', target, infobase, binding: candidateBinding, cancellation: token,
+          onOutput,
+        });
+      } catch (error) {
+        let restorationMessage = '';
+        try {
+          const restoration = await this.bindingOwner.restoreIfCandidateOwned(target, snapshot, candidateOwner);
+          if (restoration.status === 'conflict') {
+            return this.targetOwnerChanged(target);
+          }
+          if (restoration.status === 'failed') {
+            restorationMessage = ` Предыдущая привязка восстановлена не полностью: ${safeRepositoryErrorMessage(restoration.message, [candidateBinding.repositoryPassword])}`;
+          }
+        } catch (restoreError) {
+          restorationMessage = ` Предыдущая привязка восстановлена не полностью: ${safeRepositoryErrorMessage(restoreError, [candidateBinding.repositoryPassword])}`;
+        }
+        return this.failure(
+          target,
+          [],
+          `Не удалось подготовить запуск Конфигуратора: ${safeRepositoryErrorMessage(error, [candidateBinding.repositoryPassword])}${restorationMessage}`,
+        );
       }
-      const outcome = await this.runTransport({
-        operation: 'bind', target, infobase, binding: candidateBinding, cancellation: token,
-        onOutput,
-      });
+      if (transportStage.status === 'conflict') {
+        return this.targetOwnerChanged(target);
+      }
+      const outcome = await transportStage.pending;
       if (outcome.status === 'inDoubt') {
-        return this.inDoubtOrFailure(outcome, target, [], identity);
+        this.queue.quarantine([identity], `${outcome.operation}: ${outcome.errorCode}`);
+        const owner = await this.bindingOwner.markUnknownIfOwned(target, candidateOwner, []);
+        if (owner === 'conflict') {
+          return this.targetOwnerChanged(target);
+        }
+        return { status: 'inDoubt', target, affectedFullNames: [], message: outcome.message };
       }
       if (outcome.status === 'failed') {
-        const restoreError = await this.tryRestoreBindingSnapshot(target, snapshot);
-        const restorationSuffix = restoreError
-          ? ` Предыдущая привязка восстановлена не полностью: ${restoreError}`
+        const restoration = await this.bindingOwner.restoreIfCandidateOwned(target, snapshot, candidateOwner);
+        if (restoration.status === 'conflict') {
+          return this.targetOwnerChanged(target);
+        }
+        const restorationSuffix = restoration.status === 'failed'
+          ? ` Предыдущая привязка восстановлена не полностью: ${restoration.message}`
           : '';
         if (outcome.errorCode === 'CONFIGURATOR_CANCELLED_BEFORE_START') {
           return this.cancelled(
@@ -164,13 +227,15 @@ export class ConfigurationRepositoryService {
           message: `${result.message}${restorationSuffix}`,
         };
       }
-      try {
-        await this.saveState(target, { connection: 'connected', locks: {}, source: 'configuratorAcknowledgement' });
-      } catch (error) {
-        return this.postAcknowledgementFailure(
-          target,
-          `Хранилище подтверждено, но локальное состояние не сохранено: ${error instanceof Error ? error.message : String(error)}`,
-        );
+      const acknowledgement = await this.acknowledgeOwnedState(
+        target,
+        candidateOwner,
+        { resetLocks: true },
+        'Хранилище подтверждено, но локальное состояние не сохранено: ',
+        [candidateBinding.repositoryPassword],
+      );
+      if (acknowledgement.status === 'result') {
+        return acknowledgement.result;
       }
       return this.success(target, [], 'Конфигурация подключена к Хранилищу.');
     });
@@ -187,29 +252,43 @@ export class ConfigurationRepositoryService {
       return this.failure(target, [], infobase.message);
     }
     const executionInfobase = infobase.entry;
-    return this.runQueued(infobase.entry, target, 'unbind', undefined, async (identity) => {
-      const binding = await this.loadBinding(target);
-      if (!binding) {
+    return this.runQueued(infobase.entry, target, 'unbind', undefined, token, async (identity) => {
+      const snapshot = await this.bindingOwner.capture(target);
+      if (!snapshot.binding) {
         return this.failure(target, [], 'Для конфигурации не настроено подключение к Хранилищу.');
       }
-      const outcome = await this.runTransport({
+      if (snapshot.binding.executionInfobaseId !== executionInfobase.id) {
+        return this.targetOwnerChanged(target);
+      }
+      const binding = Object.freeze({ ...snapshot.binding, repositoryPassword: snapshot.password });
+      const transportStage = await this.startOwnedTransport(target, snapshot, {
         operation: 'unbind', target, infobase: executionInfobase, binding, force, cancellation: token, onOutput,
       });
-      if (outcome.status !== 'acknowledged') {
-        return this.inDoubtOrFailure(outcome, target, [], identity);
+      if (transportStage.status === 'conflict') {
+        return this.targetOwnerChanged(target);
       }
-      try {
-        // Keep the binding until secret/state cleanup succeeds so a partial cleanup
-        // remains recoverable through an explicit disconnect retry.
-        await this.deps.stateStore.clear(target);
-        await this.deps.secretStore.delete(target);
-        await this.deps.bindingStore.delete(target);
-        this.deps.stateProjection?.delete(target.key);
-        this.deps.onStateChanged?.(target);
-      } catch (error) {
+      const outcome = await transportStage.pending;
+      if (outcome.status === 'failed') {
+        return this.fromTransport(outcome, target, []);
+      }
+      if (outcome.status === 'inDoubt') {
+        this.queue.quarantine([identity], `${outcome.operation}: ${outcome.errorCode}`);
+        const owner = await this.bindingOwner.markUnknownIfOwned(target, snapshot, []);
+        if (owner === 'conflict') {
+          return this.targetOwnerChanged(target);
+        }
+        return { status: 'inDoubt', target, affectedFullNames: [], message: outcome.message };
+      }
+      const cleanup = await this.bindingOwner.clearIfOwned(target, snapshot);
+      if (cleanup.status === 'conflict') {
+        return this.targetOwnerChanged(target);
+      }
+      if (cleanup.status === 'failed') {
         return this.postAcknowledgementFailure(
           target,
-          `Хранилище отключено, но локальная привязка не очищена: ${error instanceof Error ? error.message : String(error)}`,
+          'Хранилище отключено, но локальная привязка не очищена.'
+            + ` ${safeRepositoryErrorMessage(cleanup.error, [snapshot.password])}`,
+          snapshot,
         );
       }
       await this.reload(target);
@@ -255,12 +334,14 @@ export class ConfigurationRepositoryService {
       return this.failure(target, [], infobase.message);
     }
     const executionInfobase = infobase.entry;
-    return this.runQueued(infobase.entry, target, 'commit', [reference], async (identity) => {
-      const binding = await this.loadBinding(target);
-      if (!binding) {
-        return this.failure(target, [], 'Для конфигурации не настроено подключение к Хранилищу.');
+    return this.runQueued(infobase.entry, target, 'commit', [reference], token, async (identity) => {
+      const owner = await this.captureOperationOwner(target, executionInfobase.id);
+      if (owner.status === 'result') {
+        return owner.result;
       }
-      const imported = await (this.deps.importFiles ?? runInfobaseConfigIncrementalImport)({
+      const { snapshot, binding } = owner;
+      const importStage = await this.bindingOwner.startStageIfOwned(target, snapshot, () =>
+        (this.deps.importFiles ?? runInfobaseConfigIncrementalImport)({
         storage: this.deps.infobaseStorage,
         entry: executionInfobase,
         configRoot: target.configRoot,
@@ -269,13 +350,20 @@ export class ConfigurationRepositoryService {
         logContext: 'перед помещением в Хранилище',
         ...(target.extensionName ? { ibcmdExtensionName: target.extensionName } : {}),
         onOutput,
-      });
+        }));
+      if (importStage.status === 'conflict') {
+        return this.targetOwnerChanged(target);
+      }
+      const imported = await importStage.pending;
       if (imported.status !== 'success') {
         return this.fromIbcmd(imported, target, reference.relativeFiles, imported.userMessage);
       }
+      if (!await this.bindingOwner.matches(target, snapshot)) {
+        return this.targetOwnerChanged(target);
+      }
       const objects = await writeRepositoryObjectsFile(target, [reference], options.recursive !== false);
       try {
-        const outcome = await this.runTransport({
+        const transportStage = await this.startOwnedTransport(target, snapshot, {
           operation: 'commit', target, infobase: executionInfobase, binding,
           objectListPath: objects.filePath,
           comment: options.comment,
@@ -284,17 +372,26 @@ export class ConfigurationRepositoryService {
           cancellation: token,
           onOutput,
         });
-        if (outcome.status !== 'acknowledged') {
-          return this.inDoubtOrFailure(outcome, target, objects.fullNames, identity);
+        if (transportStage.status === 'conflict') {
+          return this.targetOwnerChanged(target);
         }
-        try {
-          await this.updateLocks(target, objects.fullNames, options.keepLocked === true ? 'heldByCurrentCredentials' : 'unlocked');
-          await this.reload(target);
-        } catch (error) {
-          return this.postAcknowledgementFailure(
-            target,
-            `Хранилище подтвердило помещение, но локальная синхронизация не завершена: ${error instanceof Error ? error.message : String(error)}`,
-          );
+        const outcome = await transportStage.pending;
+        if (outcome.status !== 'acknowledged') {
+          return this.inDoubtOrFailure(outcome, target, objects.fullNames, identity, snapshot);
+        }
+        const acknowledgement = await this.acknowledgeAndReload(
+          target,
+          snapshot,
+          {
+            fullNames: objects.fullNames,
+            lockState: options.keepLocked === true ? 'heldByCurrentCredentials' : 'unlocked',
+          },
+          'Хранилище подтвердило помещение, но локальная синхронизация не завершена: ',
+          'Хранилище подтвердило помещение, но локальная синхронизация не завершена: ',
+          [binding.repositoryPassword],
+        );
+        if (acknowledgement.status === 'result') {
+          return acknowledgement.result;
         }
         return this.success(target, objects.fullNames, 'Изменения помещены в Хранилище.', reference.relativeFiles);
       } finally {
@@ -327,18 +424,24 @@ export class ConfigurationRepositoryService {
       return this.failure(target, [], infobase.message);
     }
     const executionInfobase = infobase.entry;
-    return this.runQueued(infobase.entry, target, 'updateConfiguration', undefined, async (identity) => {
-      const binding = await this.loadBinding(target);
-      if (!binding) {
-        return this.failure(target, [], 'Для конфигурации не настроено подключение к Хранилищу.');
+    return this.runQueued(infobase.entry, target, 'updateConfiguration', undefined, token, async (identity) => {
+      const owner = await this.captureOperationOwner(target, executionInfobase.id);
+      if (owner.status === 'result') {
+        return owner.result;
       }
-      const outcome = await this.runTransport({
+      const { snapshot, binding } = owner;
+      const transportStage = await this.startOwnedTransport(target, snapshot, {
         operation: 'updateConfiguration', target, infobase: executionInfobase, binding, force, cancellation: token, onOutput,
       });
-      if (outcome.status !== 'acknowledged') {
-        return this.inDoubtOrFailure(outcome, target, [], identity);
+      if (transportStage.status === 'conflict') {
+        return this.targetOwnerChanged(target);
       }
-      const exported = await (this.deps.exportConfiguration ?? runInfobaseConfigExportToDirectory)({
+      const outcome = await transportStage.pending;
+      if (outcome.status !== 'acknowledged') {
+        return this.inDoubtOrFailure(outcome, target, [], identity, snapshot);
+      }
+      const exportStage = await this.bindingOwner.startStageIfOwned(target, snapshot, () =>
+        (this.deps.exportConfiguration ?? runInfobaseConfigExportToDirectory)({
         storage: this.deps.infobaseStorage,
         entry: executionInfobase,
         configRoot: target.configRoot,
@@ -346,18 +449,24 @@ export class ConfigurationRepositoryService {
         logContext: 'после обновления из Хранилища',
         ...(target.extensionName ? { ibcmdExtensionName: target.extensionName } : {}),
         onOutput,
-      });
+        }));
+      if (exportStage.status === 'conflict') {
+        return this.targetOwnerChanged(target);
+      }
+      const exported = await exportStage.pending;
       if (exported.status !== 'success') {
         return this.fromIbcmd(exported, target, [], `Хранилище обновлено, но выгрузка файлов не выполнена: ${exported.userMessage}`);
       }
-      try {
-        await this.updateConnectionAck(target);
-        await this.reload(target);
-      } catch (error) {
-        return this.postAcknowledgementFailure(
-          target,
-          `Хранилище подтвердило обновление, но локальное состояние не сохранено: ${error instanceof Error ? error.message : String(error)}`,
-        );
+      const acknowledgement = await this.acknowledgeAndReload(
+        target,
+        snapshot,
+        {},
+        'Хранилище подтвердило обновление, но локальное состояние не сохранено: ',
+        'Хранилище подтвердило обновление, но локальное состояние не сохранено: ',
+        [binding.repositoryPassword],
+      );
+      if (acknowledgement.status === 'result') {
+        return acknowledgement.result;
       }
       return this.success(target, [], 'Конфигурация обновлена из Хранилища.');
     });
@@ -381,32 +490,41 @@ export class ConfigurationRepositoryService {
       return this.failure(target, [], infobase.message);
     }
     const executionInfobase = infobase.entry;
-    return this.runQueued(infobase.entry, target, operation, [reference], async (identity) => {
-      const binding = await this.loadBinding(target);
-      if (!binding) {
-        return this.failure(target, [], 'Для конфигурации не настроено подключение к Хранилищу.');
+    return this.runQueued(infobase.entry, target, operation, [reference], token, async (identity) => {
+      const owner = await this.captureOperationOwner(target, executionInfobase.id);
+      if (owner.status === 'result') {
+        return owner.result;
       }
+      const { snapshot, binding } = owner;
       const objects = await writeRepositoryObjectsFile(target, [reference], recursive);
       try {
-        const outcome = await this.runTransport({
+        const transportStage = await this.startOwnedTransport(target, snapshot, {
           operation, target, infobase: executionInfobase, binding,
           objectListPath: objects.filePath,
           force: extra.force,
           cancellation: token,
           onOutput,
         });
-        if (outcome.status !== 'acknowledged') {
-          return this.inDoubtOrFailure(outcome, target, objects.fullNames, identity);
+        if (transportStage.status === 'conflict') {
+          return this.targetOwnerChanged(target);
         }
-        try {
-          await this.updateLocks(target, objects.fullNames, operation === 'lock' ? 'heldByCurrentCredentials' : 'unlocked');
-          await this.updateConnectionAck(target);
-          await this.reload(target);
-        } catch (error) {
-          return this.postAcknowledgementFailure(
-            target,
-            `Хранилище подтвердило операцию, но локальное состояние не сохранено: ${error instanceof Error ? error.message : String(error)}`,
-          );
+        const outcome = await transportStage.pending;
+        if (outcome.status !== 'acknowledged') {
+          return this.inDoubtOrFailure(outcome, target, objects.fullNames, identity, snapshot);
+        }
+        const acknowledgement = await this.acknowledgeAndReload(
+          target,
+          snapshot,
+          {
+            fullNames: objects.fullNames,
+            lockState: operation === 'lock' ? 'heldByCurrentCredentials' : 'unlocked',
+          },
+          'Хранилище подтвердило операцию, но локальное состояние не сохранено: ',
+          'Хранилище подтвердило операцию, но локальное состояние не сохранено: ',
+          [binding.repositoryPassword],
+        );
+        if (acknowledgement.status === 'result') {
+          return acknowledgement.result;
         }
         return this.success(target, objects.fullNames, operation === 'lock' ? 'Объекты захвачены в Хранилище.' : 'Захват объектов снят.');
       } finally {
@@ -433,24 +551,30 @@ export class ConfigurationRepositoryService {
       return this.failure(target, [], infobase.message);
     }
     const executionInfobase = infobase.entry;
-    return this.runQueued(infobase.entry, target, operation, [reference], async (identity) => {
-      const binding = await this.loadBinding(target);
-      if (!binding) {
-        return this.failure(target, [], 'Для конфигурации не настроено подключение к Хранилищу.');
+    return this.runQueued(infobase.entry, target, operation, [reference], token, async (identity) => {
+      const owner = await this.captureOperationOwner(target, executionInfobase.id);
+      if (owner.status === 'result') {
+        return owner.result;
       }
+      const { snapshot, binding } = owner;
       const objects = await writeRepositoryObjectsFile(target, [reference], recursive);
       try {
-        const outcome = await this.runTransport({
+        const transportStage = await this.startOwnedTransport(target, snapshot, {
           operation, target, infobase: executionInfobase, binding,
           objectListPath: objects.filePath,
           force,
           cancellation: token,
           onOutput,
         });
-        if (outcome.status !== 'acknowledged') {
-          return this.inDoubtOrFailure(outcome, target, objects.fullNames, identity);
+        if (transportStage.status === 'conflict') {
+          return this.targetOwnerChanged(target);
         }
-        const exported = await (this.deps.exportObjects ?? runInfobaseConfigExportObjects)({
+        const outcome = await transportStage.pending;
+        if (outcome.status !== 'acknowledged') {
+          return this.inDoubtOrFailure(outcome, target, objects.fullNames, identity, snapshot);
+        }
+        const exportStage = await this.bindingOwner.startStageIfOwned(target, snapshot, () =>
+          (this.deps.exportObjects ?? runInfobaseConfigExportObjects)({
           storage: this.deps.infobaseStorage,
           entry: executionInfobase,
           configRoot: target.configRoot,
@@ -459,18 +583,24 @@ export class ConfigurationRepositoryService {
           logContext: 'после обновления из Хранилища',
           ...(target.extensionName ? { ibcmdExtensionName: target.extensionName } : {}),
           onOutput,
-        });
+          }));
+        if (exportStage.status === 'conflict') {
+          return this.targetOwnerChanged(target);
+        }
+        const exported = await exportStage.pending;
         if (exported.status !== 'success') {
           return this.fromIbcmd(exported, target, reference.relativeFiles, `Хранилище обновлено, но выгрузка объекта не выполнена: ${exported.userMessage}`);
         }
-        try {
-          await this.updateConnectionAck(target);
-          await this.reload(target);
-        } catch (error) {
-          return this.postAcknowledgementFailure(
-            target,
-            `Хранилище подтвердило обновление, но локальное состояние не сохранено: ${error instanceof Error ? error.message : String(error)}`,
-          );
+        const acknowledgement = await this.acknowledgeAndReload(
+          target,
+          snapshot,
+          {},
+          'Хранилище подтвердило обновление, но локальное состояние не сохранено: ',
+          'Хранилище подтвердило обновление, но локальное состояние не сохранено: ',
+          [binding.repositoryPassword],
+        );
+        if (acknowledgement.status === 'result') {
+          return acknowledgement.result;
         }
         return this.success(target, objects.fullNames, 'Объект обновлён из Хранилища.', reference.relativeFiles);
       } finally {
@@ -479,11 +609,98 @@ export class ConfigurationRepositoryService {
     });
   }
 
+  private async captureOperationOwner(
+    target: RepositoryTarget,
+    executionInfobaseId: string,
+  ): Promise<RepositoryOperationOwner> {
+    const owner = await this.bindingOwner.captureExecutionOwner(target, executionInfobaseId);
+    if (owner.status === 'missing') {
+      return {
+        status: 'result',
+        result: this.failure(target, [], 'Для конфигурации не настроено подключение к Хранилищу.'),
+      };
+    }
+    if (owner.status === 'conflict') {
+      return { status: 'result', result: this.targetOwnerChanged(target) };
+    }
+    return { status: 'ready', snapshot: owner.snapshot, binding: owner.binding };
+  }
+
+  private async acknowledgeOwnedState(
+    target: RepositoryTarget,
+    expected: RepositoryBindingSnapshot,
+    options: RepositoryOwnerAcknowledgementOptions,
+    failurePrefix: string,
+    knownSecrets: readonly (string | undefined)[],
+  ): Promise<RepositoryAcknowledgementStep> {
+    const acknowledgement = await this.bindingOwner.acknowledgeStateIfOwned(target, expected, options);
+    if (acknowledgement.status === 'conflict') {
+      return { status: 'result', result: this.targetOwnerChanged(target) };
+    }
+    if (acknowledgement.status === 'failed') {
+      const result = await this.postAcknowledgementFailure(
+        target,
+        `${failurePrefix}${safeRepositoryErrorMessage(acknowledgement.error, knownSecrets)}`,
+        expected,
+      );
+      return { status: 'result', result };
+    }
+    return { status: 'ready', owner: acknowledgement.owner };
+  }
+
+  private async acknowledgeAndReload(
+    target: RepositoryTarget,
+    expected: RepositoryBindingSnapshot,
+    options: RepositoryOwnerAcknowledgementOptions,
+    acknowledgementFailurePrefix: string,
+    reloadFailurePrefix: string,
+    knownSecrets: readonly (string | undefined)[],
+  ): Promise<RepositoryAcknowledgementStep> {
+    const acknowledgement = await this.acknowledgeOwnedState(
+      target,
+      expected,
+      options,
+      acknowledgementFailurePrefix,
+      knownSecrets,
+    );
+    if (acknowledgement.status === 'result') {
+      return acknowledgement;
+    }
+    const reloadFailure = await this.reloadAcknowledgedOwner(
+      target,
+      acknowledgement.owner,
+      reloadFailurePrefix,
+      knownSecrets,
+    );
+    return reloadFailure
+      ? { status: 'result', result: reloadFailure }
+      : acknowledgement;
+  }
+
+  private async reloadAcknowledgedOwner(
+    target: RepositoryTarget,
+    owner: RepositoryBindingSnapshot,
+    failurePrefix: string,
+    knownSecrets: readonly (string | undefined)[],
+  ): Promise<RepositoryServiceResult | undefined> {
+    try {
+      await this.reload(target);
+      return undefined;
+    } catch (error) {
+      return this.postAcknowledgementFailure(
+        target,
+        `${failurePrefix}${safeRepositoryErrorMessage(error, knownSecrets)}`,
+        owner,
+      );
+    }
+  }
+
   private async runQueued<T extends RepositoryServiceResult>(
     infobase: InfobaseEntry,
     target: RepositoryTarget,
     operation: ConfigurationRepositoryOperation,
     references: readonly RepositoryObjectReference[] | undefined,
+    token: vscode.CancellationToken,
     callback: (identity: InfobaseCanonicalIdentity) => Promise<T>,
   ): Promise<T> {
     let identity: InfobaseCanonicalIdentity;
@@ -493,19 +710,24 @@ export class ConfigurationRepositoryService {
       return this.failure(target, references?.map((reference) => reference.repositoryFullName) ?? [], `Не удалось определить физическую ИБ: ${error instanceof Error ? error.message : String(error)}`) as T;
     }
     try {
-      return await this.queue.runExclusive(identity, () => callback(identity));
+      return await this.queue.runComposite(
+        [identity, `repository-target:${repositoryTargetMutationKey(target)}`],
+        () => withRepositoryTargetMutationWitness(target, () => callback(identity)),
+        toRepositoryCancellation(token),
+      );
     } catch (error) {
-      return this.failure(target, references?.map((reference) => reference.repositoryFullName) ?? [], `Операция ${operation} не выполнена: ${error instanceof Error ? error.message : String(error)}`) as T;
+      if (error instanceof InfobaseConfigurationOperationCancelledError) {
+        return this.cancelled(target, `Операция ${operation} отменена до начала.`) as T;
+      }
+      return this.failure(target, references?.map((reference) => reference.repositoryFullName) ?? [], `Операция ${operation} не выполнена: ${safeRepositoryErrorMessage(error)}`) as T;
     }
   }
 
-  private async runTransport(
-    request: Omit<import('./types').ConfigurationRepositoryTransportRequest, 'binding' | 'infobaseCredentials' | 'cancellation'> & {
-      readonly binding: RepositoryBinding & { readonly repositoryPassword?: string };
-      readonly infobase: InfobaseEntry;
-      readonly cancellation: vscode.CancellationToken;
-    },
-  ): Promise<ConfigurationRepositoryTransportOutcome> {
+  private async startOwnedTransport(
+    target: RepositoryTarget,
+    expected: RepositoryBindingSnapshot,
+    request: RepositoryTransportServiceRequest,
+  ): Promise<RepositoryOwnerStage<ConfigurationRepositoryTransportOutcome>> {
     const infobasePassword = request.infobase.hasStoredPassword
       ? await this.deps.infobaseStorage.readPasswordSecret(request.infobase.id)
       : undefined;
@@ -513,7 +735,12 @@ export class ConfigurationRepositoryService {
     const infobaseCredentials = user || infobasePassword
       ? { user, password: infobasePassword }
       : undefined;
-    return this.transport.run({ ...request, infobaseCredentials, cancellation: toRepositoryCancellation(request.cancellation) });
+    const transportRequest: ConfigurationRepositoryTransportRequest = {
+      ...request,
+      ...(infobaseCredentials ? { infobaseCredentials } : {}),
+      cancellation: toRepositoryCancellation(request.cancellation),
+    };
+    return this.bindingOwner.startStageIfOwned(target, expected, () => this.transport.run(transportRequest));
   }
 
   private async resolveExecutionInfobase(
@@ -537,132 +764,26 @@ export class ConfigurationRepositoryService {
     return { entry, message: '' };
   }
 
-  private async persistCandidateBinding(
-    target: RepositoryTarget,
-    binding: RepositoryBinding & { readonly repositoryPassword?: string },
-  ): Promise<void> {
-    await this.deps.bindingStore.set(target, binding);
-    if (binding.repositoryPassword) {
-      await this.deps.secretStore.set(target, binding.repositoryPassword);
-    } else {
-      await this.deps.secretStore.delete(target);
-    }
-    await this.deps.stateStore.set(target, {
-      connection: 'unknown',
-      locks: {},
-      source: 'unknown',
-    });
-    this.deps.stateProjection?.set(target.key, await this.deps.stateStore.get(target));
-    this.deps.onStateChanged?.(target);
-  }
-
-  private async captureBindingSnapshot(target: RepositoryTarget): Promise<RepositoryBindingSnapshot> {
-    const [binding, password, state] = await Promise.all([
-      this.deps.bindingStore.get(target),
-      this.deps.secretStore.get(target),
-      this.deps.stateStore.get(target),
-    ]);
-    return Object.freeze({ binding, password, state });
-  }
-
-  /**
-   * Restores the local pre-connect snapshot. This is deliberately best effort:
-   * a storage outage must be reported to the caller, never converted into a
-   * false successful bind or a transport quarantine when Designer did not run.
-   */
-  private async tryRestoreBindingSnapshot(
-    target: RepositoryTarget,
-    snapshot: RepositoryBindingSnapshot,
-  ): Promise<string | undefined> {
-    try {
-      if (snapshot.binding) {
-        await this.deps.bindingStore.set(target, snapshot.binding);
-      } else {
-        await this.deps.bindingStore.delete(target);
-      }
-      if (snapshot.password !== undefined) {
-        await this.deps.secretStore.set(target, snapshot.password);
-      } else {
-        await this.deps.secretStore.delete(target);
-      }
-      if (snapshot.binding) {
-        await this.deps.stateStore.set(target, snapshot.state);
-        this.deps.stateProjection?.set(target.key, snapshot.state);
-      } else {
-        await this.deps.stateStore.clear(target);
-        this.deps.stateProjection?.delete(target.key);
-      }
-      this.deps.onStateChanged?.(target);
-      return undefined;
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  private async loadBinding(target: RepositoryTarget): Promise<(RepositoryBinding & { readonly repositoryPassword?: string }) | undefined> {
-    const binding = await this.deps.bindingStore.get(target);
-    if (!binding) {
-      return undefined;
-    }
-    return Object.freeze({ ...binding, repositoryPassword: await this.deps.secretStore.get(target) });
-  }
-
-  private async updateConnectionAck(target: RepositoryTarget): Promise<void> {
-    const current = await this.deps.stateStore.get(target);
-    await this.saveState(target, { ...current, connection: 'connected', source: 'configuratorAcknowledgement' });
-  }
-
-  private async updateLocks(target: RepositoryTarget, fullNames: readonly string[], state: 'heldByCurrentCredentials' | 'unlocked'): Promise<void> {
-    const current = await this.deps.stateStore.get(target);
-    const locks = { ...current.locks };
-    for (const fullName of fullNames) {
-      locks[fullName] = state;
-    }
-    await this.saveState(target, { ...current, connection: 'connected', locks, source: 'configuratorAcknowledgement' });
-  }
-
-  private async saveState(
-    target: RepositoryTarget,
-    state: Omit<RepositoryObservedState, 'lastConfirmedAt'> & { readonly lastConfirmedAt?: string },
-  ): Promise<void> {
-    const next = Object.freeze({
-      ...state,
-      locks: Object.freeze({ ...state.locks }),
-      lastConfirmedAt: state.lastConfirmedAt ?? new Date().toISOString(),
-    });
-    await this.deps.stateStore.set(target, next);
-    this.deps.stateProjection?.set(target.key, next);
-    this.deps.onStateChanged?.(target);
-  }
-
-  private async markUnknown(target: RepositoryTarget, fullNames: readonly string[]): Promise<void> {
-    const current = await this.deps.stateStore.get(target);
-    const locks = { ...current.locks };
-    for (const fullName of fullNames) {
-      locks[fullName] = 'unknown';
-    }
-    const next = Object.freeze({
-      connection: 'unknown',
-      locks: Object.freeze(locks),
-      ...(current.lastConfirmedAt ? { lastConfirmedAt: current.lastConfirmedAt } : {}),
-      source: 'unknown',
-    });
-    await this.deps.stateStore.set(target, next);
-    this.deps.stateProjection?.set(target.key, next);
-    this.deps.onStateChanged?.(target);
-  }
-
   private async postAcknowledgementFailure(
     target: RepositoryTarget,
     message: string,
+    expected: RepositoryBindingSnapshot,
   ): Promise<RepositoryServiceResult> {
     try {
-      await this.markUnknown(target, []);
+      await this.bindingOwner.markUnknownIfOwned(target, expected, []);
     } catch {
-      // The platform effect is known; a local state outage must not quarantine
-      // the physical IB. The next explicit operation can retry projection.
+      // Keep the acknowledged platform outcome visible if local recovery also fails.
     }
     return { status: 'inDoubt', target, affectedFullNames: [], message };
+  }
+
+  private targetOwnerChanged(target: RepositoryTarget): RepositoryServiceResult {
+    return {
+      status: 'inDoubt',
+      target,
+      affectedFullNames: [],
+      message: 'Владелец привязки или состояния Хранилища изменился во время операции; новые локальные данные сохранены.',
+    };
   }
 
   private async inDoubtOrFailure(
@@ -670,14 +791,19 @@ export class ConfigurationRepositoryService {
     target: RepositoryTarget,
     fullNames: readonly string[],
     identity: InfobaseCanonicalIdentity,
+    expected: RepositoryBindingSnapshot,
   ): Promise<RepositoryServiceResult> {
     if (outcome.status === 'inDoubt') {
-      try {
-        await this.markUnknown(target, fullNames);
-      } catch {
-        // The quarantine below still prevents another mutating operation.
-      }
       this.queue.quarantine([identity], `${outcome.operation}: ${outcome.errorCode}`);
+      let ownerStatus: 'updated' | 'conflict' | 'failed' = 'failed';
+      try {
+        ownerStatus = await this.bindingOwner.markUnknownIfOwned(target, expected, fullNames);
+      } catch {
+        // The physical IB remains quarantined even when the owner cannot be inspected.
+      }
+      if (ownerStatus === 'conflict') {
+        return this.targetOwnerChanged(target);
+      }
       return { status: 'inDoubt', target, affectedFullNames: fullNames, message: outcome.message };
     }
     return this.fromTransport(outcome, target, fullNames);
@@ -764,6 +890,18 @@ export class ConfigurationRepositoryService {
       message,
     };
   }
+}
+
+function safeRepositoryErrorMessage(error: unknown, knownSecrets: readonly (string | undefined)[] = []): string {
+  let message = error instanceof Error ? error.message : String(error);
+  for (const secret of knownSecrets) {
+    if (secret) {
+      message = message.split(secret).join('<redacted>');
+    }
+  }
+  return message
+    .replace(/((?:password|passwd|пароль|access[_-]?token|refresh[_-]?token|token|bearer|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu, '$1<redacted>')
+    .replace(/(--(?:password|token)\s+)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu, '$1<redacted>');
 }
 
 function toRepositoryCancellation(token: vscode.CancellationToken): RepositoryCancellation {
