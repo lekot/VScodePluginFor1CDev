@@ -103,7 +103,7 @@ function createPropertiesBrowserFixture(initialProperties: Record<string, string
       getElementById: (id: string) => elements.get(id) ?? null,
       querySelectorAll: (selector: string) => selector === '.property-input' ? inputs : [],
       querySelector: (selector: string) => {
-        const property = selector.match(/data-property="((?:\\.|[^"])*)"/)?.[1];
+        const property = selector.match(/data-property="((?:\\.|[^"\\])*)"/)?.[1];
         return inputs.find((input) => input.dataset.property === property) ?? null;
       },
     },
