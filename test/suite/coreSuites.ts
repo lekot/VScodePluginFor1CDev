@@ -75,6 +75,7 @@ export const coreSuiteFiles: string[] = [
   'suite/elementNameValidator.test.js',
   'suite/referenceFinder.test.js',
   'suite/elementOperations.test.js',
+  'suite/elementOperationsConfigXml.test.js',
   'suite/errorHandling.test.js',
   'suite/registerRecorderDocumentLinker.test.js',
   'suite/booleanPropertiesBug.test.js',
