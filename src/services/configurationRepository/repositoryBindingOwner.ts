@@ -187,11 +187,7 @@ export class RepositoryBindingOwner {
       if (!await this.matches(target, expected)) {
         return { status: 'conflict' as const };
       }
-      try {
-        return { status: 'started' as const, pending: start() };
-      } catch (error) {
-        return { status: 'started' as const, pending: Promise.reject(error) };
-      }
+      return adaptSynchronousStageStart(start);
     });
   }
 
@@ -321,6 +317,14 @@ function sameBindingSnapshot(left: RepositoryBindingSnapshot, right: RepositoryB
     && sameRepositoryBinding(left.binding, right.binding)
     && sameRepositoryState(left.state, right.state)
     && sameOptionalRepositoryState(left.storedState, right.storedState);
+}
+
+function adaptSynchronousStageStart<T>(start: () => Promise<T>): RepositoryOwnerStage<T> {
+  try {
+    return { status: 'started', pending: start() };
+  } catch (error) {
+    return { status: 'started', pending: Promise.reject(error) };
+  }
 }
 
 function sameOptionalRepositoryState(

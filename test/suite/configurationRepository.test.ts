@@ -1161,6 +1161,226 @@ suite('Configuration Repository phase 1', () => {
     }
   });
 
+  test('bind restores its prior owner when stored infobase credentials cannot be read before transport starts', async () => {
+    const harness = await createServiceHarness(() => acknowledgedOutcome('bind'));
+    const previousBinding = {
+      repositoryPath: 'repo-before',
+      repositoryUser: 'user-before',
+      executionInfobaseId: harness.entry.id,
+    };
+    const previousState = {
+      connection: 'connected' as const,
+      locks: { 'Catalog.Products': 'unlocked' as const },
+      lastConfirmedAt: 'previous-owner-confirmation',
+      source: 'configuratorAcknowledgement' as const,
+    };
+
+    try {
+      await harness.bindingStore.set(harness.target, previousBinding);
+      await harness.secrets.set('repositoryPassword', 'previous-repository-secret');
+      await harness.stateStore.set(harness.target, previousState);
+      harness.storage.readPasswordSecret = async () => {
+        throw new Error('password=infobase-secret');
+      };
+
+      const result = await harness.service.connect(
+        harness.target,
+        { ...harness.entry, hasStoredPassword: true },
+        {
+          repositoryPath: 'repo-candidate',
+          repositoryUser: 'candidate-user',
+          repositoryPassword: 'candidate-repository-secret',
+          executionInfobaseId: harness.entry.id,
+        },
+        neverCancelled(),
+      );
+
+      assert.strictEqual(result.status, 'failed');
+      assert.deepStrictEqual(await harness.bindingStore.get(harness.target), previousBinding);
+      assert.strictEqual(await harness.secrets.get('repositoryPassword'), 'previous-repository-secret');
+      assert.deepStrictEqual(await harness.stateStore.get(harness.target), previousState);
+      assert.strictEqual(harness.calls.length, 0, 'Configurator must not start when credentials fail before transport admission');
+      assert.strictEqual(harness.queue.getQuarantines([await resolveInfobaseCanonicalIdentity(harness.entry)]).length, 0);
+      assert.ok(!result.message.includes('infobase-secret'), 'credential errors must be redacted');
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  test('ACK state-store failures remain inDoubt across lock, commit and update workflows without leaking secrets', async () => {
+    const successfulIbcmd: IbcmdInfobaseOperationResult = {
+      status: 'success',
+      exitCode: 0,
+      userMessage: 'ok',
+      logExcerpt: '',
+    };
+    const operationCases: Array<{
+      readonly name: string;
+      readonly invoke: (harness: Awaited<ReturnType<typeof createServiceHarness>>) => Promise<RepositoryServiceResult>;
+    }> = [
+      { name: 'lock', invoke: (harness) => harness.service.lock(harness.catalog, neverCancelled()) },
+      { name: 'unlock', invoke: (harness) => harness.service.unlock(harness.catalog, neverCancelled()) },
+      { name: 'commit', invoke: (harness) => harness.service.commit(harness.catalog, neverCancelled()) },
+      { name: 'updateObject', invoke: (harness) => harness.service.updateObject(harness.catalog, neverCancelled()) },
+      { name: 'updateConfiguration', invoke: (harness) => harness.service.updateConfiguration(harness.catalog, neverCancelled()) },
+    ];
+    const invariantFailures: string[] = [];
+    const harness = await createServiceHarness(
+      (operation) => acknowledgedOutcome(operation as ConfigurationRepositoryTransportRequest['operation']),
+      undefined,
+      {
+        importFiles: async () => successfulIbcmd,
+        exportObjects: async () => successfulIbcmd,
+        exportConfiguration: async () => successfulIbcmd,
+      },
+    );
+    try {
+      const connected = await harness.service.connect(harness.target, harness.entry, {
+        repositoryPath: 'repo',
+        repositoryUser: 'user',
+        repositoryPassword: 'repository-secret',
+        executionInfobaseId: harness.entry.id,
+      }, neverCancelled());
+      assert.strictEqual(connected.status, 'acknowledged');
+
+      let failAcknowledgementWrite = false;
+      const originalSet = harness.stateStore.set.bind(harness.stateStore);
+      harness.stateStore.set = async (target, state) => {
+        if (failAcknowledgementWrite) {
+          failAcknowledgementWrite = false;
+          throw new Error('password=repository-secret');
+        }
+        await originalSet(target, state);
+      };
+
+      for (const operationCase of operationCases) {
+        failAcknowledgementWrite = true;
+        harness.calls.length = 0;
+        const result = await operationCase.invoke(harness);
+        const quarantineCount = harness.queue.getQuarantines([
+          await resolveInfobaseCanonicalIdentity(harness.entry),
+        ]).length;
+        if (result.status !== 'inDoubt') {
+          invariantFailures.push(`${operationCase.name}: expected inDoubt after local ACK persistence failure, got ${result.status}`);
+        }
+        if ((await harness.stateStore.get(harness.target)).connection !== 'unknown') {
+          invariantFailures.push(`${operationCase.name}: failed ACK recovery did not mark the current owner unknown`);
+        }
+        if (harness.calls.length !== 1) {
+          invariantFailures.push(`${operationCase.name}: expected one acknowledged transport call, got ${harness.calls.length}`);
+        }
+        if (quarantineCount !== 0) {
+          invariantFailures.push(`${operationCase.name}: local ACK persistence failure must not quarantine an acknowledged IB`);
+        }
+        if (result.message.includes('repository-secret')) {
+          invariantFailures.push(`${operationCase.name}: local store error leaked repository credentials`);
+        }
+      }
+    } finally {
+      await harness.dispose();
+    }
+
+    assert.deepStrictEqual(invariantFailures, [], invariantFailures.join('\n'));
+  });
+
+  test('commit import failure is reported before repository transport starts', async () => {
+    const harness = await createServiceHarness(
+      (operation) => acknowledgedOutcome(operation as ConfigurationRepositoryTransportRequest['operation']),
+      undefined,
+      {
+        importFiles: async (): Promise<IbcmdInfobaseOperationResult> => ({
+          status: 'error',
+          exitCode: 1,
+          userMessage: 'Import failed before repository command',
+          logExcerpt: '',
+        }),
+      },
+    );
+    try {
+      const connected = await harness.service.connect(harness.target, harness.entry, {
+        repositoryPath: 'repo', repositoryUser: 'user', executionInfobaseId: harness.entry.id,
+      }, neverCancelled());
+      assert.strictEqual(connected.status, 'acknowledged');
+      harness.calls.length = 0;
+
+      const result = await harness.service.commit(harness.catalog, neverCancelled());
+
+      assert.strictEqual(result.status, 'failed');
+      assert.match(result.message, /Import failed before repository command/u);
+      assert.strictEqual(harness.calls.length, 0);
+      assert.strictEqual((await harness.stateStore.get(harness.target)).connection, 'connected');
+      assert.strictEqual(harness.queue.getQuarantines([await resolveInfobaseCanonicalIdentity(harness.entry)]).length, 0);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  test('synchronous local stage launch failure does not strand the target store lock', async () => {
+    const harness = await createServiceHarness(
+      (operation) => acknowledgedOutcome(operation as ConfigurationRepositoryTransportRequest['operation']),
+      undefined,
+      {
+        importFiles: () => { throw new Error('local import stage did not start'); },
+      },
+    );
+    try {
+      const connected = await harness.service.connect(harness.target, harness.entry, {
+        repositoryPath: 'repo', repositoryUser: 'user', executionInfobaseId: harness.entry.id,
+      }, neverCancelled());
+      assert.strictEqual(connected.status, 'acknowledged');
+      harness.calls.length = 0;
+
+      const result = await harness.service.commit(harness.catalog, neverCancelled());
+
+      assert.strictEqual(result.status, 'failed');
+      assert.match(result.message, /local import stage did not start/u);
+      assert.strictEqual(harness.calls.length, 0, 'repository transport cannot run after the local stage fails to start');
+      const state = await harness.stateStore.get(harness.target);
+      await harness.stateStore.set(harness.target, { ...state, source: 'unknown' });
+      assert.strictEqual((await harness.stateStore.get(harness.target)).source, 'unknown');
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  test('object update keeps remote ACK distinct from a failed local export', async () => {
+    const successfulIbcmd: IbcmdInfobaseOperationResult = {
+      status: 'success', exitCode: 0, userMessage: 'ok', logExcerpt: '',
+    };
+    const reloads: Array<{ configRoot: string; reason: ReloadReason }> = [];
+    const harness = await createServiceHarness(
+      (operation) => acknowledgedOutcome(operation as ConfigurationRepositoryTransportRequest['operation']),
+      async (configRoot, reason) => { reloads.push({ configRoot, reason }); },
+      {
+        exportObjects: async (): Promise<IbcmdInfobaseOperationResult> => ({
+          status: 'error',
+          exitCode: 1,
+          userMessage: 'Object export failed locally',
+          logExcerpt: '',
+        }),
+      },
+    );
+    try {
+      const connected = await harness.service.connect(harness.target, harness.entry, {
+        repositoryPath: 'repo', repositoryUser: 'user', executionInfobaseId: harness.entry.id,
+      }, neverCancelled());
+      assert.strictEqual(connected.status, 'acknowledged');
+      const stateBeforeUpdate = await harness.stateStore.get(harness.target);
+      harness.calls.length = 0;
+
+      const result = await harness.service.updateObject(harness.catalog, neverCancelled());
+
+      assert.strictEqual(result.status, 'failed');
+      assert.match(result.message, /Object export failed locally/u);
+      assert.strictEqual(harness.calls.length, 1, 'the remote update was acknowledged before local export failed');
+      assert.deepStrictEqual(await harness.stateStore.get(harness.target), stateBeforeUpdate);
+      assert.deepStrictEqual(reloads, [], 'reload follows only a successful local export and owner ACK');
+      assert.strictEqual(harness.queue.getQuarantines([await resolveInfobaseCanonicalIdentity(harness.entry)]).length, 0);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   test('acknowledged operations preserve a replacement binding, secret and state owner', async () => {
     const successfulIbcmd: IbcmdInfobaseOperationResult = {
       status: 'success',
@@ -2391,6 +2611,7 @@ async function createServiceHarness(
     service,
     bindingStore,
     stateStore,
+    storage,
     secrets: {
       get: async (key: string) => secretValues.get(key),
       set: async (key: string, value: string) => { secretValues.set(key, value); },
