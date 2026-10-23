@@ -320,11 +320,8 @@ function sameBindingSnapshot(left: RepositoryBindingSnapshot, right: RepositoryB
 }
 
 function adaptSynchronousStageStart<T>(start: () => Promise<T>): RepositoryOwnerStage<T> {
-  try {
-    return { status: 'started', pending: start() };
-  } catch (error) {
-    return { status: 'started', pending: Promise.reject(error) };
-  }
+  const pending = new Promise<T>((resolve) => { resolve(start()); });
+  return { status: 'started', pending };
 }
 
 function sameOptionalRepositoryState(
