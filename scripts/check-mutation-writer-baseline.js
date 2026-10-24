@@ -9,11 +9,15 @@ const repoRoot = path.resolve(__dirname, '..');
 const defaultSourceRoot = path.join(repoRoot, 'src');
 const defaultBaselinePath = path.join(repoRoot, '.github', 'mutation-writer-baseline.json');
 const mutationMethods = new Set([
-  'writeFile', 'writeFileSync', 'appendFile', 'appendFileSync',
+  'write', 'writeSync', 'writeFile', 'writeFileSync', 'appendFile', 'appendFileSync',
   'rename', 'renameSync', 'unlink', 'unlinkSync', 'rm', 'rmSync',
-  'rmdir', 'rmdirSync', 'copyFile', 'copyFileSync', 'link', 'linkSync',
+  'rmdir', 'rmdirSync', 'copyFile', 'copyFileSync', 'cp', 'cpSync', 'link', 'linkSync',
   'symlink', 'symlinkSync', 'truncate', 'truncateSync', 'mkdir', 'mkdirSync',
   'createWriteStream',
+]);
+const twoPathMutationMethods = new Set([
+  'rename', 'renameSync', 'copyFile', 'copyFileSync', 'cp', 'cpSync',
+  'link', 'linkSync', 'symlink', 'symlinkSync',
 ]);
 const fileOpenMethods = new Set(['open', 'openSync']);
 const allowedBoundaryPrefix = 'src/services/configurationSession/';
@@ -23,12 +27,15 @@ function readOptions(argv) {
     sourceRoot: defaultSourceRoot,
     baselinePath: defaultBaselinePath,
     writeBaseline: false,
+    writeInventory: undefined,
     enforceFiles: [],
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--write-baseline') {
       options.writeBaseline = true;
+    } else if (arg === '--write-inventory' && argv[i + 1]) {
+      options.writeInventory = path.resolve(argv[++i]);
     } else if (arg === '--source-root' && argv[i + 1]) {
       options.sourceRoot = path.resolve(argv[++i]);
     } else if (arg === '--baseline' && argv[i + 1]) {
@@ -50,11 +57,12 @@ function printHelp() {
 
 Options:
   --source-root <path>  Source directory to scan (default: src)
-  --baseline <path>     Baseline JSON path
+  --baseline <path>     Approved version 2 policy JSON path
   --enforce-files <list> Comma-separated src-relative files where direct mutations fail
-  --write-baseline      Replace the baseline with the current scan
+  --write-inventory <path> Write observed sites to a separate inventory file
+  --write-baseline      Removed; review an inventory and update policy manually
 
-Normal checks are warning-only so existing direct writers can be migrated incrementally.`);
+Normal checks fail when observed mutation sites differ from the approved policy.`);
 }
 
 function isFileSystemModule(moduleName) {
@@ -66,163 +74,443 @@ function isPromisesModule(moduleName) {
   return moduleName === 'fs/promises' || moduleName === 'node:fs/promises';
 }
 
-function collectFileSystemAliases(sourceFile) {
-  const namespaceAliases = new Set();
-  const promisesAliases = new Set();
-  const directFunctionAliases = new Set();
-  const fsDestructuredPromisesAliases = new Set();
-
-  const registerImport = (moduleName, clause, defaultName) => {
-    if (!isFileSystemModule(moduleName)) {
-      return;
-    }
-    if (defaultName && !isPromisesModule(moduleName)) {
-      namespaceAliases.add(defaultName);
-    }
-    if (!clause) {
-      return;
-    }
-    if (ts.isNamespaceImport(clause)) {
-      (isPromisesModule(moduleName) ? promisesAliases : namespaceAliases).add(clause.name.text);
-      return;
-    }
-    if (ts.isNamedImports(clause)) {
-      for (const element of clause.elements) {
-        const importedName = element.propertyName?.text ?? element.name.text;
-        if (!isPromisesModule(moduleName) && importedName === 'promises') {
-          promisesAliases.add(element.name.text);
-        } else if (mutationMethods.has(importedName) || fileOpenMethods.has(importedName)) {
-          directFunctionAliases.add(element.name.text);
-        }
-      }
-    }
-  };
-
-  for (const statement of sourceFile.statements) {
-    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
-      const clause = statement.importClause?.namedBindings;
-      registerImport(statement.moduleSpecifier.text, clause, statement.importClause?.name?.text);
-    } else if (ts.isImportEqualsDeclaration(statement)
-      && ts.isExternalModuleReference(statement.moduleReference)
-      && statement.moduleReference.expression
-      && ts.isStringLiteral(statement.moduleReference.expression)) {
-      registerImport(statement.moduleReference.expression.text, undefined, statement.name.text);
-    }
-  }
-
-  const visitRequires = (node) => {
-    if (ts.isVariableDeclaration(node)
-      && node.initializer
-      && ts.isCallExpression(node.initializer)
-      && ts.isIdentifier(node.initializer.expression)
-      && node.initializer.expression.text === 'require'
-      && node.initializer.arguments.length === 1
-      && ts.isStringLiteral(node.initializer.arguments[0])
-      && isFileSystemModule(node.initializer.arguments[0].text)) {
-      const moduleName = node.initializer.arguments[0].text;
-      if (ts.isIdentifier(node.name)) {
-        (isPromisesModule(moduleName) ? promisesAliases : namespaceAliases).add(node.name.text);
-      } else if (ts.isObjectBindingPattern(node.name)) {
-        for (const element of node.name.elements) {
-          if (!ts.isIdentifier(element.name)) {
-            continue;
-          }
-          const importedName = element.propertyName && ts.isIdentifier(element.propertyName)
-            ? element.propertyName.text
-            : element.name.text;
-          if (moduleName === 'fs' || moduleName === 'node:fs') {
-            if (importedName === 'promises') {
-              fsDestructuredPromisesAliases.add(element.name.text);
-            } else if (mutationMethods.has(importedName) || fileOpenMethods.has(importedName)) {
-              directFunctionAliases.add(element.name.text);
-            }
-          } else if (mutationMethods.has(importedName) || fileOpenMethods.has(importedName)) {
-            directFunctionAliases.add(element.name.text);
-          }
-        }
-      }
-    }
-    ts.forEachChild(node, visitRequires);
-  };
-  visitRequires(sourceFile);
-
-  return { namespaceAliases, promisesAliases, directFunctionAliases, fsDestructuredPromisesAliases };
+function createScope(parent, kind) {
+  const scope = { parent, kind, bindings: new Map(), functionScope: undefined };
+  scope.functionScope = kind === 'root' || kind === 'function'
+    ? scope
+    : parent?.functionScope ?? scope;
+  return scope;
 }
 
-function expressionMethodName(expression) {
+function isFunctionScopeNode(node) {
+  return ts.isFunctionDeclaration(node)
+    || ts.isFunctionExpression(node)
+    || ts.isArrowFunction(node)
+    || ts.isMethodDeclaration(node)
+    || ts.isConstructorDeclaration(node)
+    || ts.isGetAccessorDeclaration(node)
+    || ts.isSetAccessorDeclaration(node);
+}
+
+function isBlockScopeNode(node) {
+  return ts.isBlock(node)
+    || ts.isModuleBlock(node)
+    || ts.isCatchClause(node)
+    || ts.isForStatement(node)
+    || ts.isForInStatement(node)
+    || ts.isForOfStatement(node)
+    || ts.isClassDeclaration(node)
+    || ts.isClassExpression(node);
+}
+
+function unwrapExpression(expression) {
+  let current = expression;
+  while (current) {
+    if (ts.isParenthesizedExpression(current)
+      || ts.isAwaitExpression(current)
+      || ts.isAsExpression(current)
+      || ts.isTypeAssertionExpression(current)
+      || ts.isNonNullExpression(current)
+      || (typeof ts.isSatisfiesExpression === 'function' && ts.isSatisfiesExpression(current))) {
+      current = current.expression;
+      continue;
+    }
+    break;
+  }
+  return current;
+}
+
+function staticPropertyName(expression) {
   if (ts.isPropertyAccessExpression(expression)) {
     return expression.name.text;
   }
   if (ts.isElementAccessExpression(expression)
     && expression.argumentExpression
-    && ts.isStringLiteral(expression.argumentExpression)) {
+    && ts.isStringLiteralLike(expression.argumentExpression)) {
     return expression.argumentExpression.text;
-  }
-  if (ts.isIdentifier(expression)) {
-    return expression.text;
   }
   return undefined;
 }
 
-function isWriteOpen(call) {
-  const flags = call.arguments[1];
-  if (!flags || !ts.isStringLiteralLike(flags)) {
-    return Boolean(flags);
+function createFilesystemBindings(sourceFile) {
+  const rootScope = createScope(undefined, 'root');
+  const scopeByNode = new WeakMap();
+  const variableBindings = [];
+
+  function declare(scope, identifier, declaration, extra = {}) {
+    if (!identifier || !ts.isIdentifier(identifier)) {
+      return undefined;
+    }
+    const binding = {
+      name: identifier.text,
+      declaration,
+      patternPath: [],
+      origin: undefined,
+      ...extra,
+    };
+    scope.bindings.set(binding.name, binding);
+    return binding;
   }
-  return /[wax]/i.test(flags.text);
+
+  function declarePattern(name, scope, declaration, patternPath = []) {
+    if (ts.isIdentifier(name)) {
+      const binding = declare(scope, name, declaration, { patternPath });
+      if (binding) {
+        variableBindings.push(binding);
+      }
+      return;
+    }
+    if (ts.isObjectBindingPattern(name)) {
+      for (const element of name.elements) {
+        if (element.dotDotToken) {
+          declarePattern(element.name, scope, declaration, patternPath);
+          continue;
+        }
+        const key = element.propertyName
+          ? (ts.isIdentifier(element.propertyName) || ts.isStringLiteralLike(element.propertyName)
+            ? element.propertyName.text
+            : (ts.isComputedPropertyName(element.propertyName)
+              && ts.isStringLiteralLike(element.propertyName.expression)
+              ? element.propertyName.expression.text
+              : '<computed>'))
+          : (ts.isIdentifier(element.name) ? element.name.text : undefined);
+        declarePattern(element.name, scope, declaration, key === undefined ? patternPath : [...patternPath, key]);
+      }
+      return;
+    }
+    if (ts.isArrayBindingPattern(name)) {
+      name.elements.forEach((element, index) => {
+        if (ts.isBindingElement(element)) {
+          declarePattern(element.name, scope, declaration, [...patternPath, String(index)]);
+        }
+      });
+    }
+  }
+
+  function declareImport(statement, scope) {
+    const moduleName = statement.moduleSpecifier?.text;
+    if (!moduleName || !isFileSystemModule(moduleName)) {
+      return;
+    }
+    const importedOrigin = isPromisesModule(moduleName)
+      ? { type: 'promises' }
+      : { type: 'namespace' };
+    const clause = statement.importClause;
+    if (!clause) {
+      return;
+    }
+    if (clause.name) {
+      declare(scope, clause.name, clause, { origin: importedOrigin });
+    }
+    if (!clause.namedBindings) {
+      return;
+    }
+    if (ts.isNamespaceImport(clause.namedBindings)) {
+      declare(scope, clause.namedBindings.name, clause, { origin: importedOrigin });
+      return;
+    }
+    if (ts.isNamedImports(clause.namedBindings)) {
+      for (const element of clause.namedBindings.elements) {
+        const importedName = element.propertyName?.text ?? element.name.text;
+        let origin;
+        if (!isPromisesModule(moduleName) && importedName === 'promises') {
+          origin = { type: 'promises' };
+        } else if (mutationMethods.has(importedName) || fileOpenMethods.has(importedName)) {
+          origin = {
+            type: 'direct',
+            method: importedName,
+            ...(isPromisesModule(moduleName) && importedName === 'open' ? { returnsFileHandle: true } : {}),
+          };
+        }
+        declare(scope, element.name, element, { origin });
+      }
+    }
+  }
+
+  function visit(node, parentScope) {
+    let scope = parentScope;
+    if (node !== sourceFile && isFunctionScopeNode(node)) {
+      scope = createScope(parentScope, 'function');
+    } else if (node !== sourceFile && isBlockScopeNode(node)) {
+      scope = createScope(parentScope, 'block');
+    }
+    scopeByNode.set(node, scope);
+
+    if (ts.isImportDeclaration(node)) {
+      declareImport(node, parentScope);
+    } else if (ts.isImportEqualsDeclaration(node)
+      && ts.isExternalModuleReference(node.moduleReference)
+      && node.moduleReference.expression
+      && ts.isStringLiteral(node.moduleReference.expression)
+      && isFileSystemModule(node.moduleReference.expression.text)) {
+      declare(parentScope, node.name, node, {
+        origin: isPromisesModule(node.moduleReference.expression.text)
+          ? { type: 'promises' }
+          : { type: 'namespace' },
+      });
+    } else if (ts.isVariableDeclaration(node)) {
+      const flags = node.parent.flags;
+      const declarationScope = flags & ts.NodeFlags.BlockScoped || ts.isCatchClause(node.parent)
+        ? scope
+        : scope.functionScope;
+      declarePattern(node.name, declarationScope, node);
+    } else if (ts.isParameter(node)) {
+      declarePattern(node.name, scope, node);
+    } else if (ts.isFunctionDeclaration(node) && node.name) {
+      declare(parentScope, node.name, node);
+    } else if (ts.isFunctionExpression(node) && node.name) {
+      declare(scope, node.name, node);
+    } else if (ts.isClassDeclaration(node) && node.name) {
+      declare(parentScope, node.name, node);
+      declare(scope, node.name, node);
+    } else if (ts.isClassExpression(node) && node.name) {
+      declare(scope, node.name, node);
+    } else if (ts.isEnumDeclaration(node) || ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)) {
+      if (node.name) {
+        declare(parentScope, node.name, node);
+      }
+    }
+
+    ts.forEachChild(node, (child) => visit(child, scope));
+  }
+
+  visit(sourceFile, rootScope);
+
+  function resolve(identifier) {
+    if (!identifier || !ts.isIdentifier(identifier)) {
+      return undefined;
+    }
+    for (let scope = scopeByNode.get(identifier); scope; scope = scope.parent) {
+      const binding = scope.bindings.get(identifier.text);
+      if (binding) {
+        return binding;
+      }
+    }
+    return undefined;
+  }
+
+  function requireOrigin(expression) {
+    const current = unwrapExpression(expression);
+    if (!ts.isCallExpression(current)
+      || !ts.isIdentifier(current.expression)
+      || current.expression.text !== 'require'
+      || current.arguments.length !== 1
+      || !ts.isStringLiteralLike(current.arguments[0])
+      || resolve(current.expression)) {
+      return undefined;
+    }
+    const moduleName = current.arguments[0].text;
+    if (!isFileSystemModule(moduleName)) {
+      return undefined;
+    }
+    return isPromisesModule(moduleName) ? { type: 'promises' } : { type: 'namespace' };
+  }
+
+  function selectProperty(origin, propertyName) {
+    if (!origin || !propertyName) {
+      return undefined;
+    }
+    if (propertyName === '<computed>'
+      && (origin.type === 'namespace' || origin.type === 'promises' || origin.type === 'handle')) {
+      return { type: 'dynamicFunction', method: '<computed>' };
+    }
+    if (origin.type === 'namespace' && propertyName === 'promises') {
+      return { type: 'promises' };
+    }
+    if ((origin.type === 'namespace' || origin.type === 'promises')
+      && (mutationMethods.has(propertyName) || fileOpenMethods.has(propertyName))) {
+      return {
+        type: 'direct',
+        method: propertyName,
+        ...(origin.type === 'promises' && propertyName === 'open' ? { returnsFileHandle: true } : {}),
+      };
+    }
+    if (origin.type === 'handle' && (propertyName === 'writeFile' || propertyName === 'write')) {
+      return { type: 'handleWriter', method: propertyName, handleTarget: origin.target };
+    }
+    return undefined;
+  }
+
+  function getOrigin(expression) {
+    const current = unwrapExpression(expression);
+    if (!current) {
+      return undefined;
+    }
+    if (ts.isIdentifier(current)) {
+      return resolve(current)?.origin;
+    }
+    if (ts.isCallExpression(current)) {
+      const callee = unwrapExpression(current.expression);
+      if (ts.isPropertyAccessExpression(callee) && callee.name.text === 'bind') {
+        const receiverOrigin = getOrigin(callee.expression);
+        if (receiverOrigin?.type === 'boundFunction'
+          || receiverOrigin?.type === 'direct'
+          || receiverOrigin?.type === 'dynamicFunction'
+          || receiverOrigin?.type === 'handleWriter') {
+          const method = receiverOrigin.method;
+          if (receiverOrigin.type === 'dynamicFunction'
+            || mutationMethods.has(method)
+            || fileOpenMethods.has(method)) {
+            const inheritedArguments = receiverOrigin.type === 'boundFunction'
+              ? receiverOrigin.boundArguments
+              : [];
+            return {
+              type: 'boundFunction',
+              method,
+              boundArguments: [...inheritedArguments, ...current.arguments.slice(1)],
+              ...(receiverOrigin.returnsFileHandle ? { returnsFileHandle: true } : {}),
+              ...(receiverOrigin.handleTarget ? { handleTarget: receiverOrigin.handleTarget } : {}),
+            };
+          }
+        }
+      }
+    }
+    const requiredOrigin = requireOrigin(current);
+    if (requiredOrigin) {
+      return requiredOrigin;
+    }
+    if (ts.isBinaryExpression(current)
+      && (current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+        || current.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
+      const leftOrigin = getOrigin(current.left);
+      const rightOrigin = getOrigin(current.right);
+      if (!leftOrigin) {
+        return rightOrigin;
+      }
+      if (!rightOrigin) {
+        return leftOrigin;
+      }
+      if (leftOrigin.type === rightOrigin.type && leftOrigin.method === rightOrigin.method) {
+        return leftOrigin;
+      }
+      if (leftOrigin.type === 'direct' && leftOrigin.method === 'open') {
+        return leftOrigin;
+      }
+      if (rightOrigin.type === 'direct' && rightOrigin.method === 'open') {
+        return rightOrigin;
+      }
+      return { type: 'dynamicFunction', method: '<coalesced>' };
+    }
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      const propertyName = staticPropertyName(current);
+      const receiverOrigin = getOrigin(current.expression);
+      if (propertyName !== undefined) {
+        return selectProperty(receiverOrigin, propertyName);
+      }
+      if (receiverOrigin?.type === 'namespace'
+        || receiverOrigin?.type === 'promises'
+        || receiverOrigin?.type === 'handle') {
+        return { type: 'dynamicFunction', method: '<computed>' };
+      }
+    }
+    return undefined;
+  }
+
+  function inferVariableOrigin(binding) {
+    const initializer = binding.declaration.initializer;
+    if (!initializer) {
+      return undefined;
+    }
+    let origin;
+    if (binding.patternPath.length > 0) {
+      origin = getOrigin(initializer);
+      for (const propertyName of binding.patternPath) {
+        origin = selectProperty(origin, propertyName);
+      }
+      return origin;
+    }
+    const current = unwrapExpression(initializer);
+    if (ts.isCallExpression(current)) {
+      const required = requireOrigin(current);
+      if (required) {
+        return required;
+      }
+      const calledOrigin = getOrigin(current.expression);
+      const boundArguments = calledOrigin?.type === 'boundFunction' ? calledOrigin.boundArguments : [];
+      if ((calledOrigin?.type === 'direct' || calledOrigin?.type === 'boundFunction')
+        && calledOrigin.method === 'open'
+        && calledOrigin.returnsFileHandle
+        && isWriteOpen(current, boundArguments)) {
+        const effectiveArguments = [...boundArguments, ...current.arguments];
+        return { type: 'handle', target: effectiveArguments[0] };
+      }
+    }
+    return getOrigin(current);
+  }
+
+  for (let pass = 0; pass <= variableBindings.length; pass += 1) {
+    let changed = false;
+    for (const binding of variableBindings) {
+      const origin = inferVariableOrigin(binding);
+      if (origin && (!binding.origin || binding.origin.type === 'unknown')) {
+        binding.origin = origin;
+        changed = true;
+      }
+    }
+    if (!changed) {
+      break;
+    }
+  }
+
+  return { scopeByNode, resolve, getOrigin };
+}
+
+function isWriteOpen(call, boundArguments = []) {
+  const flags = [...boundArguments, ...call.arguments][1];
+  if (!flags) {
+    return false;
+  }
+  const value = unwrapExpression(flags);
+  if (ts.isStringLiteralLike(value)) {
+    return /[wax+]/i.test(value.text);
+  }
+  if (ts.isNumericLiteral(value)) {
+    return Number(value.text) !== 0;
+  }
+  const expressionText = value.getText().replace(/\s+/g, '');
+  if (/\bO_RDONLY\b/.test(expressionText)
+    && !/\b(?:O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND)\b/.test(expressionText)) {
+    return false;
+  }
+  if (/\b(?:O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND)\b/.test(expressionText)) {
+    return true;
+  }
+  return true;
 }
 
 function isFileMutationCall(call, aliases) {
-  const method = expressionMethodName(call.expression);
-  if (!method) {
+  const current = unwrapExpression(call.expression);
+  const origin = aliases.getOrigin(current);
+  if (!origin) {
     return undefined;
   }
-
-  if (ts.isIdentifier(call.expression) && aliases.directFunctionAliases.has(method)) {
-    return method;
+  if (origin.type === 'dynamicFunction') {
+    return { method: origin.method, boundArguments: [] };
   }
-
-  if (!ts.isPropertyAccessExpression(call.expression)
-    && !ts.isElementAccessExpression(call.expression)) {
-    return undefined;
+  if (origin.type === 'boundFunction') {
+    if (fileOpenMethods.has(origin.method)) {
+      return isWriteOpen(call, origin.boundArguments)
+        ? { method: origin.method, boundArguments: origin.boundArguments }
+        : undefined;
+    }
+    return mutationMethods.has(origin.method)
+      ? {
+        method: origin.method,
+        boundArguments: origin.boundArguments,
+        ...(origin.handleTarget ? { handleTarget: origin.handleTarget } : {}),
+      }
+      : undefined;
   }
-
-  const receiver = call.expression.expression;
-  if (mutationMethods.has(method)) {
-    if (ts.isIdentifier(receiver)
-      && (aliases.namespaceAliases.has(receiver.text) || aliases.promisesAliases.has(receiver.text))) {
-      return method;
-    }
-    if (ts.isPropertyAccessExpression(receiver)
-      && receiver.name.text === 'promises'
-      && ts.isIdentifier(receiver.expression)
-      && aliases.namespaceAliases.has(receiver.expression.text)) {
-      return method;
-    }
-    if (ts.isPropertyAccessExpression(receiver)
-      && ts.isIdentifier(receiver.expression)
-      && aliases.fsDestructuredPromisesAliases.has(receiver.expression.text)
-      && receiver.name.text === method) {
-      return method;
-    }
+  if (origin.type === 'handleWriter') {
+    return { method: origin.method, boundArguments: [], handleTarget: origin.handleTarget };
   }
-
-  if (fileOpenMethods.has(method) && isWriteOpen(call)) {
-    if (ts.isIdentifier(receiver)
-      && (aliases.namespaceAliases.has(receiver.text) || aliases.promisesAliases.has(receiver.text))) {
-      return method;
+  if (origin.type === 'direct') {
+    if (fileOpenMethods.has(origin.method)) {
+      return isWriteOpen(call) ? { method: origin.method, boundArguments: [] } : undefined;
     }
-    if (ts.isPropertyAccessExpression(receiver)
-      && receiver.name.text === 'promises'
-      && ts.isIdentifier(receiver.expression)
-      && aliases.namespaceAliases.has(receiver.expression.text)) {
-      return method;
-    }
-  }
-
-  if ((method === 'writeFile' || method === 'write') && ts.isIdentifier(receiver)
-    && /(?:file)?handle/i.test(receiver.text)) {
-    return method;
+    return mutationMethods.has(origin.method)
+      ? { method: origin.method, boundArguments: [] }
+      : undefined;
   }
   return undefined;
 }
@@ -272,6 +560,19 @@ function listSourceFiles(directory) {
   return result.sort();
 }
 
+function mutationTargetExpression(call, method, sourceFile, boundArguments = [], handleTarget) {
+  const normalizeArgument = (argument) => argument?.getText(sourceFile).replace(/\s+/g, ' ').trim() ?? '<none>';
+  if (handleTarget) {
+    return normalizeArgument(handleTarget);
+  }
+  const argumentsList = [...boundArguments, ...call.arguments];
+  const sourceExpression = normalizeArgument(argumentsList[0]);
+  if (!twoPathMutationMethods.has(method)) {
+    return sourceExpression;
+  }
+  return JSON.stringify([sourceExpression, normalizeArgument(argumentsList[1])]);
+}
+
 function scanSource(sourceRoot) {
   const sites = [];
   for (const filePath of listSourceFiles(sourceRoot)) {
@@ -282,12 +583,13 @@ function scanSource(sourceRoot) {
 
     const sourceText = fs.readFileSync(filePath, 'utf8');
     const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true);
-    const aliases = collectFileSystemAliases(sourceFile);
+    const aliases = createFilesystemBindings(sourceFile);
     const visit = (node) => {
       if (ts.isCallExpression(node)) {
-        const method = isFileMutationCall(node, aliases);
-        if (method) {
-          const targetExpression = node.arguments[0]?.getText(sourceFile).replace(/\s+/g, ' ').trim() ?? '<none>';
+        const mutation = isFileMutationCall(node, aliases);
+        if (mutation) {
+          const { method, boundArguments, handleTarget } = mutation;
+          const targetExpression = mutationTargetExpression(node, method, sourceFile, boundArguments, handleTarget);
           const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
           sites.push({
             file: relative,
@@ -318,52 +620,108 @@ function countSites(sites) {
   return counts;
 }
 
-function readBaseline(baselinePath) {
-  if (!fs.existsSync(baselinePath)) {
-    throw new Error(`Baseline file not found: ${baselinePath}`);
+function readApprovedPolicy(policyPath) {
+  if (!fs.existsSync(policyPath)) {
+    throw new Error(`Approved mutation writer policy not found: ${policyPath}`);
   }
-  const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
-  if (baseline.version !== 1 || !Array.isArray(baseline.sites)) {
-    throw new Error(`Unsupported mutation writer baseline format: ${baselinePath}`);
+  const policy = JSON.parse(fs.readFileSync(policyPath, 'utf8'));
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) {
+    throw new Error(`Invalid mutation writer policy: expected an object: ${policyPath}`);
   }
-  return baseline;
+  if (policy.kind === 'observed-inventory') {
+    throw new Error(`Observed mutation inventory is not an approved policy: ${policyPath}`);
+  }
+  if (policy.version !== 2 || !Array.isArray(policy.sites)) {
+    throw new Error(`Unsupported mutation writer policy format (expected version 2): ${policyPath}`);
+  }
+  const policyFields = Object.keys(policy).sort();
+  if (JSON.stringify(policyFields) !== JSON.stringify(['sites', 'version'])) {
+    throw new Error(`Invalid mutation writer policy: expected exactly version and sites: ${policyPath}`);
+  }
+
+  const expectedFields = ['count', 'file', 'method', 'owner', 'reason', 'responsibility', 'target'];
+  const seenKeys = new Set();
+  for (let index = 0; index < policy.sites.length; index += 1) {
+    const site = policy.sites[index];
+    if (!site || typeof site !== 'object' || Array.isArray(site)) {
+      throw new Error(`Invalid mutation writer policy site ${index + 1}: expected an object`);
+    }
+    const fields = Object.keys(site).sort();
+    if (JSON.stringify(fields) !== JSON.stringify(expectedFields)) {
+      throw new Error(`Invalid mutation writer policy site ${index + 1}: expected exactly ${expectedFields.join(', ')}`);
+    }
+    for (const field of ['file', 'owner', 'method', 'target']) {
+      if (typeof site[field] !== 'string' || site[field].trim().length === 0) {
+        throw new Error(`Invalid mutation writer policy site ${index + 1}: ${field} must be a nonempty string`);
+      }
+    }
+    if (!Number.isSafeInteger(site.count) || site.count < 1) {
+      throw new Error(`Invalid mutation writer policy site ${index + 1}: count must be a positive integer`);
+    }
+    const emptyApprovalFields = ['reason', 'responsibility'].filter((field) =>
+      typeof site[field] !== 'string' || site[field].trim().length === 0);
+    if (emptyApprovalFields.length > 0) {
+      throw new Error(`Invalid mutation writer policy site ${index + 1}: ${emptyApprovalFields.join(' and ')} must be nonempty`);
+    }
+    const key = siteKey(site);
+    if (seenKeys.has(key)) {
+      throw new Error(`Invalid mutation writer policy: duplicate site ${site.file} ${site.owner} ${site.method} ${site.target}`);
+    }
+    seenKeys.add(key);
+  }
+  return policy;
 }
 
-function writeBaseline(baselinePath, sites) {
+function recordsFromSites(sites) {
   const counts = countSites(sites);
-  const records = Array.from(counts.entries()).map(([key, count]) => {
+  return Array.from(counts.entries()).map(([key, count]) => {
     const [file, owner, method, target] = JSON.parse(key);
     return { file, owner, method, target, count };
   }).sort((left, right) => siteKey(left).localeCompare(siteKey(right)));
-  fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
-  fs.writeFileSync(baselinePath, `${JSON.stringify({ version: 1, sites: records }, null, 2)}\n`, 'utf8');
-  console.log(`Mutation writer baseline recorded ${sites.length} direct filesystem mutation call(s) across ${records.length} site(s): ${baselinePath}`);
 }
 
-function checkBaseline(baselinePath, sites) {
-  const baseline = readBaseline(baselinePath);
-  const baselineCounts = new Map(baseline.sites.map((site) => [siteKey(site), site.count]));
-  const seen = new Map();
-  const newSites = [];
+function writeObservedInventory(inventoryPath, sites) {
+  const records = recordsFromSites(sites);
+  fs.mkdirSync(path.dirname(inventoryPath), { recursive: true });
+  fs.writeFileSync(inventoryPath, `${JSON.stringify({ kind: 'observed-inventory', sites: records }, null, 2)}\n`, 'utf8');
+  console.log(`Observed mutation inventory written (${sites.length} calls across ${records.length} sites): ${inventoryPath}`);
+}
+
+function checkApprovedPolicy(policyPath, sites) {
+  const policy = readApprovedPolicy(policyPath);
+  const approvedCounts = new Map(policy.sites.map((site) => [siteKey(site), site.count]));
+  const observedCounts = countSites(sites);
+
+  const errors = [];
   for (const site of sites.sort((left, right) => left.file.localeCompare(right.file) || left.line - right.line)) {
     const key = siteKey(site);
-    const occurrence = (seen.get(key) ?? 0) + 1;
-    seen.set(key, occurrence);
-    if (occurrence > (baselineCounts.get(key) ?? 0)) {
-      newSites.push(site);
+    const approved = approvedCounts.get(key) ?? 0;
+    const observed = observedCounts.get(key) ?? 0;
+    if (approved === 0) {
+      errors.push(`Unapproved direct filesystem mutation: ${site.file}:${site.line} ${site.method} in ${site.owner} (target: ${site.target})`);
+    } else if (observed > approved) {
+      errors.push(`Mutation writer count increased: ${site.file} ${site.method} in ${site.owner} (target: ${site.target}, approved ${approved}, observed ${observed})`);
+    }
+  }
+  for (const approvedSite of policy.sites) {
+    const key = siteKey(approvedSite);
+    const observed = observedCounts.get(key) ?? 0;
+    if (observed === 0) {
+      errors.push(`Stale approved mutation writer site: ${approvedSite.file} ${approvedSite.method} in ${approvedSite.owner} (target: ${approvedSite.target})`);
+    } else if (observed < approvedSite.count) {
+      errors.push(`Mutation writer count reduced: ${approvedSite.file} ${approvedSite.method} in ${approvedSite.owner} (target: ${approvedSite.target}, approved ${approvedSite.count}, observed ${observed})`);
     }
   }
 
-  if (newSites.length > 0) {
-    console.warn(`Mutation writer architecture guard (warning mode): ${newSites.length} unbaselined direct filesystem mutation call(s).`);
-    for (const site of newSites) {
-      console.warn(`  WARN ${site.file}:${site.line} ${site.method} in ${site.owner} (target: ${site.target})`);
+  if (errors.length > 0) {
+    console.error(`Mutation writer policy check failed with ${errors.length} violation(s):`);
+    for (const error of errors) {
+      console.error(`  ERROR ${error}`);
     }
-    console.warn('Route configuration writes through ConfigurationMutationEngine before updating the baseline.');
+    process.exitCode = 1;
     return;
   }
-
-  console.log(`Mutation writer architecture guard passed: no new direct filesystem mutation call(s) (${sites.length} observed, warning-only baseline mode).`);
+  console.log(`Mutation writer policy check passed: ${sites.length} observed mutation call(s) match ${policy.sites.length} reviewed site(s).`);
 }
 
 function enforceNoMutationsInFiles(files, sites) {
@@ -386,13 +744,26 @@ function enforceNoMutationsInFiles(files, sites) {
 
 function main() {
   const options = readOptions(process.argv.slice(2));
+  if (options.writeBaseline) {
+    throw new Error('--write-baseline was removed because it auto-approves observed writers. Use --write-inventory <path> and review policy changes explicitly.');
+  }
+  if (options.writeInventory) {
+    const inventoryPath = path.resolve(options.writeInventory);
+    const policyPath = path.resolve(options.baselinePath);
+    const samePath = process.platform === 'win32'
+      ? inventoryPath.toLowerCase() === policyPath.toLowerCase()
+      : inventoryPath === policyPath;
+    if (samePath) {
+      throw new Error('--write-inventory path must differ from the approved policy path.');
+    }
+  }
   const sites = scanSource(options.sourceRoot);
   enforceNoMutationsInFiles(options.enforceFiles, sites);
-  if (options.writeBaseline) {
-    writeBaseline(options.baselinePath, sites);
-  } else {
-    checkBaseline(options.baselinePath, sites);
+  if (options.writeInventory) {
+    writeObservedInventory(options.writeInventory, sites);
+    return;
   }
+  checkApprovedPolicy(options.baselinePath, sites);
 }
 
 try {

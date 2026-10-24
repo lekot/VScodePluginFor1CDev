@@ -1,1405 +1,1247 @@
 {
-  "version": 1,
+  "version": 2,
   "sites": [
     {
       "file": "src/agent/agentBridge.ts",
       "owner": "AgentBridge.removeBridgeFile",
       "method": "unlink",
       "target": "bridgeFilePath",
-      "count": 1
+      "count": 1,
+      "reason": "The AgentBridge.removeBridgeFile site unlinks the file at \"bridgeFilePath\". AgentBridge owns the discovery sidecar and its temporary-file cleanup.",
+      "responsibility": "AgentBridge owns the discovery sidecar and its temporary-file cleanup."
     },
     {
       "file": "src/agent/agentBridge.ts",
       "owner": "AgentBridge.startInternal",
       "method": "mkdir",
       "target": "vscodeDir",
-      "count": 1
+      "count": 1,
+      "reason": "The AgentBridge.startInternal site creates a directory at \"vscodeDir\". AgentBridge owns the discovery sidecar and its temporary-file cleanup.",
+      "responsibility": "AgentBridge owns the discovery sidecar and its temporary-file cleanup."
     },
     {
       "file": "src/agent/agentBridge.ts",
       "owner": "AgentBridge.startInternal",
       "method": "unlink",
       "target": "bridgeFile",
-      "count": 1
+      "count": 1,
+      "reason": "The AgentBridge.startInternal site unlinks the file at \"bridgeFile\". AgentBridge owns the discovery sidecar and its temporary-file cleanup.",
+      "responsibility": "AgentBridge owns the discovery sidecar and its temporary-file cleanup."
     },
     {
       "file": "src/agent/agentBridge.ts",
       "owner": "AgentBridge.writeDiscoveryFileAtomic",
       "method": "rename",
-      "target": "temporaryPath",
-      "count": 1
+      "target": "[\"temporaryPath\",\"filePath\"]",
+      "count": 1,
+      "reason": "The AgentBridge.writeDiscoveryFileAtomic site moves or publishes the path using \"[\\\"temporaryPath\\\",\\\"filePath\\\"]\". AgentBridge owns the discovery sidecar and its temporary-file cleanup.",
+      "responsibility": "AgentBridge owns the discovery sidecar and its temporary-file cleanup."
     },
     {
       "file": "src/agent/agentBridge.ts",
       "owner": "AgentBridge.writeDiscoveryFileAtomic",
       "method": "unlink",
       "target": "temporaryPath",
-      "count": 1
+      "count": 1,
+      "reason": "The AgentBridge.writeDiscoveryFileAtomic site unlinks the file at \"temporaryPath\". AgentBridge owns the discovery sidecar and its temporary-file cleanup.",
+      "responsibility": "AgentBridge owns the discovery sidecar and its temporary-file cleanup."
     },
     {
       "file": "src/agent/agentBridge.ts",
       "owner": "AgentBridge.writeDiscoveryFileAtomic",
       "method": "writeFile",
       "target": "temporaryPath",
-      "count": 1
+      "count": 1,
+      "reason": "The AgentBridge.writeDiscoveryFileAtomic site writes the file at \"temporaryPath\". AgentBridge owns the discovery sidecar and its temporary-file cleanup.",
+      "responsibility": "AgentBridge owns the discovery sidecar and its temporary-file cleanup."
     },
     {
-      "file": "src/agent/commandInterfaceOperations.ts",
-      "owner": "writeModel",
-      "method": "writeFileSync",
-      "target": "ciPath",
-      "count": 1
+      "file": "src/bindings/deploySnapshot.ts",
+      "owner": "<callback>",
+      "method": "copyFile",
+      "target": "[\"file.source\",\"path.join(destination, file.relativePath)\"]",
+      "count": 1,
+      "reason": "The <callback> site copies files from \"file.source\" to \"path.join(destination, file.relativePath)\" inside the temporary deployment snapshot. This exception is limited to snapshot materialization and does not authorize writes to the source configuration.",
+      "responsibility": "deploySnapshot materializes the source configuration into an isolated temporary deployment snapshot and owns that snapshot cleanup."
     },
     {
-      "file": "src/agent/predefinedCharacteristicOperations.ts",
-      "owner": "unlink",
-      "method": "unlink",
-      "target": "filePath",
-      "count": 1
+      "file": "src/bindings/deploySnapshot.ts",
+      "owner": "cleanupConfigurationSnapshot",
+      "method": "rm",
+      "target": "parent",
+      "count": 1,
+      "reason": "The cleanupConfigurationSnapshot site removes the path at \"parent\". deploySnapshot owns temporary configuration snapshot materialization and cleanup.",
+      "responsibility": "deploySnapshot owns temporary configuration snapshot materialization and cleanup."
     },
     {
-      "file": "src/agent/predefinedCharacteristicOperations.ts",
-      "owner": "writeFile",
-      "method": "writeFile",
-      "target": "filePath",
-      "count": 1
-    },
-    {
-      "file": "src/bindings/deployService.ts",
+      "file": "src/bindings/deploySnapshot.ts",
       "owner": "createConfigurationSnapshot",
       "method": "mkdir",
       "target": "path.join(destination, directory.relativePath)",
-      "count": 1
+      "count": 1,
+      "reason": "The createConfigurationSnapshot site creates a directory at \"path.join(destination, directory.relativePath)\". deploySnapshot owns temporary configuration snapshot materialization and cleanup.",
+      "responsibility": "deploySnapshot owns temporary configuration snapshot materialization and cleanup."
     },
     {
-      "file": "src/bindings/deployService.ts",
+      "file": "src/bindings/deploySnapshot.ts",
       "owner": "createConfigurationSnapshot",
       "method": "rm",
       "target": "parent",
-      "count": 1
+      "count": 1,
+      "reason": "The createConfigurationSnapshot site removes the path at \"parent\". deploySnapshot owns temporary configuration snapshot materialization and cleanup.",
+      "responsibility": "deploySnapshot owns temporary configuration snapshot materialization and cleanup."
     },
     {
-      "file": "src/bindings/deployService.ts",
+      "file": "src/bindings/deploySnapshot.ts",
       "owner": "createConfigurationSnapshot",
       "method": "symlink",
-      "target": "target",
-      "count": 1
-    },
-    {
-      "file": "src/bindings/deployService.ts",
-      "owner": "DeployService.deployBinding",
-      "method": "rm",
-      "target": "parent",
-      "count": 1
+      "target": "[\"target\",\"path.join(destination, link.relativePath)\"]",
+      "count": 1,
+      "reason": "The createConfigurationSnapshot site creates a symbolic link using paths \"[\\\"target\\\",\\\"path.join(destination, link.relativePath)\\\"]\". deploySnapshot owns temporary configuration snapshot materialization and cleanup.",
+      "responsibility": "deploySnapshot owns temporary configuration snapshot materialization and cleanup."
     },
     {
       "file": "src/commands/cfCommands.ts",
       "owner": "<callback>",
       "method": "rm",
       "target": "stagingRoot",
-      "count": 1
+      "count": 1,
+      "reason": "The callback in src/commands/cfCommands.ts site removes the path at \"stagingRoot\". cfCommands owns platform CF/XML output staging and export cleanup.",
+      "responsibility": "cfCommands owns platform CF/XML output staging and export cleanup."
     },
     {
       "file": "src/commands/cfCommands.ts",
       "owner": "copyDirectoryContents",
       "method": "copyFile",
-      "target": "srcPath",
-      "count": 1
+      "target": "[\"srcPath\",\"destPath\"]",
+      "count": 1,
+      "reason": "The copyDirectoryContents site copies the file using paths \"[\\\"srcPath\\\",\\\"destPath\\\"]\". cfCommands owns platform CF/XML output staging and export cleanup.",
+      "responsibility": "cfCommands owns platform CF/XML output staging and export cleanup."
     },
     {
       "file": "src/commands/cfCommands.ts",
       "owner": "copyDirectoryContents",
       "method": "mkdir",
       "target": "destDir",
-      "count": 1
+      "count": 1,
+      "reason": "The copyDirectoryContents site creates a directory at \"destDir\". cfCommands owns platform CF/XML output staging and export cleanup.",
+      "responsibility": "cfCommands owns platform CF/XML output staging and export cleanup."
     },
     {
       "file": "src/commands/cfCommands.ts",
       "owner": "prepareOutputDirectory",
       "method": "mkdir",
       "target": "dir",
-      "count": 1
-    },
-    {
-      "file": "src/commands/editorCommands.ts",
-      "owner": "<callback>",
-      "method": "mkdir",
-      "target": "path.dirname(fp)",
-      "count": 1
-    },
-    {
-      "file": "src/commands/editorCommands.ts",
-      "owner": "<callback>",
-      "method": "writeFile",
-      "target": "fp",
-      "count": 1
+      "count": 1,
+      "reason": "The prepareOutputDirectory site creates a directory at \"dir\". cfCommands owns platform CF/XML output staging and export cleanup.",
+      "responsibility": "cfCommands owns platform CF/XML output staging and export cleanup."
     },
     {
       "file": "src/commands/editorCommands.ts",
       "owner": "<callback>",
       "method": "writeFileSync",
       "target": "saveUri.fsPath",
-      "count": 1
+      "count": 1,
+      "reason": "The callback in src/commands/editorCommands.ts site synchronously writes the file at \"saveUri.fsPath\". editorCommands owns the explicit XDTO-to-XSD SaveDialog export.",
+      "responsibility": "editorCommands owns the explicit XDTO-to-XSD SaveDialog export."
     },
     {
       "file": "src/commands/utilityCommands.ts",
       "owner": "<callback>",
       "method": "writeFile",
       "target": "uri.fsPath",
-      "count": 1
+      "count": 1,
+      "reason": "The callback in src/commands/utilityCommands.ts site writes the file at \"uri.fsPath\". utilityCommands owns user-requested log export.",
+      "responsibility": "utilityCommands owns user-requested log export."
     },
     {
-      "file": "src/compareMerge/merge/atomicFileWriter.ts",
-      "owner": "copyFile",
-      "method": "copyFile",
-      "target": "sourcePath",
-      "count": 1
-    },
-    {
-      "file": "src/compareMerge/merge/atomicFileWriter.ts",
-      "owner": "mkdir",
+      "file": "src/compareMerge/merge/mergeBackupArtifacts.ts",
+      "owner": "createSafeParentDirectories",
       "method": "mkdir",
-      "target": "directoryPath",
-      "count": 1
+      "target": "cursor",
+      "count": 1,
+      "reason": "The createSafeParentDirectories site creates a directory at \"cursor\". mergeBackupArtifacts owns rollback snapshot exports.",
+      "responsibility": "mergeBackupArtifacts owns rollback snapshot exports."
     },
     {
-      "file": "src/compareMerge/merge/atomicFileWriter.ts",
-      "owner": "open",
-      "method": "open",
-      "target": "filePath",
-      "count": 1
+      "file": "src/compareMerge/merge/mergeBackupArtifacts.ts",
+      "owner": "exportDirectory",
+      "method": "mkdir",
+      "target": "childPath",
+      "count": 1,
+      "reason": "The exportDirectory site creates a directory at \"childPath\". mergeBackupArtifacts owns rollback snapshot exports.",
+      "responsibility": "mergeBackupArtifacts owns rollback snapshot exports."
     },
     {
-      "file": "src/compareMerge/merge/atomicFileWriter.ts",
-      "owner": "rename",
-      "method": "rename",
-      "target": "oldPath",
-      "count": 1
-    },
-    {
-      "file": "src/compareMerge/merge/atomicFileWriter.ts",
-      "owner": "rm",
-      "method": "rm",
-      "target": "filePath",
-      "count": 1
-    },
-    {
-      "file": "src/compareMerge/merge/atomicFileWriter.ts",
-      "owner": "writeExclusive",
+      "file": "src/compareMerge/merge/mergeBackupArtifacts.ts",
+      "owner": "exportDirectory",
       "method": "writeFile",
-      "target": "content",
-      "count": 1
+      "target": "childPath",
+      "count": 1,
+      "reason": "The exportDirectory site writes the file at \"childPath\". mergeBackupArtifacts owns rollback snapshot exports.",
+      "responsibility": "mergeBackupArtifacts owns rollback snapshot exports."
     },
     {
-      "file": "src/compareMerge/merge/mergeExecutor.ts",
-      "owner": "applyFolderOperation",
+      "file": "src/compareMerge/merge/mergeBackupArtifacts.ts",
+      "owner": "exportSnapshot",
       "method": "mkdir",
-      "target": "path.dirname(resolved.backupPath)",
-      "count": 1
+      "target": "destinationPath",
+      "count": 1,
+      "reason": "The exportSnapshot site creates a directory at \"destinationPath\". mergeBackupArtifacts owns rollback snapshot exports.",
+      "responsibility": "mergeBackupArtifacts owns rollback snapshot exports."
     },
     {
-      "file": "src/compareMerge/merge/mergeExecutor.ts",
-      "owner": "applyFolderOperation",
-      "method": "mkdir",
-      "target": "path.dirname(resolved.targetPath)",
-      "count": 1
-    },
-    {
-      "file": "src/compareMerge/merge/mergeExecutor.ts",
-      "owner": "applyFolderOperation",
-      "method": "rm",
-      "target": "resolved.targetPath",
-      "count": 1
-    },
-    {
-      "file": "src/compareMerge/merge/mergeExecutor.ts",
-      "owner": "copyFile",
-      "method": "copyFile",
-      "target": "sourcePath",
-      "count": 1
-    },
-    {
-      "file": "src/compareMerge/merge/mergeExecutor.ts",
-      "owner": "mkdir",
-      "method": "mkdir",
-      "target": "directoryPath",
-      "count": 1
-    },
-    {
-      "file": "src/compareMerge/merge/mergeExecutor.ts",
-      "owner": "open",
-      "method": "open",
-      "target": "filePath",
-      "count": 1
-    },
-    {
-      "file": "src/compareMerge/merge/mergeExecutor.ts",
-      "owner": "rename",
-      "method": "rename",
-      "target": "oldPath",
-      "count": 1
-    },
-    {
-      "file": "src/compareMerge/merge/mergeExecutor.ts",
-      "owner": "restoreFolderOperationAfterFailure",
-      "method": "mkdir",
-      "target": "path.dirname(resolved.targetPath)",
-      "count": 1
-    },
-    {
-      "file": "src/compareMerge/merge/mergeExecutor.ts",
-      "owner": "restoreFolderOperationAfterFailure",
-      "method": "rm",
-      "target": "resolved.targetPath",
-      "count": 1
-    },
-    {
-      "file": "src/compareMerge/merge/mergeExecutor.ts",
-      "owner": "rm",
-      "method": "rm",
-      "target": "filePath",
-      "count": 1
-    },
-    {
-      "file": "src/compareMerge/merge/mergeExecutor.ts",
-      "owner": "rollbackFolderOperation",
-      "method": "mkdir",
-      "target": "path.dirname(resolved.targetPath)",
-      "count": 1
-    },
-    {
-      "file": "src/compareMerge/merge/mergeExecutor.ts",
-      "owner": "rollbackFolderOperation",
-      "method": "rm",
-      "target": "resolved.targetPath",
-      "count": 2
+      "file": "src/compareMerge/merge/mergeBackupArtifacts.ts",
+      "owner": "exportSnapshot",
+      "method": "writeFile",
+      "target": "destinationPath",
+      "count": 1,
+      "reason": "The exportSnapshot site writes the file at \"destinationPath\". mergeBackupArtifacts owns rollback snapshot exports.",
+      "responsibility": "mergeBackupArtifacts owns rollback snapshot exports."
     },
     {
       "file": "src/configurationProject/configurationProjectService.ts",
       "owner": "<callback>",
       "method": "writeFile",
       "target": "filePath",
-      "count": 1
+      "count": 1,
+      "reason": "The callback in src/configurationProject/configurationProjectService.ts site writes the file at \"filePath\". configurationProjectService owns staging and publication of new configuration-project scaffolding.",
+      "responsibility": "configurationProjectService owns staging and publication of new configuration-project scaffolding."
     },
     {
       "file": "src/configurationProject/configurationProjectService.ts",
       "owner": "ConfigurationProjectService.createProject",
       "method": "mkdir",
       "target": "path.dirname(initialTarget)",
-      "count": 1
+      "count": 1,
+      "reason": "The ConfigurationProjectService.createProject site creates a directory at \"path.dirname(initialTarget)\". configurationProjectService owns staging and publication of new configuration-project scaffolding.",
+      "responsibility": "configurationProjectService owns staging and publication of new configuration-project scaffolding."
     },
     {
       "file": "src/configurationProject/configurationProjectService.ts",
       "owner": "ConfigurationProjectService.createProject",
       "method": "mkdir",
       "target": "staging",
-      "count": 1
+      "count": 1,
+      "reason": "The ConfigurationProjectService.createProject site creates a directory at \"staging\". configurationProjectService owns staging and publication of new configuration-project scaffolding.",
+      "responsibility": "configurationProjectService owns staging and publication of new configuration-project scaffolding."
     },
     {
       "file": "src/configurationProject/configurationProjectService.ts",
       "owner": "ConfigurationProjectService.createProject",
       "method": "rename",
-      "target": "staging",
-      "count": 1
+      "target": "[\"staging\",\"latestTarget\"]",
+      "count": 1,
+      "reason": "The ConfigurationProjectService.createProject site moves or publishes the path using \"[\\\"staging\\\",\\\"latestTarget\\\"]\". configurationProjectService owns staging and publication of new configuration-project scaffolding.",
+      "responsibility": "configurationProjectService owns staging and publication of new configuration-project scaffolding."
     },
     {
       "file": "src/configurationProject/configurationProjectService.ts",
       "owner": "ConfigurationProjectService.createProject",
       "method": "rm",
       "target": "staging",
-      "count": 1
+      "count": 1,
+      "reason": "The ConfigurationProjectService.createProject site removes the path at \"staging\". configurationProjectService owns staging and publication of new configuration-project scaffolding.",
+      "responsibility": "configurationProjectService owns staging and publication of new configuration-project scaffolding."
     },
     {
       "file": "src/configurationProject/configurationProjectService.ts",
       "owner": "ConfigurationProjectService.writeScaffold",
       "method": "mkdir",
       "target": "languagesDirectory",
-      "count": 1
+      "count": 1,
+      "reason": "The ConfigurationProjectService.writeScaffold site creates a directory at \"languagesDirectory\". configurationProjectService owns staging and publication of new configuration-project scaffolding.",
+      "responsibility": "configurationProjectService owns staging and publication of new configuration-project scaffolding."
     },
     {
       "file": "src/extensionSupport/cfeProject/createProject.ts",
       "owner": "CfeProjectService.createInBaseSession",
       "method": "mkdir",
       "target": "path.dirname(staging)",
-      "count": 1
+      "count": 1,
+      "reason": "The CfeProjectService.createInBaseSession site creates a directory at \"path.dirname(staging)\". CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal.",
+      "responsibility": "CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal."
     },
     {
       "file": "src/extensionSupport/cfeProject/createProject.ts",
       "owner": "CfeProjectService.createInBaseSession",
       "method": "mkdir",
       "target": "staging",
-      "count": 1
+      "count": 1,
+      "reason": "The CfeProjectService.createInBaseSession site creates a directory at \"staging\". CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal.",
+      "responsibility": "CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal."
     },
     {
       "file": "src/extensionSupport/cfeProject/createProject.ts",
       "owner": "CfeProjectService.createInBaseSession",
       "method": "rename",
-      "target": "staging",
-      "count": 1
+      "target": "[\"staging\",\"target.canonicalTarget\"]",
+      "count": 1,
+      "reason": "The CfeProjectService.createInBaseSession site moves or publishes the path using \"[\\\"staging\\\",\\\"target.canonicalTarget\\\"]\". CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal.",
+      "responsibility": "CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal."
     },
     {
       "file": "src/extensionSupport/cfeProject/createProject.ts",
       "owner": "CfeProjectService.createInBaseSession",
       "method": "rm",
       "target": "staging",
-      "count": 1
+      "count": 1,
+      "reason": "The CfeProjectService.createInBaseSession site removes the path at \"staging\". CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal.",
+      "responsibility": "CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal."
     },
     {
       "file": "src/extensionSupport/cfeProject/createProject.ts",
       "owner": "removePublishedDirectory",
       "method": "rm",
       "target": "boundary.canonicalTarget",
-      "count": 1
+      "count": 1,
+      "reason": "The removePublishedDirectory site removes the path at \"boundary.canonicalTarget\". CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal.",
+      "responsibility": "CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal."
     },
     {
       "file": "src/extensionSupport/cfeProject/createProject.ts",
       "owner": "writeRecoveryJournal",
       "method": "mkdir",
       "target": "directory",
-      "count": 1
+      "count": 1,
+      "reason": "The writeRecoveryJournal site creates a directory at \"directory\". CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal.",
+      "responsibility": "CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal."
     },
     {
       "file": "src/extensionSupport/cfeProject/createProject.ts",
       "owner": "writeRecoveryJournal",
       "method": "writeFile",
       "target": "journalPath",
-      "count": 1
+      "count": 1,
+      "reason": "The writeRecoveryJournal site writes the file at \"journalPath\". CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal.",
+      "responsibility": "CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal."
     },
     {
       "file": "src/extensionSupport/cfeProject/createProject.ts",
       "owner": "writeScaffold",
       "method": "mkdir",
       "target": "path.join(root, 'Languages')",
-      "count": 1
+      "count": 1,
+      "reason": "The writeScaffold site creates a directory at \"path.join(root, 'Languages')\". CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal.",
+      "responsibility": "CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal."
     },
     {
       "file": "src/extensionSupport/cfeProject/createProject.ts",
       "owner": "writeScaffold",
       "method": "mkdir",
       "target": "path.join(root, 'Roles')",
-      "count": 1
+      "count": 1,
+      "reason": "The writeScaffold site creates a directory at \"path.join(root, 'Roles')\". CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal.",
+      "responsibility": "CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal."
     },
     {
       "file": "src/extensionSupport/cfeProject/createProject.ts",
       "owner": "writeXmlFile",
       "method": "writeFile",
       "target": "target",
-      "count": 1
+      "count": 1,
+      "reason": "The writeXmlFile site writes the file at \"target\". CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal.",
+      "responsibility": "CFE createProject owns staging and publication of new-project scaffolding plus its recovery journal."
     },
     {
       "file": "src/extensionSupport/cfeProject/manifest.ts",
       "owner": "CfeProjectManifestStorage.writeAtomic",
       "method": "mkdir",
       "target": "directory",
-      "count": 1
+      "count": 1,
+      "reason": "The CfeProjectManifestStorage.writeAtomic site creates a directory at \"directory\". CfeProjectManifestStorage owns the CFE manifest sidecar and its atomic temporary replacement.",
+      "responsibility": "CfeProjectManifestStorage owns the CFE manifest sidecar and its atomic temporary replacement."
     },
     {
       "file": "src/extensionSupport/cfeProject/manifest.ts",
       "owner": "CfeProjectManifestStorage.writeAtomic",
       "method": "rename",
-      "target": "temporary",
-      "count": 1
+      "target": "[\"temporary\",\"target.canonicalTarget\"]",
+      "count": 1,
+      "reason": "The CfeProjectManifestStorage.writeAtomic site moves or publishes the path using \"[\\\"temporary\\\",\\\"target.canonicalTarget\\\"]\". CfeProjectManifestStorage owns the CFE manifest sidecar and its atomic temporary replacement.",
+      "responsibility": "CfeProjectManifestStorage owns the CFE manifest sidecar and its atomic temporary replacement."
     },
     {
       "file": "src/extensionSupport/cfeProject/manifest.ts",
       "owner": "CfeProjectManifestStorage.writeAtomic",
       "method": "rm",
       "target": "temporary",
-      "count": 1
+      "count": 1,
+      "reason": "The CfeProjectManifestStorage.writeAtomic site removes the path at \"temporary\". CfeProjectManifestStorage owns the CFE manifest sidecar and its atomic temporary replacement.",
+      "responsibility": "CfeProjectManifestStorage owns the CFE manifest sidecar and its atomic temporary replacement."
     },
     {
       "file": "src/extensionSupport/cfeProject/manifest.ts",
       "owner": "CfeProjectManifestStorage.writeAtomic",
       "method": "writeFile",
       "target": "temporary",
-      "count": 1
-    },
-    {
-      "file": "src/formEditor/formEditorProvider.ts",
-      "owner": "<callback>",
-      "method": "mkdir",
-      "target": "path.dirname(destination.fsPath)",
-      "count": 1
-    },
-    {
-      "file": "src/formEditor/formEditorProvider.ts",
-      "owner": "<callback>",
-      "method": "mkdir",
-      "target": "path.dirname(destinationModulePath)",
-      "count": 1
-    },
-    {
-      "file": "src/formEditor/formEditorProvider.ts",
-      "owner": "<callback>",
-      "method": "writeFile",
-      "target": "destinationModulePath",
-      "count": 1
+      "count": 1,
+      "reason": "The CfeProjectManifestStorage.writeAtomic site writes the file at \"temporary\". CfeProjectManifestStorage owns the CFE manifest sidecar and its atomic temporary replacement.",
+      "responsibility": "CfeProjectManifestStorage owns the CFE manifest sidecar and its atomic temporary replacement."
     },
     {
       "file": "src/formEditor/formEditorProvider.ts",
       "owner": "delete",
       "method": "rm",
       "target": "backupPath",
-      "count": 1
+      "count": 1,
+      "reason": "The delete site removes the path at \"backupPath\". FormEditorProvider owns its VS Code document-backup namespace.",
+      "responsibility": "FormEditorProvider owns its VS Code document-backup namespace."
     },
     {
       "file": "src/formEditor/formEditorProvider.ts",
       "owner": "FormEditorProvider.backupCustomDocument",
       "method": "mkdir",
       "target": "path.dirname(backupPath)",
-      "count": 1
+      "count": 1,
+      "reason": "The FormEditorProvider.backupCustomDocument site creates a directory at \"path.dirname(backupPath)\". FormEditorProvider owns its VS Code document-backup namespace.",
+      "responsibility": "FormEditorProvider owns its VS Code document-backup namespace."
     },
     {
       "file": "src/formEditor/formEditorProvider.ts",
       "owner": "FormEditorProvider.backupCustomDocument",
       "method": "writeFile",
       "target": "backupPath",
-      "count": 1
+      "count": 1,
+      "reason": "The FormEditorProvider.backupCustomDocument site writes the file at \"backupPath\". FormEditorProvider owns its VS Code document-backup namespace.",
+      "responsibility": "FormEditorProvider owns its VS Code document-backup namespace."
     },
     {
-      "file": "src/formEditor/formEditorProvider.ts",
-      "owner": "restoreFileSnapshot",
-      "method": "mkdir",
-      "target": "path.dirname(filePath)",
-      "count": 1
+      "file": "src/infobases/configurationTreePublish.ts",
+      "owner": "<callback>",
+      "method": "rename",
+      "target": "[\"from\",\"to\"]",
+      "count": 1,
+      "reason": "The callback in src/infobases/configurationTreePublish.ts site moves or publishes the path using \"[\\\"from\\\",\\\"to\\\"]\". configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary.",
+      "responsibility": "configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary."
     },
     {
-      "file": "src/formEditor/formEditorProvider.ts",
-      "owner": "restoreFileSnapshot",
-      "method": "rm",
-      "target": "filePath",
-      "count": 1
-    },
-    {
-      "file": "src/formEditor/formEditorProvider.ts",
-      "owner": "restoreFileSnapshot",
-      "method": "writeFile",
-      "target": "filePath",
-      "count": 1
-    },
-    {
-      "file": "src/formEditor/formEventHandlerCreator.ts",
-      "owner": "createHandlerInModule",
-      "method": "mkdir",
-      "target": "dir",
-      "count": 1
-    },
-    {
-      "file": "src/formEditor/formEventHandlerCreator.ts",
-      "owner": "createHandlerInModule",
-      "method": "writeFile",
-      "target": "modulePath",
-      "count": 2
-    },
-    {
-      "file": "src/formEditor/formMessageHandler.ts",
+      "file": "src/infobases/configurationTreePublish.ts",
       "owner": "<callback>",
       "method": "rm",
-      "target": "modulePath",
-      "count": 1
+      "target": "target",
+      "count": 1,
+      "reason": "The callback in src/infobases/configurationTreePublish.ts site removes the path at \"target\". configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary.",
+      "responsibility": "configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary."
     },
     {
-      "file": "src/formEditor/formMessageHandler.ts",
-      "owner": "<callback>",
-      "method": "writeFile",
-      "target": "modulePath",
-      "count": 1
+      "file": "src/infobases/configurationTreePublish.ts",
+      "owner": "copyPublishEntry",
+      "method": "copyFile",
+      "target": "[\"sourcePath\",\"destinationPath\"]",
+      "count": 1,
+      "reason": "The copyPublishEntry site copies the file using paths \"[\\\"sourcePath\\\",\\\"destinationPath\\\"]\". configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary.",
+      "responsibility": "configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary."
     },
     {
-      "file": "src/formEditor/formMessageHandler.ts",
-      "owner": "rollbackPendingModuleFileTransaction",
-      "method": "rm",
-      "target": "transaction.modulePath",
-      "count": 1
+      "file": "src/infobases/configurationTreePublish.ts",
+      "owner": "copyPublishEntry",
+      "method": "mkdir",
+      "target": "path.dirname(destinationPath)",
+      "count": 1,
+      "reason": "The copyPublishEntry site creates a directory at \"path.dirname(destinationPath)\". configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary.",
+      "responsibility": "configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary."
     },
     {
-      "file": "src/formEditor/formMessageHandler.ts",
-      "owner": "rollbackPendingModuleFileTransaction",
-      "method": "writeFile",
-      "target": "transaction.modulePath",
-      "count": 1
+      "file": "src/infobases/configurationTreePublish.ts",
+      "owner": "copyTree",
+      "method": "copyFile",
+      "target": "[\"sourcePath\",\"destinationPath\"]",
+      "count": 1,
+      "reason": "The copyTree site copies the file using paths \"[\\\"sourcePath\\\",\\\"destinationPath\\\"]\". configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary.",
+      "responsibility": "configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary."
+    },
+    {
+      "file": "src/infobases/configurationTreePublish.ts",
+      "owner": "copyTree",
+      "method": "mkdir",
+      "target": "destinationDir",
+      "count": 1,
+      "reason": "The copyTree site creates a directory at \"destinationDir\". configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary.",
+      "responsibility": "configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary."
+    },
+    {
+      "file": "src/infobases/configurationTreePublish.ts",
+      "owner": "createSafeDirectory",
+      "method": "mkdir",
+      "target": "directory",
+      "count": 1,
+      "reason": "The createSafeDirectory site creates a directory at \"directory\". configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary.",
+      "responsibility": "configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary."
+    },
+    {
+      "file": "src/infobases/configurationTreePublish.ts",
+      "owner": "publishConfigurationTreeUnits",
+      "method": "mkdir",
+      "target": "transactionRoot",
+      "count": 1,
+      "reason": "The publishConfigurationTreeUnits site creates a directory at \"transactionRoot\". configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary.",
+      "responsibility": "configurationTreePublish owns the existing whole-configuration publication transaction and rollback boundary."
     },
     {
       "file": "src/infobases/ibcmdConfigPathResolver.ts",
       "owner": "dispose",
       "method": "unlink",
       "target": "canonical",
-      "count": 1
+      "count": 1,
+      "reason": "The dispose site unlinks the file at \"canonical\". ibcmdConfigPathResolver owns temporary YAML files and their cleanup.",
+      "responsibility": "ibcmdConfigPathResolver owns temporary YAML files and their cleanup."
     },
     {
       "file": "src/infobases/ibcmdConfigPathResolver.ts",
       "owner": "dispose",
       "method": "unlink",
       "target": "logical",
-      "count": 1
+      "count": 1,
+      "reason": "The dispose site unlinks the file at \"logical\". ibcmdConfigPathResolver owns temporary YAML files and their cleanup.",
+      "responsibility": "ibcmdConfigPathResolver owns temporary YAML files and their cleanup."
     },
     {
       "file": "src/infobases/ibcmdConfigPathResolver.ts",
       "owner": "writeTempYaml",
       "method": "writeFile",
       "target": "tmp",
-      "count": 1
+      "count": 1,
+      "reason": "The writeTempYaml site writes the file at \"tmp\". ibcmdConfigPathResolver owns temporary YAML files and their cleanup.",
+      "responsibility": "ibcmdConfigPathResolver owns temporary YAML files and their cleanup."
     },
     {
       "file": "src/infobases/ibcmdExportTargetDir.ts",
       "owner": "<callback>",
       "method": "rm",
       "target": "path.join(dir, e.name)",
-      "count": 1
+      "count": 1,
+      "reason": "The callback in src/infobases/ibcmdExportTargetDir.ts site removes the path at \"path.join(dir, e.name)\". ibcmdExportTargetDir owns explicitly user-confirmed platform-export target cleanup.",
+      "responsibility": "ibcmdExportTargetDir owns explicitly user-confirmed platform-export target cleanup."
     },
     {
       "file": "src/infobases/infobaseConfigCommands.ts",
-      "owner": "<callback>",
-      "method": "rename",
-      "target": "from",
-      "count": 1
-    },
-    {
-      "file": "src/infobases/infobaseConfigCommands.ts",
-      "owner": "<callback>",
+      "owner": "runInfobaseConfigExportObjects",
       "method": "rm",
-      "target": "target",
-      "count": 1
-    },
-    {
-      "file": "src/infobases/infobaseConfigCommands.ts",
-      "owner": "copyConfigurationPublishEntry",
-      "method": "copyFile",
-      "target": "sourcePath",
-      "count": 1
-    },
-    {
-      "file": "src/infobases/infobaseConfigCommands.ts",
-      "owner": "copyConfigurationPublishEntry",
-      "method": "mkdir",
-      "target": "destinationPath",
-      "count": 1
-    },
-    {
-      "file": "src/infobases/infobaseConfigCommands.ts",
-      "owner": "copyConfigurationPublishEntry",
-      "method": "mkdir",
-      "target": "path.dirname(destinationPath)",
-      "count": 1
-    },
-    {
-      "file": "src/infobases/infobaseConfigCommands.ts",
-      "owner": "copyTreeOverwrite",
-      "method": "copyFile",
-      "target": "srcPath",
-      "count": 1
-    },
-    {
-      "file": "src/infobases/infobaseConfigCommands.ts",
-      "owner": "copyTreeOverwrite",
-      "method": "mkdir",
-      "target": "destPath",
-      "count": 1
-    },
-    {
-      "file": "src/infobases/infobaseConfigCommands.ts",
-      "owner": "publishConfigurationTree",
-      "method": "mkdir",
-      "target": "backupRoot",
-      "count": 1
-    },
-    {
-      "file": "src/infobases/infobaseConfigCommands.ts",
-      "owner": "publishConfigurationTree",
-      "method": "mkdir",
-      "target": "destination",
-      "count": 1
-    },
-    {
-      "file": "src/infobases/infobaseConfigCommands.ts",
-      "owner": "publishConfigurationTree",
-      "method": "mkdir",
-      "target": "stagingRoot",
-      "count": 1
-    },
-    {
-      "file": "src/infobases/infobaseConfigCommands.ts",
-      "owner": "runInfobaseConfigExportObjects",
-      "method": "mkdirSync",
       "target": "tempExportDir",
-      "count": 1
-    },
-    {
-      "file": "src/infobases/infobaseConfigCommands.ts",
-      "owner": "runInfobaseConfigExportObjects",
-      "method": "rmSync",
-      "target": "tempExportDir",
-      "count": 1
+      "count": 1,
+      "reason": "The runInfobaseConfigExportObjects site removes the path at \"tempExportDir\". infobaseConfigCommands owns preparation and cleanup of infobase-export staging directories.",
+      "responsibility": "infobaseConfigCommands owns preparation and cleanup of infobase-export staging directories."
     },
     {
       "file": "src/infobases/infobaseConfigCommands.ts",
       "owner": "runInfobaseConfigExportToDirectory",
       "method": "mkdir",
       "target": "tempExportDir",
-      "count": 1
+      "count": 1,
+      "reason": "The runInfobaseConfigExportToDirectory site creates a directory at \"tempExportDir\". infobaseConfigCommands owns preparation and cleanup of infobase-export staging directories.",
+      "responsibility": "infobaseConfigCommands owns preparation and cleanup of infobase-export staging directories."
     },
     {
       "file": "src/infobases/infobaseConfigCommands.ts",
       "owner": "runInfobaseConfigExportToDirectory",
       "method": "rm",
       "target": "tempExportDir",
-      "count": 1
+      "count": 1,
+      "reason": "The runInfobaseConfigExportToDirectory site removes the path at \"tempExportDir\". infobaseConfigCommands owns preparation and cleanup of infobase-export staging directories.",
+      "responsibility": "infobaseConfigCommands owns preparation and cleanup of infobase-export staging directories."
     },
     {
       "file": "src/infobases/infobaseV8iCommands.ts",
       "owner": "runExportInfobasesV8i",
       "method": "writeFile",
       "target": "uri.fsPath",
-      "count": 1
-    },
-    {
-      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
-      "owner": "<callback>",
-      "method": "link",
-      "target": "tempPath",
-      "count": 1
-    },
-    {
-      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
-      "owner": "<callback>",
-      "method": "mkdir",
-      "target": "dir",
-      "count": 1
-    },
-    {
-      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
-      "owner": "<callback>",
-      "method": "open",
-      "target": "targetPath",
-      "count": 1
-    },
-    {
-      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
-      "owner": "<callback>",
-      "method": "open",
-      "target": "tempPath",
-      "count": 1
-    },
-    {
-      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
-      "owner": "<callback>",
-      "method": "unlink",
-      "target": "targetPath",
-      "count": 1
-    },
-    {
-      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
-      "owner": "<callback>",
-      "method": "unlink",
-      "target": "tempPath",
-      "count": 1
-    },
-    {
-      "file": "src/rolesEditor/rolesRightsEditorProvider.ts",
-      "owner": "<callback>",
-      "method": "writeFile",
-      "target": "xmlContent",
-      "count": 2
+      "count": 1,
+      "reason": "The runExportInfobasesV8i site writes the file at \"uri.fsPath\". infobaseV8iCommands owns exported .v8i files.",
+      "responsibility": "infobaseV8iCommands owns exported .v8i files."
     },
     {
       "file": "src/services/cfConfigurationService.ts",
       "owner": "buildCfFromXmlConfiguration",
       "method": "mkdir",
       "target": "path.dirname(params.outFile)",
-      "count": 1
+      "count": 1,
+      "reason": "The buildCfFromXmlConfiguration site creates a directory at \"path.dirname(params.outFile)\". cfConfigurationService owns temporary CF, connection, and XML-output artifacts.",
+      "responsibility": "cfConfigurationService owns temporary CF, connection, and XML-output artifacts."
     },
     {
       "file": "src/services/cfConfigurationService.ts",
       "owner": "cleanupTempRoot",
       "method": "rm",
       "target": "tempRoot",
-      "count": 1
+      "count": 1,
+      "reason": "The cleanupTempRoot site removes the path at \"tempRoot\". cfConfigurationService owns temporary CF, connection, and XML-output artifacts.",
+      "responsibility": "cfConfigurationService owns temporary CF, connection, and XML-output artifacts."
     },
     {
       "file": "src/services/cfConfigurationService.ts",
       "owner": "decomposeCfToXmlDirectory",
       "method": "mkdir",
       "target": "params.outDir",
-      "count": 1
+      "count": 1,
+      "reason": "The decomposeCfToXmlDirectory site creates a directory at \"params.outDir\". cfConfigurationService owns temporary CF, connection, and XML-output artifacts.",
+      "responsibility": "cfConfigurationService owns temporary CF, connection, and XML-output artifacts."
     },
     {
       "file": "src/services/cfConfigurationService.ts",
       "owner": "prepareTempConnection",
       "method": "mkdir",
       "target": "dbPath",
-      "count": 1
+      "count": 1,
+      "reason": "The prepareTempConnection site creates a directory at \"dbPath\". cfConfigurationService owns temporary CF, connection, and XML-output artifacts.",
+      "responsibility": "cfConfigurationService owns temporary CF, connection, and XML-output artifacts."
     },
     {
       "file": "src/services/cfConfigurationService.ts",
       "owner": "prepareTempConnection",
       "method": "mkdir",
       "target": "offlineDataDir",
-      "count": 1
+      "count": 1,
+      "reason": "The prepareTempConnection site creates a directory at \"offlineDataDir\". cfConfigurationService owns temporary CF, connection, and XML-output artifacts.",
+      "responsibility": "cfConfigurationService owns temporary CF, connection, and XML-output artifacts."
     },
     {
       "file": "src/services/cfConfigurationService.ts",
       "owner": "prepareTempConnection",
       "method": "mkdir",
       "target": "tempRoot",
-      "count": 1
+      "count": 1,
+      "reason": "The prepareTempConnection site creates a directory at \"tempRoot\". cfConfigurationService owns temporary CF, connection, and XML-output artifacts.",
+      "responsibility": "cfConfigurationService owns temporary CF, connection, and XML-output artifacts."
     },
     {
       "file": "src/services/configCompareService.ts",
       "owner": "<callback>",
       "method": "rmSync",
       "target": "base",
-      "count": 1
+      "count": 1,
+      "reason": "The callback in src/services/configCompareService.ts site synchronously removes the path at \"base\". configCompareService owns temporary directories used for configuration comparison.",
+      "responsibility": "configCompareService owns temporary directories used for configuration comparison."
     },
     {
       "file": "src/services/configCompareService.ts",
       "owner": "runCompareInfobaseConfigurations",
       "method": "mkdirSync",
       "target": "dirA",
-      "count": 1
+      "count": 1,
+      "reason": "The runCompareInfobaseConfigurations site synchronously creates a directory at \"dirA\". configCompareService owns temporary directories used for configuration comparison.",
+      "responsibility": "configCompareService owns temporary directories used for configuration comparison."
     },
     {
       "file": "src/services/configCompareService.ts",
       "owner": "runCompareInfobaseConfigurations",
       "method": "mkdirSync",
       "target": "dirB",
-      "count": 1
+      "count": 1,
+      "reason": "The runCompareInfobaseConfigurations site synchronously creates a directory at \"dirB\". configCompareService owns temporary directories used for configuration comparison.",
+      "responsibility": "configCompareService owns temporary directories used for configuration comparison."
+    },
+    {
+      "file": "src/services/configurationRepository/configurationRepositoryTransport.ts",
+      "owner": "ConfigurationRepositoryTransport.run",
+      "method": "rm",
+      "target": "tempRoot",
+      "count": 1,
+      "reason": "The ConfigurationRepositoryTransport.run site removes the path at \"tempRoot\". ConfigurationRepositoryTransport owns temporary transport-root cleanup.",
+      "responsibility": "ConfigurationRepositoryTransport owns temporary transport-root cleanup."
     },
     {
       "file": "src/services/configurationRepository/repositoryObjectsFileWriter.ts",
       "owner": "dispose",
       "method": "rm",
       "target": "directory",
-      "count": 2
+      "count": 2,
+      "reason": "The dispose site removes the path at \"directory\". repositoryObjectsFileWriter owns repository object-list output and its temporary directory.",
+      "responsibility": "repositoryObjectsFileWriter owns repository object-list output and its temporary directory."
     },
     {
       "file": "src/services/configurationRepository/repositoryObjectsFileWriter.ts",
       "owner": "writeRepositoryConfigurationObjectsFile",
       "method": "writeFile",
       "target": "filePath",
-      "count": 1
+      "count": 1,
+      "reason": "The writeRepositoryConfigurationObjectsFile site writes the file at \"filePath\". repositoryObjectsFileWriter owns repository object-list output and its temporary directory.",
+      "responsibility": "repositoryObjectsFileWriter owns repository object-list output and its temporary directory."
     },
     {
       "file": "src/services/configurationRepository/repositoryObjectsFileWriter.ts",
       "owner": "writeRepositoryObjectsFile",
       "method": "writeFile",
       "target": "filePath",
-      "count": 1
+      "count": 1,
+      "reason": "The writeRepositoryObjectsFile site writes the file at \"filePath\". repositoryObjectsFileWriter owns repository object-list output and its temporary directory.",
+      "responsibility": "repositoryObjectsFileWriter owns repository object-list output and its temporary directory."
     },
     {
       "file": "src/services/configurationRepository/repositoryStores.ts",
       "owner": "RepositoryBindingStore.writeFile",
       "method": "mkdir",
       "target": "path.dirname(this.filePath)",
-      "count": 1
+      "count": 1,
+      "reason": "The RepositoryBindingStore.writeFile site creates a directory at \"path.dirname(this.filePath)\". RepositoryBindingStore and RepositoryStateStore own JSON state sidecars and their atomic replacement.",
+      "responsibility": "RepositoryBindingStore and RepositoryStateStore own JSON state sidecars and their atomic replacement."
     },
     {
       "file": "src/services/configurationRepository/repositoryStores.ts",
       "owner": "RepositoryBindingStore.writeFile",
       "method": "rename",
-      "target": "tempPath",
-      "count": 1
+      "target": "[\"tempPath\",\"this.filePath\"]",
+      "count": 1,
+      "reason": "The RepositoryBindingStore.writeFile site moves or publishes the path using \"[\\\"tempPath\\\",\\\"this.filePath\\\"]\". RepositoryBindingStore and RepositoryStateStore own JSON state sidecars and their atomic replacement.",
+      "responsibility": "RepositoryBindingStore and RepositoryStateStore own JSON state sidecars and their atomic replacement."
     },
     {
       "file": "src/services/configurationRepository/repositoryStores.ts",
       "owner": "RepositoryBindingStore.writeFile",
       "method": "writeFile",
       "target": "tempPath",
-      "count": 1
+      "count": 1,
+      "reason": "The RepositoryBindingStore.writeFile site writes the file at \"tempPath\". RepositoryBindingStore and RepositoryStateStore own JSON state sidecars and their atomic replacement.",
+      "responsibility": "RepositoryBindingStore and RepositoryStateStore own JSON state sidecars and their atomic replacement."
     },
     {
       "file": "src/services/configurationRepository/repositoryStores.ts",
       "owner": "RepositoryStateStore.writeFile",
       "method": "mkdir",
       "target": "path.dirname(this.filePath)",
-      "count": 1
+      "count": 1,
+      "reason": "The RepositoryStateStore.writeFile site creates a directory at \"path.dirname(this.filePath)\". RepositoryBindingStore and RepositoryStateStore own JSON state sidecars and their atomic replacement.",
+      "responsibility": "RepositoryBindingStore and RepositoryStateStore own JSON state sidecars and their atomic replacement."
     },
     {
       "file": "src/services/configurationRepository/repositoryStores.ts",
       "owner": "RepositoryStateStore.writeFile",
       "method": "rename",
-      "target": "tempPath",
-      "count": 1
+      "target": "[\"tempPath\",\"this.filePath\"]",
+      "count": 1,
+      "reason": "The RepositoryStateStore.writeFile site moves or publishes the path using \"[\\\"tempPath\\\",\\\"this.filePath\\\"]\". RepositoryBindingStore and RepositoryStateStore own JSON state sidecars and their atomic replacement.",
+      "responsibility": "RepositoryBindingStore and RepositoryStateStore own JSON state sidecars and their atomic replacement."
     },
     {
       "file": "src/services/configurationRepository/repositoryStores.ts",
       "owner": "RepositoryStateStore.writeFile",
       "method": "writeFile",
       "target": "tempPath",
-      "count": 1
+      "count": 1,
+      "reason": "The RepositoryStateStore.writeFile site writes the file at \"tempPath\". RepositoryBindingStore and RepositoryStateStore own JSON state sidecars and their atomic replacement.",
+      "responsibility": "RepositoryBindingStore and RepositoryStateStore own JSON state sidecars and their atomic replacement."
     },
     {
       "file": "src/services/configurator/configuratorProcessRunner.ts",
       "owner": "removeFileIfPresent",
       "method": "rm",
       "target": "filePath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "createForm",
-      "method": "mkdir",
-      "target": "formModuleDir",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "createForm",
-      "method": "mkdir",
-      "target": "formsPath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "createForm",
-      "method": "writeFile",
-      "target": "formXmlPath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "createForm",
-      "method": "writeFile",
-      "target": "modulePath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "deleteElement",
-      "method": "rm",
-      "target": "elementDir",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "deleteElement",
-      "method": "rm",
-      "target": "extRoot",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "deleteElement",
-      "method": "rm",
-      "target": "fp",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "deleteElement",
-      "method": "unlink",
-      "target": "filePath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "deleteElement",
-      "method": "unlink",
-      "target": "fp",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "duplicateElement",
-      "method": "rm",
-      "target": "newDir",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "duplicateElement",
-      "method": "rm",
-      "target": "newFilePath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "duplicateElement",
-      "method": "writeFile",
-      "target": "newFilePath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "duplicateElement",
-      "method": "writeFile",
-      "target": "path.join(newDir, relativePath)",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "ensureCompanionTaskForBusinessProcess",
-      "method": "mkdir",
-      "target": "taskElementDir",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "ensureCompanionTaskForBusinessProcess",
-      "method": "mkdir",
-      "target": "tasksDir",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "ensureCompanionTaskForBusinessProcess",
-      "method": "writeFile",
-      "target": "taskFilePath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "handleCreateRootObject",
-      "method": "mkdir",
-      "target": "elementDir",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "handleCreateRootObject",
-      "method": "mkdir",
-      "target": "path.dirname(moduleBslPath)",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "handleCreateRootObject",
-      "method": "mkdir",
-      "target": "typeFolderPath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "handleCreateRootObject",
-      "method": "writeFile",
-      "target": "moduleBslPath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "handleCreateRootObject",
-      "method": "writeFile",
-      "target": "newFilePath",
-      "count": 2
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "renameElement",
-      "method": "rename",
-      "target": "newDir",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "renameElement",
-      "method": "rename",
-      "target": "oldDir",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "renameElement",
-      "method": "rm",
-      "target": "newFilePath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "renameElement",
-      "method": "unlink",
-      "target": "filePath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "renameElement",
-      "method": "writeFile",
-      "target": "artifact.filePath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "renameElement",
-      "method": "writeFile",
-      "target": "filePath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "renameElement",
-      "method": "writeFile",
-      "target": "newFilePath",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "renameElement",
-      "method": "writeFile",
-      "target": "path.join(configRootPath, CONFIGURATION_XML)",
-      "count": 1
-    },
-    {
-      "file": "src/services/elementOperations.ts",
-      "owner": "renameElement",
-      "method": "writeFile",
-      "target": "path.join(newDir, relativePath)",
-      "count": 1
+      "count": 1,
+      "reason": "The removeFileIfPresent site removes the path at \"filePath\". configuratorProcessRunner owns cleanup of temporary configurator-process files.",
+      "responsibility": "configuratorProcessRunner owns cleanup of temporary configurator-process files."
     },
     {
       "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
       "owner": "copyDirectoryWithoutLinks",
       "method": "copyFile",
-      "target": "sourcePath",
-      "count": 1
+      "target": "[\"sourcePath\",\"destinationPath\"]",
+      "count": 1,
+      "reason": "The copyDirectoryWithoutLinks site copies the file using paths \"[\\\"sourcePath\\\",\\\"destinationPath\\\"]\". externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files.",
+      "responsibility": "externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files."
     },
     {
       "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
       "owner": "copyDirectoryWithoutLinks",
       "method": "mkdir",
       "target": "destinationDirectory",
-      "count": 2
+      "count": 2,
+      "reason": "The copyDirectoryWithoutLinks site creates a directory at \"destinationDirectory\". externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files.",
+      "responsibility": "externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files."
     },
     {
       "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
       "owner": "copyDirectoryWithoutLinks",
       "method": "writeFile",
       "target": "destinationPath",
-      "count": 1
+      "count": 1,
+      "reason": "The copyDirectoryWithoutLinks site writes the file at \"destinationPath\". externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files.",
+      "responsibility": "externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files."
     },
     {
       "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
       "owner": "ExternalArtifactProjectService.create",
       "method": "mkdir",
       "target": "path.join(stagingDirectory, name)",
-      "count": 1
+      "count": 1,
+      "reason": "The ExternalArtifactProjectService.create site creates a directory at \"path.join(stagingDirectory, name)\". externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files.",
+      "responsibility": "externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files."
     },
     {
       "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
       "owner": "ExternalArtifactProjectService.create",
       "method": "mkdir",
       "target": "stagingDirectory",
-      "count": 1
+      "count": 1,
+      "reason": "The ExternalArtifactProjectService.create site creates a directory at \"stagingDirectory\". externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files.",
+      "responsibility": "externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files."
     },
     {
       "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
       "owner": "ExternalArtifactProjectService.create",
       "method": "rename",
-      "target": "stagingDirectory",
-      "count": 1
+      "target": "[\"stagingDirectory\",\"projectDirectory\"]",
+      "count": 1,
+      "reason": "The ExternalArtifactProjectService.create site moves or publishes the path using \"[\\\"stagingDirectory\\\",\\\"projectDirectory\\\"]\". externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files.",
+      "responsibility": "externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files."
     },
     {
       "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
       "owner": "ExternalArtifactProjectService.create",
       "method": "rm",
       "target": "stagingDirectory",
-      "count": 1
+      "count": 1,
+      "reason": "The ExternalArtifactProjectService.create site removes the path at \"stagingDirectory\". externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files.",
+      "responsibility": "externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files."
     },
     {
       "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
       "owner": "ExternalArtifactProjectService.create",
       "method": "writeFile",
       "target": "path.join(stagingDirectory, `${name}.xml`)",
-      "count": 1
+      "count": 1,
+      "reason": "The ExternalArtifactProjectService.create site writes the file at \"path.join(stagingDirectory, `${name}.xml`)\". externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files.",
+      "responsibility": "externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files."
     },
     {
       "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
       "owner": "ExternalArtifactProjectService.exportEmbedded",
       "method": "mkdir",
       "target": "stagingDirectory",
-      "count": 1
+      "count": 1,
+      "reason": "The ExternalArtifactProjectService.exportEmbedded site creates a directory at \"stagingDirectory\". externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files.",
+      "responsibility": "externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files."
     },
     {
       "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
       "owner": "ExternalArtifactProjectService.exportEmbedded",
       "method": "rename",
-      "target": "stagingDirectory",
-      "count": 1
+      "target": "[\"stagingDirectory\",\"projectDirectory\"]",
+      "count": 1,
+      "reason": "The ExternalArtifactProjectService.exportEmbedded site moves or publishes the path using \"[\\\"stagingDirectory\\\",\\\"projectDirectory\\\"]\". externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files.",
+      "responsibility": "externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files."
     },
     {
       "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
       "owner": "ExternalArtifactProjectService.exportEmbedded",
       "method": "rm",
       "target": "stagingDirectory",
-      "count": 1
+      "count": 1,
+      "reason": "The ExternalArtifactProjectService.exportEmbedded site removes the path at \"stagingDirectory\". externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files.",
+      "responsibility": "externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files."
     },
     {
       "file": "src/services/externalProcessor/externalArtifactProjectService.ts",
       "owner": "ExternalArtifactProjectService.exportEmbedded",
       "method": "writeFile",
       "target": "outputRootXmlPath",
-      "count": 1
+      "count": 1,
+      "reason": "The ExternalArtifactProjectService.exportEmbedded site writes the file at \"outputRootXmlPath\". externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files.",
+      "responsibility": "externalArtifactProjectService owns staged publication of new external-artifact projects, exports, and transport files."
     },
     {
       "file": "src/services/externalProcessor/externalProcessorService.ts",
       "owner": "link",
       "method": "link",
-      "target": "existingPath",
-      "count": 1
+      "target": "[\"existingPath\",\"newPath\"]",
+      "count": 1,
+      "reason": "The link site creates a link using paths \"[\\\"existingPath\\\",\\\"newPath\\\"]\". externalProcessorService owns the reviewed external-processor artifact and transport-file operations.",
+      "responsibility": "externalProcessorService owns the reviewed external-processor artifact and transport-file operations."
     },
     {
       "file": "src/services/externalProcessor/externalProcessorService.ts",
       "owner": "mkdir",
       "method": "mkdir",
       "target": "directoryPath",
-      "count": 1
+      "count": 1,
+      "reason": "The mkdir site creates a directory at \"directoryPath\". externalProcessorService owns the reviewed external-processor artifact and transport-file operations.",
+      "responsibility": "externalProcessorService owns the reviewed external-processor artifact and transport-file operations."
     },
     {
       "file": "src/services/externalProcessor/externalProcessorService.ts",
       "owner": "rename",
       "method": "rename",
-      "target": "sourcePath",
-      "count": 1
+      "target": "[\"sourcePath\",\"destinationPath\"]",
+      "count": 1,
+      "reason": "The rename site moves or publishes the path using \"[\\\"sourcePath\\\",\\\"destinationPath\\\"]\". externalProcessorService owns the reviewed external-processor artifact and transport-file operations.",
+      "responsibility": "externalProcessorService owns the reviewed external-processor artifact and transport-file operations."
     },
     {
       "file": "src/services/externalProcessor/externalProcessorService.ts",
       "owner": "rm",
       "method": "rm",
       "target": "targetPath",
-      "count": 1
+      "count": 1,
+      "reason": "The rm site removes the path at \"targetPath\". externalProcessorService owns the reviewed external-processor artifact and transport-file operations.",
+      "responsibility": "externalProcessorService owns the reviewed external-processor artifact and transport-file operations."
     },
     {
       "file": "src/services/externalProcessor/externalProcessorService.ts",
       "owner": "unlink",
       "method": "unlink",
       "target": "filePath",
-      "count": 1
+      "count": 1,
+      "reason": "The unlink site unlinks the file at \"filePath\". externalProcessorService owns the reviewed external-processor artifact and transport-file operations.",
+      "responsibility": "externalProcessorService owns the reviewed external-processor artifact and transport-file operations."
     },
     {
       "file": "src/services/externalProcessor/externalProcessorService.ts",
       "owner": "writeFile",
       "method": "writeFile",
       "target": "filePath",
-      "count": 1
+      "count": 1,
+      "reason": "The writeFile site writes the file at \"filePath\". externalProcessorService owns the reviewed external-processor artifact and transport-file operations.",
+      "responsibility": "externalProcessorService owns the reviewed external-processor artifact and transport-file operations."
     },
     {
       "file": "src/services/ibcmd/ibcmdOfflineDataDir.ts",
       "owner": "dispose",
       "method": "rm",
       "target": "canonical",
-      "count": 1
+      "count": 1,
+      "reason": "The dispose site removes the path at \"canonical\". ibcmdOfflineDataDir owns temporary offline-data directory creation and cleanup.",
+      "responsibility": "ibcmdOfflineDataDir owns temporary offline-data directory creation and cleanup."
     },
     {
       "file": "src/services/ibcmd/ibcmdOfflineDataDir.ts",
       "owner": "dispose",
       "method": "rm",
       "target": "logical",
-      "count": 1
+      "count": 1,
+      "reason": "The dispose site removes the path at \"logical\". ibcmdOfflineDataDir owns temporary offline-data directory creation and cleanup.",
+      "responsibility": "ibcmdOfflineDataDir owns temporary offline-data directory creation and cleanup."
     },
     {
       "file": "src/services/picture/commonPictureResolver.ts",
       "owner": "resolveCommonPicture",
       "method": "mkdir",
       "target": "tempPicDir",
-      "count": 1
+      "count": 1,
+      "reason": "The resolveCommonPicture site creates a directory at \"tempPicDir\". commonPictureResolver owns temporary common-picture preview-cache files.",
+      "responsibility": "commonPictureResolver owns temporary common-picture preview-cache files."
     },
     {
       "file": "src/services/picture/commonPictureResolver.ts",
       "owner": "resolveCommonPicture",
       "method": "writeFile",
       "target": "targetPath",
-      "count": 1
+      "count": 1,
+      "reason": "The resolveCommonPicture site writes the file at \"targetPath\". commonPictureResolver owns temporary common-picture preview-cache files.",
+      "responsibility": "commonPictureResolver owns temporary common-picture preview-cache files."
     },
     {
-      "file": "src/services/registerRecorderDocumentLinker.ts",
-      "owner": "appendRegisterReferenceToRecorderDocument",
-      "method": "writeFile",
-      "target": "docPath",
-      "count": 1
+      "file": "src/support/configuratorSupportApplicator.ts",
+      "owner": "ConfiguratorSupportApplicator.apply",
+      "method": "mkdir",
+      "target": "path.dirname(targetPath)",
+      "count": 1,
+      "reason": "The ConfiguratorSupportApplicator.apply site creates a directory at \"path.dirname(targetPath)\". ConfiguratorSupportApplicator owns temporary partial-load payload and list files.",
+      "responsibility": "ConfiguratorSupportApplicator owns temporary partial-load payload and list files."
     },
     {
-      "file": "src/services/registerRecorderDocumentLinker.ts",
-      "owner": "removeRegisterReferenceFromRecorderDocument",
+      "file": "src/support/configuratorSupportApplicator.ts",
+      "owner": "ConfiguratorSupportApplicator.apply",
+      "method": "mkdir",
+      "target": "path.join(stagingPath, 'Ext', 'ParentConfigurations')",
+      "count": 1,
+      "reason": "The ConfiguratorSupportApplicator.apply site creates a directory at \"path.join(stagingPath, 'Ext', 'ParentConfigurations')\". ConfiguratorSupportApplicator owns temporary partial-load payload and list files.",
+      "responsibility": "ConfiguratorSupportApplicator owns temporary partial-load payload and list files."
+    },
+    {
+      "file": "src/support/configuratorSupportApplicator.ts",
+      "owner": "ConfiguratorSupportApplicator.apply",
+      "method": "rm",
+      "target": "temporaryPath",
+      "count": 1,
+      "reason": "The ConfiguratorSupportApplicator.apply site removes the path at \"temporaryPath\". ConfiguratorSupportApplicator owns temporary partial-load payload and list files.",
+      "responsibility": "ConfiguratorSupportApplicator owns temporary partial-load payload and list files."
+    },
+    {
+      "file": "src/support/configuratorSupportApplicator.ts",
+      "owner": "ConfiguratorSupportApplicator.dumpPayload",
+      "method": "mkdir",
+      "target": "dumpPath",
+      "count": 1,
+      "reason": "The ConfiguratorSupportApplicator.dumpPayload site creates a directory at \"dumpPath\". ConfiguratorSupportApplicator owns temporary partial-load payload and list files.",
+      "responsibility": "ConfiguratorSupportApplicator owns temporary partial-load payload and list files."
+    },
+    {
+      "file": "src/support/configuratorSupportApplicator.ts",
+      "owner": "ConfiguratorSupportApplicator.dumpPayload",
+      "method": "rm",
+      "target": "temporaryPath",
+      "count": 1,
+      "reason": "The ConfiguratorSupportApplicator.dumpPayload site removes the path at \"temporaryPath\". ConfiguratorSupportApplicator owns temporary partial-load payload and list files.",
+      "responsibility": "ConfiguratorSupportApplicator owns temporary partial-load payload and list files."
+    },
+    {
+      "file": "src/support/configuratorSupportApplicator.ts",
+      "owner": "ConfiguratorSupportApplicator.writeExactFile",
       "method": "writeFile",
-      "target": "docPath",
-      "count": 1
+      "target": "filePath",
+      "count": 1,
+      "reason": "The ConfiguratorSupportApplicator.writeExactFile site writes the file at \"filePath\". ConfiguratorSupportApplicator owns temporary partial-load payload and list files.",
+      "responsibility": "ConfiguratorSupportApplicator owns temporary partial-load payload and list files."
     },
     {
       "file": "src/support/parentConfigurationsStore.ts",
       "owner": "ParentConfigurationsStore.deleteValidatedTombstone",
       "method": "rm",
       "target": "tombstonePath",
-      "count": 1
+      "count": 1,
+      "reason": "The ParentConfigurationsStore.deleteValidatedTombstone site removes the path at \"tombstonePath\". ParentConfigurationsStore owns the reviewed recovery backup, journal, and tombstone namespace.",
+      "responsibility": "ParentConfigurationsStore owns the reviewed recovery backup, journal, and tombstone namespace."
     },
     {
       "file": "src/support/parentConfigurationsStore.ts",
       "owner": "ParentConfigurationsStore.ensureRecoveryRoot",
       "method": "mkdir",
       "target": "this.recoveryRoot",
-      "count": 1
+      "count": 1,
+      "reason": "The ParentConfigurationsStore.ensureRecoveryRoot site creates a directory at \"this.recoveryRoot\". ParentConfigurationsStore owns the reviewed recovery backup, journal, and tombstone namespace.",
+      "responsibility": "ParentConfigurationsStore owns the reviewed recovery backup, journal, and tombstone namespace."
     },
     {
       "file": "src/support/parentConfigurationsStore.ts",
       "owner": "ParentConfigurationsStore.finalizeRecoveryDirectory",
       "method": "rename",
-      "target": "livePath",
-      "count": 1
+      "target": "[\"livePath\",\"tombstonePath\"]",
+      "count": 1,
+      "reason": "The ParentConfigurationsStore.finalizeRecoveryDirectory site moves or publishes the path using \"[\\\"livePath\\\",\\\"tombstonePath\\\"]\". ParentConfigurationsStore owns the reviewed recovery backup, journal, and tombstone namespace.",
+      "responsibility": "ParentConfigurationsStore owns the reviewed recovery backup, journal, and tombstone namespace."
     },
     {
       "file": "src/support/parentConfigurationsStore.ts",
       "owner": "ParentConfigurationsStore.prepareRecoveryJournal",
       "method": "mkdir",
       "target": "livePath",
-      "count": 1
+      "count": 1,
+      "reason": "The ParentConfigurationsStore.prepareRecoveryJournal site creates a directory at \"livePath\". ParentConfigurationsStore owns the reviewed recovery backup, journal, and tombstone namespace.",
+      "responsibility": "ParentConfigurationsStore owns the reviewed recovery backup, journal, and tombstone namespace."
     },
     {
       "file": "src/support/parentConfigurationsStore.ts",
       "owner": "writeNewAndSync",
       "method": "open",
       "target": "filePath",
-      "count": 1
+      "count": 1,
+      "reason": "The writeNewAndSync site opens or creates the file at \"filePath\". ParentConfigurationsStore owns the reviewed recovery backup, journal, and tombstone namespace.",
+      "responsibility": "ParentConfigurationsStore owns the reviewed recovery backup, journal, and tombstone namespace."
     },
     {
       "file": "src/support/parentConfigurationsStore.ts",
       "owner": "writeNewAndSync",
       "method": "writeFile",
-      "target": "bytes",
-      "count": 1
+      "target": "filePath",
+      "count": 1,
+      "reason": "The writeNewAndSync site writes the file at \"filePath\". ParentConfigurationsStore owns the reviewed recovery backup, journal, and tombstone namespace.",
+      "responsibility": "ParentConfigurationsStore owns the reviewed recovery backup, journal, and tombstone namespace."
+    },
+    {
+      "file": "src/support/supportPayloadCache.ts",
+      "owner": "SupportPayloadCache.invalidateUnlocked",
+      "method": "rm",
+      "target": "this.keyRoot(key)",
+      "count": 1,
+      "reason": "The SupportPayloadCache.invalidateUnlocked site removes the path at \"this.keyRoot(key)\". SupportPayloadCache owns cache-state and temporary-version artifacts.",
+      "responsibility": "SupportPayloadCache owns cache-state and temporary-version artifacts."
+    },
+    {
+      "file": "src/support/supportPayloadCache.ts",
+      "owner": "SupportPayloadCache.removeObsoleteVersions",
+      "method": "rm",
+      "target": "path.join(versionsRoot, name)",
+      "count": 1,
+      "reason": "The SupportPayloadCache.removeObsoleteVersions site removes the path at \"path.join(versionsRoot, name)\". SupportPayloadCache owns cache-state and temporary-version artifacts.",
+      "responsibility": "SupportPayloadCache owns cache-state and temporary-version artifacts."
+    },
+    {
+      "file": "src/support/supportPayloadCache.ts",
+      "owner": "SupportPayloadCache.storeUnlocked",
+      "method": "mkdir",
+      "target": "temporaryVersionRoot",
+      "count": 1,
+      "reason": "The SupportPayloadCache.storeUnlocked site creates a directory at \"temporaryVersionRoot\". SupportPayloadCache owns cache-state and temporary-version artifacts.",
+      "responsibility": "SupportPayloadCache owns cache-state and temporary-version artifacts."
+    },
+    {
+      "file": "src/support/supportPayloadCache.ts",
+      "owner": "SupportPayloadCache.storeUnlocked",
+      "method": "mkdir",
+      "target": "versionsRoot",
+      "count": 1,
+      "reason": "The SupportPayloadCache.storeUnlocked site creates a directory at \"versionsRoot\". SupportPayloadCache owns cache-state and temporary-version artifacts.",
+      "responsibility": "SupportPayloadCache owns cache-state and temporary-version artifacts."
+    },
+    {
+      "file": "src/support/supportPayloadCache.ts",
+      "owner": "SupportPayloadCache.storeUnlocked",
+      "method": "rename",
+      "target": "[\"pointerTemp\",\"path.join(keyRoot, POINTER_FILE)\"]",
+      "count": 1,
+      "reason": "The SupportPayloadCache.storeUnlocked site moves or publishes the path using \"[\\\"pointerTemp\\\",\\\"path.join(keyRoot, POINTER_FILE)\\\"]\". SupportPayloadCache owns cache-state and temporary-version artifacts.",
+      "responsibility": "SupportPayloadCache owns cache-state and temporary-version artifacts."
+    },
+    {
+      "file": "src/support/supportPayloadCache.ts",
+      "owner": "SupportPayloadCache.storeUnlocked",
+      "method": "rename",
+      "target": "[\"temporaryVersionRoot\",\"publishedVersionRoot\"]",
+      "count": 1,
+      "reason": "The SupportPayloadCache.storeUnlocked site moves or publishes the path using \"[\\\"temporaryVersionRoot\\\",\\\"publishedVersionRoot\\\"]\". SupportPayloadCache owns cache-state and temporary-version artifacts.",
+      "responsibility": "SupportPayloadCache owns cache-state and temporary-version artifacts."
+    },
+    {
+      "file": "src/support/supportPayloadCache.ts",
+      "owner": "SupportPayloadCache.storeUnlocked",
+      "method": "rm",
+      "target": "pointerTemp",
+      "count": 1,
+      "reason": "The SupportPayloadCache.storeUnlocked site removes the path at \"pointerTemp\". SupportPayloadCache owns cache-state and temporary-version artifacts.",
+      "responsibility": "SupportPayloadCache owns cache-state and temporary-version artifacts."
+    },
+    {
+      "file": "src/support/supportPayloadCache.ts",
+      "owner": "SupportPayloadCache.storeUnlocked",
+      "method": "rm",
+      "target": "temporaryVersionRoot",
+      "count": 1,
+      "reason": "The SupportPayloadCache.storeUnlocked site removes the path at \"temporaryVersionRoot\". SupportPayloadCache owns cache-state and temporary-version artifacts.",
+      "responsibility": "SupportPayloadCache owns cache-state and temporary-version artifacts."
+    },
+    {
+      "file": "src/support/supportPayloadCache.ts",
+      "owner": "writeNewAndSync",
+      "method": "open",
+      "target": "filePath",
+      "count": 1,
+      "reason": "The writeNewAndSync site opens or creates the file at \"filePath\". SupportPayloadCache owns cache-state and temporary-version artifacts.",
+      "responsibility": "SupportPayloadCache owns cache-state and temporary-version artifacts."
     },
     {
       "file": "src/support/supportPayloadCache.ts",
       "owner": "writeNewAndSync",
       "method": "writeFile",
-      "target": "content",
-      "count": 1
+      "target": "filePath",
+      "count": 1,
+      "reason": "The writeNewAndSync site writes the file at \"filePath\". SupportPayloadCache owns cache-state and temporary-version artifacts.",
+      "responsibility": "SupportPayloadCache owns cache-state and temporary-version artifacts."
     },
     {
       "file": "src/support/supportRunJournal.ts",
       "owner": "mkdir",
       "method": "mkdir",
       "target": "directoryPath",
-      "count": 1
+      "count": 1,
+      "reason": "The mkdir site creates a directory at \"directoryPath\". SupportRunJournal owns run-journal artifacts and their cleanup.",
+      "responsibility": "SupportRunJournal owns run-journal artifacts and their cleanup."
     },
     {
       "file": "src/support/supportRunJournal.ts",
       "owner": "remove",
       "method": "rm",
       "target": "filePath",
-      "count": 1
+      "count": 1,
+      "reason": "The remove site removes the path at \"filePath\". SupportRunJournal owns run-journal artifacts and their cleanup.",
+      "responsibility": "SupportRunJournal owns run-journal artifacts and their cleanup."
     },
     {
       "file": "src/support/supportRunJournal.ts",
       "owner": "rename",
       "method": "rename",
-      "target": "sourcePath",
-      "count": 1
+      "target": "[\"sourcePath\",\"targetPath\"]",
+      "count": 1,
+      "reason": "The rename site moves or publishes the path using \"[\\\"sourcePath\\\",\\\"targetPath\\\"]\". SupportRunJournal owns run-journal artifacts and their cleanup.",
+      "responsibility": "SupportRunJournal owns run-journal artifacts and their cleanup."
     },
     {
       "file": "src/support/supportRunJournal.ts",
       "owner": "writeNewFile",
       "method": "open",
       "target": "filePath",
-      "count": 1
+      "count": 1,
+      "reason": "The writeNewFile site opens or creates the file at \"filePath\". SupportRunJournal owns run-journal artifacts and their cleanup.",
+      "responsibility": "SupportRunJournal owns run-journal artifacts and their cleanup."
     },
     {
       "file": "src/support/supportRunJournal.ts",
       "owner": "writeNewFile",
       "method": "writeFile",
-      "target": "contents",
-      "count": 1
+      "target": "filePath",
+      "count": 1,
+      "reason": "The writeNewFile site writes the file at \"filePath\". SupportRunJournal owns run-journal artifacts and their cleanup.",
+      "responsibility": "SupportRunJournal owns run-journal artifacts and their cleanup."
     },
     {
       "file": "src/utils/diskCache.ts",
       "owner": "clearTreeCache",
       "method": "unlink",
       "target": "path.join(dir, f)",
-      "count": 1
+      "count": 1,
+      "reason": "The clearTreeCache site unlinks the file at \"path.join(dir, f)\". diskCache owns extension tree-cache artifacts.",
+      "responsibility": "diskCache owns extension tree-cache artifacts."
     },
     {
       "file": "src/utils/diskCache.ts",
       "owner": "invalidateTreeCache",
       "method": "unlink",
       "target": "filePath",
-      "count": 1
+      "count": 1,
+      "reason": "The invalidateTreeCache site unlinks the file at \"filePath\". diskCache owns extension tree-cache artifacts.",
+      "responsibility": "diskCache owns extension tree-cache artifacts."
     },
     {
       "file": "src/utils/diskCache.ts",
       "owner": "saveTreeToCache",
       "method": "mkdir",
       "target": "dir",
-      "count": 1
+      "count": 1,
+      "reason": "The saveTreeToCache site creates a directory at \"dir\". diskCache owns extension tree-cache artifacts.",
+      "responsibility": "diskCache owns extension tree-cache artifacts."
+    },
+    {
+      "file": "src/utils/diskCache.ts",
+      "owner": "saveTreeToCache",
+      "method": "unlink",
+      "target": "filePath",
+      "count": 2,
+      "reason": "The saveTreeToCache site unlinks the file at \"filePath\". diskCache owns extension tree-cache artifacts.",
+      "responsibility": "diskCache owns extension tree-cache artifacts."
     },
     {
       "file": "src/utils/diskCache.ts",
       "owner": "saveTreeToCache",
       "method": "writeFile",
       "target": "filePath",
-      "count": 1
-    },
-    {
-      "file": "src/utils/referenceFinder.ts",
-      "owner": "replaceIdentityTokensInProject",
-      "method": "writeFile",
-      "target": "plan.filePath",
-      "count": 2
+      "count": 1,
+      "reason": "The saveTreeToCache site writes the file at \"filePath\". diskCache owns extension tree-cache artifacts.",
+      "responsibility": "diskCache owns extension tree-cache artifacts."
     },
     {
       "file": "src/utils/typeContentsCache.ts",
       "owner": "<callback>",
       "method": "unlink",
       "target": "path.join(dir, file)",
-      "count": 2
+      "count": 2,
+      "reason": "The callback in src/utils/typeContentsCache.ts site unlinks the file at \"path.join(dir, file)\". typeContentsCache owns extension type-content cache artifacts.",
+      "responsibility": "typeContentsCache owns extension type-content cache artifacts."
     },
     {
       "file": "src/utils/typeContentsCache.ts",
       "owner": "saveTypeContentsToCache",
       "method": "mkdir",
       "target": "dir",
-      "count": 1
+      "count": 1,
+      "reason": "The saveTypeContentsToCache site creates a directory at \"dir\". typeContentsCache owns extension type-content cache artifacts.",
+      "responsibility": "typeContentsCache owns extension type-content cache artifacts."
     },
     {
       "file": "src/utils/typeContentsCache.ts",
       "owner": "saveTypeContentsToCache",
       "method": "writeFile",
       "target": "getCacheFilePath(globalStoragePath, configPath, typeName, kind, platform)",
-      "count": 1
-    },
-    {
-      "file": "src/utils/xml/predefinedDataAppender.ts",
-      "owner": "appendPredefinedDesignerItem",
-      "method": "mkdir",
-      "target": "path.dirname(filePath)",
-      "count": 1
-    },
-    {
-      "file": "src/utils/xml/predefinedDataAppender.ts",
-      "owner": "appendPredefinedDesignerItem",
-      "method": "writeFile",
-      "target": "filePath",
-      "count": 1
-    },
-    {
-      "file": "src/utils/xml/xmlFileIo.ts",
-      "owner": "<callback>",
-      "method": "unlink",
-      "target": "p",
-      "count": 1
-    },
-    {
-      "file": "src/utils/xml/xmlFileIo.ts",
-      "owner": "defaultOpen",
-      "method": "open",
-      "target": "p",
-      "count": 1
-    },
-    {
-      "file": "src/utils/xml/xmlFileIo.ts",
-      "owner": "defaultWriteFile",
-      "method": "writeFile",
-      "target": "p",
-      "count": 1
-    },
-    {
-      "file": "src/utils/xml/xmlFileIo.ts",
-      "owner": "writeUtf8FileWithBackup",
-      "method": "writeFile",
-      "target": "newContent",
-      "count": 1
-    },
-    {
-      "file": "src/utils/XMLWriter.ts",
-      "owner": "XMLWriter.createMinimalElementFile",
-      "method": "writeFile",
-      "target": "filePath",
-      "count": 1
+      "count": 1,
+      "reason": "The saveTypeContentsToCache site writes the file at \"getCacheFilePath(globalStoragePath, configPath, typeName, kind, platform)\". typeContentsCache owns extension type-content cache artifacts.",
+      "responsibility": "typeContentsCache owns extension type-content cache artifacts."
     }
   ]
 }

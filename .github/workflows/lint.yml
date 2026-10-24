@@ -41,7 +41,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Mutation writer architecture guard (warning baseline)
+      - name: Mutation writer architecture guard (reviewed policy)
         run: npm run check:mutation-writer-baseline
 
       - name: LOC budget architecture guard (#201)
@@ -69,7 +69,7 @@ jobs:
         run: |
           echo "## Lint" >> $GITHUB_STEP_SUMMARY
           echo "- Strict mode: enabled (\`--max-warnings 0\`)" >> $GITHUB_STEP_SUMMARY
-          echo "- Mutation writer guard: warning-only against the committed baseline" >> $GITHUB_STEP_SUMMARY
+          echo "- Mutation writer guard: blocking against the reviewed version 2 policy" >> $GITHUB_STEP_SUMMARY
           echo "- Test async discipline: enabled for critical test entrypoints (\`@typescript-eslint/no-floating-promises\`)" >> $GITHUB_STEP_SUMMARY
           echo "- PR annotations: reviewdog (\`github-pr-check\`)" >> $GITHUB_STEP_SUMMARY
 
