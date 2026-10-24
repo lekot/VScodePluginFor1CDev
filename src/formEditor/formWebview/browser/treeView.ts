@@ -1,6 +1,6 @@
 import type { FormChildItem } from '../../formModel';
 import type { FormBrowserState, FormOutboundMessage } from '../contracts';
-import { getDataPathValue, getDisplayItems, getFlatVisibleIds, getTreeIcon, hasDataPath, isContainerTag, isDescendantOfItem, isRealElement } from '../modelQueries';
+import { findElement, getDataPathValue, getDisplayItems, getFlatVisibleIds, getTreeIcon, hasDataPath, isContainerTag, isItemWithinSubtree, isRealElement } from '../modelQueries';
 
 const FORM_ROOT_ID = '__form_root__';
 const REQUISITE_DROP_TYPE = 'application/x-1c-form-requisite';
@@ -110,14 +110,15 @@ export function createTreeView(state: FormBrowserState, ports: TreeViewPorts): T
       }
       row.appendChild(label);
 
-      // Preserve legacy bubbling semantics: nested drag handlers continue to receive the same event.
       row.ondragstart = (event) => {
+        event.stopPropagation();
         if (state.selectedIds.length > 1) { event.preventDefault(); return; }
         event.dataTransfer!.setData('text/plain', row.dataset.id || '');
         event.dataTransfer!.effectAllowed = 'move';
       };
       row.ondragover = (event) => {
         event.preventDefault();
+        event.stopPropagation();
         const transfer = event.dataTransfer!;
         if (Array.from(transfer.types).indexOf(REQUISITE_DROP_TYPE) >= 0) {
           if (isContainerTag(row.dataset.tag)) { transfer.dropEffect = 'copy'; row.classList.add('drop-target'); }
@@ -127,13 +128,18 @@ export function createTreeView(state: FormBrowserState, ports: TreeViewPorts): T
         const targetId = row.dataset.id || '';
         if (!sourceId || sourceId === targetId || !isContainerTag(row.dataset.tag)) { return; }
         const model = state.formModel;
-        if (model && isDescendantOfItem(model.childItemsRoot, sourceId, targetId)) { return; }
+        if (!model || !findElement(model, sourceId)
+          || isItemWithinSubtree(getDisplayItems(state), sourceId, targetId)) { return; }
         transfer.dropEffect = 'move';
         row.classList.add('drop-target');
       };
-      row.ondragleave = () => row.classList.remove('drop-target');
+      row.ondragleave = (event) => {
+        event.stopPropagation();
+        row.classList.remove('drop-target');
+      };
       row.ondrop = (event) => {
         event.preventDefault();
+        event.stopPropagation();
         row.classList.remove('drop-target');
         const transfer = event.dataTransfer!;
         const requisiteName = transfer.getData(REQUISITE_DROP_TYPE);
@@ -146,7 +152,8 @@ export function createTreeView(state: FormBrowserState, ports: TreeViewPorts): T
         const sourceId = transfer.getData('text/plain');
         if (!sourceId || sourceId === targetId || !isContainerTag(row.dataset.tag)) { return; }
         const model = state.formModel;
-        if (model && isDescendantOfItem(model.childItemsRoot, sourceId, targetId)) { return; }
+        if (!model || !findElement(model, sourceId)
+          || isItemWithinSubtree(getDisplayItems(state), sourceId, targetId)) { return; }
         ports.postMessage({ type: 'dragDrop', sourceId, targetId, index: 0 });
       };
       row._formItem = item;
@@ -223,21 +230,26 @@ export function createTreeView(state: FormBrowserState, ports: TreeViewPorts): T
     root.appendChild(label);
     root.ondragover = (event) => {
       event.preventDefault();
+      event.stopPropagation();
       const transfer = event.dataTransfer!;
       if (Array.from(transfer.types).indexOf(REQUISITE_DROP_TYPE) >= 0) { return; }
       const sourceId = transfer.getData('text/plain');
-      if (!sourceId || sourceId === FORM_ROOT_ID) { return; }
+      if (!sourceId || sourceId === FORM_ROOT_ID || !state.formModel || !findElement(state.formModel, sourceId)) { return; }
       transfer.dropEffect = 'move';
       root.classList.add('drop-target');
     };
-    root.ondragleave = () => root.classList.remove('drop-target');
+    root.ondragleave = (event) => {
+      event.stopPropagation();
+      root.classList.remove('drop-target');
+    };
     root.ondrop = (event) => {
       event.preventDefault();
+      event.stopPropagation();
       root.classList.remove('drop-target');
       const transfer = event.dataTransfer!;
       if (transfer.getData(REQUISITE_DROP_TYPE)) { return; }
       const sourceId = transfer.getData('text/plain');
-      if (!sourceId || sourceId === FORM_ROOT_ID) { return; }
+      if (!sourceId || sourceId === FORM_ROOT_ID || !state.formModel || !findElement(state.formModel, sourceId)) { return; }
       ports.postMessage({ type: 'dragDrop', sourceId, targetId: FORM_ROOT_ID, index: 0 });
     };
     root.addEventListener('click', (event) => {
