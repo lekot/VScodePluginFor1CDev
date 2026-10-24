@@ -189,6 +189,111 @@ suite('Form webview runtime characterization', () => {
     });
   });
 
+  test('preserves single-element event edits and procedure navigation', () => {
+    withRuntime((fixture) => {
+      const model = makeFormModel();
+      const field = model.childItemsRoot[0].childItems[0];
+      field.events = { OnChange: 'OnFirstNameChange', OnOpen: 'OnFirstNameOpen' };
+      sendFormData(fixture, model);
+      click(fixture, '#tree-root .tree-node[data-id="field-one"]');
+
+      const document = fixture.dom.window.document;
+      const eventInputs = Array.from(document.querySelectorAll<HTMLInputElement>('#props-content .event-method-input'));
+      assert.deepStrictEqual(eventInputs.map((input) => input.dataset.event), ['OnChange', 'OnOpen']);
+      const changeInput = document.querySelector<HTMLInputElement>('#props-content .event-method-input[data-event="OnChange"]');
+      assert.ok(changeInput);
+      assert.strictEqual(changeInput.value, 'OnFirstNameChange');
+      changeInput.value = 'OnEditedChange';
+      changeInput.dispatchEvent(new fixture.dom.window.Event('change', { bubbles: true }));
+      assert.deepStrictEqual(lastMessageOf(fixture, 'propertyChange'), {
+        type: 'propertyChange',
+        elementId: 'field-one',
+        section: 'events',
+        key: 'OnChange',
+        value: 'OnEditedChange',
+      });
+
+      const gotoButton = changeInput.closest('.prop-row')?.querySelector<HTMLButtonElement>('.btn-goto-proc');
+      assert.ok(gotoButton);
+      gotoButton.dispatchEvent(new fixture.dom.window.MouseEvent('click', { bubbles: true }));
+      assert.deepStrictEqual(lastMessageOf(fixture, 'openModule'), {
+        type: 'openModule',
+        procedureName: 'OnEditedChange',
+      });
+
+      const openModuleCount = messagesOf(fixture, 'openModule').length;
+      changeInput.value = '   ';
+      gotoButton.dispatchEvent(new fixture.dom.window.MouseEvent('click', { bubbles: true }));
+      assert.strictEqual(messagesOf(fixture, 'openModule').length, openModuleCount, 'blank event procedures do not request navigation');
+      assert.deepStrictEqual(fixture.runtimeErrors, []);
+    });
+  });
+
+  test('edits only intersecting properties and events for a mixed multi-selection', () => {
+    withRuntime((fixture) => {
+      const model = makeFormModel();
+      const firstField = model.childItemsRoot[0].childItems[0];
+      const secondField = model.childItemsRoot[0].childItems[1];
+      firstField.properties['FirstOnly'] = 'first-only value';
+      secondField.properties['SecondOnly'] = 'second-only value';
+      firstField.events = { OnChange: 'OnFirstNameChange', OnOpen: 'OnFirstNameOpen' };
+      secondField.events = { OnChange: 'OnSecondNameChange' };
+      sendFormData(fixture, model);
+
+      click(fixture, '#tree-root .tree-node[data-id="field-one"]');
+      click(fixture, '#tree-root .tree-node[data-id="field-two"]', { ctrlKey: true });
+
+      const document = fixture.dom.window.document;
+      const propertyInputs = Array.from(document.querySelectorAll<HTMLInputElement>('#props-content input[data-key]'));
+      assert.deepStrictEqual(propertyInputs.map((input) => input.dataset.key).sort(), ['DataPath', 'Placeholder', 'Title']);
+      assert.strictEqual(document.querySelector('#props-content input[data-key="FirstOnly"]'), null);
+      assert.strictEqual(document.querySelector('#props-content input[data-key="SecondOnly"]'), null);
+      assert.strictEqual(document.getElementById('props-content')?.textContent?.includes('first-only value'), false);
+      assert.strictEqual(document.getElementById('props-content')?.textContent?.includes('second-only value'), false);
+
+      const dataPathInput = document.querySelector<HTMLInputElement>('#props-content input[data-key="DataPath"]');
+      assert.ok(dataPathInput);
+      assert.strictEqual(dataPathInput.value, '');
+      assert.strictEqual(dataPathInput.placeholder, 'Разные значения');
+      const titleInput = document.querySelector<HTMLInputElement>('#props-content input[data-key="Title"]');
+      assert.ok(titleInput);
+      assert.strictEqual(titleInput.value, 'Имя');
+      assert.strictEqual(titleInput.placeholder, '');
+
+      const eventInputs = Array.from(document.querySelectorAll<HTMLInputElement>('#props-content .event-method-input'));
+      assert.deepStrictEqual(eventInputs.map((input) => input.dataset.event), ['OnChange'], 'events absent from one selected element are omitted');
+      const changeInput = eventInputs[0];
+      assert.strictEqual(changeInput.value, '');
+      assert.strictEqual(changeInput.placeholder, 'Разные значения');
+
+      const propertyChangeCount = messagesOf(fixture, 'propertyChange').length;
+      titleInput.value = 'Общий заголовок';
+      titleInput.dispatchEvent(new fixture.dom.window.Event('change', { bubbles: true }));
+      const propertyChanges = messagesOf(fixture, 'propertyChange');
+      assert.strictEqual(propertyChanges.length, propertyChangeCount + 1, 'one common property edit sends one batch message');
+      assert.deepStrictEqual(lastMessageOf(fixture, 'propertyChange'), {
+        type: 'propertyChange',
+        elementIds: ['field-one', 'field-two'],
+        key: 'Title',
+        value: 'Общий заголовок',
+      });
+
+      const eventChangeCount = propertyChanges.length;
+      changeInput.value = 'OnSharedChange';
+      changeInput.dispatchEvent(new fixture.dom.window.Event('change', { bubbles: true }));
+      const eventChanges = messagesOf(fixture, 'propertyChange');
+      assert.strictEqual(eventChanges.length, eventChangeCount + 1, 'one common event edit sends one batch message');
+      assert.deepStrictEqual(lastMessageOf(fixture, 'propertyChange'), {
+        type: 'propertyChange',
+        elementIds: ['field-one', 'field-two'],
+        section: 'events',
+        key: 'OnChange',
+        value: 'OnSharedChange',
+      });
+      assert.deepStrictEqual(fixture.runtimeErrors, []);
+    });
+  });
+
   test('preserves the tree drop handler payload and form attribute/command section controls', () => {
     withRuntime((fixture) => {
       sendFormData(fixture);
