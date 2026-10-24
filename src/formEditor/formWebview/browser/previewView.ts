@@ -1,7 +1,7 @@
 import type { FormChildItem } from '../../formModel';
 import { getPreviewFieldCharacterWidth } from '../../formPreviewLayout';
 import type { FormBrowserState, FormOutboundMessage } from '../contracts';
-import { getDataPathValue, getDisplayItems, getFormItemKey, getRareTagFallbacks, isContainerTag, isDescendantOfItem, isRealElement, resolvePreviewTitle } from '../modelQueries';
+import { findElement, getDataPathValue, getDisplayItems, getFormItemKey, getRareTagFallbacks, isContainerTag, isItemWithinSubtree, isRealElement, resolvePreviewTitle } from '../modelQueries';
 import { applyPreviewContainerLayout, getContainerLayoutMeta, getLayoutPropertyValueByAliases, getPagesRepresentationClass, getPreviewDropIndex, layoutContainerStyle, resolveTitleLocation } from '../previewLayout';
 
 const REQUISITE_DROP_TYPE = 'application/x-1c-form-requisite';
@@ -382,11 +382,13 @@ export function createPreviewView(state: FormBrowserState, ports: PreviewViewPor
       itemElement.appendChild(controlWrap);
       itemElement.draggable = true;
       itemElement.ondragstart = (event) => {
+        event.stopPropagation();
         event.dataTransfer!.setData('text/plain', id);
         event.dataTransfer!.effectAllowed = 'move';
       };
       itemElement.ondragover = (event) => {
         event.preventDefault();
+        event.stopPropagation();
         const transfer = event.dataTransfer!;
         if (Array.from(transfer.types).indexOf(REQUISITE_DROP_TYPE) >= 0) {
           if (isContainer) { transfer.dropEffect = 'copy'; itemElement.classList.add('drop-target'); }
@@ -395,13 +397,18 @@ export function createPreviewView(state: FormBrowserState, ports: PreviewViewPor
         const sourceId = transfer.getData('text/plain');
         if (!sourceId || sourceId === id || !isContainer) { return; }
         const model = state.formModel;
-        if (model && isDescendantOfItem(model.childItemsRoot, sourceId, id)) { return; }
+        if (!model || !findElement(model, sourceId)
+          || isItemWithinSubtree(getDisplayItems(state), sourceId, id)) { return; }
         transfer.dropEffect = 'move';
         itemElement.classList.add('drop-target');
       };
-      itemElement.ondragleave = () => itemElement.classList.remove('drop-target');
+      itemElement.ondragleave = (event) => {
+        event.stopPropagation();
+        itemElement.classList.remove('drop-target');
+      };
       itemElement.ondrop = (event) => {
         event.preventDefault();
+        event.stopPropagation();
         itemElement.classList.remove('drop-target');
         const transfer = event.dataTransfer!;
         const requisiteName = transfer.getData(REQUISITE_DROP_TYPE);
@@ -415,7 +422,8 @@ export function createPreviewView(state: FormBrowserState, ports: PreviewViewPor
         const sourceId = transfer.getData('text/plain');
         if (!sourceId || sourceId === id || !isContainer) { return; }
         const model = state.formModel;
-        if (model && isDescendantOfItem(model.childItemsRoot, sourceId, id)) { return; }
+        if (!model || !findElement(model, sourceId)
+          || isItemWithinSubtree(getDisplayItems(state), sourceId, id)) { return; }
         const children = itemElement.querySelector('.preview-children')?.children || [];
         const index = getPreviewDropIndex(children, event, layoutMeta ? layoutMeta.orientation : 'vertical');
         ports.postMessage({ type: 'dragDrop', sourceId, targetId: id, index, source: 'preview' });

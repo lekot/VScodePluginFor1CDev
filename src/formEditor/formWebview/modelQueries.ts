@@ -241,17 +241,21 @@ export function hasDataPath(item: FormChildItem): boolean {
   return getDataPathValue(item).length > 0;
 }
 
-export function isDescendantOfItem(items: FormChildItem[], sourceId: string, targetId: string): boolean {
-  if (sourceId === targetId) { return true; }
-  for (const item of items) {
-    const id = item.id || item.name;
-    if (id === targetId) {
-      return item.childItems.some((child) => (child.id || child.name) === sourceId
-        || (child.childItems.length > 0 && isDescendantOfItem(child.childItems, sourceId, id)));
+export function isItemWithinSubtree(items: FormChildItem[], ancestorId: string, candidateId: string): boolean {
+  if (!ancestorId || !candidateId) { return false; }
+  const findItem = (nodes: FormChildItem[]): FormChildItem | null => {
+    for (const item of nodes) {
+      if (getFormItemKey(item) === ancestorId) { return item; }
+      const found = findItem(item.childItems);
+      if (found) { return found; }
     }
-    if (item.childItems.length && isDescendantOfItem(item.childItems, sourceId, targetId)) { return true; }
-  }
-  return false;
+    return null;
+  };
+  const ancestor = findItem(items);
+  if (!ancestor) { return false; }
+  const containsCandidate = (nodes: FormChildItem[]): boolean => nodes.some((item) =>
+    getFormItemKey(item) === candidateId || containsCandidate(item.childItems));
+  return getFormItemKey(ancestor) === candidateId || containsCandidate(ancestor.childItems);
 }
 
 export function getFlatVisibleIds(
