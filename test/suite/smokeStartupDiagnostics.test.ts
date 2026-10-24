@@ -3,7 +3,6 @@ import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { pathToFileURL } from 'url';
 
 interface SmokeHarnessResult {
   events: Array<{
@@ -12,6 +11,14 @@ interface SmokeHarnessResult {
   }>;
   logs: string[];
   processExitCode: number | null;
+  workspaceFilePath?: string;
+  workspaceJsonAtLaunch?: { folders?: Array<{ path?: string }> };
+  workspaceJsonAtRunnerStart?: { folders?: Array<{ path?: string }> };
+  workspaceContainerExistsAfter?: boolean;
+  workspaceFileExistsAfter?: boolean;
+  externalOverridePath?: string;
+  externalOverrideExistsAfter?: boolean;
+  externalOverrideSentinelAfter?: string | null;
 }
 
 interface SmokeHarnessExecution {
@@ -19,13 +26,22 @@ interface SmokeHarnessExecution {
   status: number | null;
 }
 
-function runSmokeHarness(mode: 'success' | 'download-failure' | 'runner-failure'): SmokeHarnessExecution {
+function runSmokeHarness(
+  mode: 'success' | 'download-failure' | 'runner-failure',
+  workspaceMode: 'override' | 'default' = 'override',
+): SmokeHarnessExecution {
   const repositoryRoot = path.resolve(__dirname, '../../../');
-  const runSmokePath = path.join(repositoryRoot, 'out', 'test', 'runSmoke.js');
+  const runSmokePath = path.resolve(__dirname, '../runSmoke.js');
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-startup-harness-'));
   const preloadPath = path.join(tempRoot, 'mock-test-electron.cjs');
   const resultPath = path.join(tempRoot, 'result.json');
   const fakeExecutable = path.join(repositoryRoot, '.vscode-test', 'fake-vscode', 'Code');
+  const externalOverridePath = path.join(tempRoot, 'external-override');
+  const externalOverrideSentinelPath = path.join(externalOverridePath, 'keep.txt');
+  const externalOverrideSentinel = 'external override must remain unchanged';
+
+  fs.mkdirSync(externalOverridePath, { recursive: true });
+  fs.writeFileSync(externalOverrideSentinelPath, externalOverrideSentinel, 'utf8');
 
   const preloadSource = `
 const fs = require('fs');
@@ -33,6 +49,8 @@ const path = require('path');
 const repositoryRoot = ${JSON.stringify(repositoryRoot)};
 const resultPath = ${JSON.stringify(resultPath)};
 const fakeExecutable = ${JSON.stringify(fakeExecutable)};
+const externalOverridePath = ${JSON.stringify(externalOverridePath)};
+const externalOverrideSentinelPath = ${JSON.stringify(externalOverrideSentinelPath)};
 const mode = ${JSON.stringify(mode)};
 const testElectronOut = path.join(repositoryRoot, 'node_modules', '@vscode', 'test-electron', 'out');
 const download = require(path.join(testElectronOut, 'download.js'));
@@ -40,9 +58,30 @@ const runTest = require(path.join(testElectronOut, 'runTest.js'));
 const testElectron = require(path.join(testElectronOut, 'index.js'));
 const events = [];
 const logs = [];
+let workspaceFilePath;
+let workspaceJsonAtLaunch;
+function captureWorkspace(launchArgs) {
+  if (!Array.isArray(launchArgs)) return;
+  const filePath = launchArgs.find((arg) => typeof arg === 'string' && arg.endsWith('.code-workspace'));
+  if (!filePath || !path.isAbsolute(filePath) || !fs.existsSync(filePath)) return;
+  workspaceFilePath = filePath;
+  workspaceJsonAtLaunch = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  return workspaceJsonAtLaunch;
+}
+let workspaceJsonAtRunnerStart;
 const originalLog = console.log;
 const originalError = console.error;
-console.log = (...args) => { logs.push(args.map(String).join(' ')); originalLog(...args); };
+console.log = (...args) => {
+  const line = args.map(String).join(' ');
+  logs.push(line);
+  const marker = 'SMOKE_LAUNCH_REQUESTED ';
+  const markerIndex = line.indexOf(marker);
+  if (markerIndex >= 0) {
+    const details = JSON.parse(line.slice(markerIndex + marker.length));
+    captureWorkspace(details.launchArgs);
+  }
+  originalLog(...args);
+};
 console.error = (...args) => { logs.push(args.map(String).join(' ')); originalError(...args); };
 download.downloadAndUnzipVSCode = async (options) => {
   events.push({ type: 'download', options });
@@ -51,11 +90,26 @@ download.downloadAndUnzipVSCode = async (options) => {
 };
 runTest.runTests = async (options) => {
   events.push({ type: 'runner', options });
+  workspaceJsonAtRunnerStart = captureWorkspace(options.launchArgs);
   if (mode === 'runner-failure') throw new testElectron.TestRunFailedError(23, undefined);
   return 0;
 };
 process.once('exit', (code) => {
-  fs.writeFileSync(resultPath, JSON.stringify({ events, logs, processExitCode: code }), 'utf8');
+  fs.writeFileSync(resultPath, JSON.stringify({
+    events,
+    logs,
+    processExitCode: code,
+    workspaceFilePath,
+    workspaceJsonAtLaunch,
+    workspaceJsonAtRunnerStart,
+    workspaceContainerExistsAfter: workspaceFilePath ? fs.existsSync(path.dirname(workspaceFilePath)) : undefined,
+    workspaceFileExistsAfter: workspaceFilePath ? fs.existsSync(workspaceFilePath) : undefined,
+    externalOverridePath,
+    externalOverrideExistsAfter: fs.existsSync(externalOverridePath),
+    externalOverrideSentinelAfter: fs.existsSync(externalOverrideSentinelPath)
+      ? fs.readFileSync(externalOverrideSentinelPath, 'utf8')
+      : null,
+  }), 'utf8');
 });
 `;
 
@@ -70,7 +124,7 @@ process.once('exit', (code) => {
         timeout: 15000,
         env: {
           ...process.env,
-          SMOKE_WORKSPACE: path.join(repositoryRoot, 'test', 'fixtures', 'designer-config'),
+          ...(workspaceMode === 'override' ? { SMOKE_WORKSPACE: externalOverridePath } : { SMOKE_WORKSPACE: '' }),
         },
       }
     );
@@ -88,6 +142,21 @@ process.once('exit', (code) => {
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+}
+
+function assertOverrideWorkspaceWasPreparedAndCleaned(
+  result: SmokeHarnessResult,
+  runnerStarted: boolean,
+): void {
+  assert.ok(result.workspaceFilePath?.endsWith('.code-workspace'), 'Saved-workspace path must be captured before launch.');
+  assert.deepStrictEqual(result.workspaceJsonAtLaunch?.folders, [{ path: result.externalOverridePath }]);
+  if (runnerStarted) {
+    assert.deepStrictEqual(result.workspaceJsonAtRunnerStart?.folders, [{ path: result.externalOverridePath }]);
+  }
+  assert.strictEqual(result.workspaceContainerExistsAfter, false, 'Owned saved-workspace container must be removed.');
+  assert.strictEqual(result.workspaceFileExistsAfter, false, 'Owned saved workspace file must be removed.');
+  assert.strictEqual(result.externalOverrideExistsAfter, true, 'SMOKE_WORKSPACE override directory must remain untouched.');
+  assert.strictEqual(result.externalOverrideSentinelAfter, 'external override must remain unchanged');
 }
 
 function runSummary(
@@ -130,12 +199,10 @@ suite('Smoke startup diagnostics', () => {
     );
 
     const launchArgs = runnerOptions.launchArgs as string[];
-    const workspaceArgIndex = launchArgs.indexOf('--folder-uri');
-    assert.ok(workspaceArgIndex >= 0, 'Existing smoke workspace launch argument must remain.');
-    assert.strictEqual(
-      launchArgs[workspaceArgIndex + 1],
-      pathToFileURL(path.join(repositoryRoot, 'test', 'fixtures', 'designer-config')).toString()
-    );
+    const workspaceFilePath = launchArgs[0];
+    assert.ok(workspaceFilePath?.endsWith('.code-workspace'), 'Smoke tests must open a saved workspace file.');
+    assert.strictEqual(path.resolve(workspaceFilePath), path.resolve(result.workspaceFilePath ?? ''));
+    assertOverrideWorkspaceWasPreparedAndCleaned(result, true);
     assert.ok(
       launchArgs.includes(`--user-data-dir=${path.join(repositoryRoot, '.vscode-test', 'user-data')}`),
       'User data directory must be explicit and isolated under .vscode-test.'
@@ -164,6 +231,7 @@ suite('Smoke startup diagnostics', () => {
     assert.deepStrictEqual(result.events.map((event) => event.type), ['download']);
     assert.ok(result.logs.some((line) => line.includes('SMOKE_LAUNCH_REQUESTED')));
     assert.ok(result.logs.some((line) => line.includes('fake VS Code download failure')));
+    assertOverrideWorkspaceWasPreparedAndCleaned(result, false);
   });
 
   test('preserves the VS Code runner exit code without retrying', () => {
@@ -172,6 +240,24 @@ suite('Smoke startup diagnostics', () => {
     assert.deepStrictEqual(result.events.map((event) => event.type), ['download', 'runner']);
     assert.ok(result.logs.some((line) => line.includes('SMOKE_LAUNCH_RESOLVED')));
     assert.ok(result.logs.some((line) => line.includes('SMOKE_RUNNER_FAILED')));
+    assertOverrideWorkspaceWasPreparedAndCleaned(result, true);
+  });
+
+  test('points a saved workspace at the copied default smoke fixture', () => {
+    const { result, status } = runSmokeHarness('success', 'default');
+    assert.strictEqual(status, 0);
+    const workspaceFolderPath = result.workspaceJsonAtLaunch?.folders?.[0]?.path;
+    assert.ok(workspaceFolderPath, 'Saved workspace must contain its first fixture folder.');
+    assert.deepStrictEqual(result.workspaceJsonAtRunnerStart?.folders, [{ path: workspaceFolderPath }]);
+    assert.ok(path.isAbsolute(workspaceFolderPath));
+    assert.ok(
+      path.relative(os.tmpdir(), path.resolve(workspaceFolderPath)) !== '..'
+        && !path.relative(os.tmpdir(), path.resolve(workspaceFolderPath)).startsWith(`..${path.sep}`),
+      'The default fixture must remain an owned temporary copy.',
+    );
+    assert.strictEqual(fs.existsSync(workspaceFolderPath), false, 'Default copied fixture must be removed after the runner exits.');
+    assert.strictEqual(result.workspaceContainerExistsAfter, false);
+    assert.strictEqual(result.workspaceFileExistsAfter, false);
   });
 
   test('explains a missing report after runner failure', () => {

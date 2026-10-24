@@ -145,6 +145,7 @@ export interface ConfigurationInfrastructure {
   readonly runConfigurationMutationOutcome?: MutationOutcomeRunner;
   readonly runConfigurationPlanOutcome?: PlanOutcomeRunner;
   readonly getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
+  readonly refreshWorkspace: () => Promise<void>;
 }
 
 export interface CompositionPipelineStages {
@@ -603,6 +604,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
       runConfigurationMutationOutcome,
       runConfigurationPlanOutcome,
       getConfigurationRegistry,
+      refreshWorkspace: () => registryCoordinator.refreshWorkspace(),
     };
   }
 
@@ -906,6 +908,7 @@ export class ExtensionCompositionRoot implements vscode.Disposable {
     const agentFeature = await createAgentFeatureComposition({
       context: createAgentFeatureContext(this.state, this.context),
       getConfigurationRegistry: infra.getConfigurationRegistry,
+      refreshWorkspace: infra.refreshWorkspace,
       runConfigurationMutation: infra.runConfigurationMutation,
       requestConfigurationReload: this._requestConfigurationReload!,
       refreshMetadataTree: trackedLifecycle.loadMetadataTree,
