@@ -23,5 +23,5 @@
     "types": ["mocha", "node", "vscode"]
   },
   "include": ["src/**/*", "test/**/*"],
-  "exclude": ["node_modules", "dist", "out", "src/providers/propertiesWebview/browser"]
+  "exclude": ["node_modules", "dist", "out", "src/providers/propertiesWebview/browser", "src/formEditor/formWebview/browser"]
 }

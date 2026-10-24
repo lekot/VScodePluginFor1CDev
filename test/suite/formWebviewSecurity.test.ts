@@ -7,6 +7,7 @@ import {
   escapeWebviewText,
   getWebviewHtml,
 } from '../../src/formEditor/formWebviewHtml';
+import { createFormWebviewRuntimeFixture } from '../helpers/formWebviewRuntime';
 
 suite('Form editor webview security', () => {
   test('uses a unique matching nonce for CSP, style, and script on every render', () => {
@@ -30,18 +31,55 @@ suite('Form editor webview security', () => {
     assert.doesNotMatch(first, /\sstyle\s*=/i);
   });
 
-  test('embeds the exported context-specific escaping functions in the webview', () => {
-    const html = getWebviewHtml({} as vscode.Webview);
+  test('renders hostile model values as text without serializing host functions into the webview', () => {
+    const fixture = createFormWebviewRuntimeFixture();
+    try {
+      const hostile = `"><img src=x onerror='boom'>&<svg>`;
+      fixture.send({
+        type: 'formData',
+        formModel: {
+          childItemsRoot: [{ tag: 'InputField', id: 'hostile', name: hostile, properties: { Title: hostile }, childItems: [] }],
+          attributes: [],
+          commands: [],
+          formEvents: [],
+        },
+      });
+      const document = fixture.dom.window.document;
 
-    assert.ok(html.includes(escapeWebviewText.toString()));
-    assert.ok(html.includes(escapeWebviewAttribute.toString()));
+      assert.strictEqual(document.querySelector('#tree-root img'), null);
+      assert.strictEqual(document.querySelector('#preview-form img'), null);
+      assert.strictEqual(document.querySelector('#props-content img'), null);
+      assert.strictEqual(
+        document.querySelector('#tree-root .tree-node[data-id="hostile"] .tree-node-label')?.textContent,
+        `${hostile} (InputField)`,
+      );
+      assert.strictEqual(escapeWebviewText(hostile).includes('<img'), false);
+      assert.strictEqual(escapeWebviewAttribute(hostile).includes('"'), false);
+      assert.deepStrictEqual(fixture.runtimeErrors, []);
+    } finally {
+      fixture.close();
+    }
   });
 
-  test('uses an explicit display value when showing the bindings attribute tree', () => {
-    const html = getWebviewHtml({} as vscode.Webview);
+  test('shows the requisite tree when form data has no attributes', () => {
+    const fixture = createFormWebviewRuntimeFixture();
+    try {
+      fixture.send({
+        type: 'formData',
+        formModel: {
+          childItemsRoot: [{ tag: 'InputField', id: 'field', name: 'Field', properties: {}, childItems: [] }],
+          attributes: [],
+          commands: [],
+          formEvents: [],
+        },
+      });
 
-    assert.ok(html.includes("if (treeWrap) treeWrap.style.display = 'block';"));
-    assert.ok(!html.includes("if (treeWrap) treeWrap.style.display = '';"));
+      assert.strictEqual(fixture.dom.window.document.getElementById('attributes-tree-wrap')?.style.display, 'block');
+      assert.strictEqual(fixture.dom.window.document.getElementById('attributes-table-wrap')?.style.display, 'none');
+      assert.deepStrictEqual(fixture.runtimeErrors, []);
+    } finally {
+      fixture.close();
+    }
   });
 
   test('neutralizes hostile text and double-quoted attribute payloads', () => {

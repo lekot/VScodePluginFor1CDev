@@ -38,16 +38,12 @@
       "maxLines": 1107,
       "reason": "Form editor webview message routing and dispatch (#201)"
     },
-    "src/formEditor/formWebviewHtml.ts": {
-      "maxLines": 3765,
-      "reason": "Form editor HTML template and embedded browser bundle (#201)"
-    },
     "src/formEditor/formXmlTextEditor.ts": {
       "maxLines": 1275,
       "reason": "Form XML custom editor provider and synchronization (#201)"
     },
     "src/infobases/infobaseConfigCommands.ts": {
-      "maxLines": 1487,
+      "maxLines": 1316,
       "reason": "Infobase configuration commands and lifecycle (#201)"
     },
     "src/mxlPreview/mxlParser.ts": {
@@ -83,7 +79,7 @@
       "reason": "Mutation plan execution and snapshot engine (#201)"
     },
     "src/services/elementOperations.ts": {
-      "maxLines": 1147,
+      "maxLines": 1129,
       "reason": "Metadata element CRUD operations (#201)"
     },
     "src/services/externalProcessor/externalProcessorService.ts": {
@@ -95,7 +91,7 @@
       "reason": "Native test client automation for forms (#201)"
     },
     "src/services/metadataCrudService.ts": {
-      "maxLines": 1285,
+      "maxLines": 1281,
       "reason": "Metadata CRUD service (#201)"
     },
     "src/support/supportSyncCoordinator.ts": {
