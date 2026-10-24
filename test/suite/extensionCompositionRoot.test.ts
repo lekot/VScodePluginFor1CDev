@@ -16,6 +16,8 @@ import * as path from 'path';
 import { Logger } from '../../src/utils/logger';
 import { createActivationSubscriptionScope } from '../../src/extension/activationSubscriptionScope';
 import { rollbackPartialActivation } from '../../src/extension';
+import { AGENT_CFE_COMMAND_IDS } from '../../src/agent/agentCfeProjectOperations';
+import { MetadataType } from '../../src/models/treeNode';
 import {
   RepositoryBindingStore,
   RepositoryStateStore,
@@ -674,6 +676,183 @@ suite('ExtensionCompositionRoot (#261)', () => {
     }
   });
 
+  test('CFE creation refreshes the production workspace registry before publishing the tree', async () => {
+    const workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), 'issue400-cfe-lifecycle-'));
+    const globalStoragePath = await fs.mkdtemp(path.join(os.tmpdir(), 'issue400-cfe-storage-'));
+    const baseRoot = path.join(workspacePath, 'base');
+    const neighborRoot = path.join(workspacePath, 'neighbor');
+    await createIssue400Configuration(baseRoot, '11111111-1111-4111-8111-111111111111');
+    await createIssue400Configuration(neighborRoot, '22222222-2222-4222-8222-222222222222');
+
+    const integrationContext = {
+      ...context,
+      subscriptions: [],
+      globalStorageUri: vscode.Uri.file(globalStoragePath),
+    } as vscode.ExtensionContext;
+    const integrationAssembly = createExtensionState();
+    integrationAssembly.composition.initialize(integrationContext);
+    const integrationState = integrationAssembly.state;
+    const integrationLifecycle = createMetadataTreeLifecycle(createMetadataTreeLifecycleRuntimeView(integrationState));
+    const events: string[] = [];
+    let root: ExtensionCompositionRoot | undefined;
+    let registry: import('../../src/services/configurationSession/WorkspaceRegistry').WorkspaceRegistry | undefined;
+    const treeRegistrySnapshots: string[][] = [];
+    const originalLoadMetadataTree = integrationLifecycle.loadMetadataTree;
+    integrationLifecycle.loadMetadataTree = async () => {
+      events.push('tree:start');
+      await originalLoadMetadataTree();
+      treeRegistrySnapshots.push(registry?.list().map((item) => item.rootPath) ?? []);
+      events.push('tree:end');
+    };
+
+    try {
+      vscodeTestState.mockWorkspaceFolders = [{
+        name: 'issue400-cfe-lifecycle',
+        index: 0,
+        uri: vscode.Uri.file(workspacePath),
+      }];
+      root = new ExtensionCompositionRoot(integrationContext, integrationAssembly, integrationLifecycle);
+      await root.compose();
+      const infrastructure = root.infrastructure!;
+      const coordinator = infrastructure.registryCoordinator;
+      registry = infrastructure.workspaceRegistry;
+      await infrastructure.getConfigurationRegistry();
+      await integrationLifecycle.loadMetadataTree();
+
+      const canonicalBaseRoot = await fs.realpath(baseRoot);
+      const canonicalNeighborRoot = await fs.realpath(neighborRoot);
+      const baseBefore = registry.list().find((item) => item.rootPath === canonicalBaseRoot);
+      const neighborBefore = registry.list().find((item) => item.rootPath === canonicalNeighborRoot);
+      assert.ok(baseBefore, 'the base configuration must be registered before CFE creation');
+      assert.ok(neighborBefore, 'the neighboring configuration must be registered before CFE creation');
+
+      const originalRefreshWorkspace = coordinator.refreshWorkspace.bind(coordinator);
+      coordinator.refreshWorkspace = async () => {
+        events.push('registry:start');
+        await originalRefreshWorkspace();
+        events.push('registry:end');
+      };
+      const baseNode = integrationState.treeDataProvider!.getRootNodes().find(
+        (node) => node.type === MetadataType.Configuration
+          && integrationState.treeDataProvider!.getConfigPathForNode(node) === canonicalBaseRoot,
+      );
+      assert.ok(baseNode, 'the base root must be available to the UI command');
+
+      events.length = 0;
+      const treeSnapshotStartForAgent = treeRegistrySnapshots.length;
+      const createAgentCfe = vscodeTestState.registeredCommandHandlers.get(AGENT_CFE_COMMAND_IDS.createProject);
+      assert.ok(createAgentCfe, 'the production Agent command must be registered');
+      const agentOutcome = await createAgentCfe({
+        baseConfigurationId: baseBefore.configurationId,
+        extensionName: 'AgentNested',
+        purpose: 'Customization',
+        namePrefix: 'AgentNested_',
+        compatibilityMode: 'Version8_3_24',
+      }) as {
+        readonly success: boolean;
+        readonly error?: string;
+        readonly data?: {
+          readonly status: string;
+          readonly context?: {
+            readonly baseConfigurationId: string;
+            readonly extensionConfigurationId: string;
+          };
+        };
+      };
+      const agentExtensionRoot = await fs.realpath(path.join(baseRoot, 'ConfigurationExtensions', 'AgentNested'));
+      const agentEvents = [...events];
+      const agentTreeSnapshots = treeRegistrySnapshots.slice(treeSnapshotStartForAgent);
+      const lifecycleFindings: string[] = [];
+      if (!agentOutcome.success || agentOutcome.data?.status !== 'created') {
+        lifecycleFindings.push(`Agent creation failed: ${agentOutcome.error ?? 'no created result'}`);
+      }
+      if (agentOutcome.data?.context?.baseConfigurationId !== baseBefore.configurationId) {
+        lifecycleFindings.push('Agent creation did not return the exact base/CFE context.');
+      }
+      if (agentOutcome.data?.context?.extensionConfigurationId === undefined
+        || registry.require(agentOutcome.data.context.extensionConfigurationId).identity.rootPath !== agentExtensionRoot) {
+        lifecycleFindings.push('Agent CFE root was not registered under its own session ID.');
+      }
+      if (agentEvents.indexOf('registry:end') < 0
+        || agentEvents.indexOf('tree:start') < 0
+        || agentEvents.indexOf('registry:end') > agentEvents.indexOf('tree:start')) {
+        lifecycleFindings.push(`Agent lifecycle order was ${agentEvents.join(' → ')}.`);
+      }
+      if (!agentTreeSnapshots.some((roots) => roots.includes(agentExtensionRoot))) {
+        lifecycleFindings.push('Agent tree publication ran before the new CFE appeared in the registry.');
+      }
+
+      events.length = 0;
+      const treeSnapshotStartForUi = treeRegistrySnapshots.length;
+      vscodeTestState.inputBoxQueue.push('UiNested', 'UiNested_');
+      vscodeTestState.quickPickQueue.push(
+        { label: 'Доработка', value: 'Customization' },
+        { label: 'Версия 8.3.24', value: 'Version8_3_24' },
+      );
+      const createUiCfe = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.cfe.createProject');
+      assert.ok(createUiCfe, 'the production UI command must be registered');
+      await createUiCfe(baseNode);
+      const uiExtensionRoot = await fs.realpath(path.join(baseRoot, 'ConfigurationExtensions', 'UiNested'));
+      const uiEvents = [...events];
+      const uiTreeSnapshots = treeRegistrySnapshots.slice(treeSnapshotStartForUi);
+      const uiDescriptor = registry.list().find((item) => item.rootPath === uiExtensionRoot);
+      if (!uiDescriptor) {
+        lifecycleFindings.push('UI CFE root was not registered under its own session ID.');
+      }
+      if (uiEvents.indexOf('registry:end') < 0
+        || uiEvents.indexOf('tree:start') < 0
+        || uiEvents.indexOf('registry:end') > uiEvents.indexOf('tree:start')) {
+        lifecycleFindings.push(`UI lifecycle order was ${uiEvents.join(' → ')}.`);
+      }
+      if (!uiTreeSnapshots.some((roots) => roots.includes(uiExtensionRoot))) {
+        lifecycleFindings.push('UI tree publication ran before the new CFE appeared in the registry.');
+      }
+
+      const extensionDescriptors = registry.list().filter(
+        (item) => item.rootPath === agentExtensionRoot || item.rootPath === uiExtensionRoot,
+      );
+      if (extensionDescriptors.length !== 2) {
+        lifecycleFindings.push(`Only ${extensionDescriptors.length} of the two nested CFE roots were discovered.`);
+      } else {
+        assert.notStrictEqual(extensionDescriptors[0]!.configurationId, extensionDescriptors[1]!.configurationId);
+        assert.notStrictEqual(extensionDescriptors[0]!.rootPath, extensionDescriptors[1]!.rootPath);
+      }
+      assert.strictEqual(registry.require(baseBefore.configurationId).identity.rootPath, baseBefore.rootPath);
+      assert.strictEqual(registry.require(neighborBefore.configurationId).identity.rootPath, neighborBefore.rootPath);
+      assert.deepStrictEqual(lifecycleFindings, [], lifecycleFindings.join('\n'));
+
+      const originalRefreshWithLogging = coordinator.refreshWorkspace;
+      coordinator.refreshWorkspace = async () => { throw new Error('injected workspace discovery failure'); };
+      const createFailureCfe = vscodeTestState.registeredCommandHandlers.get(AGENT_CFE_COMMAND_IDS.createProject)!;
+      const refreshFailureOutcome = await createFailureCfe({
+        baseConfigurationId: baseBefore.configurationId,
+        extensionName: 'RefreshFailure',
+        purpose: 'Customization',
+        namePrefix: 'RefreshFailure_',
+        compatibilityMode: 'Version8_3_24',
+      }) as {
+        readonly success: boolean;
+        readonly error?: string;
+        readonly data?: {
+          readonly status: string;
+          readonly context?: { readonly baseConfigurationId: string };
+        };
+      };
+      assert.strictEqual(refreshFailureOutcome.success, true, refreshFailureOutcome.error);
+      assert.strictEqual(refreshFailureOutcome.data?.status, 'created');
+      assert.strictEqual(refreshFailureOutcome.data?.context, undefined, 'a failed discovery must not fabricate the base as the CFE context');
+      coordinator.refreshWorkspace = originalRefreshWithLogging;
+      await coordinator.refreshWorkspace();
+      await integrationLifecycle.loadMetadataTree();
+    } finally {
+      await root?.dispose();
+      await integrationLifecycle.dispose();
+      await integrationAssembly.state.dispose();
+      await fs.rm(workspacePath, { recursive: true, force: true });
+      await fs.rm(globalStoragePath, { recursive: true, force: true });
+    }
+  });
+
   test('composition observes a failed recovery outcome while keeping the catalog available', async () => {
     const originalRecover = InfobaseCatalogMutationService.prototype.recoverPendingMutations;
     let releaseRecovery!: () => void;
@@ -885,4 +1064,18 @@ async function waitForCondition(condition: () => boolean, description: string): 
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
+}
+
+async function createIssue400Configuration(root: string, uuid: string): Promise<void> {
+  await fs.mkdir(path.join(root, 'Languages'), { recursive: true });
+  await fs.writeFile(
+    path.join(root, 'Configuration.xml'),
+    `<?xml version="1.0"?><MetaDataObject version="2.20"><Configuration uuid="${uuid}"><Properties><Name>TestConfiguration</Name><DefaultLanguage>Language.Russian</DefaultLanguage><ScriptVariant>English</ScriptVariant></Properties><ChildObjects><Language>Russian</Language></ChildObjects></Configuration></MetaDataObject>`,
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(root, 'Languages', 'Russian.xml'),
+    `<?xml version="1.0"?><MetaDataObject version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><Properties><LanguageCode>ru</LanguageCode></Properties></Language></MetaDataObject>`,
+    'utf8',
+  );
 }
