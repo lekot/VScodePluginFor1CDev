@@ -331,7 +331,7 @@ export function buildRequisiteTree(model: FormModel | null): RequisiteTreeNode[]
     }
   };
   visit(model.childItemsRoot);
-  return [...root.keys()].sort().map((key) => root.get(key)!);
+  return [...root.keys()].sort((left, right) => left.localeCompare(right, 'ru')).map((key) => root.get(key)!);
 }
 
 export function collectRequisitesFromTree(model: FormModel | null): FormAttributeView[] {
@@ -354,7 +354,7 @@ export function collectRequisitesFromTree(model: FormModel | null): FormAttribut
     }
   };
   visit(model.childItemsRoot);
-  return [...usageByName.keys()].sort().map((name) => ({
+  return [...usageByName.keys()].sort((left, right) => left.localeCompare(right, 'ru')).map((name) => ({
     name,
     properties: {},
     usage: usageByName.get(name)!.join(', '),
@@ -379,7 +379,7 @@ export function collectCommandsFromTree(model: FormModel | null): FormCommandVie
     }
   };
   visit(model.childItemsRoot);
-  return [...names].sort().map((name) => ({ name, properties: {}, fromTree: true }));
+  return [...names].sort((left, right) => left.localeCompare(right, 'ru')).map((name) => ({ name, properties: {}, fromTree: true }));
 }
 
 export function valuesEqual(left: unknown, right: unknown): boolean {

@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import type { FormMessage } from '../../src/formEditor/formMessageHandler';
 import type { FormAttribute, FormChildItem, FormCommand, FormModel } from '../../src/formEditor/formModel';
+import { buildRequisiteTree, collectCommandsFromTree, collectRequisitesFromTree } from '../../src/formEditor/formWebview/modelQueries';
 import {
   createFormDataTransfer,
   createFormDragEvent,
@@ -58,6 +59,25 @@ function makeFormModel(): FormModel {
     autoCommandBar,
     parameters: [{ name: 'Mode', id: 'parameter-mode', properties: { Type: 'String' } }],
   };
+}
+
+const localeSortNames = ['ёЖ', 'еЖ', 'Aardvark', 'aardvark', 'Бета', 'бета'];
+const expectedLocaleSortNames = ['бета', 'Бета', 'еЖ', 'ёЖ', 'aardvark', 'Aardvark'];
+
+function makeLocaleSortFormModel(): FormModel {
+  const model = makeFormModel();
+  model.childItemsRoot = [makeItem('UsualGroup', 'sorted-group', 'SortedGroup', {}, localeSortNames.map((name, index) => (
+    makeItem('InputField', `sorted-field-${index}`, `SortedField${index}`, {
+      DataPath: name,
+      CommandName: `Form.Command.${name}`,
+    })
+  )))];
+  model.attributes = [];
+  model.commands = [];
+  delete model.autoCommandBarName;
+  delete model.autoCommandBarId;
+  delete model.autoCommandBar;
+  return model;
 }
 
 function sendFormData(fixture: FormWebviewRuntimeFixture, model = makeFormModel()): void {
@@ -464,6 +484,114 @@ suite('Form webview runtime characterization', () => {
       assert.strictEqual(document.documentElement.getAttribute('data-vscode-theme'), 'dark');
       assert.strictEqual(document.getElementById('save-status')?.textContent, 'Сохранено');
       assert.deepStrictEqual(fixture.dom.window.formProcedures, sameOriginProcedures);
+      assert.deepStrictEqual(fixture.runtimeErrors, []);
+    });
+  });
+
+  test('renders CommandInterface and AutoCommandBar with DOM text nodes and preserves structure', () => {
+    withRuntime((fixture) => {
+      const document = fixture.dom.window.document;
+      const commandContent = document.getElementById('command-interface-content');
+      assert.ok(commandContent);
+      const nativeInnerHTML = Object.getOwnPropertyDescriptor(fixture.dom.window.Element.prototype, 'innerHTML');
+      assert.ok(nativeInnerHTML?.get && nativeInnerHTML.set);
+      let rejectedDynamicWrites = 0;
+      Object.defineProperty(commandContent, 'innerHTML', {
+        configurable: true,
+        get: () => nativeInnerHTML.get?.call(commandContent),
+        set: () => {
+          rejectedDynamicWrites += 1;
+          throw new Error('CommandInterface must use DOM nodes and textContent');
+        },
+      });
+
+      try {
+        const model = makeFormModel();
+        const commandName = '<img src=x onerror=alert(1)>';
+        const commandTitle = 'Title <script>alert(1)</script> & "quoted"';
+        const autoCommandLabel = '<svg onload=alert(1)>Auto</svg>';
+        model.commands = [{ name: commandName, properties: { Title: commandTitle } }];
+        assert.ok(model.autoCommandBar);
+        model.autoCommandBar.childItems[0].properties['CommandName'] = autoCommandLabel;
+        model.autoCommandBar.childItems.push(makeItem('Button', 'fallback-command', 'FallbackButton', { CommandName: '  ' }));
+
+        sendFormData(fixture, model);
+        assert.strictEqual(rejectedDynamicWrites, 0, 'CommandInterface rendering never assigns dynamic HTML');
+        assert.deepStrictEqual(fixture.runtimeErrors, []);
+        const sections = document.querySelectorAll('#command-interface-content .command-interface-section');
+        assert.strictEqual(sections.length, 2);
+        assert.deepStrictEqual(
+          Array.from(document.querySelectorAll('#command-interface-content .command-interface-section-title')).map((title) => title.textContent),
+          ['Команды формы', 'Командная панель'],
+        );
+        const lists = document.querySelectorAll('#command-interface-content .command-interface-list');
+        assert.strictEqual(lists.length, 2);
+        assert.deepStrictEqual(Array.from(lists[0].querySelectorAll('li')).map((item) => item.textContent), [`${commandName} — ${commandTitle}`]);
+        assert.deepStrictEqual(Array.from(lists[1].querySelectorAll('li')).map((item) => item.textContent), [autoCommandLabel, 'FallbackButton']);
+        assert.match(document.querySelector('#command-interface-content .command-interface-summary')?.textContent || '', /Командная панель: MainCommandBar/);
+        assert.strictEqual(commandContent.querySelector('img, script, svg'), null, 'model strings stay text, not parsed markup');
+
+        const noBarModel = makeLocaleSortFormModel();
+        sendFormData(fixture, noBarModel);
+        assert.deepStrictEqual(
+          Array.from(document.querySelectorAll('#command-interface-content .command-interface-empty')).map((node) => node.textContent),
+          ['Нет команд формы', 'Командная панель не задана'],
+        );
+
+        const missingBarModel = makeLocaleSortFormModel();
+        missingBarModel.autoCommandBarName = 'MissingCommandBar';
+        sendFormData(fixture, missingBarModel);
+        assert.match(document.querySelector('#command-interface-content .command-interface-summary')?.textContent || '', /MissingCommandBar/);
+        assert.deepStrictEqual(
+          Array.from(document.querySelectorAll('#command-interface-content .command-interface-empty')).map((node) => node.textContent),
+          ['Нет команд формы', 'Узел командной панели не найден'],
+        );
+
+        const emptyBarModel = makeLocaleSortFormModel();
+        emptyBarModel.autoCommandBarName = 'MainCommandBar';
+        emptyBarModel.autoCommandBar = makeItem('AutoCommandBar', 'auto-bar', 'MainCommandBar');
+        sendFormData(fixture, emptyBarModel);
+        assert.deepStrictEqual(
+          Array.from(document.querySelectorAll('#command-interface-content .command-interface-empty')).map((node) => node.textContent),
+          ['Нет команд формы', 'Панель пуста'],
+        );
+        assert.strictEqual(rejectedDynamicWrites, 0, 'empty and missing command bar states also avoid dynamic HTML');
+        assert.deepStrictEqual(fixture.runtimeErrors, []);
+      } finally {
+        Reflect.deleteProperty(commandContent, 'innerHTML');
+      }
+    });
+  });
+
+  test('builds requisite tree names in Russian locale order', () => {
+    const model = makeLocaleSortFormModel();
+    const expected = expectedLocaleSortNames;
+    assert.deepStrictEqual(buildRequisiteTree(model).map((node) => node.pathSegment), expected);
+
+    withRuntime((fixture) => {
+      sendFormData(fixture, model);
+      const requisiteTree = fixture.dom.window.document.getElementById('attributes-tree-root');
+      assert.ok(requisiteTree);
+      assert.deepStrictEqual(Array.from(requisiteTree.children).map((node) => (node as HTMLElement).dataset.fullPath), expected);
+      assert.deepStrictEqual(fixture.runtimeErrors, []);
+    });
+  });
+
+  test('collects fallback requisite names in Russian locale order', () => {
+    const model = makeLocaleSortFormModel();
+    assert.deepStrictEqual(collectRequisitesFromTree(model).map((requisite) => requisite.name), expectedLocaleSortNames);
+  });
+
+  test('collects tree command names in Russian locale order for the command table', () => {
+    const model = makeLocaleSortFormModel();
+    const expected = expectedLocaleSortNames;
+    assert.deepStrictEqual(collectCommandsFromTree(model).map((command) => command.name), expected);
+
+    withRuntime((fixture) => {
+      sendFormData(fixture, model);
+      const commandNames = Array.from(fixture.dom.window.document.querySelectorAll('#commands-tbody tr'))
+        .map((row) => (row as HTMLElement).dataset.name);
+      assert.deepStrictEqual(commandNames, expected);
       assert.deepStrictEqual(fixture.runtimeErrors, []);
     });
   });

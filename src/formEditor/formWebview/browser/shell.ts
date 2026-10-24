@@ -1,6 +1,5 @@
 import type { FormChildItem, FormModel } from '../../formModel';
 import type { FormBrowserState, FormOutboundMessage } from '../contracts';
-import { escapeWebviewText } from '../escaping';
 import { extractDisplayValue, findElement, findParentAndIndex, getPasteTargetId, isContainerTag } from '../modelQueries';
 import type { PreviewViewController } from './previewView';
 import type { RequisiteViewController } from './requisiteView';
@@ -231,45 +230,58 @@ export function createShell(state: FormBrowserState, ports: ShellPorts): ShellCo
   function renderCommandInterface(model: FormModel): void {
     const container = document.getElementById('command-interface-content');
     if (!container) { return; }
-    let html = '';
-    html += '<div class="command-interface-section"><p class="command-interface-section-title">Команды формы</p>';
+
+    const createTextElement = (tagName: string, text: string, className?: string): HTMLElement => {
+      const element = document.createElement(tagName);
+      if (className) { element.className = className; }
+      element.textContent = text;
+      return element;
+    };
+
+    const commandSection = document.createElement('div');
+    commandSection.className = 'command-interface-section';
+    commandSection.appendChild(createTextElement('p', 'Команды формы', 'command-interface-section-title'));
     if (model.commands && model.commands.length) {
-      html += '<ul class="command-interface-list">';
+      const list = document.createElement('ul');
+      list.className = 'command-interface-list';
       model.commands.forEach((command) => {
         const title = extractDisplayValue(command.properties['Title']);
         const label = (command.name || '') + (title ? ` — ${title}` : '');
-        html += `<li>${escapeWebviewText(label || command.name || '')}</li>`;
+        list.appendChild(createTextElement('li', label || command.name || ''));
       });
-      html += '</ul>';
+      commandSection.appendChild(list);
     } else {
-      html += '<p class="command-interface-empty">Нет команд формы</p>';
+      commandSection.appendChild(createTextElement('p', 'Нет команд формы', 'command-interface-empty'));
     }
-    html += '</div>';
-    html += '<div class="command-interface-section"><p class="command-interface-section-title">Командная панель</p>';
+
+    const commandBarSection = document.createElement('div');
+    commandBarSection.className = 'command-interface-section';
+    commandBarSection.appendChild(createTextElement('p', 'Командная панель', 'command-interface-section-title'));
     const barName = model.autoCommandBarName || model.autoCommandBarId;
     if (!barName) {
-      html += '<p class="command-interface-empty">Командная панель не задана</p>';
+      commandBarSection.appendChild(createTextElement('p', 'Командная панель не задана', 'command-interface-empty'));
     } else {
-      html += `<p class="command-interface-summary">Командная панель: ${escapeWebviewText(barName)}</p>`;
+      commandBarSection.appendChild(createTextElement('p', `Командная панель: ${barName}`, 'command-interface-summary'));
       const barNode = findElement(model, barName);
       if (!barNode) {
-        html += '<p class="command-interface-empty">Узел командной панели не найден</p>';
+        commandBarSection.appendChild(createTextElement('p', 'Узел командной панели не найден', 'command-interface-empty'));
       } else if (barNode.childItems.length) {
-        html += '<ul class="command-interface-list">';
+        const list = document.createElement('ul');
+        list.className = 'command-interface-list';
         barNode.childItems.forEach((child) => {
           const commandName = child.properties['CommandName'] != null
             ? extractDisplayValue(child.properties['CommandName'])
             : '';
           const label = commandName && commandName.trim() ? commandName : child.name || child.tag || '';
-          html += `<li>${escapeWebviewText(label)}</li>`;
+          list.appendChild(createTextElement('li', label));
         });
-        html += '</ul>';
+        commandBarSection.appendChild(list);
       } else {
-        html += '<p class="command-interface-empty">Панель пуста</p>';
+        commandBarSection.appendChild(createTextElement('p', 'Панель пуста', 'command-interface-empty'));
       }
     }
-    html += '</div>';
-    container.innerHTML = html;
+
+    container.replaceChildren(commandSection, commandBarSection);
   }
 
   function collectContainerIds(items: FormChildItem[], expandedIds: Set<string>): void {
