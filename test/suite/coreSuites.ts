@@ -52,6 +52,7 @@ export const coreSuiteFiles: string[] = [
   'suite/deleteReconcileRecovery.test.js',
   'suite/typeContentsCache.test.js',
   'suite/metadataDefaultValues.test.js',
+  'suite/accumulationRegisterAttributeDefaults.test.js',
   'suite/compareCodeUnits.test.js',
   'suite/metadataFileLocator.test.js',
   'suite/standardModuleRegistry.integration.test.js',
