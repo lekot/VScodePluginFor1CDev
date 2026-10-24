@@ -127,9 +127,56 @@ function dropOnItem(
   targetId: string,
   transfer: ReturnType<typeof createFormDataTransfer>,
   clientY = 0,
-): void {
-  itemElement(fixture, surface, targetId)
-    .dispatchEvent(createFormDragEvent(fixture.dom, 'drop', transfer, 0, clientY));
+): Event {
+  const event = createFormDragEvent(fixture.dom, 'drop', transfer, 0, clientY);
+  itemElement(fixture, surface, targetId).dispatchEvent(event);
+  return event;
+}
+
+function dragOverOnItem(
+  fixture: FormWebviewRuntimeFixture,
+  surface: Surface,
+  targetId: string,
+  transfer: ReturnType<typeof createFormDataTransfer>,
+): Event {
+  const event = createFormDragEvent(fixture.dom, 'dragover', transfer);
+  itemElement(fixture, surface, targetId).dispatchEvent(event);
+  return event;
+}
+
+function dragLeaveOnItem(fixture: FormWebviewRuntimeFixture, surface: Surface, targetId: string): Event {
+  const event = new fixture.dom.window.Event('dragleave', { bubbles: true, cancelable: true });
+  itemElement(fixture, surface, targetId).dispatchEvent(event);
+  return event;
+}
+
+function highlightState(fixture: FormWebviewRuntimeFixture, surface: Surface, targetId: string): {
+  target: boolean;
+  ancestors: boolean;
+} {
+  const target = itemElement(fixture, surface, targetId);
+  const ownerClass = surface === 'tree' ? 'tree-node' : 'preview-item';
+  let ancestor = target.parentElement;
+  let ancestorHighlighted = false;
+  while (ancestor) {
+    if (ancestor.classList.contains(ownerClass) && ancestor.classList.contains('drop-target')) {
+      ancestorHighlighted = true;
+      break;
+    }
+    ancestor = ancestor.parentElement;
+  }
+  return { target: target.classList.contains('drop-target'), ancestors: ancestorHighlighted };
+}
+
+function requisiteTransfer(fixture: FormWebviewRuntimeFixture): ReturnType<typeof createFormDataTransfer> {
+  const attribute = fixture.dom.window.document.querySelector<HTMLElement>(
+    '#attributes-tbody tr[data-id="attribute-customer"]',
+  );
+  assert.ok(attribute, 'Expected the Customer requisite drag source');
+  const transfer = createFormDataTransfer();
+  attribute.dispatchEvent(createFormDragEvent(fixture.dom, 'dragstart', transfer));
+  assert.strictEqual(transfer.getData(requisiteType), 'Customer');
+  return transfer;
 }
 
 function messagesOf(fixture: FormWebviewRuntimeFixture, type: string): unknown[] {
@@ -337,6 +384,282 @@ suite('Form webview drag and drop runtime', () => {
     });
   });
 
+  test('valid dragover highlights only its container, sets move, and clears after leave and drop', () => {
+    const results: Record<Surface, unknown[]> = { tree: [], preview: [] };
+    for (const surface of surfaces) {
+      withRuntime((fixture) => {
+        sendFormData(fixture, createDropModel());
+        if (surface === 'preview') {
+          setPreviewChildGeometry(itemElement(fixture, surface, 'middle'), [0]);
+        }
+
+        const transfer = dragStart(fixture, surface, 'source-leaf');
+        const over = dragOverOnItem(fixture, surface, 'middle', transfer);
+        const highlightedAfterOver = highlightState(fixture, surface, 'middle');
+        const rootHighlightedAfterOver = surface === 'tree'
+          ? itemElement(fixture, 'tree', formRootId).classList.contains('drop-target')
+          : false;
+        const messagesAfterOver = messagesOf(fixture, 'dragDrop').slice();
+
+        dragLeaveOnItem(fixture, surface, 'middle');
+        const highlightedAfterLeave = highlightState(fixture, surface, 'middle');
+        const reenter = dragOverOnItem(fixture, surface, 'middle', transfer);
+        const highlightedOnReenter = highlightState(fixture, surface, 'middle');
+        const drop = dropOnItem(fixture, surface, 'middle', transfer, 0);
+
+        results[surface] = [
+          over.defaultPrevented,
+          transfer.dropEffect,
+          highlightedAfterOver,
+          rootHighlightedAfterOver,
+          messagesAfterOver,
+          highlightedAfterLeave,
+          reenter.defaultPrevented,
+          highlightedOnReenter,
+          drop.defaultPrevented,
+          highlightState(fixture, surface, 'middle'),
+          messagesOf(fixture, 'dragDrop'),
+        ];
+      });
+    }
+
+    assert.deepStrictEqual(results, {
+      tree: [
+        true,
+        'move',
+        { target: true, ancestors: false },
+        false,
+        [],
+        { target: false, ancestors: false },
+        true,
+        { target: true, ancestors: false },
+        true,
+        { target: false, ancestors: false },
+        [{ type: 'dragDrop', sourceId: 'source-leaf', targetId: 'middle', index: 0 }],
+      ],
+      preview: [
+        true,
+        'move',
+        { target: true, ancestors: false },
+        false,
+        [],
+        { target: false, ancestors: false },
+        true,
+        { target: true, ancestors: false },
+        true,
+        { target: false, ancestors: false },
+        [{ type: 'dragDrop', sourceId: 'source-leaf', targetId: 'middle', index: 0, source: 'preview' }],
+      ],
+    });
+  });
+
+  test('invalid dragovers do not highlight a target or fall back to an ancestor on either surface', () => {
+    const invalidCases: Array<{ sourceId: string; targetId: string }> = [
+      { sourceId: 'outer', targetId: 'outer' },
+      { sourceId: 'outer', targetId: 'middle' },
+      { sourceId: 'outer', targetId: 'deep' },
+      { sourceId: 'unknown-form-element', targetId: 'right-group' },
+      { sourceId: '', targetId: 'right-group' },
+      { sourceId: 'source-leaf', targetId: 'leaf-target' },
+    ];
+    const results: Record<Surface, unknown[][]> = { tree: [], preview: [] };
+    for (const surface of surfaces) {
+      withRuntime((fixture) => {
+        sendFormData(fixture, createDropModel());
+        for (const { sourceId, targetId } of invalidCases) {
+          const transfer = createFormDataTransfer();
+          if (sourceId) { transfer.setData('text/plain', sourceId); }
+          const over = dragOverOnItem(fixture, surface, targetId, transfer);
+          const highlightedAfterOver = highlightState(fixture, surface, targetId);
+          const rootHighlightedAfterOver = surface === 'tree'
+            ? itemElement(fixture, 'tree', formRootId).classList.contains('drop-target')
+            : false;
+          const drop = dropOnItem(fixture, surface, targetId, transfer);
+          results[surface].push([
+            over.defaultPrevented,
+            transfer.dropEffect,
+            highlightedAfterOver,
+            rootHighlightedAfterOver,
+            drop.defaultPrevented,
+            highlightState(fixture, surface, targetId),
+            messagesOf(fixture, 'dragDrop').slice(),
+          ]);
+        }
+      });
+    }
+
+    const expectedInvalidCase = (): unknown[] => [
+      true,
+      'none',
+      { target: false, ancestors: false },
+      false,
+      true,
+      { target: false, ancestors: false },
+      [],
+    ];
+    assert.deepStrictEqual(results, {
+      tree: invalidCases.map(expectedInvalidCase),
+      preview: invalidCases.map(expectedInvalidCase),
+    });
+  });
+
+  test('requisite dragover uses copy, clears highlight, and refuses leaf targets on both surfaces', () => {
+    const results: Record<Surface, unknown[]> = { tree: [], preview: [] };
+    for (const surface of surfaces) {
+      withRuntime((fixture) => {
+        sendFormData(fixture, createDropModel());
+        if (surface === 'preview') {
+          setPreviewChildGeometry(itemElement(fixture, surface, 'middle'), [0]);
+        }
+
+        const transfer = requisiteTransfer(fixture);
+        const over = dragOverOnItem(fixture, surface, 'middle', transfer);
+        const highlightAfterOver = highlightState(fixture, surface, 'middle');
+        dragLeaveOnItem(fixture, surface, 'middle');
+        const highlightAfterLeave = highlightState(fixture, surface, 'middle');
+        const reenter = dragOverOnItem(fixture, surface, 'middle', transfer);
+        const drop = dropOnItem(fixture, surface, 'middle', transfer, 0);
+        const highlightAfterDrop = highlightState(fixture, surface, 'middle');
+        const successfulMessages = messagesOf(fixture, 'addElementFromRequisite').slice();
+
+        const leafTransfer = requisiteTransfer(fixture);
+        const leafOver = dragOverOnItem(fixture, surface, 'leaf-target', leafTransfer);
+        const leafHighlight = highlightState(fixture, surface, 'leaf-target');
+        const leafDrop = dropOnItem(fixture, surface, 'leaf-target', leafTransfer);
+
+        results[surface] = [
+          over.defaultPrevented,
+          transfer.dropEffect,
+          highlightAfterOver,
+          highlightAfterLeave,
+          reenter.defaultPrevented,
+          drop.defaultPrevented,
+          highlightAfterDrop,
+          successfulMessages,
+          leafOver.defaultPrevented,
+          leafTransfer.dropEffect,
+          leafHighlight,
+          leafDrop.defaultPrevented,
+          highlightState(fixture, surface, 'leaf-target'),
+          messagesOf(fixture, 'addElementFromRequisite'),
+        ];
+      });
+    }
+
+    assert.deepStrictEqual(results, {
+      tree: [
+        true,
+        'copy',
+        { target: true, ancestors: false },
+        { target: false, ancestors: false },
+        true,
+        true,
+        { target: false, ancestors: false },
+        [{ type: 'addElementFromRequisite', requisiteName: 'Customer', dataPath: 'Customer', targetId: 'middle', index: 0 }],
+        true,
+        'none',
+        { target: false, ancestors: false },
+        true,
+        { target: false, ancestors: false },
+        [{ type: 'addElementFromRequisite', requisiteName: 'Customer', dataPath: 'Customer', targetId: 'middle', index: 0 }],
+      ],
+      preview: [
+        true,
+        'copy',
+        { target: true, ancestors: false },
+        { target: false, ancestors: false },
+        true,
+        true,
+        { target: false, ancestors: false },
+        [{ type: 'addElementFromRequisite', requisiteName: 'Customer', dataPath: 'Customer', targetId: 'middle', index: 0, source: 'preview' }],
+        true,
+        'none',
+        { target: false, ancestors: false },
+        true,
+        { target: false, ancestors: false },
+        [{ type: 'addElementFromRequisite', requisiteName: 'Customer', dataPath: 'Customer', targetId: 'middle', index: 0, source: 'preview' }],
+      ],
+    });
+  });
+
+  test('synthetic Form root highlights valid moves and rejects requisite and unknown sources', () => {
+    withRuntime((fixture) => {
+      sendFormData(fixture, createDropModel());
+      const root = itemElement(fixture, 'tree', formRootId);
+      const transfer = dragStart(fixture, 'tree', 'source-leaf');
+      const over = dragOverOnItem(fixture, 'tree', formRootId, transfer);
+      const highlightedAfterOver = root.classList.contains('drop-target');
+      const messagesAfterOver = messagesOf(fixture, 'dragDrop').slice();
+      dragLeaveOnItem(fixture, 'tree', formRootId);
+      const highlightedAfterLeave = root.classList.contains('drop-target');
+      const reenter = dragOverOnItem(fixture, 'tree', formRootId, transfer);
+      const highlightedOnReenter = root.classList.contains('drop-target');
+      const drop = dropOnItem(fixture, 'tree', formRootId, transfer);
+      const highlightedAfterDrop = root.classList.contains('drop-target');
+      const validMessages = messagesOf(fixture, 'dragDrop').slice();
+
+      const requisite = requisiteTransfer(fixture);
+      const requisiteOver = dragOverOnItem(fixture, 'tree', formRootId, requisite);
+      const requisiteHighlighted = root.classList.contains('drop-target');
+      const requisiteDrop = dropOnItem(fixture, 'tree', formRootId, requisite);
+      const requisiteMessages = messagesOf(fixture, 'addElementFromRequisite').slice();
+
+      const unknown = createFormDataTransfer();
+      unknown.setData('text/plain', 'unknown-form-element');
+      const unknownOver = dragOverOnItem(fixture, 'tree', formRootId, unknown);
+      const unknownHighlighted = root.classList.contains('drop-target');
+      const unknownDrop = dropOnItem(fixture, 'tree', formRootId, unknown);
+
+      assert.deepStrictEqual({
+        valid: [
+          over.defaultPrevented,
+          transfer.dropEffect,
+          highlightedAfterOver,
+          messagesAfterOver,
+          highlightedAfterLeave,
+          reenter.defaultPrevented,
+          highlightedOnReenter,
+          drop.defaultPrevented,
+          highlightedAfterDrop,
+          validMessages,
+        ],
+        requisite: [
+          requisiteOver.defaultPrevented,
+          requisite.dropEffect,
+          requisiteHighlighted,
+          requisiteDrop.defaultPrevented,
+          root.classList.contains('drop-target'),
+          requisiteMessages,
+        ],
+        unknown: [
+          unknownOver.defaultPrevented,
+          unknown.dropEffect,
+          unknownHighlighted,
+          unknownDrop.defaultPrevented,
+          root.classList.contains('drop-target'),
+          messagesOf(fixture, 'dragDrop').slice(),
+        ],
+      }, {
+        valid: [
+          true,
+          'move',
+          true,
+          [],
+          false,
+          true,
+          true,
+          true,
+          false,
+          [{ type: 'dragDrop', sourceId: 'source-leaf', targetId: formRootId, index: 0 }],
+        ],
+        requisite: [true, 'none', false, true, false, []],
+        unknown: [true, 'none', false, true, false, [
+          { type: 'dragDrop', sourceId: 'source-leaf', targetId: formRootId, index: 0 },
+        ]],
+      });
+    });
+  });
+
   test('tree multi-selection continues to prohibit drag sources', () => {
     withRuntime((fixture) => {
       sendFormData(fixture, createDropModel());
@@ -427,5 +750,125 @@ suite('Form webview drag and drop runtime', () => {
     };
 
     assert.deepStrictEqual(results, expectedResults);
+  });
+
+  test('AutoCommandBar dragover and dragleave use the same ancestry rules for fallback and explicit IDs', () => {
+    const modes: CommandBarIdMode[] = ['name-fallback', 'numeric-id', 'ordinary-id'];
+    const results: Record<CommandBarIdMode, Record<Surface, unknown>> = {
+      'name-fallback': { tree: null, preview: null },
+      'numeric-id': { tree: null, preview: null },
+      'ordinary-id': { tree: null, preview: null },
+    };
+
+    for (const mode of modes) {
+      for (const surface of surfaces) {
+        withRuntime((fixture) => {
+          const { model, ids } = createAutoCommandBarModel(mode);
+          sendFormData(fixture, model);
+          if (surface === 'preview') {
+            setPreviewChildGeometry(itemElement(fixture, surface, ids.main), [0, 20]);
+            setPreviewChildGeometry(itemElement(fixture, surface, ids.nested), [0]);
+          }
+
+          const invalidTransfer = dragStart(fixture, surface, ids.main);
+          const invalidOver = dragOverOnItem(fixture, surface, ids.deep, invalidTransfer);
+          const invalidState = [
+            invalidOver.defaultPrevented,
+            invalidTransfer.dropEffect,
+            highlightState(fixture, surface, ids.deep),
+            messagesOf(fixture, 'dragDrop').slice(),
+          ];
+          const invalidDrop = dropOnItem(fixture, surface, ids.deep, invalidTransfer);
+
+          const ancestorTransfer = dragStart(fixture, surface, ids.nested);
+          const ancestorOver = dragOverOnItem(fixture, surface, ids.main, ancestorTransfer);
+          const ancestorState = [
+            ancestorOver.defaultPrevented,
+            ancestorTransfer.dropEffect,
+            highlightState(fixture, surface, ids.main),
+          ];
+          dragLeaveOnItem(fixture, surface, ids.main);
+          const ancestorAfterLeave = highlightState(fixture, surface, ids.main);
+          const ancestorReenter = dragOverOnItem(fixture, surface, ids.main, ancestorTransfer);
+          const ancestorDrop = dropOnItem(fixture, surface, ids.main, ancestorTransfer, 0);
+
+          const siblingTransfer = dragStart(fixture, surface, ids.sibling);
+          const siblingOver = dragOverOnItem(fixture, surface, ids.nested, siblingTransfer);
+          const siblingState = [
+            siblingOver.defaultPrevented,
+            siblingTransfer.dropEffect,
+            highlightState(fixture, surface, ids.nested),
+          ];
+          dragLeaveOnItem(fixture, surface, ids.nested);
+          const siblingAfterLeave = highlightState(fixture, surface, ids.nested);
+          const siblingReenter = dragOverOnItem(fixture, surface, ids.nested, siblingTransfer);
+          const siblingDrop = dropOnItem(fixture, surface, ids.nested, siblingTransfer, 0);
+
+          results[mode][surface] = {
+            invalid: [
+              ...invalidState,
+              invalidDrop.defaultPrevented,
+              highlightState(fixture, surface, ids.deep),
+            ],
+            ancestor: [
+              ...ancestorState,
+              ancestorAfterLeave,
+              ancestorReenter.defaultPrevented,
+              ancestorDrop.defaultPrevented,
+            ],
+            sibling: [
+              ...siblingState,
+              siblingAfterLeave,
+              siblingReenter.defaultPrevented,
+              siblingDrop.defaultPrevented,
+            ],
+            payloads: messagesOf(fixture, 'dragDrop').slice(),
+          };
+        });
+      }
+    }
+
+    const expected = (mode: CommandBarIdMode, surface: Surface): unknown => {
+      const { ids } = createAutoCommandBarModel(mode);
+      const payload = (sourceId: string, targetId: string): unknown => ({
+        type: 'dragDrop',
+        sourceId,
+        targetId,
+        index: 0,
+        ...(surface === 'preview' ? { source: 'preview' } : {}),
+      });
+      return {
+        invalid: [
+          true,
+          'none',
+          { target: false, ancestors: false },
+          [],
+          true,
+          { target: false, ancestors: false },
+        ],
+        ancestor: [
+          true,
+          'move',
+          { target: true, ancestors: false },
+          { target: false, ancestors: false },
+          true,
+          true,
+        ],
+        sibling: [
+          true,
+          'move',
+          { target: true, ancestors: false },
+          { target: false, ancestors: false },
+          true,
+          true,
+        ],
+        payloads: [payload(ids.nested, ids.main), payload(ids.sibling, ids.nested)],
+      };
+    };
+    assert.deepStrictEqual(results, {
+      'name-fallback': { tree: expected('name-fallback', 'tree'), preview: expected('name-fallback', 'preview') },
+      'numeric-id': { tree: expected('numeric-id', 'tree'), preview: expected('numeric-id', 'preview') },
+      'ordinary-id': { tree: expected('ordinary-id', 'tree'), preview: expected('ordinary-id', 'preview') },
+    });
   });
 });
