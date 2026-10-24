@@ -21,8 +21,7 @@ import {
   normalizeConfigRelativePath,
 } from '../bindings/bindingPathUtils';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
-import { getStandardModuleFileName, type StandardModuleKind } from '../constants/metadataModuleDescriptors';
-import { configurationPathKey, isSamePath, isSameOrDescendantPath } from '../utils/configurationPathIdentity';
+import { configurationPathKey, isSameOrDescendantPath } from '../utils/configurationPathIdentity';
 import type { ConfigurationId } from '../services/configurationSession/types';
 import type { TreeLoadContext } from '../types/treeLoadContext';
 import { TreeFilterService, FILTERABLE_METADATA_TYPES } from './treeFilterService';
@@ -57,31 +56,15 @@ import {
   type RepositoryStateReader,
   type RepositoryTreeDecoration,
 } from '../services/configurationRepository/repositoryTreeDecorations';
+import { TreeWarmupScheduler } from './treeWarmupScheduler';
+import type { TypeContentsWarmupOptions } from './treeWarmupScheduler';
+import { TreeLocationNavigator } from './treeLocationNavigator';
+
+export type { TypeContentsWarmupOptions } from './treeWarmupScheduler';
 
 /** R6 placeholders under object XML — reload via loadElementChildren after mutations (see invalidateLoadedChildren). */
 const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates', 'Dimensions', 'Resources', 'EnumValues', 'PredefinedData']);
-const TYPE_CONTENTS_WARMUP_PRIORITY = new Map<string, number>([
-  ['Catalogs', 0],
-  ['Documents', 1],
-  ['Enums', 2],
-  ['CommonModules', 3],
-  ['InformationRegisters', 4],
-  ['Reports', 5],
-  ['DataProcessors', 6],
-  ['Roles', 7],
-  ['Constants', 8],
-  ['CommonPictures', 9],
-]);
 const TYPE_CONTENTS_WARMUP_RESUME_AFTER_FOREGROUND_MS = 1000;
-const TYPE_CONTENTS_WARMUP_DEFAULT_BUDGET_MS = 100;
-
-export interface TypeContentsWarmupOptions {
-  delayMs?: number;
-  budgetMs?: number;
-  rootIds?: readonly string[];
-  preferredRootId?: string;
-  slicePauseMs?: number;
-}
 
 export type LoadedTypeObjectsResult =
   | { readonly status: 'loaded'; readonly names: readonly string[] }
@@ -120,14 +103,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   private readonly cache: TreeCacheService;
   private readonly typeLoadCoordinator: TreeTypeLoadCoordinator;
 
-
-
   /** Snapshot of referenceable names per scope for TypeEditor (invalidated with tree reload / structure). */
   private readonly typeEditorReferenceableCache = new Map<string, ReferenceableGroup[]>();
   /** Snapshot of objectable object groups per scope for ObjectTypeEditor (invalidated with tree reload / structure). */
   private readonly objectableObjectsCache = new Map<string, ObjectableGroup[]>();
-  private typeContentsWarmupGeneration = 0;
-  private typeContentsWarmupTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly typeContentsWarmupScheduler: TreeWarmupScheduler;
+  private readonly locationNavigator: TreeLocationNavigator;
   private disposed = false;
 
   private messageUpdater: ((message: string | undefined) => void) | null = null;
@@ -146,6 +127,17 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       () => this.clearTypeEditorReferenceableCache(),
       (element, loaded) => this.projectElementChildren(element, loaded),
     );
+    this.typeContentsWarmupScheduler = new TreeWarmupScheduler({
+      getRoots: () => this.rootNodes,
+      loadTypeFolderIndex: (node) => this.loadTypeFolderIndex(node),
+    });
+    this.locationNavigator = new TreeLocationNavigator({
+      getRoots: () => this.rootNodes,
+      getLoadContext: (root) => this.cache.getLoadContext(root),
+      getChildren: (node) => this.getChildren(node),
+      hasActiveFilter: () => this.filter.hasActiveFilter(),
+      findTypeFolder: (root, folderId) => this.findTypeFolderNode(root, folderId),
+    });
     Logger.info('MetadataTreeDataProvider initialized');
   }
 
@@ -886,127 +878,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (this.disposed) {
       return;
     }
-    const normalizedOptions: TypeContentsWarmupOptions = typeof options === 'number'
-      ? { delayMs: options }
-      : options;
-    this.clearScheduledTypeContentsCacheWarmup();
-    const generation = ++this.typeContentsWarmupGeneration;
-    const selectedRootIds = normalizedOptions.rootIds
-      ? new Set(normalizedOptions.rootIds)
-      : undefined;
-    const roots = this.rootNodes.filter((root) => !selectedRootIds || selectedRootIds.has(root.id));
-    if (roots.length === 0) {
-      return;
-    }
-    if (normalizedOptions.preferredRootId) {
-      const idx = roots.findIndex((r) => r.id === normalizedOptions.preferredRootId);
-      if (idx > 0) {
-        const [preferred] = roots.splice(idx, 1);
-        roots.unshift(preferred);
-      }
-    }
-    const budgetMs = normalizedOptions.budgetMs ?? TYPE_CONTENTS_WARMUP_DEFAULT_BUDGET_MS;
-    const slicePauseMs = normalizedOptions.slicePauseMs ?? 50;
-
-    this.typeContentsWarmupTimer = setTimeout(() => {
-      this.typeContentsWarmupTimer = null;
-      void this.warmUpTypeContentsCache(
-        roots,
-        generation,
-        budgetMs,
-        slicePauseMs,
-      ).catch((error) => {
-        Logger.warn('Type contents cache warmup failed', error);
-      });
-    }, normalizedOptions.delayMs ?? 1000);
-  }
-
-  private clearScheduledTypeContentsCacheWarmup(): void {
-    if (!this.typeContentsWarmupTimer) {
-      return;
-    }
-    clearTimeout(this.typeContentsWarmupTimer);
-    this.typeContentsWarmupTimer = null;
+    this.typeContentsWarmupScheduler.start(options);
   }
 
   private cancelTypeContentsCacheWarmup(): void {
-    this.typeContentsWarmupGeneration++;
-    this.clearScheduledTypeContentsCacheWarmup();
-  }
-
-  private isTypeFolderAlreadyLoaded(element: TreeNode): boolean {
-    return isTypeIndexLoaded(element);
-  }
-
-  private collectWarmupTypeFolders(root: TreeNode): TreeNode[] {
-    const folders = getTypeIndexFolders(root).filter((folder) => !this.isTypeFolderAlreadyLoaded(folder));
-    return folders.sort((a, b) => {
-      const pa = TYPE_CONTENTS_WARMUP_PRIORITY.get(a.id) ?? 1000;
-      const pb = TYPE_CONTENTS_WARMUP_PRIORITY.get(b.id) ?? 1000;
-      if (pa !== pb) {
-        return pa - pb;
-      }
-      return a.id.localeCompare(b.id);
-    });
-  }
-
-  private async warmUpTypeContentsCache(
-    roots: TreeNode[],
-    generation: number,
-    budgetMs: number,
-    slicePauseMs = 50,
-  ): Promise<void> {
-    const deadline = Date.now() + Math.max(0, budgetMs);
-    for (let rIdx = 0; rIdx < roots.length; rIdx++) {
-      const root = roots[rIdx];
-      if (generation !== this.typeContentsWarmupGeneration) {
-        return;
-      }
-      if (Date.now() >= deadline) {
-        this.scheduleWarmupContinuation(roots.slice(rIdx), generation, budgetMs, slicePauseMs);
-        return;
-      }
-      for (const typeFolder of this.collectWarmupTypeFolders(root)) {
-        if (generation !== this.typeContentsWarmupGeneration) {
-          return;
-        }
-        if (Date.now() >= deadline) {
-          this.scheduleWarmupContinuation(roots.slice(rIdx), generation, budgetMs, slicePauseMs);
-          return;
-        }
-        if (this.isTypeFolderAlreadyLoaded(typeFolder)) {
-          continue;
-        }
-        const startedAt = Date.now();
-        await this.loadTypeFolderIndex(typeFolder);
-        if (generation !== this.typeContentsWarmupGeneration) {
-          return;
-        }
-        const durationMs = Date.now() - startedAt;
-        if (durationMs >= 1000) {
-          Logger.info('Type contents cache warmup item completed', { typeName: typeFolder.id, durationMs });
-        }
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      }
-    }
-  }
-
-  private scheduleWarmupContinuation(
-    roots: TreeNode[],
-    generation: number,
-    budgetMs: number,
-    slicePauseMs: number,
-  ): void {
-    if (generation !== this.typeContentsWarmupGeneration) {
-      return;
-    }
-    this.clearScheduledTypeContentsCacheWarmup();
-    this.typeContentsWarmupTimer = setTimeout(() => {
-      this.typeContentsWarmupTimer = null;
-      void this.warmUpTypeContentsCache(roots, generation, budgetMs, slicePauseMs).catch((error) => {
-        Logger.warn('Type contents cache warmup continuation failed', error);
-      });
-    }, slicePauseMs);
+    this.typeContentsWarmupScheduler.cancel();
   }
 
   private async loadTypeFolderIndex(typeFolder: TreeNode): Promise<TreeNode[]> {
@@ -1015,7 +891,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   dispose(): void {
     this.disposed = true;
-    this.cancelTypeContentsCacheWarmup();
+    this.typeContentsWarmupScheduler.dispose();
     this.typeLoadCoordinator.dispose();
     this._onDidChangeTreeData.dispose();
   }
@@ -1187,6 +1063,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   private getNodeRootIdentity(node: TreeNode): string {
     return this.getConfigRootIdentity(this.cache.getConfigurationRoot(node));
+  }
+
+  private isTypeFolderAlreadyLoaded(element: TreeNode): boolean {
+    return isTypeIndexLoaded(element);
   }
 
   private isLazyTypeNode(element: TreeNode): boolean {
@@ -1752,348 +1632,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   // ---------------------------------------------------------------------------
   // findNodeByLocation — targeted tree walk for reveal-in-tree (issue #88)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Walk the tree from the configuration root matching `loc.configRoot` down to the node
-   * described by `loc`. Returns `null` when any step fails (root not found, type folder absent, etc.).
-   *
-   * Subsystem structure (Designer + EDT): child subsystems are direct children of the parent
-   * subsystem node with type `MetadataType.Subsystem` — no intermediate subfolder.
-   *
-   * Uses `getChildren()` for lazy-loading at every step so that nodes that have not been
-   * expanded yet are loaded transparently.
-   *
-   * @param loc Descriptor produced by `locateMetadataFile`.
-   */
   async findNodeByLocation(loc: MetadataLocation): Promise<TreeNode | null> {
-    // ── Step 1: find configuration root by configRoot path ──────────────────
-    const configRootNode = await this.findConfigRootByPath(loc.configRoot);
-    if (!configRootNode) {
-      return null;
-    }
-
-    // ── Step 2: extension support ────────────────────────────────────────────
-    // When loc.extensionName is set, the file lives inside ConfigurationExtensions/<Name>/
-    // of the main config (the locator found the main config as longest prefix).
-    // We need to find the corresponding extension root node, which is loaded as a separate
-    // root with loadContext.configPath = <mainConfigRoot>/ConfigurationExtensions/<extensionName>.
-    let searchRoot = configRootNode;
-    if (loc.extensionName) {
-      const extRoot = await this.findExtensionRootByName(loc.configRoot, loc.extensionName);
-      if (extRoot === null) {
-        // Extension root not loaded — cannot walk into it; avoid false-positive on main config.
-        return null;
-      }
-      searchRoot = extRoot;
-    }
-
-    // ── Step 3: find type folder ─────────────────────────────────────────────
-    // Use findTypeFolderNode (id-based, aware of the «Общие» / Common group) rather than
-    // findChildByName (name-based). Type folder names are localised to Russian (e.g. CommonModules
-    // → 'Общие модули'), so a name-based lookup would always fail for that category.
-    // findTypeFolderNode already handles both direct children and children nested under Common.
-    const typeFolderNode = this.findTypeFolderNode(searchRoot, loc.objectType);
-    if (!typeFolderNode) {
-      return null;
-    }
-
-    // ── Step 4/5: find object (with optional subsystem hierarchy walk) ───────
-    let objectNode: TreeNode | null;
-
-    if (loc.objectType === 'Subsystems' && loc.hierarchy && loc.hierarchy.length > 0) {
-      objectNode = await this.walkSubsystemHierarchy(typeFolderNode, loc.hierarchy);
-    } else {
-      objectNode = await this.findChildByName(typeFolderNode, loc.objectName);
-    }
-
-    if (!objectNode) {
-      return null;
-    }
-
-    // ── Step 6: subPath walk ─────────────────────────────────────────────────
-    if (!loc.subPath) {
-      return objectNode;
-    }
-
-    return this.walkSubPath(objectNode, loc.subPath);
-  }
-
-  /**
-   * Find the configuration root node whose load context configPath matches `configRoot`.
-   * Comparison is done with `path.resolve` to normalise separators and relative segments.
-   */
-  private async findConfigRootByPath(configRoot: string): Promise<TreeNode | null> {
-    const normalizedTarget = path.resolve(configRoot);
-    for (const root of this.rootNodes) {
-      const ctx = this.cache.getLoadContext(root);
-      if (ctx) {
-        if (isSamePath(ctx.configPath, normalizedTarget)) {
-          return root;
-        }
-      } else if (root.filePath) {
-        // Fallback: Configuration.xml lives directly in configPath
-        const rootDir = path.resolve(path.dirname(root.filePath));
-        if (isSamePath(rootDir, normalizedTarget)) {
-          return root;
-        }
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Find an extension root node whose loadContext.configPath equals
-   * `<mainConfigRoot>/ConfigurationExtensions/<extensionName>`.
-   *
-   * Designer stores extension files under `ConfigurationExtensions/<Name>/` inside
-   * the main config directory. When the locator sees such a path it returns
-   * `configRoot = mainConfigRoot` plus `extensionName = '<Name>'`. The corresponding
-   * root node has `configPath = <mainConfigRoot>/ConfigurationExtensions/<Name>` and
-   * `properties.extensionPurpose` set.
-   *
-   * Returns `null` when no matching extension root is loaded.
-   */
-  private async findExtensionRootByName(
-    mainConfigRoot: string,
-    extensionName: string
-  ): Promise<TreeNode | null> {
-    const expectedPath = path.resolve(mainConfigRoot, 'ConfigurationExtensions', extensionName);
-    for (const root of this.rootNodes) {
-      if (root.properties.extensionPurpose === undefined) {
-        continue;
-      }
-      const ctx = this.cache.getLoadContext(root);
-      if (ctx && isSamePath(ctx.configPath, expectedPath)) {
-        return root;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Get (lazy-load if needed) children of `parent` and find the first child
-   * whose `name` equals `targetName` (case-sensitive, matching 1C metadata names).
-   *
-   * Uses the resolved children from getChildren() (handles lazy-load and stale-node
-   * resolution) rather than reading `parent.children` directly.
-   */
-  private async findChildByName(parent: TreeNode, targetName: string): Promise<TreeNode | null> {
-    const children = await this.getChildren(parent);
-    const found = children.find((c) => c.name === targetName);
-    if (found) {
-      return found;
-    }
-    // Fallback: getChildren may return a filtered list when a search filter is active.
-    // Skip the raw-children fallback when a filter is active — the caller (revealActiveFile)
-    // has already guarded against this via the filter-cancel dialog (Critical #1).
-    // Raw fallback only makes sense when no filter is active to ensure lazy nodes are reachable.
-    if (this.filter.hasActiveFilter()) {
-      return null;
-    }
-    const raw = parent.children ?? [];
-    return raw.find((c) => c.name === targetName) ?? null;
-  }
-
-  /**
-   * Get (lazy-load if needed) children of `parent` and find the first child with `id === targetId`.
-   * Used for R6 placeholder subfolders (Forms, Commands, Templates) whose `name` may be localised
-   * by `ensureR6PlaceholdersForInstanceNode` (e.g. 'Формы'), but whose `id` stays stable.
-   */
-  private async findChildById(parent: TreeNode, targetId: string): Promise<TreeNode | null> {
-    const children = await this.getChildren(parent);
-    const found = children.find((c) => c.id === targetId);
-    if (found) {
-      return found;
-    }
-    // Skip raw fallback when a filter is active — same reasoning as findChildByName.
-    if (this.filter.hasActiveFilter()) {
-      return null;
-    }
-    const raw = parent.children ?? [];
-    return raw.find((c) => c.id === targetId) ?? null;
-  }
-
-  /**
-   * Walk the subsystem hierarchy chain starting from the `Subsystems` type-folder node.
-   * `hierarchy` is an array like ['Sales', 'Orders'] — root is hierarchy[0].
-   * Child subsystems are direct children of type MetadataType.Subsystem (no intermediate folder).
-   */
-  private async walkSubsystemHierarchy(
-    subsystemsFolderNode: TreeNode,
-    hierarchy: string[]
-  ): Promise<TreeNode | null> {
-    // hierarchy[0] is the root subsystem name (child of Subsystems folder).
-    let current: TreeNode = subsystemsFolderNode;
-    for (const name of hierarchy) {
-      const children = await this.getChildren(current);
-      // Match by name AND type to avoid collisions with non-subsystem children
-      // (e.g. the synthetic CommandInterface node that shares the parent).
-      let found = children.find((c) => c.name === name && c.type === MetadataType.Subsystem);
-      if (!found) {
-        // Fallback: check raw children in case filter hides the subsystem node.
-        found = (current.children ?? []).find(
-          (c) => c.name === name && c.type === MetadataType.Subsystem
-        );
-      }
-      if (!found) {
-        return null;
-      }
-      current = found;
-    }
-    return current;
-  }
-
-  /**
-   * Walk inside an object node following `subPath` descriptor.
-   * Returns the target node or `null` when the path cannot be resolved.
-   */
-  private async walkSubPath(
-    objectNode: TreeNode,
-    subPath: NonNullable<MetadataLocation['subPath']>
-  ): Promise<TreeNode | null> {
-    switch (subPath.kind) {
-      case 'commonModule': {
-        // CommonModules/X — the object node IS the common module.
-        // Virtual Ext node with Module.bsl is a child, but the object node itself
-        // is the navigable entity for a commonModule subPath.
-        return objectNode;
-      }
-
-      case 'objectModule':
-        return this.findStandardModuleNode(objectNode, 'ObjectModule');
-
-      case 'managerModule':
-        return this.findStandardModuleNode(objectNode, 'ManagerModule');
-
-      case 'recordSetModule':
-        return this.findStandardModuleNode(objectNode, 'RecordSetModule');
-
-      case 'valueManagerModule':
-        return this.findStandardModuleNode(objectNode, 'ValueManagerModule');
-
-      case 'form': {
-        if (objectNode.type === MetadataType.CommonForm) {
-          if (subPath.name !== objectNode.name) {
-            return null;
-          }
-          if (subPath.subFile === 'xml' || subPath.subFile === 'container') {
-            return objectNode;
-          }
-          return this.findModuleNode(objectNode, 'Module.bsl');
-        }
-        // R6 placeholder id is 'Forms'; name may be localised by ensureR6PlaceholdersForInstanceNode.
-        const formsFolder = await this.findChildById(objectNode, 'Forms');
-        if (!formsFolder) {
-          return null;
-        }
-        const children = await this.getChildren(formsFolder);
-        const allChildren = this.mergeChildren(children, formsFolder.children ?? []);
-        const formNode = allChildren.find(
-          (c) => c.name === subPath.name && c.type === MetadataType.Form
-        ) ?? null;
-        if (!formNode) {
-          return null;
-        }
-        if (subPath.subFile === 'xml' || subPath.subFile === 'container') {
-          return formNode;
-        }
-        // subFile === 'module': find the module node inside the form
-        return this.findModuleNode(formNode, 'Module.bsl');
-      }
-
-      case 'command': {
-        // R6 placeholder id is 'Commands'.
-        const commandsFolder = await this.findChildById(objectNode, 'Commands');
-        if (!commandsFolder) {
-          return null;
-        }
-        const cmdChildren = await this.getChildren(commandsFolder);
-        const allCmdChildren = this.mergeChildren(cmdChildren, commandsFolder.children ?? []);
-        const commandNode = allCmdChildren.find(
-          (c) => c.name === subPath.name && c.type === MetadataType.Command
-        ) ?? null;
-        if (!commandNode) {
-          return null;
-        }
-        if (subPath.subFile === 'xml') {
-          return commandNode;
-        }
-        // subFile === 'module'
-        return this.findModuleNode(commandNode, 'CommandModule.bsl');
-      }
-
-      case 'template': {
-        // R6 placeholder id is 'Templates'.
-        const templatesFolder = await this.findChildById(objectNode, 'Templates');
-        if (!templatesFolder) {
-          return null;
-        }
-        const tmplChildren = await this.getChildren(templatesFolder);
-        const allTmplChildren = this.mergeChildren(tmplChildren, templatesFolder.children ?? []);
-        return allTmplChildren.find(
-          (c) => c.name === subPath.name && c.type === MetadataType.Template
-        ) ?? null;
-      }
-
-      case 'rights': {
-        // Rights.xml is parsed into object properties, not a separate tree node.
-        // Return the role node itself so the caller can reveal/select it.
-        return objectNode;
-      }
-
-      case 'predefinedData': {
-        // PredefinedData container node has id 'PredefinedData' and is a direct child of the object.
-        const pdChildren = await this.getChildren(objectNode);
-        const allPdChildren = this.mergeChildren(pdChildren, objectNode.children ?? []);
-        const predefined = allPdChildren.find((c) => c.id === 'PredefinedData');
-        return predefined ?? objectNode;
-      }
-
-      default:
-        return objectNode;
-    }
-  }
-
-  /**
-   * Find a module .bsl node inside an object node.
-   * Modules live under the `Ext` child node (`MetadataType.Extension`, id ends with `.Ext` or `Ext`).
-   * For CommonModules the Ext id is `CommonModules.X.Ext`; for others plain `Ext`.
-   */
-  private async findModuleNode(objectNode: TreeNode, fileName: string): Promise<TreeNode | null> {
-    const children = await this.getChildren(objectNode);
-    // Use the union of resolved children and raw node.children to handle filtered views.
-    const allChildren = this.mergeChildren(children, objectNode.children ?? []);
-    // Find the Ext node (may be named 'Extensions' with type Extension)
-    const extNode = allChildren.find(
-      (c) => c.type === MetadataType.Extension && (c.id === 'Ext' || c.id.endsWith('.Ext'))
-    );
-    if (!extNode) {
-      return null;
-    }
-    const extChildren = await this.getChildren(extNode);
-    const allExtChildren = this.mergeChildren(extChildren, extNode.children ?? []);
-    return allExtChildren.find((c) => c.name === fileName) ?? null;
-  }
-
-  private async findStandardModuleNode(
-    objectNode: TreeNode,
-    kind: StandardModuleKind
-  ): Promise<TreeNode | null> {
-    const fileName = getStandardModuleFileName(objectNode.type, kind);
-    return fileName ? this.findModuleNode(objectNode, fileName) : null;
-  }
-
-  /**
-   * Merge two children arrays without duplicates (by identity).
-   * Used to combine getChildren() result (possibly filtered) with raw node.children.
-   */
-  private mergeChildren(a: TreeNode[], b: TreeNode[]): TreeNode[] {
-    if (a.length === 0) {return b;}
-    if (b.length === 0) {return a;}
-    const seen = new Set<TreeNode>(a);
-    const extra = b.filter((n) => !seen.has(n));
-    return extra.length === 0 ? a : [...a, ...extra];
+    return this.locationNavigator.findNodeByLocation(loc);
   }
 }
 
