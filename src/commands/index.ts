@@ -96,6 +96,7 @@ export async function registerAllCommands({
     context,
     state: featureContexts.extensionSupport,
     getConfigurationRegistry: infrastructure.getConfigurationRegistry,
+    refreshWorkspace: infrastructure.refreshWorkspace,
     refreshTree: lifecycle.loadMetadataTree,
   });
   registerConfigurationProjectCommands({

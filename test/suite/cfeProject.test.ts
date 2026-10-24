@@ -342,6 +342,7 @@ suite('CFE project scaffold', () => {
         treeDataProvider: { getConfigPathForNode: () => base },
       } as never,
       getConfigurationRegistry: async () => registry,
+      refreshWorkspace: async () => {},
       refreshTree: async () => { treeRefreshes += 1; },
     });
     vscodeTestState.inputBoxQueue.push('UiExtension', 'Ui_');

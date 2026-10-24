@@ -9,6 +9,7 @@ export interface RegisterCfeProjectCommandsOptions {
   readonly context: vscode.ExtensionContext;
   readonly state: ExtensionSupportCommandsContext;
   readonly getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
+  readonly refreshWorkspace: () => Promise<void>;
   readonly refreshTree: () => Promise<void>;
 }
 
@@ -32,7 +33,7 @@ export function registerCfeProjectCommands(options: RegisterCfeProjectCommandsOp
         const registry = await options.getConfigurationRegistry();
         const session = await registry.resolveResource(root);
         const service = new CfeProjectServiceFactory(registry, {
-          refreshWorkspace: async () => { await options.getConfigurationRegistry(); },
+          refreshWorkspace: options.refreshWorkspace,
         }).forConfiguration(session.identity.configurationId);
         const outcome = await service.createProject({ ...request, baseConfigurationId: session.identity.configurationId });
         await options.refreshTree();
@@ -53,10 +54,11 @@ export function registerCfeProjectCommands(options: RegisterCfeProjectCommandsOp
   ): Promise<unknown> => {
     const registry = await options.getConfigurationRegistry();
     const result = await operation(
-      new CfeProjectServiceFactory(registry, { refreshWorkspace: options.refreshTree })
+      new CfeProjectServiceFactory(registry, { refreshWorkspace: options.refreshWorkspace })
         .forConfiguration(request.extensionConfigurationId),
       request,
     );
+    await options.refreshWorkspace();
     await options.refreshTree();
     return result;
   };

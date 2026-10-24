@@ -19,6 +19,7 @@ import type { CompositionResourceOptions } from './extensionCompositionRoot';
 export interface AgentFeatureCompositionDependencies {
   readonly context: AgentFeatureContext;
   readonly getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
+  readonly refreshWorkspace: () => Promise<void>;
   readonly runConfigurationMutation: ConfigurationMutationRunner;
   readonly requestConfigurationReload: RequestConfigurationReload;
   readonly refreshMetadataTree: () => Promise<void>;
@@ -39,6 +40,7 @@ export interface AgentFeatureComposition {
 export async function createAgentFeatureComposition({
   context,
   getConfigurationRegistry,
+  refreshWorkspace,
   runConfigurationMutation,
   requestConfigurationReload,
   refreshMetadataTree,
@@ -82,7 +84,10 @@ export async function createAgentFeatureComposition({
     debug,
     deploy,
     support,
-    refreshCfeLifecycle: refreshMetadataTree,
+    refreshCfeLifecycle: async () => {
+      await refreshWorkspace();
+      await refreshMetadataTree();
+    },
     repositoryService: context.configurationRepositoryService,
   });
 
