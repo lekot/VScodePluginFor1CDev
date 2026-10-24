@@ -76,6 +76,31 @@ suite('metadataDefaultValues', () => {
     assert.strictEqual(doc.FullTextSearch, 'Use');
   });
 
+  test('omits only unsupported defaults for AccumulationRegister Attribute', () => {
+    const accumulationRegister = getDefaultPropertiesForNestedElement(
+      'Attribute',
+      MetadataType.AccumulationRegister
+    ) as Record<string, unknown>;
+    const informationRegister = getDefaultPropertiesForNestedElement(
+      'Attribute',
+      MetadataType.InformationRegister
+    ) as Record<string, unknown>;
+    const catalog = getDefaultPropertiesForNestedElement('Attribute', MetadataType.Catalog) as Record<string, unknown>;
+    const document = getDefaultPropertiesForNestedElement('Attribute', MetadataType.Document) as Record<string, unknown>;
+    const tabularSection = getDefaultPropertiesForNestedElement('TabularSection', MetadataType.AccumulationRegister);
+
+    for (const unsupported of ['DataHistory', 'FillValue', 'FillFromFillingValue']) {
+      assert.strictEqual(accumulationRegister[unsupported], undefined, `${unsupported} is unsupported for AccumulationRegister.Attribute`);
+      assert.notStrictEqual(informationRegister[unsupported], undefined, `${unsupported} remains unchanged for InformationRegister.Attribute`);
+      assert.notStrictEqual(catalog[unsupported], undefined, `${unsupported} remains available for Catalog.Attribute`);
+      assert.notStrictEqual(document[unsupported], undefined, `${unsupported} remains available for Document.Attribute`);
+    }
+    assert.strictEqual(accumulationRegister.Indexing, 'DontIndex');
+    assert.strictEqual(accumulationRegister.FullTextSearch, 'Use');
+    assert.strictEqual(accumulationRegister.PasswordMode, false, 'common attribute defaults are preserved');
+    assert.deepStrictEqual(tabularSection, {}, 'TabularSection defaults remain empty');
+  });
+
   test('returns tabular section defaults and clones nested defaults', () => {
     const ts = getDefaultPropertiesForNestedElement('TabularSection');
     assert.deepStrictEqual(ts, {});

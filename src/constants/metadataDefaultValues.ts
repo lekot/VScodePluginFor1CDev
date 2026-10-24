@@ -149,6 +149,14 @@ const ATTRIBUTE_DEFAULTS_WITHOUT_EXTENDED: DefaultProperties = {
   FillFromFillingValue: undefined as unknown as boolean,
 };
 
+/** AccumulationRegister.Attribute does not support these three otherwise-extended defaults. */
+const ATTRIBUTE_DEFAULTS_WITHOUT_ACCUMULATION_REGISTER_ONLY_PROPS: DefaultProperties = {
+  ...ATTRIBUTE_DEFAULTS,
+  DataHistory: undefined,
+  FillValue: undefined,
+  FillFromFillingValue: undefined,
+};
+
 /** Defaults for TabularSection (no Type at tabular level in 1C). */
 const TABULAR_SECTION_DEFAULTS: DefaultProperties = {
   // Name, Synonym only; no Type
@@ -176,6 +184,9 @@ export function getDefaultPropertiesForNestedElement(
 ): DefaultProperties {
   if (elementType !== 'Attribute') {
     return { ...TABULAR_SECTION_DEFAULTS };
+  }
+  if (parentRootType === MetadataType.AccumulationRegister) {
+    return { ...ATTRIBUTE_DEFAULTS_WITHOUT_ACCUMULATION_REGISTER_ONLY_PROPS };
   }
   const useExtended = parentRootType === undefined || !ATTRIBUTE_TYPES_WITHOUT_EXTENDED_PROPS.has(parentRootType);
   return { ...(useExtended ? ATTRIBUTE_DEFAULTS : ATTRIBUTE_DEFAULTS_WITHOUT_EXTENDED) };
