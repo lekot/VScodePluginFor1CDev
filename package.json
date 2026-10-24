@@ -2166,9 +2166,11 @@
     "copy:webviews": "node scripts/copy-webviews.js",
     "generate:properties-webview": "node scripts/generate-properties-webview.js",
     "check:properties-webview": "tsc -p tsconfig.properties-webview.json --noEmit && node scripts/generate-properties-webview.js --check",
+    "generate:form-webview": "node scripts/generate-form-webview.js",
+    "check:form-webview": "tsc -p tsconfig.form-webview.json --noEmit && node scripts/generate-form-webview.js --check",
     "bundle:query-builder-visitor": "node scripts/bundle-query-builder-visitor.js",
     "generate:bsl-completion-index": "npm run compile && node scripts/generate-bsl-completion-index.js",
-    "compile": "npm run check:properties-webview && node scripts/clean-production-dist.cjs && tsc -p ./ && node scripts/bundle-session-router.js && node scripts/copy-webviews.js",
+    "compile": "npm run check:properties-webview && npm run check:form-webview && node scripts/clean-production-dist.cjs && tsc -p ./ && node scripts/bundle-session-router.js && node scripts/copy-webviews.js",
     "verify:session-router-bundle": "node scripts/verify-session-router-bundle.js",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
@@ -2178,7 +2180,7 @@
     "check:loc-budget": "node scripts/check-loc-budget.js",
     "check:mutation-writer-baseline": "node scripts/check-mutation-writer-baseline.js",
     "check:xml-writer-boundary": "node scripts/check-mutation-writer-baseline.js --enforce-files src/utils/XMLWriter.ts,src/utils/xml/xmlFileIo.ts,src/formEditor/formXmlWriter.ts,src/utils/xml/predefinedDataAppender.ts,src/agent/predefinedCharacteristicOperations.ts",
-    "check:architecture-guards": "npm run check:properties-webview && node scripts/check-mutation-writer-baseline.js && npm run check:xml-writer-boundary && node scripts/check-loc-budget.js && node scripts/check-extension-composition-boundary.cjs && node scripts/check-extension-composition-boundary.cjs --self-test",
+    "check:architecture-guards": "npm run check:properties-webview && npm run check:form-webview && node scripts/check-mutation-writer-baseline.js && npm run check:xml-writer-boundary && node scripts/check-loc-budget.js && node scripts/check-extension-composition-boundary.cjs && node scripts/check-extension-composition-boundary.cjs --self-test",
     "verify": "npm run check:architecture-guards && npm run lint:ci && npm run lint:test-promises && npm run test:ci",
     "test": "tsc -p tsconfig.test.json && npm run copy:test-fixtures && node node_modules/mocha/bin/mocha --ui tdd out/test/suite/*.test.js",
     "copy:test-fixtures": "node scripts/copy-test-fixtures.js",
@@ -2194,6 +2196,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/glob": "^8.0.0",
     "@types/js-yaml": "^4.0.9",
+    "@types/jsdom": "^21.1.7",
     "@types/markdown-it": "^14.2.0",
     "@types/mocha": "^10.0.0",
     "@types/node": "^20.0.0",
@@ -2208,6 +2211,7 @@
     "eslint": "^8.0.0",
     "fast-check": "^4.6.0",
     "glob": "^10.0.0",
+    "jsdom": "^26.1.0",
     "mocha": "^10.0.0",
     "prettier": "^3.0.0",
     "typescript": "^5.0.0",
@@ -2224,7 +2228,8 @@
   },
   "c8": {
     "include": [
-      "out/src/**/*.js"
+      "out/src/**/*.js",
+      "out/form-webview-runtime.generated.js"
     ]
   },
   "prettier": {

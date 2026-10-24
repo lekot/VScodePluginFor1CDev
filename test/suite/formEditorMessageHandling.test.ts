@@ -1,5 +1,4 @@
 import * as assert from 'assert';
-import { getWebviewHtml } from '../../src/formEditor/formWebviewHtml';
 import {
   applyExternalPropertyChange,
   createSerializedExecutor,
@@ -8,6 +7,7 @@ import {
 } from '../../src/formEditor/formMessageHandler';
 import type { FormModel } from '../../src/formEditor/formModel';
 import * as vscode from 'vscode';
+import { createFormWebviewRuntimeFixture } from '../helpers/formWebviewRuntime';
 
 function makeSelectableModel(widths: readonly string[] = ['100', '200']): FormModel {
   return {
@@ -197,24 +197,47 @@ suite('form editor message handling regressions', () => {
     });
   });
 
-  test('webview property change uses dataset key for regular props', () => {
-    const html = getWebviewHtml({} as any);
-    assert.ok(
-      html.includes("const key = inp.dataset.key ? inp.dataset.key : (inp.id ? inp.id.replace('prop-', '') : null);"),
-      'property key extraction should prioritize data-key with correct precedence'
-    );
-    assert.ok(
-      !html.includes("const key = inp.dataset.key || inp.id ? inp.id.replace('prop-', '') : null;"),
-      'buggy operator-precedence expression must be removed'
-    );
-    assert.ok(
-      html.includes('selectedAttributeId = attr.id || attr.name;'),
-      'attribute selection should prefer stable id'
-    );
-    assert.ok(
-      html.includes('selectedCommandId = cmd.id || cmd.name;'),
-      'command selection should prefer stable id'
-    );
+  test('webview property changes use data-key before id and requisite actions keep stable IDs', () => {
+    const fixture = createFormWebviewRuntimeFixture();
+    try {
+      fixture.send({
+        type: 'formData',
+        formModel: {
+          childItemsRoot: [{ tag: 'InputField', id: 'field', name: 'Field', properties: { Title: 'Before' }, childItems: [] }],
+          attributes: [{ id: 'attribute-stable-id', name: 'Customer', properties: { Type: 'String' } }],
+          commands: [{ id: 'command-stable-id', name: 'RunAction', properties: { Title: 'Run' } }],
+          formEvents: [],
+        },
+      });
+      const document = fixture.dom.window.document;
+      const treeItem = document.querySelector<HTMLElement>('#tree-root .tree-node[data-id="field"]');
+      assert.ok(treeItem);
+      treeItem.dispatchEvent(new fixture.dom.window.MouseEvent('click', { bubbles: true }));
+      const title = document.querySelector<HTMLInputElement>('#props-content input[data-key="Title"]');
+      assert.ok(title);
+      title.id = 'prop-WrongKey';
+      title.value = 'Changed';
+      title.dispatchEvent(new fixture.dom.window.Event('change', { bubbles: true }));
+      const propertyChange = fixture.messages.find((message) => message.type === 'propertyChange');
+      assert.ok(propertyChange && propertyChange.type === 'propertyChange');
+      assert.strictEqual(propertyChange.key, 'Title', 'data-key wins over a conflicting input id');
+
+      document.querySelector<HTMLTableRowElement>('#attributes-tbody tr')?.dispatchEvent(new fixture.dom.window.MouseEvent('click', { bubbles: true }));
+      document.getElementById('btn-delete-attribute')?.dispatchEvent(new fixture.dom.window.MouseEvent('click', { bubbles: true }));
+      const deleteAttribute = fixture.messages.find((message) => message.type === 'deleteAttribute');
+      assert.ok(deleteAttribute && deleteAttribute.type === 'deleteAttribute');
+      assert.strictEqual(deleteAttribute.attributeId, 'attribute-stable-id');
+
+      document.querySelector<HTMLElement>('[data-right-tab="commands"]')?.dispatchEvent(new fixture.dom.window.MouseEvent('click', { bubbles: true }));
+      document.querySelector<HTMLTableRowElement>('#commands-tbody tr')?.dispatchEvent(new fixture.dom.window.MouseEvent('click', { bubbles: true }));
+      document.getElementById('btn-delete-command')?.dispatchEvent(new fixture.dom.window.MouseEvent('click', { bubbles: true }));
+      const deleteCommand = fixture.messages.find((message) => message.type === 'deleteCommand');
+      assert.ok(deleteCommand && deleteCommand.type === 'deleteCommand');
+      assert.strictEqual(deleteCommand.commandId, 'command-stable-id');
+      assert.deepStrictEqual(fixture.runtimeErrors, []);
+    } finally {
+      fixture.close();
+    }
   });
 
   test('serialized executor preserves in-flight operation ordering', async () => {

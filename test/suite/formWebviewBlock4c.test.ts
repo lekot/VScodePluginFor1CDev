@@ -2,6 +2,24 @@ import '../helpers/vscodeStubRegister';
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { getWebviewHtml } from '../../src/formEditor/formWebviewHtml';
+import type { FormChildItem, FormModel } from '../../src/formEditor/formModel';
+import { createFormWebviewRuntimeFixture } from '../helpers/formWebviewRuntime';
+
+function item(tag: string, id: string, name: string, properties: Record<string, unknown> = {}): FormChildItem {
+  return { tag, id, name, properties, childItems: [] };
+}
+
+function sendItems(items: FormChildItem[]): ReturnType<typeof createFormWebviewRuntimeFixture> {
+  const fixture = createFormWebviewRuntimeFixture();
+  try {
+    const formModel: FormModel = { childItemsRoot: items, attributes: [], commands: [], formEvents: [] };
+    fixture.send({ type: 'formData', formModel });
+    return fixture;
+  } catch (error) {
+    fixture.close();
+    throw error;
+  }
+}
 
 /** Contract tests for 1CVIEWER-36 Block 4 phase C: Title multilang, TitleLocation, rare-tag fallback widget. */
 suite('form webview Block 4C - title/location/fallback (1CVIEWER-36)', () => {
@@ -11,51 +29,64 @@ suite('form webview Block 4C - title/location/fallback (1CVIEWER-36)', () => {
     html = getWebviewHtml({} as vscode.Webview, vscode.ColorThemeKind.Dark);
   });
 
-  test('JS: resolvePreviewTitle exists and falls back to item.name', () => {
-    assert.ok(html.includes('function resolvePreviewTitle(item, localeHint)'), 'title resolver function');
-    assert.ok(html.includes('if (!item) return \'\';'), 'null-safe guard');
-    assert.ok(
-      html.includes('return String(item.name || \'\').trim();'),
-      'fallback to item.name when Title is absent/empty'
-    );
+  test('uses a non-empty title and falls back to the item name when Title is missing or blank', () => {
+    const fixture = sendItems([
+      item('Button', 'with-title', 'ButtonName', { Title: 'Visible title' }),
+      item('Button', 'empty-title', 'Fallback name', { Title: '   ' }),
+    ]);
+    try {
+      const buttons = Array.from(fixture.dom.window.document.querySelectorAll('.preview-item .preview-button'));
+      assert.strictEqual(buttons[0]?.textContent, 'Visible title');
+      assert.strictEqual(buttons[1]?.textContent, 'Fallback name');
+      assert.deepStrictEqual(fixture.runtimeErrors, []);
+    } finally {
+      fixture.close();
+    }
   });
 
-  test('JS: Title extraction supports multilang nodes via v8:item aliases', () => {
-    assert.ok(html.includes('function extractTitleValue(rawTitle, localeHint)'), 'title extraction helper');
-    assert.ok(
-      html.includes("if (local !== 'item') continue;"),
-      'accepts namespaced local key "item" (including v8:item)'
-    );
-    assert.ok(
-      html.includes('var localized = pickLocalizedContent(items, localeHint);'),
-      'multilang selection for item list'
-    );
-    assert.ok(
-      html.includes("if (key === ':@' || key.startsWith('@')) continue;"),
-      'ignores XML attributes while parsing Title payload'
-    );
+  test('resolves namespaced multilingual Title values and ignores XML attributes', () => {
+    const fixture = sendItems([
+      item('Button', 'localized', 'Fallback', {
+        'v8:Title': {
+          ':@': { '@_v8:ignored': 'must not be displayed' },
+          'v8:item': [
+            { ':@': { '@_lang': 'ru' }, 'v8:lang': 'ru', 'v8:content': 'Русская кнопка' },
+            { ':@': { '@_lang': 'en' }, 'v8:lang': 'en', 'v8:content': 'English button' },
+          ],
+        },
+      }),
+    ]);
+    try {
+      const button = fixture.dom.window.document.querySelector('.preview-item[data-id="localized"] .preview-button');
+      assert.strictEqual(button?.textContent, 'English button', 'the runtime locale selects matching namespaced content');
+      assert.deepStrictEqual(fixture.runtimeErrors, []);
+    } finally {
+      fixture.close();
+    }
   });
 
-  test('JS: Title property lookup supports namespaced Title key', () => {
-    assert.ok(
-      html.includes('if (local === \'Title\') {') && html.includes('titleRaw = props[propKey];'),
-      'resolves Title by local key even when property is namespaced'
-    );
-    assert.ok(
-      html.includes('if (title && String(title).trim() !== \'\') return String(title).trim();'),
-      'empty/whitespace title is rejected before fallback'
-    );
+  test('finds namespaced Title properties and rejects whitespace-only localized content', () => {
+    const fixture = sendItems([
+      item('Button', 'namespaced-title', 'Stable name', { 'v8:Title': '  ' }),
+    ]);
+    try {
+      const button = fixture.dom.window.document.querySelector('.preview-item[data-id="namespaced-title"] .preview-button');
+      assert.strictEqual(button?.textContent, 'Stable name');
+      assert.deepStrictEqual(fixture.runtimeErrors, []);
+    } finally {
+      fixture.close();
+    }
   });
 
-  test('CSS + JS: Input-like controls branch by TitleLocation Left/Right/Top/Bottom/None', () => {
-    assert.ok(
-      html.includes("if (tag === 'InputField' || tag === 'SearchStringAddition' || tag === 'ValueList')"),
-      'TitleLocation branch applies to all input-like controls in contract C'
-    );
-    assert.ok(
-      html.includes("wrap.className = 'preview-control-wrap preview-field-row preview-title-' + titleLocation;"),
-      'location class composed dynamically'
-    );
+  test('renders input-like controls with each supported TitleLocation and its CSS class', () => {
+    const fixture = sendItems(['Left', 'Right', 'Top', 'Bottom', 'None'].map((location) =>
+      item('InputField', `field-${location.toLowerCase()}`, `Field${location}`, { Title: `Title${location}`, TitleLocation: location })
+    ));
+    try {
+      const document = fixture.dom.window.document;
+      for (const location of ['left', 'right', 'top', 'bottom', 'none']) {
+        assert.ok(document.querySelector(`.preview-item[data-id="field-${location}"] .preview-field-row.preview-title-${location}`), `${location} title location renders`);
+      }
     assert.ok(html.includes('.preview-field-row.preview-title-right { flex-direction: row-reverse; justify-content: flex-end; }'), 'right title location CSS');
     assert.ok(
       html.includes('.preview-field-row.preview-title-top,') &&
@@ -71,37 +102,37 @@ suite('form webview Block 4C - title/location/fallback (1CVIEWER-36)', () => {
       html.includes('.preview-field-row.preview-title-none .preview-field-label { display: none; }'),
       'none location hides label'
     );
+      assert.deepStrictEqual(fixture.runtimeErrors, []);
+    } finally {
+      fixture.close();
+    }
   });
 
-  test('JS: normalizeTitleLocation handles defaults, RU/EN aliases, and None', () => {
-    assert.ok(html.includes('function normalizeTitleLocation(raw)'), 'TitleLocation normalizer');
-    assert.ok(html.includes("if (!value) return 'left';"), 'default location is left');
-    assert.ok(
-      html.includes("if (value === 'none' || value.indexOf('нет') >= 0) return 'none';"),
-      'none alias in EN/RU'
-    );
-    assert.ok(
-      html.includes("if (value === 'right' || value.indexOf('прав') >= 0) return 'right';"),
-      'right alias in EN/RU'
-    );
-    assert.ok(
-      html.includes("if (value === 'top' || value.indexOf('верх') >= 0) return 'top';"),
-      'top alias in EN/RU'
-    );
-    assert.ok(
-      html.includes("if (value === 'bottom' || value.indexOf('низ') >= 0) return 'bottom';"),
-      'bottom alias in EN/RU'
-    );
-    assert.ok(
-      html.includes("if (!item || !item.properties) return 'left';"),
-      'resolver fallback for missing properties'
-    );
+  test('normalizes English and Russian TitleLocation values and defaults unknown values to left', () => {
+    const fixture = sendItems([
+      item('InputField', 'default', 'Default'),
+      item('InputField', 'none-ru', 'NoneRu', { TitleLocation: 'Нет' }),
+      item('InputField', 'right-ru', 'RightRu', { TitleLocation: 'Справа' }),
+      item('InputField', 'top-ru', 'TopRu', { TitleLocation: 'Сверху' }),
+      item('InputField', 'bottom-ru', 'BottomRu', { TitleLocation: 'Снизу' }),
+      item('InputField', 'unknown', 'Unknown', { TitleLocation: 'Unexpected' }),
+    ]);
+    try {
+      const document = fixture.dom.window.document;
+      assert.ok(document.querySelector('.preview-item[data-id="default"] .preview-title-left'));
+      assert.ok(document.querySelector('.preview-item[data-id="none-ru"] .preview-title-none'));
+      assert.ok(document.querySelector('.preview-item[data-id="right-ru"] .preview-title-right'));
+      assert.ok(document.querySelector('.preview-item[data-id="top-ru"] .preview-title-top'));
+      assert.ok(document.querySelector('.preview-item[data-id="bottom-ru"] .preview-title-bottom'));
+      assert.ok(document.querySelector('.preview-item[data-id="unknown"] .preview-title-left'));
+      assert.deepStrictEqual(fixture.runtimeErrors, []);
+    } finally {
+      fixture.close();
+    }
   });
 
-  test('JS + CSS: rare controls from §17 use unified fallback widget', () => {
-    assert.ok(html.includes('var RARE_TAG_FALLBACKS = new Set(['), 'rare-tag set exists');
-    [
-      'RadioButtonField',
+  test('rare controls use the fallback widget while RadioButtonField keeps its specialized mock', () => {
+    const rareTags = [
       'TrackBarField',
       'ProgressBarField',
       'TextDocumentField',
@@ -112,22 +143,29 @@ suite('form webview Block 4C - title/location/fallback (1CVIEWER-36)', () => {
       'PlannerField',
       'GraphicalSchemaField',
       'FormattedDocumentField'
-    ].forEach((tag) => assert.ok(html.includes(`'${tag}'`), `rare tag listed: ${tag}`));
-
-    assert.ok(html.includes('function createRareTagFallbackWidget(label, tag)'), 'factory for single fallback widget');
-    assert.ok(html.includes("widget.className = 'preview-fallback-widget';"), 'fallback widget class');
-    assert.ok(html.includes("text.className = 'fallback-label';"), 'fallback label class');
-    assert.ok(html.includes("pill.className = 'fallback-tag';"), 'fallback tag class');
-    assert.ok(
-      html.includes('} else if (RARE_TAG_FALLBACKS.has(tag)) {') &&
-        html.includes('wrap.appendChild(createRareTagFallbackWidget(label, tag));'),
-      'createPreviewControl routes rare tags to unified widget'
-    );
+    ];
+    const fixture = sendItems([
+      ...rareTags.map((tag) => item(tag, `rare-${tag}`, `Label-${tag}`)),
+      item('RadioButtonField', 'radio-field', 'Radio label'),
+    ]);
+    try {
+      const document = fixture.dom.window.document;
+      for (const tag of rareTags) {
+        const widget = document.querySelector<HTMLElement>(`.preview-item[data-id="rare-${tag}"] .preview-fallback-widget`);
+        assert.ok(widget, `${tag} uses the common fallback widget`);
+        assert.strictEqual(widget.querySelector('.fallback-label')?.textContent, `Label-${tag}`);
+        assert.strictEqual(widget.querySelector('.fallback-tag')?.textContent, tag);
+      }
+      assert.strictEqual(document.querySelectorAll('.preview-item[data-id="radio-field"] input[type="radio"]').length, 3);
     assert.ok(html.includes('.preview-fallback-widget {'), 'fallback widget CSS block');
     assert.ok(
       html.includes('.preview-fallback-widget .fallback-label') &&
         html.includes('.preview-fallback-widget .fallback-tag'),
       'fallback widget sub-element styles'
     );
+      assert.deepStrictEqual(fixture.runtimeErrors, []);
+    } finally {
+      fixture.close();
+    }
   });
 });

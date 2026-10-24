@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "types": [],
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "files": [
+    "src/formEditor/formModel.ts",
+    "src/formEditor/formPreviewLayout.ts",
+    "src/formEditor/formWebview/contracts.ts",
+    "src/formEditor/formWebview/escaping.ts",
+    "src/formEditor/formWebview/modelQueries.ts",
+    "src/formEditor/formWebview/previewLayout.ts",
+    "src/formEditor/formWebview/state.ts",
+    "src/formEditor/formWebview/browser/entry.ts",
+    "src/formEditor/formWebview/browser/previewView.ts",
+    "src/formEditor/formWebview/browser/propertyInspector.ts",
+    "src/formEditor/formWebview/browser/requisiteView.ts",
+    "src/formEditor/formWebview/browser/shell.ts",
+    "src/formEditor/formWebview/browser/treeView.ts"
+  ]
+}
