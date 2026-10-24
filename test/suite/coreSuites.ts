@@ -149,6 +149,7 @@ export const coreSuiteFiles: string[] = [
   'suite/mutationReceiptError.test.js',
   'suite/mutationReceiptAdapters.test.js',
   'suite/mutationAgentReceipts.test.js',
+  'suite/architectureOutcomeBoundaryMatrix.test.js',
   'suite/agentRoleRights.test.js',
   'suite/rightsEditor.integration.test.js',
   'suite/typeParser.test.js',

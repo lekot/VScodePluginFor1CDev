@@ -1,7 +1,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { pathToFileURL } from 'url';
 import {
   downloadAndUnzipVSCode,
   runTests,
@@ -55,6 +54,7 @@ async function main() {
   }
 
   let temporaryWorkspace: string | undefined;
+  let temporarySavedWorkspaceDirectory: string | undefined;
   let exitCode = 0;
   try {
     const extensionDevelopmentPath = path.resolve(__dirname, '../../');
@@ -80,12 +80,21 @@ async function main() {
       await fs.promises.writeFile(path.join(commonModulesPath, `${commonModuleName}.xml`), moduleXml, 'utf8');
     }
 
+    temporarySavedWorkspaceDirectory = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), '1cviewer-smoke-launch-workspace-'),
+    );
+    const workspaceFilePath = path.join(temporarySavedWorkspaceDirectory, 'smoke.code-workspace');
+    await fs.promises.writeFile(
+      workspaceFilePath,
+      `${JSON.stringify({ folders: [{ path: workspaceFolder }] }, null, 2)}\n`,
+      'utf8',
+    );
+
     const vscodeTestDirectory = path.join(extensionDevelopmentPath, '.vscode-test');
     const userDataDirectory = path.join(vscodeTestDirectory, 'user-data');
     const extensionsDirectory = path.join(vscodeTestDirectory, 'extensions');
     const launchArgs = [
-      '--folder-uri',
-      pathToFileURL(workspaceFolder).toString(),
+      workspaceFilePath,
       `--user-data-dir=${userDataDirectory}`,
       `--extensions-dir=${extensionsDirectory}`,
     ];
@@ -95,6 +104,9 @@ async function main() {
       cachePath: vscodeTestDirectory,
       extensionDevelopmentPath,
       extensionTestsPath,
+      workspaceMode: 'saved-workspace',
+      workspaceFilePath,
+      workspaceFolderPath: workspaceFolder,
       launchArgs,
     });
 
@@ -145,13 +157,20 @@ async function main() {
     console.error('Smoke tests failed', err);
     exitCode = err instanceof TestRunFailedError && typeof err.code === 'number' ? err.code : 1;
   } finally {
-    if (temporaryWorkspace) {
+    const temporaryDirectories = [
+      { label: 'saved smoke workspace container', path: temporarySavedWorkspaceDirectory },
+      { label: 'copied smoke fixture workspace', path: temporaryWorkspace },
+    ];
+    for (const directory of temporaryDirectories) {
+      if (!directory.path) {
+        continue;
+      }
       try {
-        assertPathIsWithin(os.tmpdir(), temporaryWorkspace);
-        await fs.promises.rm(temporaryWorkspace, { recursive: true, force: true });
+        assertPathIsWithin(os.tmpdir(), directory.path);
+        await fs.promises.rm(directory.path, { recursive: true, force: true });
       } catch (err) {
-        console.error('Failed to clean temporary smoke workspace', err);
-        if (exitCode === 0) exitCode = 1;
+        console.error(`Failed to clean ${directory.label}`, err);
+        if (exitCode === 0) { exitCode = 1; }
       }
     }
   }
