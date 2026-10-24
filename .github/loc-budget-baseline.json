@@ -67,7 +67,7 @@
       "reason": "Properties webview HTML and UI rendering (#201)"
     },
     "src/providers/treeDataProvider.ts": {
-      "maxLines": 2121,
+      "maxLines": 1648,
       "reason": "Monolithic tree provider, slated for decomposition in #201 Step 3"
     },
     "src/queryBuilder/sdbl/sdblFormatter.ts": {

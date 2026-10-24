@@ -4,6 +4,7 @@ import * as fc from 'fast-check';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
+import { TreeWarmupScheduler } from '../../src/providers/treeWarmupScheduler';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { MetadataParser } from '../../src/parsers/metadataParser';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
@@ -1073,11 +1074,19 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
     try {
       provider.setRootNode(root, fakeTreeLoadContext(configPath, ConfigFormat.Designer));
-      await (provider as any).warmUpTypeContentsCache(
-        [root],
-        (provider as any).typeContentsWarmupGeneration,
-        1,
-      );
+      const scheduler = new TreeWarmupScheduler({
+        getRoots: () => [root],
+        loadTypeFolderIndex: async (typeFolder) => [...await provider.getChildren(typeFolder)],
+      });
+      try {
+        await (scheduler as any).warmUpTypeContentsCache(
+          [root],
+          (scheduler as any).generation,
+          1,
+        );
+      } finally {
+        scheduler.dispose();
+      }
 
       assert.deepStrictEqual(parseCalls, ['Catalogs']);
     } finally {
