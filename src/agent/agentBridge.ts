@@ -385,10 +385,10 @@ export class AgentBridge {
         try {
             const result = await vscode.commands.executeCommand(name, args ?? {});
             this._sendJson(res, 200, result);
-        } catch (err) {
+        } catch {
             this._sendJson(res, 200, {
                 success: false,
-                error: err instanceof Error ? err.message : String(err),
+                error: 'Не удалось выполнить команду агента.',
             });
         }
     }

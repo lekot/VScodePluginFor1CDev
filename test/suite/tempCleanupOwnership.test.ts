@@ -189,6 +189,7 @@ interface BatchSpawnOptions {
   cwd: string;
   env: NodeJS.ProcessEnv;
   encoding: 'utf8';
+  shell?: boolean;
   windowsHide: boolean;
   timeout: number;
 }
@@ -215,10 +216,28 @@ function runBatch(
   if (process.platform !== 'win32') {
     throw new Error('Windows batch files can only be launched on Windows.');
   }
+
+  const resolvedCwd = path.resolve(cwd);
+  const resolvedBatchPath = path.resolve(resolvedCwd, batchPath);
+  const relativeBatchPath = path.relative(resolvedCwd, resolvedBatchPath).replace(/\//g, '\\').toLowerCase();
+  let batchCommand: string;
+  switch (relativeBatchPath) {
+    case 'test-suite.bat':
+      batchCommand = 'test-suite.bat';
+      break;
+    case 'scripts\\instrument-smoke.bat':
+      batchCommand = 'scripts\\instrument-smoke.bat';
+      break;
+    case 'scripts\\cleanup-1cviewer-temp.bat':
+      batchCommand = 'scripts\\cleanup-1cviewer-temp.bat';
+      break;
+    default:
+      throw new Error('Unsupported batch script.');
+  }
+
   const commandProcessor = env.ComSpec ?? process.env.ComSpec ?? 'cmd.exe';
-  const relativeBatchPath = path.relative(cwd, batchPath).replace(/\//g, '\\');
-  return spawnBatch(commandProcessor, ['/d', '/c', relativeBatchPath], {
-    cwd,
+  return spawnBatch(commandProcessor, ['/d', '/c', batchCommand], {
+    cwd: resolvedCwd,
     env,
     encoding: 'utf8',
     windowsHide: true,
@@ -236,7 +255,7 @@ interface BatchFixture {
 }
 
 function createBatchFixture(audit: AuditRoot, repoRoot: string): BatchFixture {
-  const root = path.join(audit.root, 'batch-fixture');
+  const root = path.join(audit.root, 'рабочая папка with spaces', 'batch-fixture');
   const scriptsDirectory = path.join(root, 'scripts');
   const testFixturesDirectory = path.join(root, 'test', 'fixtures');
   const outputFixturesDirectory = path.join(root, 'out', 'test', 'fixtures');
@@ -474,6 +493,84 @@ suite('Global TEMP cleanup retirement', () => {
         /copy:test-fixtures/i,
         'fake npm fixture copy step was not reached'
       );
+    } finally {
+      removeAuditRoot(audit);
+    }
+  });
+
+  windowsOnlyTest('batch launcher passes only canonical allowlisted commands with cwd kept separate', () => {
+    const audit = createAuditRoot();
+    try {
+      const repoRoot = path.resolve(process.cwd());
+      const fixture = createBatchFixture(audit, repoRoot);
+      const commandProcessor = 'C:\\Windows\\System32\\cmd.exe';
+      const env = createIsolatedEnvironment(audit, { ComSpec: commandProcessor });
+      const calls: Array<{ command: string; args: string[]; options: BatchSpawnOptions }> = [];
+      const spawnBatch: BatchSpawner = (command, args, options) => {
+        calls.push({ command, args: [...args], options });
+        return { status: 0, stdout: '', stderr: '' };
+      };
+
+      const scripts = [
+        { path: path.join(fixture.root, 'TEST-SUITE.BAT'), command: 'test-suite.bat' },
+        {
+          path: path.join(fixture.root, 'SCRIPTS', 'InStRuMeNt-SmOkE.BaT'),
+          command: 'scripts\\instrument-smoke.bat',
+        },
+        {
+          path: path.join(fixture.root, 'scripts', 'CLEANUP-1CVIEWER-TEMP.BAT'),
+          command: 'scripts\\cleanup-1cviewer-temp.bat',
+        },
+      ];
+
+      for (const script of scripts) {
+        const result = runBatch(script.path, env, fixture.root, spawnBatch);
+        assert.strictEqual(result.status, 0);
+      }
+
+      assert.strictEqual(fixture.root.includes('рабочая папка with spaces'), true,
+        'runtime fixture cwd must exercise spaces and Cyrillic');
+      assert.strictEqual(calls.length, scripts.length);
+      scripts.forEach((script, index) => {
+        const call = calls[index];
+        assert.strictEqual(call.command, commandProcessor, 'ComSpec from the isolated test environment must be honored');
+        assert.deepStrictEqual(call.args, ['/d', '/c', script.command],
+          'cmd must receive a literal allowlisted command without a computed path');
+        assert.strictEqual(call.options.cwd, fixture.root, 'cwd must carry the Unicode/spaced working directory');
+        assert.strictEqual(call.options.env, env);
+        assert.strictEqual(call.options.shell, undefined, 'spawnSync shell:false must remain the default');
+      });
+    } finally {
+      removeAuditRoot(audit);
+    }
+  });
+
+  windowsOnlyTest('batch launcher rejects unknown, external, and metacharacter paths before spawning', () => {
+    const audit = createAuditRoot();
+    try {
+      const repoRoot = path.resolve(process.cwd());
+      const fixture = createBatchFixture(audit, repoRoot);
+      const env = createIsolatedEnvironment(audit, { ComSpec: 'C:\\Windows\\System32\\cmd.exe' });
+      let spawnCalls = 0;
+      const spawnBatch: BatchSpawner = () => {
+        spawnCalls++;
+        return { status: 0, stdout: '', stderr: '' };
+      };
+      const rejectedPaths = [
+        path.join(fixture.root, 'scripts', 'unknown.bat'),
+        path.join(audit.root, 'external.bat'),
+        path.join(fixture.root, 'scripts', 'unsafe & calc.bat'),
+        path.join(fixture.root, 'scripts', 'unsafe^whoami.bat'),
+      ];
+
+      for (const batchPath of rejectedPaths) {
+        assert.throws(
+          () => runBatch(batchPath, env, fixture.root, spawnBatch),
+          /Unsupported batch script/,
+          `unsupported batch path should be rejected: ${batchPath}`
+        );
+      }
+      assert.strictEqual(spawnCalls, 0, 'unsupported paths must be rejected before spawning cmd.exe');
     } finally {
       removeAuditRoot(audit);
     }
