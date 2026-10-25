@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
+import type { AgentResult } from '../../src/agent/types';
 import { AgentBridge } from '../../src/agent/agentBridge';
 import {
     setExecuteCommandHandler,
@@ -380,7 +381,89 @@ suite('AgentBridge — HTTP server', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 14. executeCommand вызывается с правильным name и args
+    // 14. Returned typed AgentResult failures are passed through
+    // -------------------------------------------------------------------------
+
+    test('returned typed AgentResult failures preserve all outcome fields over HTTP', async () => {
+        type MutationStatus =
+            | { status: 'failed'; effectPossible: false }
+            | { status: 'rolledBack'; effectPossible: false }
+            | { status: 'inDoubt'; effectPossible: true };
+        const agentResults: Array<{ name: string; result: AgentResult<MutationStatus> }> = [
+            {
+                name: 'failed',
+                result: {
+                    success: false,
+                    code: 'AGENT_OPERATION_FAILED',
+                    operationId: 'operation-failed-1',
+                    snapshotVersion: 31,
+                    data: { status: 'failed', effectPossible: false },
+                    error: 'The operation failed before applying changes.',
+                },
+            },
+            {
+                name: 'rolledback',
+                result: {
+                    success: false,
+                    code: 'MUTATION_ROLLED_BACK',
+                    operationId: 'operation-rolled-back-2',
+                    snapshotVersion: 32,
+                    data: { status: 'rolledBack', effectPossible: false },
+                    mutationFailure: {
+                        status: 'rolledBack',
+                        code: 'MUTATION_ROLLED_BACK',
+                        effectPossible: false,
+                        message: 'The mutation was rolled back.',
+                    },
+                    error: 'The mutation was rolled back.',
+                },
+            },
+            {
+                name: 'indoubt',
+                result: {
+                    success: false,
+                    code: 'MUTATION_IN_DOUBT',
+                    operationId: 'operation-in-doubt-3',
+                    snapshotVersion: 33,
+                    data: { status: 'inDoubt', effectPossible: true },
+                    mutationFailure: {
+                        status: 'inDoubt',
+                        code: 'MUTATION_IN_DOUBT',
+                        effectPossible: true,
+                        message: 'The mutation result is uncertain.',
+                    },
+                    reconciliation: {
+                        status: 'failed',
+                        code: 'RELOAD_TIMEOUT',
+                        message: 'The follow-up configuration refresh timed out.',
+                    },
+                    error: 'The mutation may have been applied; inspect the configuration state.',
+                },
+            },
+        ];
+
+        for (const sample of agentResults) {
+            setExecuteCommandHandler(() => sample.result);
+
+            const res = await httpRequest({
+                port,
+                method: 'POST',
+                path: '/command',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ name: `test.allowed.${sample.name}`, args: {} }),
+            });
+
+            assert.strictEqual(res.status, 200, `${sample.name} result should remain a normal command response`);
+            assert.deepStrictEqual(JSON.parse(res.body), sample.result,
+                `${sample.name} AgentResult should be forwarded without changing its fields`);
+        }
+    });
+
+    // -------------------------------------------------------------------------
+    // 15. executeCommand вызывается с правильным name и args
     // -------------------------------------------------------------------------
 
     test('executeCommand вызывается с правильным name и args', async () => {
@@ -415,7 +498,7 @@ suite('AgentBridge — HTTP server', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 15. args undefined → executeCommand вызывается с {}
+    // 16. args undefined → executeCommand вызывается с {}
     // -------------------------------------------------------------------------
 
     test('POST без args → executeCommand вызывается с {}', async () => {
@@ -441,7 +524,7 @@ suite('AgentBridge — HTTP server', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 16. Non-whitelisted команда → 403
+    // 17. Non-whitelisted команда → 403
     // -------------------------------------------------------------------------
 
     test('non-whitelisted команда → 403 с error и name', async () => {
@@ -463,60 +546,139 @@ suite('AgentBridge — HTTP server', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 17. executeCommand бросает Error → 200 + { success: false, error: msg }
+    // 18. Unexpected command errors do not expose messages, stacks, tokens, or paths
     // -------------------------------------------------------------------------
 
-    test('executeCommand бросает Error → 200 + { success: false, error: "msg" }', async () => {
+    test('executeCommand Error возвращает стабильную ошибку без утечки message/stack/token/path или логирования', async () => {
+        const pathMarker = 'C:\\Users\\Максим\\secrets\\agent-command.json';
+        const messageMarker = `command failed ${pathMarker} Bearer ${token}`;
+        const stackMarker = `Error: ${messageMarker}\n    at ${pathMarker}:17:4`;
+        const originalConsoleError = console.error;
+        const errorLogs: unknown[][] = [];
+        console.error = (...args: unknown[]) => errorLogs.push(args);
         setExecuteCommandHandler((_name, _args) => {
-            throw new Error('command failed for testing');
+            const error = new Error(messageMarker);
+            error.stack = stackMarker;
+            throw error;
         });
 
-        const res = await httpRequest({
-            port,
-            method: 'POST',
-            path: '/command',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ name: 'test.allowed.throw', args: {} }),
-        });
+        try {
+            const res = await httpRequest({
+                port,
+                method: 'POST',
+                path: '/command',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ name: 'test.allowed.throw', args: {} }),
+            });
 
-        assert.strictEqual(res.status, 200);
-        const json = JSON.parse(res.body) as Record<string, unknown>;
-        assert.strictEqual(json['success'], false);
-        assert.strictEqual(json['error'], 'command failed for testing');
+            assert.strictEqual(res.status, 200);
+            assert.deepStrictEqual(JSON.parse(res.body), {
+                success: false,
+                error: 'Не удалось выполнить команду агента.',
+            });
+            assert.ok(!res.body.includes(messageMarker), 'response must not include the thrown message');
+            assert.ok(!res.body.includes(stackMarker), 'response must not include the thrown stack');
+            assert.ok(!res.body.includes(token), 'response must not include the bearer token');
+            assert.ok(!res.body.includes(pathMarker), 'response must not include the local path');
+            assert.deepStrictEqual(errorLogs, [], 'unexpected command errors must not be logged raw');
+        } finally {
+            console.error = originalConsoleError;
+        }
     });
 
     // -------------------------------------------------------------------------
-    // 18. executeCommand бросает не-Error (строку) → 200 + { success: false, error: '<строка>' }
+    // 19. Non-Error string rejections are not exposed
     // -------------------------------------------------------------------------
 
-    test('executeCommand бросает строку → 200 + { success: false, error: "<строка>" }', async () => {
+    test('executeCommand string rejection returns the same stable error without exposing bearer/path markers', async () => {
+        const pathMarker = 'C:\\Users\\Максим\\secrets\\agent-command.json';
+        const thrownValue = `string rejection ${pathMarker} Bearer ${token}`;
+        const originalConsoleError = console.error;
+        const errorLogs: unknown[][] = [];
+        console.error = (...args: unknown[]) => errorLogs.push(args);
         setExecuteCommandHandler((_name, _args) => {
             // eslint-disable-next-line no-throw-literal
-            throw 'string error thrown';
+            throw thrownValue;
         });
 
-        const res = await httpRequest({
-            port,
-            method: 'POST',
-            path: '/command',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ name: 'test.allowed.throwstr', args: {} }),
-        });
+        try {
+            const res = await httpRequest({
+                port,
+                method: 'POST',
+                path: '/command',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ name: 'test.allowed.throwstr', args: {} }),
+            });
 
-        assert.strictEqual(res.status, 200);
-        const json = JSON.parse(res.body) as Record<string, unknown>;
-        assert.strictEqual(json['success'], false);
-        assert.strictEqual(json['error'], 'string error thrown');
+            assert.strictEqual(res.status, 200);
+            assert.deepStrictEqual(JSON.parse(res.body), {
+                success: false,
+                error: 'Не удалось выполнить команду агента.',
+            });
+            assert.ok(!res.body.includes(thrownValue), 'response must not include the thrown string');
+            assert.ok(!res.body.includes(token), 'response must not include the bearer token');
+            assert.ok(!res.body.includes(pathMarker), 'response must not include the local path');
+            assert.deepStrictEqual(errorLogs, [], 'unexpected command errors must not be logged raw');
+        } finally {
+            console.error = originalConsoleError;
+        }
     });
 
     // -------------------------------------------------------------------------
-    // 19. Body > 1MB → 413 + { error: 'payload too large' }
+    // 20. Non-Error values are not coerced while handling the unexpected throw
+    // -------------------------------------------------------------------------
+
+    test('executeCommand object rejection is caught without String conversion or raw logging', async () => {
+        const pathMarker = 'C:\\Users\\Максим\\secrets\\agent-command.json';
+        let coercionAttempts = 0;
+        const thrownValue = {
+            toString(): never {
+                coercionAttempts++;
+                throw new Error(`coercion failed Bearer ${token} ${pathMarker}`);
+            },
+        };
+        const originalConsoleError = console.error;
+        const errorLogs: unknown[][] = [];
+        console.error = (...args: unknown[]) => errorLogs.push(args);
+        setExecuteCommandHandler((_name, _args) => {
+            // eslint-disable-next-line no-throw-literal
+            throw thrownValue;
+        });
+
+        try {
+            const res = await httpRequest({
+                port,
+                method: 'POST',
+                path: '/command',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ name: 'test.allowed.throwobj', args: {} }),
+            });
+
+            assert.strictEqual(res.status, 200);
+            assert.deepStrictEqual(JSON.parse(res.body), {
+                success: false,
+                error: 'Не удалось выполнить команду агента.',
+            });
+            assert.strictEqual(coercionAttempts, 0, 'the thrown non-Error object must not be coerced');
+            assert.ok(!res.body.includes(token), 'response must not include the bearer token');
+            assert.ok(!res.body.includes(pathMarker), 'response must not include the local path');
+            assert.deepStrictEqual(errorLogs, [], 'unexpected command errors must not be logged raw');
+        } finally {
+            console.error = originalConsoleError;
+        }
+    });
+
+    // -------------------------------------------------------------------------
+    // 21. Body > 1MB → 413 + { error: 'payload too large' }
     // -------------------------------------------------------------------------
 
     test('body above bridge limit → 413 + { error: "payload too large" }', async () => {
@@ -540,7 +702,7 @@ suite('AgentBridge — HTTP server', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 20. Разные regex: whitelist принимает foo.bar, отбивает bar.foo
+    // 22. Разные regex: whitelist принимает foo.bar, отбивает bar.foo
     // -------------------------------------------------------------------------
 
     test('разные commandPattern: /^foo\\.\\w+$/ принимает foo.bar, отбивает bar.foo', async () => {
@@ -588,7 +750,7 @@ suite('AgentBridge — HTTP server', () => {
     // =========================================================================
 
     // -------------------------------------------------------------------------
-    // 21. Bridge file создаётся после start() с правильным содержимым
+    // 23. Bridge file создаётся после start() с правильным содержимым
     // -------------------------------------------------------------------------
 
     test('P7b-3: bridge file создаётся после start() с правильными полями', async () => {
@@ -640,7 +802,7 @@ suite('AgentBridge — HTTP server', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 22. Bridge file удаляется после stop()
+    // 24. Bridge file удаляется после stop()
     // -------------------------------------------------------------------------
 
     test('P7b-3: bridge file удаляется после stop()', async () => {
@@ -657,7 +819,7 @@ suite('AgentBridge — HTTP server', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 23. Без workspaceFolder bridge file НЕ создаётся
+    // 25. Без workspaceFolder bridge file НЕ создаётся
     // -------------------------------------------------------------------------
 
     test('P7b-3: без workspaceFolder bridge file не создаётся', async () => {
@@ -676,7 +838,7 @@ suite('AgentBridge — HTTP server', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 24. Двойной start: файл переписывается с новыми port/token
+    // 26. Двойной start: файл переписывается с новыми port/token
     // -------------------------------------------------------------------------
 
     test('P7b-3: двойной start (с остановкой между) переписывает bridge file', async () => {
@@ -707,7 +869,7 @@ suite('AgentBridge — HTTP server', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 25. stop() при отсутствующем bridge file (ручное удаление) — не падает
+    // 27. stop() при отсутствующем bridge file (ручное удаление) — не падает
     // -------------------------------------------------------------------------
 
     test('P7b-3: stop() при удалённом bridge file не падает (ENOENT)', async () => {
@@ -727,7 +889,7 @@ suite('AgentBridge — HTTP server', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 26. Папка .vscode создаётся если её не было
+    // 28. Папка .vscode создаётся если её не было
     // -------------------------------------------------------------------------
 
     test('P7b-3: папка .vscode создаётся если её не было', async () => {
@@ -748,7 +910,7 @@ suite('AgentBridge — HTTP server', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 27. helperScriptPath / discoverScriptPath пишутся если задан extensionPath
+    // 29. helperScriptPath / discoverScriptPath пишутся если задан extensionPath
     // -------------------------------------------------------------------------
 
     test('extensionPath: bridge file содержит helperScriptPath и discoverScriptPath', async () => {
@@ -779,7 +941,7 @@ suite('AgentBridge — HTTP server', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 28. Без extensionPath — helperScriptPath/discoverScriptPath не пишутся
+    // 30. Без extensionPath — helperScriptPath/discoverScriptPath не пишутся
     // -------------------------------------------------------------------------
 
     test('без extensionPath: helperScriptPath/discoverScriptPath отсутствуют в bridge file', async () => {
