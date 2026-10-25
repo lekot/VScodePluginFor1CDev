@@ -137,6 +137,63 @@ suite('RoleXmlParser Tests', () => {
     }
   });
 
+  test('parseRoleXml keeps prototype-looking object names as own Rights.xml entries', async () => {
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-prototype-'));
+    const roleFilePath = path.join(tempRoot, 'src', 'Roles', 'PrototypeRole.xml');
+    const rightsFilePath = path.join(tempRoot, 'src', 'Roles', 'PrototypeRole', 'Ext', 'Rights.xml');
+    await fs.promises.mkdir(path.dirname(rightsFilePath), { recursive: true });
+    await fs.promises.mkdir(path.dirname(roleFilePath), { recursive: true });
+    await fs.promises.writeFile(roleFilePath,
+      '<Role xmlns="http://v8.1c.ru/8.3/MDClasses"><Properties><Name>PrototypeRole</Name></Properties><Rights/></Role>',
+      'utf8');
+    await fs.promises.writeFile(rightsFilePath, [
+      '<Rights xmlns="http://v8.1c.ru/8.2/roles">',
+      ...['__proto__', 'constructor', 'toString', 'Catalog.Neighbor'].map((name) =>
+        `<object><name>${name}</name><right><name>Read</name><value>true</value></right></object>`),
+      '</Rights>',
+    ].join(''), 'utf8');
+
+    const originalObjectPrototype = Object.getPrototypeOf({});
+    try {
+      const model = await RoleXmlParser.parseRoleXml(roleFilePath);
+      assert.deepStrictEqual(Object.keys(model.rights).sort(),
+        ['__proto__', 'constructor', 'toString', 'Catalog.Neighbor'].sort(),
+        'all untrusted XML object names must survive as own map entries');
+      assert.strictEqual(Object.getPrototypeOf(model.rights), originalObjectPrototype,
+        'parsing the __proto__ name must not replace the rights map prototype');
+      for (const name of ['__proto__', 'constructor', 'toString', 'Catalog.Neighbor']) {
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(model.rights, name), true);
+        assert.strictEqual(model.rights[name].read, true);
+      }
+      assert.strictEqual((Object.prototype as Record<string, unknown>).polluted, undefined,
+        'untrusted XML must not mutate global prototypes');
+    } finally {
+      await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('extractRights keeps prototype-looking object names in Designer full-name keys', () => {
+    const rights = RoleXmlParser.extractRights({
+      Role: {
+        Rights: {
+          Catalog: {
+            Object: ['__proto__', 'constructor', 'toString', 'Neighbor'].map((name) => ({
+              Name: name,
+              Read: 'true',
+            })),
+          },
+        },
+      },
+    });
+
+    for (const name of ['__proto__', 'constructor', 'toString', 'Neighbor']) {
+      const fullName = `Catalog.${name}`;
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(rights, fullName), true);
+      assert.strictEqual(rights[fullName].read, true);
+    }
+    assert.strictEqual(Object.getPrototypeOf(rights), Object.prototype);
+  });
+
   test('parseRoleXml reads Rights.xml object and right names when name nodes are #text + xsi:type (fast-xml-parser)', async () => {
     const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-name-'));
     const roleFilePath = path.join(tempRoot, 'src', 'Roles', 'TestRole.xml');

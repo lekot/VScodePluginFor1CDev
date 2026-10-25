@@ -1397,13 +1397,11 @@ suite('RolesEditor Lazy Loading & Staged Lifecycle (Issue #329)', () => {
     const roleData = {
       name: 'Operator',
       filePath: 'src/Roles/Operator.xml',
-      rights: {
-        'Catalog.Items.Attribute.Beta': { Read: true, View: true },
-        'Catalog.Items': { Read: true },
-      },
+      rights: JSON.parse('{"Catalog.Items.Attribute.Beta":{"Read":true,"View":true},"Catalog.Items":{"Read":true},"__proto__":{"Read":false},"constructor":{"Read":false},"toString":{"Read":false},"hasOwnProperty":{"Read":false},"Catalog.Neighbor":{"Read":false}}'),
       uiRights: [
-        { key: 'Read', label: 'Read', xmlName: 'Read', applicableTo: ['Catalog', 'Attribute'] },
-        { key: 'View', label: 'View', xmlName: 'View', applicableTo: ['Catalog', 'Attribute'] },
+        { key: 'Read', label: 'Read', xmlName: 'Read', applicableTo: ['Catalog', 'Attribute'], dependencies: ['__proto__'], clearedBy: [] },
+        { key: 'View', label: 'View', xmlName: 'View', applicableTo: ['Catalog', 'Attribute'], dependencies: [], clearedBy: [] },
+        { key: '__proto__', label: '__proto__', xmlName: '__proto__', applicableTo: ['Catalog'], dependencies: [], clearedBy: [] },
       ],
     };
 
@@ -1415,7 +1413,7 @@ suite('RolesEditor Lazy Loading & Staged Lifecycle (Issue #329)', () => {
 
     html = html.replace(
       /\s*\/\/ Request initial data\s*vscode\.postMessage\(\s*\{\s*command:\s*'ready'\s*\}\s*\)\s*;/,
-      ` roleData = ${JSON.stringify(roleData)};
+      ` roleData = JSON.parse(${JSON.stringify(JSON.stringify(roleData))});
         allObjects = ${JSON.stringify(initialObjects)};
         tableInitialLoading = false;
         filterState = { showAll: false, searchQuery: '', typeFilter: '' };
@@ -1426,7 +1424,27 @@ suite('RolesEditor Lazy Loading & Staged Lifecycle (Issue #329)', () => {
 
     const scriptMatch = html.match(/<script nonce="[^"]*">([\s\S]*?)<\/script>/);
     assert.ok(scriptMatch, 'script tag must exist in rolesEditorWebview.html');
-    const scriptContent = scriptMatch[1];
+    let scriptContent = scriptMatch[1];
+    scriptContent = scriptContent.replace(/\}\)\(\);\s*$/, `window.__rolesTestState = function () {
+        return {
+          allObjects: allObjects,
+          rights: roleData.rights,
+          prototypeState: Object.prototype.displayName === undefined &&
+            Object.prototype.hasRights === undefined &&
+            Object.displayName === undefined &&
+            Object.prototype.toString.displayName === undefined &&
+            Object.prototype.hasOwnProperty.displayName === undefined,
+          rightsPrototypeIsNull: Object.getPrototypeOf(roleData.rights) === null,
+          protoRightsPrototypeIsNull: Object.prototype.hasOwnProperty.call(roleData.rights, '__proto__') &&
+            Object.getPrototypeOf(roleData.rights['__proto__']) === null,
+          resetFilters: function () {
+            filterState.searchQuery = '';
+            filterState.typeFilter = '';
+            renderTable();
+          }
+        };
+      };
+      })();`);
 
     class MockElement {
       public tagName: string;
@@ -1505,8 +1523,9 @@ suite('RolesEditor Lazy Loading & Staged Lifecycle (Issue #329)', () => {
     };
 
     const messageListeners: ((event: { data: unknown }) => void)[] = [];
+    const postedMessages: Array<{ command: string; data?: any }> = [];
     const sandbox = {
-      acquireVsCodeApi: () => ({ postMessage: () => {} }),
+      acquireVsCodeApi: () => ({ postMessage: (message: { command: string; data?: any }) => postedMessages.push(message) }),
       document: {
         getElementById: (id: string) => elements[id] || new MockElement('div'),
         createElement: (tag: string) => new MockElement(tag),
@@ -1528,6 +1547,10 @@ suite('RolesEditor Lazy Loading & Staged Lifecycle (Issue #329)', () => {
 
     function postMessage(msg: unknown): void {
       for (const fn of messageListeners) fn({ data: msg });
+    }
+
+    function inspectWebviewState(): any {
+      return (sandbox.window as any).__rolesTestState();
     }
 
     // 1. Initial State: Catalog.Items and Catalog.Items.Attribute.Beta
@@ -1595,6 +1618,121 @@ suite('RolesEditor Lazy Loading & Staged Lifecycle (Issue #329)', () => {
     assert.strictEqual(betaSearchCount, 1, 'Beta attribute must remain unique during search');
     const searchUnique = new Set(rowsAfterSearch);
     assert.strictEqual(searchUnique.size, rowsAfterSearch.length, 'Every rendered row must have a unique fullName during search');
+
+    const indexedObjects = [
+      { fullName: '__proto__', type: 'Catalog', name: 'Proto', displayName: 'Proto indexed', rowKind: 'object', hasRights: false },
+      { fullName: 'constructor', type: 'Catalog', name: 'Constructor', displayName: 'Constructor indexed', rowKind: 'object', hasRights: false },
+      { fullName: 'toString', type: 'Catalog', name: 'ToString', displayName: 'ToString indexed', rowKind: 'object', hasRights: false },
+      { fullName: 'hasOwnProperty', type: 'Catalog', name: 'HasOwnProperty', displayName: 'HasOwnProperty indexed', rowKind: 'object', hasRights: false },
+      { fullName: 'Catalog.Neighbor', type: 'Catalog', name: 'Neighbor', displayName: 'Neighbor indexed', rowKind: 'object', hasRights: false },
+    ];
+    postMessage({
+      command: 'objectsLoaded',
+      data: { sessionId: 'session-1', dataRevision: 3, phase: 'typeIndex', objects: indexedObjects },
+    });
+    const indexedMergeRows = JSON.parse(JSON.stringify(inspectWebviewState().allObjects.map(
+      (object: { fullName: string; displayName: string }) => ({ fullName: object.fullName, displayName: object.displayName }),
+    ))) as Array<{ fullName: string; displayName: string }>;
+    for (const fullName of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'Catalog.Neighbor']) {
+      assert.strictEqual(indexedMergeRows.filter((row) => row.fullName === fullName).length, 1, `${fullName} must be added exactly once through index merge`);
+    }
+    assert.strictEqual(inspectWebviewState().prototypeState, true, 'prototype-looking fullNames must not write into global prototypes or inherited functions');
+
+    postMessage({
+      command: 'objectsLoaded',
+      data: { sessionId: 'session-1', dataRevision: 4, phase: 'initial', objects: indexedObjects },
+    });
+    postMessage({
+      command: 'objectsLoaded',
+      data: {
+        sessionId: 'session-1',
+        dataRevision: 5,
+        phase: 'typeIndex',
+        objects: indexedObjects.map((object) => ({ ...object, displayName: `${object.displayName} merged`, hasRights: true })),
+      },
+    });
+    const mergedRows = JSON.parse(JSON.stringify(inspectWebviewState().allObjects.map(
+      (object: { fullName: string; displayName: string }) => ({ fullName: object.fullName, displayName: object.displayName }),
+    ))) as Array<{ fullName: string; displayName: string }>;
+    for (const fullName of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'Catalog.Neighbor']) {
+      const matches = mergedRows.filter((row) => row.fullName === fullName);
+      assert.strictEqual(matches.length, 1, `${fullName} must be kept exactly once through index merge`);
+      assert.ok(matches[0].displayName.endsWith('merged'), `${fullName} must receive indexed display data`);
+    }
+
+    inspectWebviewState().resetFilters();
+    elements.showAllToggle.checked = true;
+    elements.showAllToggle.dispatchEvent({ type: 'change', target: elements.showAllToggle });
+    for (const fullName of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      const row = elements.tableBody.children.find((candidate) => candidate.children[0].title === fullName);
+      assert.ok(row, `${fullName} must render after the index and initial snapshot merge`);
+      const readCheckbox = row.children[1].children[0];
+      readCheckbox.checked = true;
+      readCheckbox.dispatchEvent({ type: 'change', target: readCheckbox });
+    }
+    const protoRights = inspectWebviewState().rights['__proto__'] as Record<string, unknown>;
+    assert.strictEqual(inspectWebviewState().rightsPrototypeIsNull, true, 'the outer rights record must have a null prototype');
+    assert.strictEqual(inspectWebviewState().protoRightsPrototypeIsNull, true, 'each nested rights record must have a null prototype');
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(protoRights, 'Read'), true);
+    assert.strictEqual(protoRights.Read, true, 'checkbox updates must target the own rights record');
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(protoRights, '__proto__'), true, 'dependency writes must keep the own prototype-looking right key');
+    assert.strictEqual(protoRights['__proto__'], true);
+
+    elements.saveButton.dispatchEvent({ type: 'click', target: elements.saveButton });
+    const saveMessage = postedMessages.filter((message) => message.command === 'save').pop();
+    assert.ok(saveMessage, 'save must post the hydrated role record');
+    const savedRights = saveMessage.data.roleData.rights as Record<string, Record<string, unknown>>;
+    assert.strictEqual(Object.getPrototypeOf(savedRights), null, 'the outer rights record must have a null prototype');
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(savedRights, '__proto__'), true);
+    assert.strictEqual(Object.getPrototypeOf(savedRights['__proto__']), null);
+    assert.strictEqual(savedRights['__proto__']['__proto__'], true);
+    const wireRights = JSON.parse(JSON.stringify(savedRights)) as Record<string, Record<string, unknown>>;
+    assert.strictEqual(wireRights['__proto__']['__proto__'], true, 'saved JSON must preserve own prototype-looking keys');
+    assert.strictEqual(inspectWebviewState().prototypeState, true, 'merge, checkbox dependency writes, and save must leave realm prototypes unchanged');
+  });
+
+  test('provider serializes own prototype-looking role rights through JSON.parse hydration (#404)', async () => {
+    const rolePath = path.join(tmpRoot, 'src', 'Roles', 'PrototypeRole.xml');
+    const rightsPath = path.join(tmpRoot, 'src', 'Roles', 'PrototypeRole', 'Ext', 'Rights.xml');
+    await fs.promises.mkdir(path.dirname(rightsPath), { recursive: true });
+    await fs.promises.mkdir(path.dirname(rolePath), { recursive: true });
+    await fs.promises.writeFile(
+      rolePath,
+      '<Role xmlns="http://v8.1c.ru/8.3/MDClasses"><Properties><Name>PrototypeRole</Name></Properties><Rights/></Role>',
+      'utf8',
+    );
+    await fs.promises.writeFile(rightsPath, [
+      '<Rights xmlns="http://v8.1c.ru/8.2/roles">',
+      ...['__proto__', 'constructor', 'toString', 'Catalog.Neighbor'].map((name) =>
+        `<object><name>${name}</name><right><name>Read</name><value>true</value></right></object>`),
+      '</Rights>',
+    ].join(''), 'utf8');
+
+    const { panel } = createFakeWebviewPanel({ autoReplyFlushWith: '' });
+    const restorePanel = patchCreateWebviewPanel(panel);
+    const provider = new RolesRightsEditorProvider(createFakeExtensionContext());
+
+    try {
+      await provider.show(rolePath, tmpRoot);
+      const html = panel.webview.html;
+      const hydrations = [...html.matchAll(/roleData\s*=\s*[^;]+;/g)];
+      const hydration = hydrations[hydrations.length - 1];
+      assert.ok(hydration, 'actual provider HTML must contain its role data hydration assignment');
+      const sandbox = { roleData: undefined as unknown };
+      vm.runInNewContext(hydration[0], sandbox);
+      const roleData = sandbox.roleData as { rights: Record<string, { read: boolean }> };
+      const providerRealmObjectPrototype = vm.runInNewContext('Object.prototype', sandbox);
+      for (const name of ['__proto__', 'constructor', 'toString', 'Catalog.Neighbor']) {
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(roleData.rights, name), true,
+          `${name} must stay an own property across the real provider boundary`);
+        assert.strictEqual(roleData.rights[name].read, true);
+      }
+      assert.strictEqual(Object.getPrototypeOf(roleData.rights), providerRealmObjectPrototype);
+      assert.strictEqual((Object.prototype as Record<string, unknown>).polluted, undefined);
+    } finally {
+      restorePanel();
+      provider.dispose();
+    }
   });
 });
 
