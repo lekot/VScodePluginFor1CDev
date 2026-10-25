@@ -308,7 +308,12 @@ export class RoleXmlParser {
 
       // Only add to map if at least one right is true
       if (this.hasAnyRights(objectRights)) {
-        rights[fullName] = objectRights;
+        Object.defineProperty(rights, fullName, {
+          value: objectRights,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
       }
     }
   }
@@ -622,7 +627,12 @@ export class RoleXmlParser {
         
         // Only add to map if at least one right is true
         if (this.hasAnyRights(objectRights)) {
-          rights[objectName] = objectRights;
+          Object.defineProperty(rights, objectName, {
+            value: objectRights,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+          });
         }
       }
       

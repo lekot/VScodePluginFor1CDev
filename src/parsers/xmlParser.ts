@@ -169,7 +169,11 @@ export class XmlParser {
 
     for (const part of parts) {
       if (current && typeof current === 'object') {
-        current = (current as Record<string, unknown>)[part];
+        const descriptor = Object.getOwnPropertyDescriptor(current, part);
+        if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+          return undefined;
+        }
+        current = descriptor.value;
       } else {
         return undefined;
       }
@@ -187,17 +191,42 @@ export class XmlParser {
   static setElementByPath(obj: Record<string, unknown>, elementPath: string, value: unknown): void {
     const parts = elementPath.split('.');
     assertSafeXmlPathSegments(parts);
-    let current: Record<string, unknown> = obj;
+    let current: object = obj;
 
     for (let i = 0; i < parts.length - 1; i++) {
       const part = parts[i];
-      if (!current[part]) {
-        current[part] = {};
+      const descriptor = Object.getOwnPropertyDescriptor(current, part);
+      if (!descriptor) {
+        const child: Record<string, unknown> = {};
+        Object.defineProperty(current, part, {
+          value: child,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+        current = child;
+        continue;
       }
-      current = current[part] as Record<string, unknown>;
+
+      if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        throw new Error(`Cannot traverse accessor path segment: ${part}`);
+      }
+
+      const next = descriptor.value;
+      if (next === null || typeof next !== 'object') {
+        throw new Error(`Invalid primitive intermediate path segment: ${part}`);
+      }
+      current = next;
     }
 
-    current[parts[parts.length - 1]] = value;
+    const leaf = parts[parts.length - 1];
+    const descriptor = Object.getOwnPropertyDescriptor(current, leaf);
+    if (descriptor && !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+      throw new Error(`Cannot assign accessor path segment: ${leaf}`);
+    }
+    Object.defineProperty(current, leaf, descriptor
+      ? { ...descriptor, value }
+      : { value, enumerable: true, writable: true, configurable: true });
   }
 
   /**

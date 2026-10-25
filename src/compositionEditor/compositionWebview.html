@@ -443,9 +443,31 @@
             let bulkLoadInProgress = false;
             let pendingAfterLoad = null;
 
-            let itemSettings = {};        // ref → { key → value }
+            let itemSettings = new Map(); // ref → Map<key, value>
             let settingsSchema = [];      // ItemSettingSchema[]
-            let initialItemSettings = {}; // deep clone of itemSettings at init
+            let initialItemSettings = new Map(); // independent snapshot of item settings at init
+
+            function settingsMapFromWire(wireSettings) {
+                const result = new Map();
+                if (!wireSettings || typeof wireSettings !== 'object' || Array.isArray(wireSettings)) {
+                    return result;
+                }
+                Object.entries(wireSettings).forEach(function (entry) {
+                    const values = entry[1];
+                    if (values && typeof values === 'object' && !Array.isArray(values)) {
+                        result.set(entry[0], new Map(Object.entries(values)));
+                    }
+                });
+                return result;
+            }
+
+            function cloneSettingsMap(settings) {
+                const result = new Map();
+                settings.forEach(function (values, ref) {
+                    result.set(ref, new Map(values));
+                });
+                return result;
+            }
 
             let searchQuery = '';
             let showCheckedOnly = false;
@@ -466,8 +488,8 @@
                 initialChecked = new Set(data.checkedRefs || []);
 
                 settingsSchema = data.itemSettingsSchema || [];
-                itemSettings = data.itemSettings ? JSON.parse(JSON.stringify(data.itemSettings)) : {};
-                initialItemSettings = JSON.parse(JSON.stringify(itemSettings));
+                itemSettings = settingsMapFromWire(data.itemSettings);
+                initialItemSettings = cloneSettingsMap(itemSettings);
 
                 // Render additional header columns for settings schema
                 if (settingsSchema.length > 0) {
@@ -647,8 +669,9 @@
                         tdSetting.className = 'col-setting';
 
                         const select = document.createElement('select');
-                        const currentValue = (itemSettings[obj.ref] && itemSettings[obj.ref][schema.key] !== undefined)
-                            ? itemSettings[obj.ref][schema.key]
+                        const settings = itemSettings.get(obj.ref);
+                        const currentValue = (settings && settings.has(schema.key))
+                            ? settings.get(schema.key)
                             : schema.defaultValue;
 
                         for (var oi = 0; oi < schema.options.length; oi++) {
@@ -663,10 +686,12 @@
                         }
 
                         select.addEventListener('change', function () {
-                            if (!itemSettings[obj.ref]) {
-                                itemSettings[obj.ref] = {};
+                            let settings = itemSettings.get(obj.ref);
+                            if (!settings) {
+                                settings = new Map();
+                                itemSettings.set(obj.ref, settings);
                             }
-                            itemSettings[obj.ref][schema.key] = select.value;
+                            settings.set(schema.key, select.value);
                             vscode.postMessage({
                                 command: 'settingChange',
                                 data: { ref: obj.ref, key: schema.key, value: select.value }
@@ -804,12 +829,12 @@
                 let settingsChanged = 0;
                 // Count settings changes per ref (one ref with N changed fields = 1 change)
                 for (const ref of checkedSet) {
-                    const current = itemSettings[ref];
-                    const initial = initialItemSettings[ref];
-                    if (!current || !initial) { continue; }
+                    const current = itemSettings.get(ref);
+                    const initial = initialItemSettings.get(ref);
+                    if (!current) { continue; }
                     for (var ki = 0; ki < settingsSchema.length; ki++) {
                         const key = settingsSchema[ki].key;
-                        if (current[key] !== initial[key]) {
+                        if (current.get(key) !== initial?.get(key)) {
                             settingsChanged++;
                             break;
                         }

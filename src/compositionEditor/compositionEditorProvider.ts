@@ -55,6 +55,17 @@ function cloneSettingsMap(
   return new Map([...settings].map(([ref, values]) => [ref, { ...values }]));
 }
 
+function withOwnSetting(
+  settings: Readonly<Record<string, string>> | undefined,
+  key: string,
+  value: string,
+): Record<string, string> {
+  return Object.fromEntries([
+    ...Object.entries(settings ?? {}),
+    [key, value],
+  ]);
+}
+
 function cloneContentDiff(diff: ContentUpdateDiff): ContentUpdateDiff {
   return {
     add: [...diff.add],
@@ -204,11 +215,12 @@ export class CompositionEditorProvider implements vscode.Disposable {
 
       const htmlPath = this.resolveWebviewHtmlPath();
       const template = fs.readFileSync(htmlPath, 'utf8');
+      const payloadJson = escapeJsonForScript(JSON.stringify(payload));
       const html = renderSecureWebviewHtml(template, {
         csp: { allowUnsafeInlineStyles: true },
         substitutions: {
           '// __COMPOSITION_DATA_PLACEHOLDER__':
-            `window.__compositionData = ${escapeJsonForScript(JSON.stringify(payload))};`,
+            `window.__compositionData = JSON.parse(${JSON.stringify(payloadJson)});`,
         },
       });
 
@@ -350,8 +362,7 @@ export class CompositionEditorProvider implements vscode.Disposable {
         break;
       case 'settingChange': {
         const currentItemSettings = cloneSettingsMap(model.currentItemSettings);
-        const settings = currentItemSettings.get(msg.data.ref) ?? {};
-        settings[msg.data.key] = msg.data.value;
+        const settings = withOwnSetting(currentItemSettings.get(msg.data.ref), msg.data.key, msg.data.value);
         currentItemSettings.set(msg.data.ref, settings);
         this.currentItemSettings = cloneSettingsMap(currentItemSettings);
         this.recoveryModel = { ...model, currentItemSettings };
@@ -374,12 +385,7 @@ export class CompositionEditorProvider implements vscode.Disposable {
   }
 
   private handleSettingChange(ref: string, key: string, value: string): void {
-    let settings = this.currentItemSettings.get(ref);
-    if (!settings) {
-      settings = {};
-      this.currentItemSettings.set(ref, settings);
-    }
-    settings[key] = value;
+    this.currentItemSettings.set(ref, withOwnSetting(this.currentItemSettings.get(ref), key, value));
   }
 
   private async handleExpand(typeFolderId: string, session: CompositionSessionSnapshot): Promise<void> {
@@ -505,12 +511,10 @@ export class CompositionEditorProvider implements vscode.Disposable {
       const settingsChanged = new Map<string, Record<string, string>>();
       for (const [ref, current] of session.currentItemSettings) {
         const initial = session.initialItemSettings.get(ref) ?? {};
-        const changed: Record<string, string> = {};
-        let hasChange = false;
-        for (const [k, v] of Object.entries(current)) {
-          if (initial[k] !== v) { changed[k] = v; hasChange = true; }
-        }
-        if (hasChange) { settingsChanged.set(ref, changed); }
+        const changed = Object.fromEntries(Object.entries(current).filter(([key, value]) =>
+          !Object.prototype.hasOwnProperty.call(initial, key) || initial[key] !== value,
+        )) as Record<string, string>;
+        if (Object.keys(changed).length > 0) { settingsChanged.set(ref, changed); }
       }
 
       if (toAdd.length === 0 && toRemove.length === 0 && settingsChanged.size === 0) {

@@ -461,7 +461,7 @@ export class RolesRightsEditorProvider {
     // Inject data into the script (match line ending \n or \r\n)
     html = html.replace(
       /\s*\/\/ Request initial data\s*vscode\.postMessage\(\s*\{\s*command:\s*'ready'\s*\}\s*\)\s*;/,
-      ` roleData = ${roleDataJson};
+      ` roleData = JSON.parse(${JSON.stringify(roleDataJson)});
             allObjects = ${objectsJson};
             tableInitialLoading = ${loadingFlag};
             filterState = ${filterStateJson};

@@ -147,6 +147,91 @@ suite('subsystemCompositionEditorProvider — diff logic', () => {
   });
 });
 
+suite('Composition webview — prototype-looking refs and settings', () => {
+  test('reads and updates hostile refs and schema keys through independent Map snapshots without affecting neighbors', async () => {
+    const templatePath = path.resolve(__dirname, '../../../src/compositionEditor/compositionWebview.html');
+    const template = await fsp.readFile(templatePath, 'utf8');
+    const schemaKeys = ['Use', '__proto__', 'constructor', 'prototype', 'toString', 'hasOwnProperty'];
+    const payload = {
+      titlePrefix: 'Composition',
+      entityName: 'Test',
+      containers: [{
+        typeFolderId: 'Catalogs',
+        metadataType: 'Catalog',
+        displayName: 'Catalogs',
+        objectCount: null,
+        checkedCount: 5,
+      }],
+      checkedRefs: ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'Catalog.Neighbor'],
+      itemSettingsSchema: schemaKeys.map((key) => ({ key, label: key, options: ['Use', 'DontUse'], defaultValue: 'Use' })),
+      itemSettings: JSON.parse('{"Catalog.Neighbor":{}}') as Record<string, Record<string, string>>,
+    };
+    const html = template.replace(
+      '// __COMPOSITION_DATA_PLACEHOLDER__',
+      `window.__compositionData = JSON.parse(${JSON.stringify(JSON.stringify(payload))});`,
+    );
+    assert.notStrictEqual(html, template, 'test initialization must replace the production data placeholder');
+
+    const runtime = new CompositionWebviewRuntime();
+    runtime.loadHtml(html);
+    const objects = [
+      { ref: '__proto__', displayName: 'Proto', type: 'Catalog' },
+      { ref: 'constructor', displayName: 'Constructor', type: 'Catalog' },
+      { ref: 'toString', displayName: 'ToString', type: 'Catalog' },
+      { ref: 'hasOwnProperty', displayName: 'HasOwnProperty', type: 'Catalog' },
+      { ref: 'Catalog.Neighbor', displayName: 'Neighbor', type: 'Catalog' },
+    ];
+    const publishObjects = (): void => runtime.postMessageToWebview({
+      command: 'objectsLoaded',
+      data: { typeFolderId: 'Catalogs', objects },
+    });
+
+    const expandArrow = runtime.findTypeArrow('Catalogs');
+    assert.ok(expandArrow, 'the browser must render the Catalogs container');
+    expandArrow.click();
+    publishObjects();
+
+    for (const ref of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+      const setting = runtime.findObjectSetting(ref);
+      assert.ok(setting, `${ref} must have a rendered Use setting`);
+      setting.value = 'DontUse';
+      setting.dispatchEvent({ type: 'change' });
+      const lastMessage = JSON.parse(JSON.stringify(runtime.sentMessages[runtime.sentMessages.length - 1]));
+      assert.deepStrictEqual(lastMessage, {
+        command: 'settingChange',
+        data: { ref, key: 'Use', value: 'DontUse' },
+      }, 'wire settingChange payload must remain unchanged for arbitrary refs');
+      assert.strictEqual(runtime.getElementById('btn-save').disabled, false, 'the changed ref must mark the browser dirty');
+      assert.ok(runtime.getElementById('changes-badge').textContent.includes('изм.'), 'the dirty badge must reflect the independent initial snapshot');
+      publishObjects();
+      assert.strictEqual(runtime.findObjectSetting(ref)?.value, 'DontUse', `${ref} setting must survive a host render refresh`);
+      assert.strictEqual(runtime.findObjectSetting('Catalog.Neighbor')?.value, 'Use', 'a hostile ref must not change the ordinary neighbor setting');
+    }
+
+    const neighborRow = runtime.findObjectRow('Catalog.Neighbor');
+    assert.ok(neighborRow, 'the ordinary neighbor row must remain present');
+    const neighborSettings = neighborRow.getElementsByTagName('SELECT');
+    for (const schemaIndex of [1, 2, 3, 4, 5]) {
+      const key = schemaKeys[schemaIndex];
+      const setting = neighborSettings[schemaIndex];
+      assert.ok(setting, `${key} schema key must have a rendered control`);
+      setting.value = 'DontUse';
+      setting.dispatchEvent({ type: 'change' });
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(runtime.sentMessages[runtime.sentMessages.length - 1])), {
+        command: 'settingChange',
+        data: { ref: 'Catalog.Neighbor', key, value: 'DontUse' },
+      }, 'prototype-looking schema keys must keep the existing host message contract');
+      publishObjects();
+      const refreshedRow = runtime.findObjectRow('Catalog.Neighbor');
+      assert.ok(refreshedRow);
+      assert.strictEqual(refreshedRow.getElementsByTagName('SELECT')[schemaIndex].value, 'DontUse', `${key} must be stored as a setting value`);
+    }
+
+    assert.strictEqual(runtime.getElementById('changes-badge').textContent, '5\u00a0изм.', 'the badge counts changed refs once even when several schema keys change');
+    assert.strictEqual(runtime.sentMessages.filter((message) => message.command === 'settingChange').length, 9);
+  });
+});
+
 suite('CompositionEditorProvider — production writers & save entrypoint (Issue 159)', () => {
   let tmpDir: string;
   let originalCreateWebviewPanel: typeof vscode.window.createWebviewPanel;
@@ -474,9 +559,9 @@ function createCompositionPanelHarness(runRealWebview = false): {
     set html(value: string) {
       htmlValue = value;
       htmlAssignments++;
-      const match = value.match(/window\.__compositionData = (.*);/);
+      const match = value.match(/window\.__compositionData = JSON\.parse\((.*)\);/);
       if (match) {
-        const payload = JSON.parse(match[1]);
+        const payload = JSON.parse(JSON.parse(match[1]));
         displayedState = {
           checkedRefs: [...payload.checkedRefs],
           itemSettings: JSON.parse(JSON.stringify(payload.itemSettings)),
@@ -2113,6 +2198,140 @@ suite('CompositionEditorProvider — real webview session state (#250)', () => {
       releaseSave.resolve();
       await runtime?.drainExtensionMessages().catch(() => {});
       gateway.dispose();
+      provider.dispose();
+      panels.restore();
+      await cleanupTempDir(fixture.tempRoot);
+    }
+  });
+});
+
+suite('CompositionEditorProvider — prototype-safe settings (#404)', () => {
+  test('normal and recovery setting changes preserve own prototype-looking keys through wire and save', async () => {
+    const fixture = await createRuntimeCompositionFiles('composition-prototype-settings-');
+    const readB = compositionDeferred<{ refs: string[]; itemSettings: Map<string, Record<string, string>> }>();
+    const schemaKeys = ['Use', '__proto__', 'constructor', 'toString', 'hasOwnProperty', 'prototype'];
+    const initialSettings = new Map<string, Record<string, string>>([
+      ['__proto__', Object.fromEntries([
+        ['Use', 'Use'],
+        ['__proto__', 'Changed'],
+        ['constructor', 'initial-ref-constructor'],
+        ['toString', 'initial-ref-toString'],
+      ])],
+      ['Catalog.Safe', Object.fromEntries([
+        ['Use', 'Use'],
+        ['constructor', 'initial-constructor'],
+        ['toString', 'initial-toString'],
+      ])],
+      ['Catalog.Neighbor', Object.fromEntries([['Use', 'Use']])],
+    ]);
+    let appliedSettings: Map<string, Record<string, string>> | undefined;
+    const strategy = {
+      ...CommonAttributeStrategy,
+      itemSettingsSchema: schemaKeys.map((key) => ({ key, label: key, options: ['Use', 'DontUse', 'Changed'], defaultValue: 'Use' })),
+      readContent: (filePath: string) => filePath === fixture.fileB
+        ? readB.promise
+        : Promise.resolve({
+          refs: ['__proto__', 'Catalog.Safe', 'Catalog.Neighbor'],
+          itemSettings: new Map([...initialSettings].map(([ref, values]) => [ref, { ...values }])),
+        }),
+      applyUpdate: async (_filePath: string, diff: { settingsChanged: Map<string, Record<string, string>> }) => {
+        appliedSettings = diff.settingsChanged;
+        return { rejected: [] };
+      },
+    };
+    const panels = patchCompositionPanelFactory(true);
+    let gateway: SessionBackedMutationGateway | undefined;
+    const provider = new CompositionEditorProvider(
+      createCompositionContext(),
+      { invalidateTreeCacheOnly: async () => {}, loadMetadataTree: async () => {} },
+      strategy,
+    );
+    let runtime: CompositionWebviewRuntime | undefined;
+
+    try {
+      await writeCompositionFixture(fixture.configA, fixture.fileA, commonAttributeXml('A', 'Catalog.Safe'));
+      gateway = await createSessionBackedMutationGateway([fixture.configA, fixture.configB]);
+      const safe = { id: 'Catalog.Safe', name: 'Safe', type: MetadataType.Catalog, properties: {} } as TreeNode;
+      const neighbor = { id: 'Catalog.Neighbor', name: 'Neighbor', type: MetadataType.Catalog, properties: {} } as TreeNode;
+      const { tree } = createRuntimeCatalogTree(fixture.configA, fixture.configB, [safe, neighbor]);
+      await provider.show(fixture.nodeA, tree, fixture.configA);
+      runtime = panels.panels[0].runtime;
+      assert.ok(runtime, 'the panel must execute the real composition webview script');
+
+      runtime.findTypeArrow('Catalogs')?.click();
+      await runtime.drainExtensionMessages();
+
+      runtime.postMessageToWebview({
+        command: 'objectsLoaded',
+        data: { typeFolderId: 'Catalogs', objects: [
+          { ref: '__proto__', displayName: 'Proto', type: 'Catalog' },
+          { ref: 'Catalog.Safe', displayName: 'Safe', type: 'Catalog' },
+          { ref: 'Catalog.Neighbor', displayName: 'Neighbor', type: 'Catalog' },
+        ] },
+      });
+      const protoRow = runtime.findObjectRow('__proto__');
+      assert.ok(protoRow, 'an own prototype-looking ref must render in the actual provider webview');
+      assert.strictEqual(protoRow.getElementsByTagName('SELECT')[1].value, 'Changed',
+        'the own prototype-looking schema key must hydrate through the actual provider HTML JSON boundary');
+
+      const initializedWire = panels.panels[0].liveState();
+      assert.ok(initializedWire, 'the host must publish the initial composition payload');
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(initializedWire.itemSettings, '__proto__'), true, 'Object.fromEntries wire payload must keep a prototype-looking ref as own data');
+      assert.strictEqual(initializedWire.itemSettings['__proto__']['__proto__'], 'Changed');
+
+      await runtime.drainExtensionMessages();
+      const safeSettings = runtime.findObjectRow('Catalog.Safe')?.getElementsByTagName('SELECT');
+      const neighborSettings = runtime.findObjectRow('Catalog.Neighbor')?.getElementsByTagName('SELECT');
+      assert.ok(safeSettings && neighborSettings, 'both ordinary neighboring rows must render their settings');
+
+      safeSettings[0].value = 'DontUse';
+      safeSettings[0].dispatchEvent({ type: 'change' });
+      safeSettings[1].value = 'Changed';
+      safeSettings[1].dispatchEvent({ type: 'change' });
+      safeSettings[2].value = 'Changed';
+      safeSettings[2].dispatchEvent({ type: 'change' });
+      safeSettings[3].value = 'Changed';
+      safeSettings[3].dispatchEvent({ type: 'change' });
+      neighborSettings[0].value = 'DontUse';
+      neighborSettings[0].dispatchEvent({ type: 'change' });
+      await runtime.drainExtensionMessages();
+
+      const showB = provider.show(fixture.nodeB, tree, fixture.configB);
+      neighborSettings[1].value = 'Changed';
+      neighborSettings[1].dispatchEvent({ type: 'change' });
+      await runtime.drainExtensionMessages();
+      readB.reject(new Error('B read failed during prototype-key recovery'));
+      await showB;
+
+      assert.strictEqual(runtime.findObjectRow('Catalog.Safe')?.getElementsByTagName('SELECT')[1].value, 'Changed', 'the browser must retain its dirty schema-key value after recovery');
+      assert.ok(
+        runtime.sentMessages.some((message) => message.command === 'settingChange' && message.data.ref === 'Catalog.Neighbor' && message.data.key === '__proto__' && message.data.value === 'Changed'),
+        'the recovery message must preserve the original settingChange payload',
+      );
+
+      runtime.getElementById('btn-save').click();
+      await runtime.drainExtensionMessages();
+      assert.ok(appliedSettings, 'save must call the strategy with the settings diff');
+
+      const safeDiff = appliedSettings.get('Catalog.Safe');
+      assert.ok(safeDiff, 'normal changes must remain in the saved diff');
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(safeDiff, '__proto__'), true, 'normal host settingChange must create an own __proto__ key');
+      assert.strictEqual(safeDiff['__proto__'], 'Changed');
+      assert.strictEqual(safeDiff.Use, 'DontUse');
+      assert.strictEqual(safeDiff.constructor, 'Changed');
+      assert.strictEqual(safeDiff.toString, 'Changed');
+
+      const neighborDiff = appliedSettings.get('Catalog.Neighbor');
+      assert.ok(neighborDiff, 'recovery and neighboring changes must remain in the saved diff');
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(neighborDiff, '__proto__'), true, 'recovery settingChange must create an own __proto__ key');
+      assert.strictEqual(neighborDiff['__proto__'], 'Changed');
+      assert.strictEqual(neighborDiff.Use, 'DontUse');
+      assert.strictEqual(appliedSettings.has('__proto__'), false, 'ref keys belong to the outer Map and must not be flattened into the settings diff');
+      assert.strictEqual(provider.getDirtyCount(), 0, 'successful save must retain the existing clean-state semantics');
+    } finally {
+      readB.reject(new Error('cleanup B read'));
+      await runtime?.drainExtensionMessages().catch(() => {});
+      await gateway?.dispose();
       provider.dispose();
       panels.restore();
       await cleanupTempDir(fixture.tempRoot);

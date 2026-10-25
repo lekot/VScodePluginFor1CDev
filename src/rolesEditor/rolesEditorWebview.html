@@ -441,6 +441,30 @@
             var renderTableSeq = 0;
             var searchDebounceTimer = null;
 
+            function copyToNullPrototypeRecord(source) {
+                var result = Object.create(null);
+                if (!source || typeof source !== 'object' || Array.isArray(source)) {
+                    return result;
+                }
+                Object.entries(source).forEach(function (entry) {
+                    result[entry[0]] = entry[1];
+                });
+                return result;
+            }
+
+            function normalizeRoleRights() {
+                if (!roleData || typeof roleData !== 'object') {
+                    return;
+                }
+                var normalizedRights = copyToNullPrototypeRecord(null);
+                if (roleData.rights && typeof roleData.rights === 'object' && !Array.isArray(roleData.rights)) {
+                    Object.entries(roleData.rights).forEach(function (entry) {
+                        normalizedRights[entry[0]] = copyToNullPrototypeRecord(entry[1]);
+                    });
+                }
+                roleData.rights = normalizedRights;
+            }
+
             function setLoadingOverlay(visible) {
                 var el = document.getElementById('tableLoadingOverlay');
                 if (el) {
@@ -502,6 +526,7 @@
             }
 
             function beginRightsEditorSession() {
+                normalizeRoleRights();
                 if (roleData && roleData.name) {
                     document.getElementById('roleTitle').textContent = 'Rights: ' + roleData.name;
                 }
@@ -630,16 +655,16 @@
                             allObjects = data.objects || [];
                         } else {
                             var incoming = data.objects || [];
-                            var existingByFullName = {};
+                            var existingByFullName = new Map();
                             for (var i = 0; i < allObjects.length; i++) {
-                                existingByFullName[allObjects[i].fullName] = allObjects[i];
+                                existingByFullName.set(allObjects[i].fullName, allObjects[i]);
                             }
                             for (var j = 0; j < incoming.length; j++) {
                                 var inObj = incoming[j];
-                                var existing = existingByFullName[inObj.fullName];
+                                var existing = existingByFullName.get(inObj.fullName);
                                 if (!existing) {
                                     allObjects.push(inObj);
-                                    existingByFullName[inObj.fullName] = inObj;
+                                    existingByFullName.set(inObj.fullName, inObj);
                                 } else {
                                     existing.displayName = inObj.displayName;
                                     existing.hasRights = inObj.hasRights;
@@ -813,7 +838,7 @@
                 tdName.title = obj.fullName;
                 tr.appendChild(tdName);
 
-                const objectRights = roleData.rights[obj.fullName] || {};
+                const objectRights = roleData.rights[obj.fullName] || Object.create(null);
                 const metadataType = (obj.fullName || '').split('.')[0];
                 rightTypes.forEach(function(right) {
                     const td = document.createElement('td');
@@ -1044,7 +1069,7 @@
 
                 // Update local state
                 if (!roleData.rights[objectName]) {
-                    roleData.rights[objectName] = {};
+                    roleData.rights[objectName] = Object.create(null);
                 }
                 roleData.rights[objectName][rightType] = value;
 
