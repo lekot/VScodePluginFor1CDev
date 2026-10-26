@@ -48,6 +48,18 @@ function handleLoadError(error: unknown): void {
   vscode.window.showErrorMessage(`${MESSAGES.ERROR_LOADING}: ${errorMessage}`);
 }
 
+async function showPartialMetadataLoadWarning(message: string): Promise<void> {
+  try {
+    await vscode.window.showWarningMessage(message);
+  } catch (error) {
+    try {
+      Logger.warn('Failed to display partial metadata load warning', error);
+    } catch {
+      // Diagnostics cannot turn a partial tree publication into a failed load.
+    }
+  }
+}
+
 export type MetadataTreeLifecycle = {
   invalidateTreeCacheOnly: (configPath: string) => Promise<void>;
   executeConfigurationReload: (
@@ -222,18 +234,23 @@ export function createMetadataTreeLifecycle(state: MetadataTreeLifecycleRuntimeV
 
   function createWatcher(configRoot: string): MetadataWatcherService {
     const watcher = new MetadataWatcherService();
-    watcher.start(configRoot, {
-      onTreeReload: () => undefined,
-      onFsMutationBatch: (meta) => {
-        reloadOrchestratorHandlers.scheduleCoordinatedReload(meta.configPath, 'watcher');
-      },
-      onFilesChanged: (changedPaths) => {
-        for (const changedPath of changedPaths) {
-          state.propertiesProvider?.notifyFileChangedExternally(changedPath);
-        }
-      },
-    });
-    return watcher;
+    try {
+      watcher.start(configRoot, {
+        onTreeReload: () => undefined,
+        onFsMutationBatch: (meta) => {
+          reloadOrchestratorHandlers.scheduleCoordinatedReload(meta.configPath, 'watcher');
+        },
+        onFilesChanged: (changedPaths) => {
+          for (const changedPath of changedPaths) {
+            state.propertiesProvider?.notifyFileChangedExternally(changedPath);
+          }
+        },
+      });
+      return watcher;
+    } catch (error) {
+      disposeWatchers([watcher]);
+      throw error;
+    }
   }
 
   async function doLoadMetadataTree(generation: number): Promise<boolean> {
@@ -273,6 +290,14 @@ export function createMetadataTreeLifecycle(state: MetadataTreeLifecycleRuntimeV
         state.treeDataProvider.setRootNodes([], undefined);
         return true;
       }
+      if (configs.length > 0 && !state.configurationContextResolver) {
+        const configRoot = configs[0]!.configPath;
+        throw new MetadataReloadError(
+          'CONFIGURATION_CONTEXT_UNAVAILABLE',
+          `Невозможно загрузить конфигурацию без резолвера контекста чтения: ${configRoot}`,
+          configRoot,
+        );
+      }
 
       await vscode.window.withProgress(
         {
@@ -285,25 +310,52 @@ export function createMetadataTreeLifecycle(state: MetadataTreeLifecycleRuntimeV
 
           const roots: TreeNode[] = [];
           const loadContextMap = new Map<TreeNode, TreeLoadContext>();
+          const failedRootPaths: string[] = [];
+          let firstRootFailure: unknown;
+          let hasRootFailure = false;
           const totalRootCount = configs.length + packages.length;
           const rootProgressIncrement = 100 / totalRootCount;
 
           for (let i = 0; i < configs.length; i++) {
             const { configPath: configRoot, workspaceFolderPath } = configs[i];
-            const cacheEpochAtParseStart = cacheEpoch;
-            const { rootNode, context } = await loadConfigurationRoot(
-              configRoot,
-              workspaceFolderPath,
-              {
-                canWriteTreeCache: () =>
-                  !disposed
-                  && !fullLoadQuiescing
-                  && generation === requestedGeneration
-                  && cacheEpoch === cacheEpochAtParseStart,
-              },
-            );
-            roots.push(rootNode);
-            loadContextMap.set(rootNode, context);
+            try {
+              if (generation !== requestedGeneration) { return; }
+              const cacheEpochAtParseStart = cacheEpoch;
+              const { rootNode, context } = await loadConfigurationRoot(
+                configRoot,
+                workspaceFolderPath,
+                {
+                  canWriteTreeCache: () =>
+                    !disposed
+                    && !fullLoadQuiescing
+                    && generation === requestedGeneration
+                    && cacheEpoch === cacheEpochAtParseStart,
+                },
+              );
+              throwIfFullLoadQuiescing();
+              if (generation !== requestedGeneration) { return; }
+              const watcher = createWatcher(configRoot);
+              nextWatchers.push(watcher);
+              roots.push(rootNode);
+              loadContextMap.set(rootNode, context);
+            } catch (error) {
+              throwIfFullLoadQuiescing();
+              if (generation !== requestedGeneration) { return; }
+              if (error instanceof MetadataReloadError && error.code === 'RELOAD_DISPOSED') {
+                throw error;
+              }
+              if (!hasRootFailure) {
+                firstRootFailure = error;
+                hasRootFailure = true;
+              }
+              failedRootPaths.push(configRoot);
+              try {
+                const detail = error instanceof Error ? error.message : String(error);
+                Logger.warn(`Failed to prepare metadata configuration root ${configRoot}: ${detail}`, error);
+              } catch {
+                // Per-root diagnostics cannot stop preparation of neighboring roots.
+              }
+            }
             progress.report({ increment: rootProgressIncrement });
           }
 
@@ -312,12 +364,12 @@ export function createMetadataTreeLifecycle(state: MetadataTreeLifecycleRuntimeV
             progress.report({ increment: rootProgressIncrement });
           }
 
+          if (failedRootPaths.length > 0 && roots.length === 0) {
+            throw firstRootFailure;
+          }
+
           throwIfFullLoadQuiescing();
           if (generation !== requestedGeneration) { return; }
-          for (const { configPath: configRoot } of configs) {
-            const watcher = createWatcher(configRoot);
-            nextWatchers.push(watcher);
-          }
 
           const provider = state.treeDataProvider;
           if (!provider) {
@@ -330,8 +382,13 @@ export function createMetadataTreeLifecycle(state: MetadataTreeLifecycleRuntimeV
           }
           provider.startTypeContentsCacheWarmup({ delayMs: 1000 });
 
-          vscode.window.showInformationMessage(MESSAGES.SUCCESS);
-          Logger.info(MESSAGES.TREE_LOADED);
+          if (failedRootPaths.length > 0) {
+            const warning = `Часть дерева метаданных загружена. Не удалось подготовить конфигурации:\n${failedRootPaths.join('\n')}`;
+            void showPartialMetadataLoadWarning(warning);
+          } else {
+            vscode.window.showInformationMessage(MESSAGES.SUCCESS);
+            Logger.info(MESSAGES.TREE_LOADED);
+          }
 
           // Commit the new watcher set only after parsing, provider update, and
           // watcher startup have all succeeded. Until this point the previous

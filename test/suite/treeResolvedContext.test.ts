@@ -13,6 +13,7 @@ import { renderPropertiesBySections } from '../../src/providers/propertiesWebvie
 import { saveProperties } from '../../src/providers/propertiesMessageHandler';
 import { ConfigurationContextResolver } from '../../src/services/configurationSession/ConfigurationContextResolver';
 import { WorkspaceRegistry, WorkspaceRegistryError } from '../../src/services/configurationSession/WorkspaceRegistry';
+import { WorkspaceRegistryCoordinator } from '../../src/services/configurationSession/WorkspaceRegistryCoordinator';
 import type { ConfigurationContext, ConfigurationId } from '../../src/services/configurationSession/types';
 import { createMetadataTreeLifecycleRuntimeView } from '../../src/extension/extensionFeatureContexts';
 import { MetadataWatcherService } from '../../src/services/metadataWatcherService';
@@ -301,6 +302,70 @@ suite('Tree resolved load context', () => {
       assert.deepStrictEqual(provider.getRootNodes(), [oldRoot]);
     } finally {
       lifecycle.dispose();
+    }
+  });
+
+  test('publishes valid roots and packages when real discovery finds an unresolvable ConfigDumpInfo-only root', async () => {
+    const tempRoot = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tree-context-incomplete-root-')));
+    const workspace = path.join(tempRoot, 'workspace');
+    const incompleteRoot = path.join(workspace, 'incomplete-root');
+    const validRoot = path.join(workspace, 'valid-root');
+    const packagePath = path.join(workspace, 'release.cf');
+    await fs.promises.mkdir(incompleteRoot, { recursive: true });
+    await fs.promises.mkdir(validRoot, { recursive: true });
+    await fs.promises.mkdir(path.join(validRoot, 'Catalogs'), { recursive: true });
+    await fs.promises.writeFile(path.join(incompleteRoot, 'ConfigDumpInfo.xml'), '<ConfigDumpInfo/>', 'utf8');
+    await fs.promises.writeFile(
+      path.join(validRoot, 'Configuration.xml'),
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="44444444-4444-4444-4444-444444444444"><Properties><Name>Valid</Name></Properties><ChildObjects/></Configuration></MetaDataObject>',
+      'utf8',
+    );
+    await fs.promises.writeFile(packagePath, 'cf fixture', 'utf8');
+    vscodeTestState.mockWorkspaceFolders = [{ name: 'workspace', index: 0, uri: vscode.Uri.file(workspace) }];
+
+    const discoveredConfigs = await FormatDetector.discoverAllConfigurationRoots([workspace]);
+    const discoveredPackages = await FormatDetector.discoverAllConfigurationPackageFiles([workspace]);
+    assert.strictEqual(discoveredConfigs.status, 'authoritative');
+    assert.ok(discoveredConfigs.items.some((candidate) => candidate.configPath === incompleteRoot));
+    assert.ok(discoveredConfigs.items.some((candidate) => candidate.configPath === validRoot));
+    assert.strictEqual(discoveredPackages.status, 'authoritative');
+    assert.deepStrictEqual(discoveredPackages.items.map((candidate) => candidate.filePath), [packagePath]);
+
+    const registry = new WorkspaceRegistry();
+    const coordinator = new WorkspaceRegistryCoordinator(registry, {
+      getWorkspaceFolders: () => [workspace],
+    });
+    const { stateFixture, provider } = createState();
+    stateFixture.publish({ configurationContextResolver: new ConfigurationContextResolver(coordinator) });
+    const originalWatcherStart = MetadataWatcherService.prototype.start;
+    const watcherStarts: string[] = [];
+    MetadataWatcherService.prototype.start = function (configRoot, _callbacks): void {
+      watcherStarts.push(configRoot);
+    };
+    const lifecycle = createLifecycle(stateFixture);
+    try {
+      await lifecycle.loadMetadataTree();
+
+      const roots = provider.getRootNodes();
+      const configurationRoots = roots.filter((root) => root.type === MetadataType.Configuration);
+      const packageRoots = roots.filter((root) => root.type === MetadataType.ConfigurationPackage);
+      assert.strictEqual(configurationRoots.length, 1);
+      assert.strictEqual(packageRoots.length, 1);
+      assert.strictEqual(packageRoots[0]!.filePath, packagePath);
+      assert.ok(configurationRoots[0]!.children?.some((child) => child.type === MetadataType.Catalog));
+      const contexts = (provider as any).cache.getLoadContexts() as Map<TreeNode, { configPath: string }>;
+      assert.strictEqual(contexts.get(configurationRoots[0]!)?.configPath, validRoot);
+      assert.deepStrictEqual(watcherStarts, [validRoot]);
+      assert.strictEqual(lifecycle.metadataWatchers.length, 1);
+      assert.strictEqual(vscodeTestState.warningLog.length, 1);
+      assert.ok(vscodeTestState.warningLog[0]!.includes(incompleteRoot));
+      assert.deepStrictEqual(vscodeTestState.informationLog, []);
+    } finally {
+      await lifecycle.dispose();
+      await coordinator.dispose();
+      await stateFixture.dispose();
+      MetadataWatcherService.prototype.start = originalWatcherStart;
+      await fs.promises.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
