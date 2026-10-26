@@ -319,6 +319,172 @@ suite('MetadataTreeLifecycle', () => {
     assert.notStrictEqual(lifecycle.metadataWatchers[0], previousWatchers[0]);
   });
 
+  for (const failingPosition of [0, 1, 2]) {
+    test(`keeps other roots and packages when parsing root ${failingPosition + 1} of 3 fails`, async () => {
+      const workspaceFolderPath = 'C:/workspace/partial-root-load';
+      const configPaths = ['cfg-a', 'cfg-b', 'cfg-c'].map((name) => `${workspaceFolderPath}/${name}`);
+      const failingConfigPath = configPaths[failingPosition]!;
+      const packagePath = `${workspaceFolderPath}/release.cf`;
+      vscodeTestState.mockWorkspaceFolders = [
+        { name: 'partial-root-load', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+      ];
+      stubDiscovery({
+        configs: configPaths.map((configPath) => ({ configPath, workspaceFolderPath })),
+        packages: [{ filePath: packagePath, workspaceFolderPath }],
+      });
+
+      const parseCalls: string[] = [];
+      (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async (configPath) => {
+        parseCalls.push(configPath);
+        if (configPath === failingConfigPath) {
+          throw new Error(`synthetic parser failure: ${configPath}`);
+        }
+        return {
+          id: 'configuration',
+          name: 'Configuration',
+          type: MetadataType.Configuration,
+          properties: { comment: configPath },
+          children: [],
+        };
+      };
+      const watcherStarts: string[] = [];
+      MetadataWatcherService.prototype.start = function (configRoot, _callbacks): void {
+        watcherStarts.push(configRoot);
+      };
+
+      const { state, provider } = createStateWithProvider();
+      const lifecycle = createTrackedLifecycle(state);
+      try {
+        await lifecycle.loadMetadataTree();
+
+        const roots = provider.getRootNodes();
+        const configurationRoots = roots.filter((root) => root.type === MetadataType.Configuration);
+        const packageRoots = roots.filter((root) => root.type === MetadataType.ConfigurationPackage);
+        const expectedConfigPaths = configPaths.filter((configPath) => configPath !== failingConfigPath);
+        assert.deepStrictEqual(parseCalls, configPaths, 'the parser should attempt every discovered root in order');
+        assert.deepStrictEqual(
+          configurationRoots.map((root) => root.properties.comment),
+          expectedConfigPaths,
+          'only successfully prepared configuration roots should be published',
+        );
+        assert.deepStrictEqual(packageRoots.map((root) => root.filePath), [packagePath]);
+        assert.deepStrictEqual(watcherStarts, expectedConfigPaths, 'failed roots must not receive watchers');
+        assert.strictEqual(lifecycle.metadataWatchers.length, expectedConfigPaths.length);
+
+        const contexts = (provider as any).cache.getLoadContexts() as Map<unknown, { configPath: string }>;
+        assert.deepStrictEqual(
+          [...contexts.values()].map((context) => context.configPath),
+          expectedConfigPaths,
+          'each published configuration root must keep its own resolved load context',
+        );
+        assert.strictEqual(contexts.size, configurationRoots.length);
+        assert.strictEqual(vscodeTestState.warningLog.length, 1);
+        assert.match(vscodeTestState.warningLog[0]!, /Не удалось подготовить/u);
+        assert.ok(vscodeTestState.warningLog[0]!.includes(failingConfigPath));
+        assert.deepStrictEqual(vscodeTestState.informationLog, [], 'partial publication must not claim a full success');
+        assert.deepStrictEqual(vscodeTestState.errorLog, []);
+      } finally {
+        await lifecycle.dispose();
+      }
+    });
+  }
+
+  test('cleans up a watcher whose startup fails and publishes only roots with ready watchers', async () => {
+    const workspaceFolderPath = 'C:/workspace/partial-watcher-load';
+    const configPaths = ['cfg-a', 'cfg-b', 'cfg-c'].map((name) => `${workspaceFolderPath}/${name}`);
+    const failingConfigPath = configPaths[1]!;
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'partial-watcher-load', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({
+      configs: configPaths.map((configPath) => ({ configPath, workspaceFolderPath })),
+      packages: [{ filePath: `${workspaceFolderPath}/release.cf`, workspaceFolderPath }],
+    });
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async (configPath) => ({
+      id: 'configuration',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: { comment: configPath },
+      children: [],
+    });
+
+    const watcherStarts: string[] = [];
+    const watcherRoots = new Map<MetadataWatcherService, string>();
+    const failingWatcherDisposals: string[] = [];
+    MetadataWatcherService.prototype.start = function (configRoot, _callbacks): void {
+      watcherStarts.push(configRoot);
+      watcherRoots.set(this, configRoot);
+      if (configRoot === failingConfigPath) {
+        throw new Error('synthetic watcher startup failure');
+      }
+    };
+    MetadataWatcherService.prototype.dispose = function (): void {
+      const configRoot = watcherRoots.get(this);
+      if (configRoot === failingConfigPath) {
+        failingWatcherDisposals.push(failingConfigPath);
+      }
+      watcherDisposals += 1;
+    };
+
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createTrackedLifecycle(state);
+    try {
+      await lifecycle.loadMetadataTree();
+
+      const expectedConfigPaths = configPaths.filter((configPath) => configPath !== failingConfigPath);
+      assert.deepStrictEqual(
+        provider.getRootNodes()
+          .filter((root) => root.type === MetadataType.Configuration)
+          .map((root) => root.properties.comment),
+        expectedConfigPaths,
+      );
+      assert.deepStrictEqual(failingWatcherDisposals, [failingConfigPath]);
+      assert.strictEqual(lifecycle.metadataWatchers.length, expectedConfigPaths.length);
+      assert.strictEqual(vscodeTestState.warningLog.length, 1);
+      assert.ok(vscodeTestState.warningLog[0]!.includes(failingConfigPath));
+      assert.deepStrictEqual(vscodeTestState.informationLog, []);
+    } finally {
+      await lifecycle.dispose();
+    }
+  });
+
+  test('all failed roots preserve the last published roots and watchers and rethrow the first diagnostic', async () => {
+    const workspaceFolderPath = 'C:/workspace/all-roots-failed';
+    const previousConfigPath = `${workspaceFolderPath}/previous`;
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'all-roots-failed', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({ configs: [{ configPath: previousConfigPath, workspaceFolderPath }] });
+    stubSuccessfulTreeParsing();
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createTrackedLifecycle(state);
+    try {
+      await lifecycle.loadMetadataTree();
+      const previousRoots = provider.getRootNodes();
+      const previousWatchers = [...lifecycle.metadataWatchers];
+      const firstFailure = new Error('first configuration root failed');
+
+      stubDiscovery({
+        configs: ['failed-a', 'failed-b'].map((name) => ({
+          configPath: `${workspaceFolderPath}/${name}`,
+          workspaceFolderPath,
+        })),
+      });
+      (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async () => {
+        throw firstFailure;
+      };
+
+      await assert.rejects(lifecycle.loadMetadataTree(), (error: unknown) => error === firstFailure);
+
+      assert.deepStrictEqual(provider.getRootNodes(), previousRoots);
+      assert.deepStrictEqual(lifecycle.metadataWatchers, previousWatchers);
+      assert.strictEqual(watcherDisposals, 0, 'all-failed preparation must keep the existing watcher set alive');
+      assert.deepStrictEqual(vscodeTestState.warningLog, []);
+    } finally {
+      await lifecycle.dispose();
+    }
+  });
+
   test('watcher cleanup continues when disposal and warning diagnostics both throw', async () => {
     const workspaceFolderPath = 'C:/workspace/watcher-cleanup';
     vscodeTestState.mockWorkspaceFolders = [
