@@ -392,6 +392,7 @@ Workspace → FormatDetector → MetadataParser → TreeNode → TreeDataProvide
 - Благодарим портал [maxlekot.ru](https://maxlekot.ru) за поддержку проекта и оплату PRO-подписок на Claude Code и Codex.
 - Благодарим [alonehobo](https://github.com/alonehobo) за [BslEdit](https://github.com/alonehobo/BslEdit) и существенный вклад в CDT 41: сравнение макетов, редактор СКД и визуал конструктора запросов ([PR #268](https://github.com/lekot/VScodePluginFor1CDev/pull/268), [PR #269](https://github.com/lekot/VScodePluginFor1CDev/pull/269), [PR #270](https://github.com/lekot/VScodePluginFor1CDev/pull/270)).
 - [onec-debug-adapter](https://github.com/akpaevj/onec-debug-adapter) — реверс-инжиниринг протокола RDBG и взаимодействия с dbgs, на основе которого реализована отладка 1С из VS Code.
+- [1C Testpilot](https://github.com/ROCTUP/1c-testpilot) — публичные сценарии и описание методов прямой работы с клиентом тестирования 1С, послужившие ориентиром при реализации нативного TestClient в CDT 41.
 - [1c-syntax](https://github.com/1c-syntax/1c-syntax) — грамматики и шаблоны для подсветки синтаксиса BSL/SDBL.
 - [cc-1c-skills](https://github.com/Nikolay-Shirokov/cc-1c-skills) — навыки и спецификации для AI-агентов, работающих с платформой 1С.
 - [1c-agent-based-dev-framework](https://github.com/SteelMorgan/1c-agent-based-dev-framework) — фреймворк агентной разработки для 1С, идеи по работе с формами enterprise и СКД.
