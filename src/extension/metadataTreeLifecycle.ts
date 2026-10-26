@@ -48,6 +48,18 @@ function handleLoadError(error: unknown): void {
   vscode.window.showErrorMessage(`${MESSAGES.ERROR_LOADING}: ${errorMessage}`);
 }
 
+async function showPartialMetadataLoadWarning(message: string): Promise<void> {
+  try {
+    await vscode.window.showWarningMessage(message);
+  } catch (error) {
+    try {
+      Logger.warn('Failed to display partial metadata load warning', error);
+    } catch {
+      // Diagnostics cannot turn a partial tree publication into a failed load.
+    }
+  }
+}
+
 export type MetadataTreeLifecycle = {
   invalidateTreeCacheOnly: (configPath: string) => Promise<void>;
   executeConfigurationReload: (
@@ -372,18 +384,7 @@ export function createMetadataTreeLifecycle(state: MetadataTreeLifecycleRuntimeV
 
           if (failedRootPaths.length > 0) {
             const warning = `Часть дерева метаданных загружена. Не удалось подготовить конфигурации:\n${failedRootPaths.join('\n')}`;
-            const reportWarningFailure = (error: unknown): void => {
-              try {
-                Logger.warn('Failed to display partial metadata load warning', error);
-              } catch {
-                // Diagnostics cannot turn a partial tree publication into a failed load.
-              }
-            };
-            try {
-              void Promise.resolve(vscode.window.showWarningMessage(warning)).catch(reportWarningFailure);
-            } catch (error) {
-              reportWarningFailure(error);
-            }
+            void showPartialMetadataLoadWarning(warning);
           } else {
             vscode.window.showInformationMessage(MESSAGES.SUCCESS);
             Logger.info(MESSAGES.TREE_LOADED);

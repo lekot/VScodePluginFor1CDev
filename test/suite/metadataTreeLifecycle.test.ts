@@ -44,6 +44,7 @@ suite('MetadataTreeLifecycle', () => {
   const originalInvalidateTypeContentsCache = MetadataParser.invalidateTypeContentsCache;
   const originalWatcherStart = MetadataWatcherService.prototype.start;
   const originalWatcherDispose = MetadataWatcherService.prototype.dispose;
+  const originalShowWarningMessage = vscode.window.showWarningMessage;
   const activeLifecycles = new Set<ReturnType<typeof createMetadataTreeLifecycle>>();
   const activeProviders = new Set<MetadataTreeDataProvider>();
   const activeStateFixtures = new Set<ExtensionStateFixture>();
@@ -182,6 +183,7 @@ suite('MetadataTreeLifecycle', () => {
     activeProviders.clear();
     MetadataWatcherService.prototype.start = originalWatcherStart;
     MetadataWatcherService.prototype.dispose = originalWatcherDispose;
+    (vscode.window as any).showWarningMessage = originalShowWarningMessage;
     (FormatDetector.discoverAllConfigurationRoots as unknown as typeof FormatDetector.discoverAllConfigurationRoots) =
       originalDiscoverAllConfigurationRoots;
     (FormatDetector.discoverAllConfigurationPackageFiles as unknown as typeof FormatDetector.discoverAllConfigurationPackageFiles) =
@@ -388,6 +390,304 @@ suite('MetadataTreeLifecycle', () => {
       }
     });
   }
+
+  test('publishes a partial tree without waiting for the warning to be dismissed', async () => {
+    const workspaceFolderPath = 'C:/workspace/pending-partial-warning';
+    const healthyConfigPath = `${workspaceFolderPath}/healthy`;
+    const failingConfigPath = `${workspaceFolderPath}/failed`;
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'pending-partial-warning', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({
+      configs: [healthyConfigPath, failingConfigPath]
+        .map((configPath) => ({ configPath, workspaceFolderPath })),
+    });
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async (configPath) => {
+      if (configPath === failingConfigPath) {
+        throw new Error('synthetic parser failure');
+      }
+      return {
+        id: 'configuration',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: { comment: configPath },
+        children: [],
+      };
+    };
+
+    const warningGate = deferred<string | undefined>();
+    let warningRequested = false;
+    (vscode.window as any).showWarningMessage = (message: string) => {
+      warningRequested = true;
+      assert.ok(message.includes(failingConfigPath));
+      return warningGate.promise;
+    };
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createTrackedLifecycle(state);
+    const loading = lifecycle.loadMetadataTree();
+    try {
+      const result = await Promise.race([
+        loading.then(() => 'loaded' as const),
+        new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), 100)),
+      ]);
+
+      assert.strictEqual(result, 'loaded', 'tree publication must not wait for the user to dismiss a warning');
+      assert.strictEqual(warningRequested, true);
+      assert.deepStrictEqual(
+        provider.getRootNodes().map((root) => root.properties.comment),
+        [healthyConfigPath],
+      );
+      assert.strictEqual(lifecycle.metadataWatchers.length, 1);
+      assert.deepStrictEqual(vscodeTestState.informationLog, []);
+    } finally {
+      warningGate.resolve(undefined);
+      await loading.catch(() => undefined);
+      (vscode.window as any).showWarningMessage = originalShowWarningMessage;
+      await lifecycle.dispose();
+    }
+  });
+
+  for (const failureMode of ['synchronous throw', 'asynchronous rejection'] as const) {
+    test(`keeps a partial tree when the warning delivery has ${failureMode === 'asynchronous rejection' ? 'an ' : 'a '}${failureMode} and logging also fails`, async () => {
+      const workspaceFolderPath = `C:/workspace/warning-delivery-${failureMode.replace(/\s+/gu, '-')}`;
+      const healthyConfigPath = `${workspaceFolderPath}/healthy`;
+      const failingConfigPath = `${workspaceFolderPath}/failed`;
+      vscodeTestState.mockWorkspaceFolders = [
+        { name: 'warning-delivery', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+      ];
+      stubDiscovery({
+        configs: [healthyConfigPath, failingConfigPath]
+          .map((configPath) => ({ configPath, workspaceFolderPath })),
+      });
+      (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async (configPath) => {
+        if (configPath === failingConfigPath) {
+          throw new Error('synthetic parser failure');
+        }
+        return {
+          id: 'configuration',
+          name: 'Configuration',
+          type: MetadataType.Configuration,
+          properties: { comment: configPath },
+          children: [],
+        };
+      };
+      const originalWarn = Logger.warn;
+      let attemptedWarning = false;
+      (vscode.window as any).showWarningMessage = () => {
+        attemptedWarning = true;
+        if (failureMode === 'synchronous throw') {
+          throw new Error('warning API failed synchronously');
+        }
+        return Promise.reject(new Error('warning API rejected asynchronously'));
+      };
+      Logger.warn = () => { throw new Error('logger unavailable'); };
+      const { state, provider } = createStateWithProvider();
+      const lifecycle = createTrackedLifecycle(state);
+      try {
+        await lifecycle.loadMetadataTree();
+
+        assert.strictEqual(attemptedWarning, true);
+        assert.deepStrictEqual(
+          provider.getRootNodes().map((root) => root.properties.comment),
+          [healthyConfigPath],
+        );
+        assert.strictEqual(lifecycle.metadataWatchers.length, 1);
+        assert.deepStrictEqual(vscodeTestState.informationLog, []);
+      } finally {
+        (vscode.window as any).showWarningMessage = originalShowWarningMessage;
+        Logger.warn = originalWarn;
+        await lifecycle.dispose();
+      }
+    });
+  }
+
+  test('publishes discovered packages when every configuration root fails', async () => {
+    const workspaceFolderPath = 'C:/workspace/package-only-partial';
+    const configPaths = ['failed-a', 'failed-b'].map((name) => `${workspaceFolderPath}/${name}`);
+    const packagePath = `${workspaceFolderPath}/release.cf`;
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'package-only-partial', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({
+      configs: configPaths.map((configPath) => ({ configPath, workspaceFolderPath })),
+      packages: [{ filePath: packagePath, workspaceFolderPath }],
+    });
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async () => {
+      throw new Error('all configuration roots failed');
+    };
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createTrackedLifecycle(state);
+    try {
+      await lifecycle.loadMetadataTree();
+
+      assert.deepStrictEqual(
+        provider.getRootNodes().map((root) => ({ type: root.type, filePath: root.filePath })),
+        [{ type: MetadataType.ConfigurationPackage, filePath: packagePath }],
+      );
+      assert.deepStrictEqual(lifecycle.metadataWatchers, []);
+      assert.strictEqual(vscodeTestState.warningLog.length, 1);
+      assert.ok(configPaths.every((configPath) => vscodeTestState.warningLog[0]!.includes(configPath)));
+      assert.deepStrictEqual(vscodeTestState.informationLog, []);
+    } finally {
+      await lifecycle.dispose();
+    }
+  });
+
+  test('isolates non-Error root failures even when per-root logging throws', async () => {
+    const workspaceFolderPath = 'C:/workspace/non-error-partial-failure';
+    const failingConfigPath = `${workspaceFolderPath}/failed`;
+    const healthyConfigPath = `${workspaceFolderPath}/healthy`;
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'non-error-partial-failure', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({
+      configs: [failingConfigPath, healthyConfigPath]
+        .map((configPath) => ({ configPath, workspaceFolderPath })),
+    });
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async (configPath) => {
+      if (configPath === failingConfigPath) {
+        throw 'synthetic string failure';
+      }
+      return {
+        id: 'configuration',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: { comment: configPath },
+        children: [],
+      };
+    };
+    const originalWarn = Logger.warn;
+    Logger.warn = () => { throw new Error('logger unavailable'); };
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createTrackedLifecycle(state);
+    try {
+      await lifecycle.loadMetadataTree();
+
+      assert.deepStrictEqual(
+        provider.getRootNodes().map((root) => root.properties.comment),
+        [healthyConfigPath],
+      );
+      assert.strictEqual(lifecycle.metadataWatchers.length, 1);
+      assert.strictEqual(vscodeTestState.warningLog.length, 1);
+      assert.ok(vscodeTestState.warningLog[0]!.includes(failingConfigPath));
+    } finally {
+      Logger.warn = originalWarn;
+      await lifecycle.dispose();
+    }
+  });
+
+  test('superseded per-root failures do not publish a partial generation or warning', async () => {
+    const workspaceFolderPath = 'C:/workspace/superseded-partial-root';
+    const configPaths = ['cfg-a', 'cfg-b'].map((name) => `${workspaceFolderPath}/${name}`);
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'superseded-partial-root', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({ configs: configPaths.map((configPath) => ({ configPath, workspaceFolderPath })) });
+    const failedParseGate = deferred<void>();
+    const firstParseStarted = deferred<void>();
+    const parseCalls: string[] = [];
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async (configPath) => {
+      parseCalls.push(configPath);
+      if (parseCalls.length === 1) {
+        firstParseStarted.resolve(undefined);
+        await failedParseGate.promise;
+        throw new Error('superseded generation parser failure');
+      }
+      return {
+        id: 'configuration',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: { comment: configPath },
+        children: [],
+      };
+    };
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createTrackedLifecycle(state);
+    try {
+      const firstLoad = lifecycle.loadMetadataTree();
+      await firstParseStarted.promise;
+      const trailingLoad = lifecycle.loadMetadataTree();
+      failedParseGate.resolve(undefined);
+      await Promise.all([firstLoad, trailingLoad]);
+
+      assert.deepStrictEqual(parseCalls, [configPaths[0], ...configPaths]);
+      assert.deepStrictEqual(
+        provider.getRootNodes().map((root) => root.properties.comment),
+        configPaths,
+      );
+      assert.strictEqual(lifecycle.metadataWatchers.length, 2);
+      assert.deepStrictEqual(vscodeTestState.warningLog, []);
+    } finally {
+      failedParseGate.resolve(undefined);
+      await lifecycle.dispose();
+    }
+  });
+
+  test('quiescing during a failed root aborts instead of publishing neighboring roots', async () => {
+    const workspaceFolderPath = 'C:/workspace/quiesced-partial-root';
+    const configPaths = ['failed-a', 'neighbor-b'].map((name) => `${workspaceFolderPath}/${name}`);
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'quiesced-partial-root', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({ configs: configPaths.map((configPath) => ({ configPath, workspaceFolderPath })) });
+    const parseGate = deferred<void>();
+    const parseStarted = deferred<void>();
+    const parseCalls: string[] = [];
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async (configPath) => {
+      parseCalls.push(configPath);
+      parseStarted.resolve(undefined);
+      await parseGate.promise;
+      throw new Error('failure after quiesce');
+    };
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createTrackedLifecycle(state);
+    try {
+      const loading = lifecycle.loadMetadataTree();
+      await parseStarted.promise;
+      const quiescence = lifecycle.quiesce();
+      parseGate.resolve(undefined);
+
+      await assert.rejects(
+        loading,
+        (error: unknown) => error instanceof MetadataReloadError && error.code === 'RELOAD_DISPOSED',
+      );
+      await quiescence;
+      assert.deepStrictEqual(parseCalls, [configPaths[0]]);
+      assert.deepStrictEqual(provider.getRootNodes(), []);
+      assert.deepStrictEqual(lifecycle.metadataWatchers, []);
+      assert.deepStrictEqual(vscodeTestState.warningLog, []);
+    } finally {
+      parseGate.resolve(undefined);
+      await lifecycle.dispose();
+    }
+  });
+
+  test('a disposed reload error from one root remains globally fatal', async () => {
+    const workspaceFolderPath = 'C:/workspace/disposed-root-error';
+    const configPaths = ['disposed-a', 'neighbor-b'].map((name) => `${workspaceFolderPath}/${name}`);
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: 'disposed-root-error', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({ configs: configPaths.map((configPath) => ({ configPath, workspaceFolderPath })) });
+    const parseCalls: string[] = [];
+    const disposedFailure = new MetadataReloadError('RELOAD_DISPOSED', 'synthetic disposal error');
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) = async (configPath) => {
+      parseCalls.push(configPath);
+      throw disposedFailure;
+    };
+    const { state, provider } = createStateWithProvider();
+    const lifecycle = createTrackedLifecycle(state);
+    try {
+      await assert.rejects(lifecycle.loadMetadataTree(), (error: unknown) => error === disposedFailure);
+
+      assert.deepStrictEqual(parseCalls, [configPaths[0]]);
+      assert.deepStrictEqual(provider.getRootNodes(), []);
+      assert.deepStrictEqual(lifecycle.metadataWatchers, []);
+      assert.deepStrictEqual(vscodeTestState.warningLog, []);
+    } finally {
+      await lifecycle.dispose();
+    }
+  });
 
   test('cleans up a watcher whose startup fails and publishes only roots with ready watchers', async () => {
     const workspaceFolderPath = 'C:/workspace/partial-watcher-load';
