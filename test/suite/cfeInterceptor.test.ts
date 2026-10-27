@@ -2,7 +2,9 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { XMLValidator } from 'fast-xml-parser';
 import '../helpers/vscodeStubRegister';
+import { elementChildren, parseXmlDocument, textContent, type XmlElement } from '../../src/compareMerge/xml/xmlDom';
 import {
   buildCanonicalInterceptorBlock,
   findBslMethod,
@@ -15,6 +17,11 @@ import { CfeProjectRegistry } from '../../src/extensionSupport/cfeProject/regist
 import { CfeProjectError } from '../../src/extensionSupport/cfeProject/types';
 import type { MutationPlan } from '../../src/services/configurationSession/mutationPlan';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
+import {
+  buildInternalInfoXml,
+  getExplicitGeneratedTypeSpecs,
+  ROOT_TAGS_WITHOUT_INTERNALINFO,
+} from '../../src/utils/xml/internalInfoGenerator';
 
 const UUIDS = {
   catalog: '22222222-2222-4222-8222-222222222222',
@@ -111,7 +118,99 @@ suite('CFE structural interceptors', () => {
     }
   });
 
-  test('rejects before/after on functions, unsupported module compatibility, and modified generated bodies', async () => {
+  test('creates a sparse CommonModule PropertyState only in formats that support it and remains idempotent', async function () {
+    this.timeout(60_000);
+    for (const format of ['2.17', '2.18', '2.19', '2.20', '2.21']) {
+      await withHarness(format, async (harness) => {
+        const objectPath = path.join(harness.extension, 'CommonModules', 'Core.xml');
+        const before = await fs.promises.readFile(objectPath, 'utf8');
+        assert.doesNotMatch(before, /<InternalInfo\b/u);
+
+        const created = await harness.interceptor.createInterceptor({
+          extensionConfigurationId: harness.extensionConfigurationId,
+          targetSourceUuid: UUIDS.commonModule,
+          moduleKind: 'Module',
+          methodName: 'ПриЗаписи',
+          kind: 'before',
+        });
+        assert.strictEqual(created.status, 'created');
+        assert.strictEqual(created.propertyStateUpdated, Number(format.slice(2)) >= 19);
+
+        const after = await fs.promises.readFile(objectPath, 'utf8');
+        assert.strictEqual(XMLValidator.validate(after), true);
+        const propertyStateCount = (after.match(/<(?:[\w.-]+:)?PropertyState\b/gu) ?? []).length;
+        assert.strictEqual(propertyStateCount, Number(format.slice(2)) >= 19 ? 1 : 0);
+        if (Number(format.slice(2)) < 19) {
+          assert.strictEqual(after, before);
+        } else {
+          assert.doesNotMatch(after, /GeneratedType/u);
+        }
+
+        const repeated = await harness.interceptor.createInterceptor({
+          extensionConfigurationId: harness.extensionConfigurationId,
+          targetSourceUuid: UUIDS.commonModule,
+          moduleKind: 'Module',
+          methodName: 'ПриЗаписи',
+          kind: 'before',
+        });
+        assert.strictEqual(repeated.status, 'already-exists');
+        assert.strictEqual(await fs.promises.readFile(objectPath, 'utf8'), after);
+      });
+    }
+  });
+
+  test('adds PropertyState with namespace aliases on a sparse prefixed CommonModule', async () => {
+    await withHarness('2.19', async (harness) => {
+      const objectPath = path.join(harness.extension, 'CommonModules', 'Core.xml');
+      const created = await harness.interceptor.createInterceptor({
+        extensionConfigurationId: harness.extensionConfigurationId,
+        targetSourceUuid: UUIDS.commonModule,
+        moduleKind: 'Module',
+        methodName: 'ПриЗаписи',
+        kind: 'before',
+      });
+      assert.strictEqual(created.status, 'created');
+
+      const after = await fs.promises.readFile(objectPath, 'utf8');
+      assert.strictEqual(XMLValidator.validate(after), true);
+      assert.match(after, /<m:MetaDataObject\b/u);
+      const rootObject = elementChildren(parseXmlDocument(after).root)
+        .find((element) => element.localName === 'CommonModule');
+      assert.ok(rootObject);
+      assert.strictEqual(rootObject.name, 'm:CommonModule');
+      const internalInfo = elementChildren(rootObject).find((element) => element.localName === 'InternalInfo');
+      assert.ok(internalInfo);
+      assert.strictEqual(internalInfo.name, 'm:InternalInfo');
+      assert.strictEqual(resolveElementNamespace(internalInfo), 'http://v8.1c.ru/8.3/MDClasses');
+      const propertyStates = elementChildren(internalInfo).filter((element) => element.localName === 'PropertyState');
+      assert.strictEqual(propertyStates.length, 1);
+      const propertyState = propertyStates[0]!;
+      assert.strictEqual(resolveElementNamespace(propertyState), 'http://v8.1c.ru/8.3/xcf/readable');
+      const property = elementChildren(propertyState).find((element) => element.localName === 'Property');
+      const state = elementChildren(propertyState).find((element) => element.localName === 'State');
+      assert.ok(property);
+      assert.ok(state);
+      assert.strictEqual(resolveElementNamespace(property), 'http://v8.1c.ru/8.3/xcf/readable');
+      assert.strictEqual(resolveElementNamespace(state), 'http://v8.1c.ru/8.3/xcf/readable');
+      assert.strictEqual(textContent(property).trim(), 'Module');
+      assert.strictEqual(textContent(state).trim(), 'Extended');
+
+      const repeated = await harness.interceptor.createInterceptor({
+        extensionConfigurationId: harness.extensionConfigurationId,
+        targetSourceUuid: UUIDS.commonModule,
+        moduleKind: 'Module',
+        methodName: 'ПриЗаписи',
+        kind: 'before',
+      });
+      assert.strictEqual(repeated.status, 'already-exists');
+      assert.strictEqual(await fs.promises.readFile(objectPath, 'utf8'), after);
+    }, {
+      commonModuleXml: (format) => aliasedCommonModuleXml(format),
+    });
+  });
+
+  test('rejects before/after on functions, unsupported module compatibility, and modified generated bodies', async function () {
+    this.timeout(15_000);
     await withHarness('2.20', async (harness) => {
       const commonModule = await harness.interceptor.createInterceptor({
         extensionConfigurationId: harness.extensionConfigurationId,
@@ -295,13 +394,14 @@ suite('CFE structural interceptors', () => {
 async function withHarness(
   format: string,
   callback: (harness: InterceptorHarness) => Promise<void>,
+  options: { readonly commonModuleXml?: (format: string) => string } = {},
 ): Promise<void> {
   const workspace = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cfe-interceptor-'));
   const base = path.join(workspace, 'base');
   const extension = path.join(base, 'ConfigurationExtensions', 'InterceptorExtension');
   const registry = new WorkspaceRegistry();
   try {
-    await writeBaseConfiguration(base, format);
+    await writeBaseConfiguration(base, format, options.commonModuleXml);
     await registry.refresh([{ configPath: base, workspaceFolderPath: workspace }]);
     const projects = new CfeProjectService(workspace, registry, {
       refreshWorkspace: async () => registry.refresh([
@@ -334,7 +434,11 @@ async function withHarness(
   }
 }
 
-async function writeBaseConfiguration(base: string, format: string): Promise<void> {
+async function writeBaseConfiguration(
+  base: string,
+  format: string,
+  commonModuleXmlFactory?: (format: string) => string,
+): Promise<void> {
   const module = await readFixture('complex-module.bsl');
   await Promise.all([
     fs.promises.mkdir(path.join(base, 'Languages'), { recursive: true }),
@@ -353,21 +457,28 @@ async function writeBaseConfiguration(base: string, format: string): Promise<voi
   );
   await fs.promises.writeFile(
     path.join(base, 'Catalogs', 'Products.xml'),
-    sourceObjectXml('Catalog', 'Products', UUIDS.catalog),
+    sourceObjectXml('Catalog', 'Products', UUIDS.catalog, format),
     'utf8',
   );
   await fs.promises.writeFile(path.join(base, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl'), module, 'utf8');
   await fs.promises.writeFile(
     path.join(base, 'CommonModules', 'Core.xml'),
-    sourceObjectXml('CommonModule', 'Core', UUIDS.commonModule),
+    commonModuleXmlFactory?.(format) ?? sourceObjectXml('CommonModule', 'Core', UUIDS.commonModule, format),
     'utf8',
   );
   await fs.promises.writeFile(path.join(base, 'CommonModules', 'Core', 'Ext', 'Module.bsl'), module, 'utf8');
 }
 
-function sourceObjectXml(type: string, name: string, uuid: string): string {
+function sourceObjectXml(type: string, name: string, uuid: string, format: string): string {
   const childObjects = type === 'Catalog' ? '<ChildObjects/>' : '';
-  return `<?xml version="1.0"?><MetaDataObject version="2.20"><${type} uuid="${uuid}"><Properties><Name>${name}</Name></Properties>${childObjects}</${type}></MetaDataObject>`;
+  const hasGeneratedTypes = !ROOT_TAGS_WITHOUT_INTERNALINFO.has(type)
+    && getExplicitGeneratedTypeSpecs(type) !== undefined;
+  const internalInfo = hasGeneratedTypes ? buildInternalInfoXml(type, name, '') : '';
+  return `<?xml version="1.0"?><MetaDataObject xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="${format}"><${type} uuid="${uuid}">${internalInfo}<Properties><Name>${name}</Name></Properties>${childObjects}</${type}></MetaDataObject>`;
+}
+
+function aliasedCommonModuleXml(format: string): string {
+  return `<?xml version="1.0"?><m:MetaDataObject xmlns:m="http://v8.1c.ru/8.3/MDClasses" xmlns:r="http://v8.1c.ru/8.3/xcf/readable" version="${format}"><m:CommonModule uuid="${UUIDS.commonModule}"><m:Properties><m:Name>Core</m:Name></m:Properties></m:CommonModule></m:MetaDataObject>`;
 }
 
 async function readFixture(fileName: string): Promise<string> {
@@ -376,4 +487,18 @@ async function readFixture(fileName: string): Promise<string> {
 
 function isLinkPermissionError(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && (error.code === 'EPERM' || error.code === 'EACCES'));
+}
+
+function resolveElementNamespace(element: XmlElement): string | undefined {
+  const prefix = element.name.includes(':') ? element.name.slice(0, element.name.indexOf(':')) : '';
+  let current: XmlElement | undefined = element;
+  while (current) {
+    const declarationName = prefix ? `xmlns:${prefix}` : 'xmlns';
+    const declaration = current.attributes.find((attribute) => attribute.name === declarationName);
+    if (declaration) {
+      return declaration.value;
+    }
+    current = current.parent;
+  }
+  return undefined;
 }

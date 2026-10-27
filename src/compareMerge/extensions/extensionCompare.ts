@@ -193,9 +193,9 @@ export async function tryBuildExtensionCompareState(
     targetLabel: safeBasename(leftRootPath),
     sourceLabel: safeBasename(rightRootPath),
     limitations: [
-      'Поддерживается только Designer XML 2.17–2.21 и корневые Catalog, Document, Enum, CommonModule.',
+      'Поддерживается Designer XML 2.17–2.21; корневые типы определяются общим реестром метаданных (46 типов).',
       'Переносятся только явно выбранные объекты; отсутствие объекта не означает удаление.',
-      'Динамические ссылки BSL, права и RLS не доказываются этим сравнением.',
+      'Динамические ссылки BSL и фактический эффект прав/RLS не доказываются; структурные ссылки Rights проверяются по цели, доказанной базе и выбранным объектам.',
     ],
   };
 

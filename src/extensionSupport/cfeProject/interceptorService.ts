@@ -7,6 +7,14 @@ import { hashContent } from '../../services/configurationSession/atomicFileStora
 import type { MutationExpectation, MutationPlan, MutationStep } from '../../services/configurationSession/mutationPlan';
 import { assertNoSymlinkSegments, assertPathWithinRoot } from '../../services/configurationSession/pathBoundary';
 import { isRootObjectRegisteredInConfiguration } from '../../services/configurationXmlUpdater';
+import {
+  elementChildren,
+  parseXmlDocument,
+  serializeXmlDocument,
+  textContent,
+  type XmlChildNode,
+  type XmlElement,
+} from '../../compareMerge/xml/xmlDom';
 import { validateElementName } from '../../utils/elementNameValidator';
 import {
   BslStructuralError,
@@ -31,6 +39,7 @@ import { CfeProjectError, type CfeProjectContext } from './types';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const SHA256_RE = /^[0-9a-f]{64}$/iu;
+const XCF_READABLE_NAMESPACE = 'http://v8.1c.ru/8.3/xcf/readable';
 
 const MODULE_COMPATIBILITY: Readonly<Record<string, readonly CfeModuleKind[]>> = Object.freeze({
   Catalog: Object.freeze(['ObjectModule', 'ManagerModule'] as const),
@@ -242,6 +251,7 @@ export class CfeInterceptorService {
 
     const propertyState = ensureModulePropertyState(
       objectFile.content,
+      currentIdentity.type,
       request.moduleKind,
       context.formatVersion,
     );
@@ -522,53 +532,214 @@ function appendInterceptorBlock(existing: string, block: string): string {
 
 function ensureModulePropertyState(
   objectXml: string,
+  objectType: string,
   moduleKind: CfeModuleKind,
   formatVersion: string,
 ): { readonly content: string; readonly changed: boolean } {
   if (formatRank(formatVersion) < 219) {
     return { content: objectXml, changed: false };
   }
-  const property = moduleKind;
-  const escapedProperty = escapeRegExp(property);
-  const existing = new RegExp(
-    `<xr:PropertyState>\\s*<xr:Property>\\s*${escapedProperty}\\s*</xr:Property>[\\s\\S]*?</xr:PropertyState>`,
-    'iu',
-  );
-  if (existing.test(objectXml)) {
-    return { content: objectXml, changed: false };
+
+  const hasBom = objectXml.startsWith('\uFEFF');
+  const xml = hasBom ? objectXml.slice(1) : objectXml;
+  let document;
+  try {
+    document = parseXmlDocument(xml);
+  } catch {
+    throw new CfeProjectError('CFE_OWNERSHIP_INVALID', 'Не удалось безопасно обновить InternalInfo объекта CFE.');
   }
-  const newline = objectXml.includes('\r\n') ? '\r\n' : '\n';
-  const empty = /([ \t]*)<InternalInfo\s*\/>/iu.exec(objectXml);
-  if (empty) {
-    const indent = empty[1]!;
-    const propertyState = propertyStateXml(property, `${indent}\t`, newline);
-    const replacement = `${indent}<InternalInfo>${newline}${propertyState}${newline}${indent}</InternalInfo>`;
-    return {
-      content: objectXml.slice(0, empty.index) + replacement + objectXml.slice(empty.index! + empty[0].length),
-      changed: true,
-    };
+  const metadataObjects = elementChildren(document.root);
+  if (document.root.localName !== 'MetaDataObject'
+    || metadataObjects.length !== 1
+    || metadataObjects[0]!.localName !== objectType) {
+    throw new CfeProjectError('CFE_OWNERSHIP_INVALID', 'Корневой объект CFE изменился перед обновлением PropertyState.');
   }
-  const internalInfo = /([ \t]*)<InternalInfo\b[^>]*>[\s\S]*?<\/InternalInfo>/iu.exec(objectXml);
-  if (!internalInfo || internalInfo.index === undefined) {
+  const metadataObject = metadataObjects[0]!;
+  const internalInfos = elementChildren(metadataObject).filter((element) => element.localName === 'InternalInfo');
+  if (internalInfos.length > 1) {
+    throw new CfeProjectError('CFE_OWNERSHIP_INVALID', 'У заимствованного объекта CFE повторяется InternalInfo.');
+  }
+
+  let internalInfo = internalInfos[0];
+  if (internalInfo) {
+    const matchingStates = elementChildren(internalInfo).filter((element) => (
+      element.localName === 'PropertyState'
+      && namespaceUri(element) === XCF_READABLE_NAMESPACE
+      && elementChildren(element).some((child) => (
+        child.localName === 'Property'
+        && namespaceUri(child) === XCF_READABLE_NAMESPACE
+        && textContent(child).trim() === moduleKind
+      ))
+    ));
+    if (matchingStates.length > 1) {
+      throw new CfeProjectError('CFE_OWNERSHIP_INVALID', 'У заимствованного объекта CFE повторяется PropertyState модуля.');
+    }
+    if (matchingStates.length === 1) {
+      return { content: objectXml, changed: false };
+    }
+  } else if (objectType !== 'CommonModule' || moduleKind !== 'Module') {
     throw new CfeProjectError('CFE_OWNERSHIP_INVALID', 'У заимствованного объекта CFE отсутствует InternalInfo для PropertyState.');
   }
-  const closingOffset = internalInfo.index + internalInfo[0].lastIndexOf('</InternalInfo>');
-  const closingLineStart = objectXml.lastIndexOf('\n', closingOffset) + 1;
-  const closingIndent = objectXml.slice(closingLineStart, closingOffset);
-  const propertyState = propertyStateXml(property, `${closingIndent}\t`, newline);
+
+  const newline = objectXml.includes('\r\n') ? '\r\n' : '\n';
+  if (!internalInfo) {
+    const properties = elementChildren(metadataObject).filter((element) => element.localName === 'Properties');
+    if (properties.length !== 1) {
+      throw new CfeProjectError('CFE_OWNERSHIP_INVALID', 'У CommonModule отсутствует единственный прямой Properties для вставки InternalInfo.');
+    }
+    const propertiesIndex = metadataObject.children.indexOf(properties[0]!);
+    const previousChild = metadataObject.children[propertiesIndex - 1];
+    const beforeProperties = previousChild?.kind === 'text' && /^\s*$/u.test(previousChild.text)
+      ? previousChild.text
+      : '';
+    const objectIndent = indentationAtEnd(beforeProperties);
+    internalInfo = createXmlElement(qualifyLike(metadataObject.name, 'InternalInfo'), 'InternalInfo');
+    internalInfo.parent = metadataObject;
+    metadataObject.children.splice(propertiesIndex, 0, internalInfo, { kind: 'text', text: beforeProperties });
+    const readablePrefix = ensureReadablePrefix(internalInfo);
+    appendPropertyState(internalInfo, createPropertyState(readablePrefix, moduleKind, objectIndent, newline), objectIndent, newline);
+  } else {
+    const internalInfoIndent = indentationBefore(metadataObject, internalInfo);
+    const readablePrefix = ensureReadablePrefix(internalInfo);
+    appendPropertyState(
+      internalInfo,
+      createPropertyState(readablePrefix, moduleKind, internalInfoIndent, newline),
+      internalInfoIndent,
+      newline,
+    );
+  }
+
+  const trailingWhitespace = xml.slice(xml.trimEnd().length);
+  const serialized = serializeXmlDocument(document).replace(/\r?\n/gu, newline);
   return {
-    content: objectXml.slice(0, closingLineStart) + propertyState + newline + closingIndent + objectXml.slice(closingOffset),
+    content: `${hasBom ? '\uFEFF' : ''}${serialized}${trailingWhitespace}`,
     changed: true,
   };
 }
 
-function propertyStateXml(property: string, indent: string, newline: string): string {
-  return [
-    `${indent}<xr:PropertyState>`,
-    `${indent}\t<xr:Property>${property}</xr:Property>`,
-    `${indent}\t<xr:State>Extended</xr:State>`,
-    `${indent}</xr:PropertyState>`,
-  ].join(newline);
+function createPropertyState(prefix: string, property: CfeModuleKind, indent: string, newline: string): XmlElement {
+  const childIndent = `${indent}\t`;
+  const nestedIndent = `${childIndent}\t`;
+  const propertyState = createXmlElement(`${prefix}:PropertyState`, 'PropertyState');
+  const propertyElement = createXmlElement(`${prefix}:Property`, 'Property', [{ kind: 'text', text: property }]);
+  const stateElement = createXmlElement(`${prefix}:State`, 'State', [{ kind: 'text', text: 'Extended' }]);
+  propertyElement.parent = propertyState;
+  stateElement.parent = propertyState;
+  propertyState.children = [
+    { kind: 'text', text: `${newline}${nestedIndent}` },
+    propertyElement,
+    { kind: 'text', text: `${newline}${nestedIndent}` },
+    stateElement,
+    { kind: 'text', text: `${newline}${childIndent}` },
+  ];
+  return propertyState;
+}
+
+function appendPropertyState(
+  internalInfo: XmlElement,
+  propertyState: XmlElement,
+  indent: string,
+  newline: string,
+): void {
+  const lastChild = internalInfo.children[internalInfo.children.length - 1];
+  const trailingText = lastChild?.kind === 'text' && /^\s*$/u.test(lastChild.text) ? lastChild.text : undefined;
+  const closingIndent = trailingText === undefined ? indent : indentationAtEnd(trailingText);
+  if (trailingText !== undefined) {
+    internalInfo.children.pop();
+  }
+  propertyState.parent = internalInfo;
+  internalInfo.children.push(
+    { kind: 'text', text: `${newline}${closingIndent}\t` },
+    propertyState,
+    { kind: 'text', text: trailingText ?? `${newline}${closingIndent}` },
+  );
+}
+
+function ensureReadablePrefix(internalInfo: XmlElement): string {
+  const namespaces = inScopeNamespaces(internalInfo);
+  if (namespaces.get('xr') === XCF_READABLE_NAMESPACE) {
+    return 'xr';
+  }
+  const existingAlias = [...namespaces.entries()].find(([prefix, uri]) => prefix !== '' && uri === XCF_READABLE_NAMESPACE);
+  if (existingAlias) {
+    return existingAlias[0];
+  }
+
+  let prefix = 'xr';
+  if (namespaces.has(prefix)) {
+    prefix = 'xrCfe';
+    let suffix = 2;
+    while (namespaces.has(prefix)) {
+      prefix = `xrCfe${suffix++}`;
+    }
+  }
+  internalInfo.attributes.push({
+    name: `xmlns:${prefix}`,
+    localName: prefix,
+    value: XCF_READABLE_NAMESPACE,
+    quote: '"',
+  });
+  return prefix;
+}
+
+function inScopeNamespaces(element: XmlElement): Map<string, string> {
+  const namespaces = new Map<string, string>();
+  let current: XmlElement | undefined = element;
+  while (current) {
+    for (const attribute of current.attributes) {
+      if (attribute.name === 'xmlns' && !namespaces.has('')) {
+        namespaces.set('', attribute.value);
+      } else if (attribute.name.startsWith('xmlns:')) {
+        const prefix = attribute.name.slice('xmlns:'.length);
+        if (!namespaces.has(prefix)) {
+          namespaces.set(prefix, attribute.value);
+        }
+      }
+    }
+    current = current.parent;
+  }
+  return namespaces;
+}
+
+function namespaceUri(element: XmlElement): string | undefined {
+  const prefix = element.name.includes(':') ? element.name.slice(0, element.name.indexOf(':')) : '';
+  let current: XmlElement | undefined = element;
+  while (current) {
+    const declarationName = prefix ? `xmlns:${prefix}` : 'xmlns';
+    const declaration = current.attributes.find((attribute) => attribute.name === declarationName);
+    if (declaration) {
+      return declaration.value;
+    }
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function indentationBefore(parent: XmlElement, element: XmlElement): string {
+  const index = parent.children.indexOf(element);
+  const previousChild = parent.children[index - 1];
+  return previousChild?.kind === 'text' && /^\s*$/u.test(previousChild.text)
+    ? indentationAtEnd(previousChild.text)
+    : '';
+}
+
+function indentationAtEnd(text: string): string {
+  return /(?:^|\r?\n)([\t ]*)$/u.exec(text)?.[1] ?? '';
+}
+
+function qualifyLike(qualifiedName: string, localName: string): string {
+  const separator = qualifiedName.indexOf(':');
+  return separator < 0 ? localName : `${qualifiedName.slice(0, separator)}:${localName}`;
+}
+
+function createXmlElement(name: string, localName: string, children: XmlChildNode[] = []): XmlElement {
+  const element: XmlElement = { kind: 'element', name, localName, attributes: [], children };
+  for (const child of children) {
+    if (child.kind === 'element') {
+      child.parent = element;
+    }
+  }
+  return element;
 }
 
 function formatRank(value: string): number {
@@ -609,8 +780,4 @@ function isMutationPlan(
 
 function isMissing(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT');
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }

@@ -5,6 +5,8 @@ import * as path from 'path';
 import '../helpers/vscodeStubRegister';
 import { CfeProjectService } from '../../src/extensionSupport/cfeProject/createProject';
 import { CfeProjectError } from '../../src/extensionSupport/cfeProject/types';
+import { getMetadataTypeDescriptorByRootTag } from '../../src/constants/metadataTypeDescriptors';
+import { getExplicitGeneratedTypeSpecs, ROOT_TAGS_WITHOUT_INTERNALINFO } from '../../src/utils/xml/metadataGeneratedTypeSchema';
 import type { ExclusiveConfigurationOperation } from '../../src/services/configurationSession/ConfigurationSession';
 import type { MutationPlan } from '../../src/services/configurationSession/mutationPlan';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
@@ -111,23 +113,24 @@ suite('CFE borrow core', () => {
     });
   });
 
-  test('rejects unproven dependency closures and CFE identity collisions before writes', async () => {
+  test('borrows registry types and rejects CFE identity collisions before writes', async () => {
     await withHarness('2.20', async (harness) => {
-      await assert.rejects(
-        () => harness.service.borrowObject({
-          extensionConfigurationId: harness.extensionConfigurationId,
-          sourceDotPath: 'Report.Sales',
-        }),
-        (error: CfeProjectError) => error.code === 'CFE_DEPENDENCY_UNSUPPORTED',
-      );
-      await assert.rejects(
-        () => harness.service.borrowObject({
-          extensionConfigurationId: harness.extensionConfigurationId,
-          sourceUuid: UUIDS.report,
-        }),
-        (error: CfeProjectError) => error.code === 'CFE_DEPENDENCY_UNSUPPORTED',
-      );
-      assert.strictEqual(await exists(path.join(harness.extension, 'Reports', 'Sales.xml')), false);
+      const report = await harness.service.borrowObject({
+        extensionConfigurationId: harness.extensionConfigurationId,
+        sourceDotPath: 'Report.Sales',
+      });
+      assert.strictEqual(report.type, 'Report');
+      assert.strictEqual(report.status, 'borrowed');
+      const reportXml = await fs.promises.readFile(path.join(harness.extension, report.objectPath), 'utf8');
+      assert.match(reportXml, /<InternalInfo>/);
+      assert.match(reportXml, /<ChildObjects\/>/);
+
+      const byUuid = await harness.service.borrowObject({
+        extensionConfigurationId: harness.extensionConfigurationId,
+        sourceUuid: UUIDS.report,
+      });
+      assert.strictEqual(byUuid.status, 'already-borrowed');
+      assert.strictEqual(byUuid.localUuid, report.localUuid);
 
       const reportFolder = path.join(harness.extension, 'Reports');
       const crossTypeTarget = path.join(reportFolder, 'Existing.xml');
@@ -276,15 +279,25 @@ async function writeBaseConfiguration(base: string, format: string): Promise<voi
     'utf8',
   );
   await fs.promises.writeFile(path.join(base, 'Languages', 'Russian.xml'), `<?xml version="1.0"?><MetaDataObject version="${format}"><Language uuid="12121212-1212-4121-8121-121212121212"><Properties><Name>Russian</Name><LanguageCode>ru</LanguageCode></Properties></Language></MetaDataObject>`, 'utf8');
-  await fs.promises.writeFile(path.join(base, 'Catalogs', 'Products.xml'), sourceObjectXml('Catalog', 'Products', UUIDS.catalog), 'utf8');
-  await fs.promises.writeFile(path.join(base, 'Documents', 'Order.xml'), sourceObjectXml('Document', 'Order', UUIDS.document), 'utf8');
-  await fs.promises.writeFile(path.join(base, 'CommonModules', 'Core.xml'), sourceObjectXml('CommonModule', 'Core', UUIDS.commonModule, '<Global>true</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>true</ServerCall>'), 'utf8');
-  await fs.promises.writeFile(path.join(base, 'Reports', 'Sales.xml'), sourceObjectXml('Report', 'Sales', UUIDS.report), 'utf8');
+  await fs.promises.writeFile(path.join(base, 'Catalogs', 'Products.xml'), sourceObjectXml('Catalog', 'Products', UUIDS.catalog, '', format), 'utf8');
+  await fs.promises.writeFile(path.join(base, 'Documents', 'Order.xml'), sourceObjectXml('Document', 'Order', UUIDS.document, '', format), 'utf8');
+  await fs.promises.writeFile(path.join(base, 'CommonModules', 'Core.xml'), sourceObjectXml('CommonModule', 'Core', UUIDS.commonModule, '<Global>true</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>true</ServerCall>', format), 'utf8');
+  await fs.promises.writeFile(path.join(base, 'Reports', 'Sales.xml'), sourceObjectXml('Report', 'Sales', UUIDS.report, '', format), 'utf8');
 }
 
-function sourceObjectXml(type: string, name: string, uuid: string, extraProperties = ''): string {
-  const childObjects = type === 'Catalog' || type === 'Document' || type === 'Enum' ? '<ChildObjects/>' : '';
-  return `<?xml version="1.0"?><MetaDataObject version="2.20"><${type} uuid="${uuid}"><Properties><Name>${name}</Name>${extraProperties}</Properties>${childObjects}</${type}></MetaDataObject>`;
+function sourceObjectXml(type: string, name: string, uuid: string, extraProperties = '', format = '2.20'): string {
+  const descriptor = getMetadataTypeDescriptorByRootTag(type);
+  const childObjects = descriptor?.structure.hasChildObjects ? '<ChildObjects/>' : '';
+  const paletteNamespace = format === '2.21' ? ' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"' : '';
+  const specs = ROOT_TAGS_WITHOUT_INTERNALINFO.has(type)
+    ? []
+    : getExplicitGeneratedTypeSpecs(type) ?? [{ namePrefix: `${type}Manager`, category: 'Manager' }];
+  const internalInfo = specs.length === 0 ? '' : `<InternalInfo>${specs.map((spec, index) => {
+    const typeId = `20000000-0000-4000-8000-${String(index * 2 + 1).padStart(12, '0')}`;
+    const valueId = `30000000-0000-4000-8000-${String(index * 2 + 2).padStart(12, '0')}`;
+    return `<xr:GeneratedType name="${spec.namePrefix}.${name}" category="${spec.category}"><xr:TypeId>${typeId}</xr:TypeId><xr:ValueId>${valueId}</xr:ValueId></xr:GeneratedType>`;
+  }).join('')}</InternalInfo>`;
+  return `<?xml version="1.0"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.3/xcf/readable"${paletteNamespace} version="${format}"><${type} uuid="${uuid}">${internalInfo}<Properties><Name>${name}</Name>${extraProperties}</Properties>${childObjects}</${type}></MetaDataObject>`;
 }
 
 function ownCatalogXml(name: string, uuid: string): string {

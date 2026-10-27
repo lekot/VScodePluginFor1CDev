@@ -24,6 +24,9 @@ const UUID = {
   objectB: '44444444-4444-4444-8444-444444444444',
   dependencyEnum: '55555555-5555-4555-8555-555555555555',
   dependencyEnumValue: '66666666-6666-4666-8666-666666666666',
+  registerKey: '77777777-7777-4777-8777-777777777777',
+  registerManager: '88888888-8888-4888-8888-888888888888',
+  filterAlias: '99999999-9999-4999-8999-999999999999',
 } as const;
 
 suite('Extension compare dependency validation (#336)', () => {
@@ -63,6 +66,250 @@ suite('Extension compare dependency validation (#336)', () => {
         assert.ok(packagePreview.preview.items.some((item) => item.label === 'Catalog.B'));
         assert.strictEqual(await pathExists(path.join(target, 'Catalogs', 'A.xml')), false, 'preview creation does not write targets');
         assert.strictEqual(await pathExists(path.join(target, 'Catalogs', 'B.xml')), false, 'preview creation does not write targets');
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('blocks a missing untyped metadata dependency in the direct Rights/Object/Name structure', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      const role: ExtensionCompareObjectFixture = {
+        type: 'Role',
+        name: 'Ext_Role',
+        uuid: UUID.objectA,
+        belonging: 'Own',
+      };
+      await writeDesignerConfiguration(target, { uuid: UUID.target });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+        objects: [role],
+      });
+      await writeCompareBytes(
+        source,
+        path.join('Roles', role.name, 'Ext', 'Rights.xml'),
+        '<rights><object><name>Catalog.Missing</name></object></rights>',
+      );
+
+      const compare = await openCompare(tempRoot, target, source);
+      try {
+        const roleId = nodeIdForLabel(compare.result.projection.root, 'Role.Ext_Role');
+        assert.ok(
+          compare.result.workspace.listMergeableNodeIds().includes(roleId),
+          'the Role row must reach dependency validation instead of failing the root-type gate',
+        );
+        const created = await compare.result.workspace.createPreviewForNodeIds([roleId]);
+        assert.strictEqual(created.ok, false, `missing object in Rights.xml must block the role transfer: ${JSON.stringify(created)}`);
+        const dependencyDiagnostic = created.diagnostics.find((diagnostic) => diagnostic.blocking);
+        assert.ok(dependencyDiagnostic);
+        assert.ok(dependencyDiagnostic.suggestedAction?.includes('Catalog.Missing'), JSON.stringify(dependencyDiagnostic));
+        assert.ok(dependencyDiagnostic.suggestedAction?.includes('Roles/Ext_Role/Ext/Rights.xml'), JSON.stringify(dependencyDiagnostic));
+        assert.strictEqual(await pathExists(path.join(target, 'Roles', 'Ext_Role.xml')), false);
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('resolves Configuration.Name from Role Rights.xml against the target Configuration.Properties.Name', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      const role: ExtensionCompareObjectFixture = {
+        type: 'Role',
+        name: 'Ext_Role',
+        uuid: UUID.objectA,
+        belonging: 'Own',
+      };
+      await writeDesignerConfiguration(target, { uuid: UUID.target, name: 'TargetConfiguration' });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+        objects: [role],
+      });
+      await writeCompareBytes(source, path.join('Roles', role.name, 'Ext', 'Rights.xml'),
+        '<rights><object><name>Configuration.TargetConfiguration</name></object></rights>');
+
+      const compare = await openCompare(tempRoot, target, source);
+      try {
+        const roleId = nodeIdForLabel(compare.result.projection.root, 'Role.Ext_Role');
+        assert.ok(compare.result.workspace.listMergeableNodeIds().includes(roleId));
+        const created = await compare.result.workspace.createPreviewForNodeIds([roleId]);
+        assert.strictEqual(created.ok, true, `target Configuration.Name should satisfy the Role reference: ${JSON.stringify(created)}`);
+        assert.ok(created.preview.items.length > 0);
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('resolves Configuration.Name against the proven base when the target CFE has a different name', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cfe');
+      const base = path.join(tempRoot, 'base-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      const role: ExtensionCompareObjectFixture = {
+        type: 'Role',
+        name: 'Ext_Role',
+        uuid: UUID.objectA,
+        belonging: 'Own',
+      };
+      await writeDesignerConfiguration(target, {
+        uuid: UUID.target,
+        name: 'TargetExtension',
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+      });
+      await writeDesignerConfiguration(base, { uuid: UUID.target, name: 'BaseConfiguration' });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+        objects: [role],
+      });
+      await writeCompareBytes(source, path.join('Roles', role.name, 'Ext', 'Rights.xml'),
+        '<rights><object><name>Configuration.BaseConfiguration</name></object></rights>');
+
+      const compare = await openCompare(tempRoot, target, source, { extensionBaseRoots: { left: base } });
+      try {
+        const roleId = nodeIdForLabel(compare.result.projection.root, 'Role.Ext_Role');
+        assert.ok(compare.result.workspace.listMergeableNodeIds().includes(roleId));
+        const created = await compare.result.workspace.createPreviewForNodeIds([roleId]);
+        assert.strictEqual(created.ok, true, `proven base Configuration.Name should satisfy the Role reference: ${JSON.stringify(created)}`);
+        assert.ok(created.preview.items.length > 0);
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('blocks a foreign Configuration.Name from Role Rights.xml with a dependency diagnostic', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      const role: ExtensionCompareObjectFixture = {
+        type: 'Role',
+        name: 'Ext_Role',
+        uuid: UUID.objectA,
+        belonging: 'Own',
+      };
+      await writeDesignerConfiguration(target, { uuid: UUID.target, name: 'TargetConfiguration' });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+        objects: [role],
+      });
+      await writeCompareBytes(source, path.join('Roles', role.name, 'Ext', 'Rights.xml'),
+        '<rights><object><name>Configuration.ForeignConfiguration</name></object></rights>');
+
+      const compare = await openCompare(tempRoot, target, source);
+      try {
+        const roleId = nodeIdForLabel(compare.result.projection.root, 'Role.Ext_Role');
+        assert.ok(compare.result.workspace.listMergeableNodeIds().includes(roleId));
+        const created = await compare.result.workspace.createPreviewForNodeIds([roleId]);
+        assert.strictEqual(created.ok, false, `a foreign Configuration.Name must block the Role transfer: ${JSON.stringify(created)}`);
+        const diagnostic = created.diagnostics.find((item) => item.blocking);
+        assert.ok(diagnostic);
+        assert.ok(diagnostic.suggestedAction?.includes('Configuration.ForeignConfiguration'), JSON.stringify(diagnostic));
+        assert.ok(diagnostic.suggestedAction?.includes('Roles/Ext_Role/Ext/Rights.xml'), JSON.stringify(diagnostic));
+        assert.ok(diagnostic.suggestedAction?.includes('отсутствует в target'), JSON.stringify(diagnostic));
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('does not interpret arbitrary Name nodes or comments as Rights.xml dependencies', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      const role: ExtensionCompareObjectFixture = {
+        type: 'Role',
+        name: 'Ext_Role',
+        uuid: UUID.objectA,
+        belonging: 'Own',
+      };
+      await writeDesignerConfiguration(target, { uuid: UUID.target, objects: [catalogObject('Real', UUID.objectB)] });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+        objects: [role],
+      });
+      await writeCompareBytes(
+        source,
+        path.join('Roles', role.name, 'Ext', 'Rights.xml'),
+        '<rights><object><name>Catalog.Real</name><synonym><name>Configuration.NestedNoise</name></synonym></object><!-- Configuration.CommentOnly --></rights>',
+      );
+      await writeCompareBytes(source, path.join('Roles', role.name, 'Ext', 'Unrelated.xml'), '<Metadata><Name>Configuration.AlsoNotAReference</Name><Name>Catalog.AlsoNotAReference</Name></Metadata>');
+
+      const compare = await openCompare(tempRoot, target, source);
+      try {
+        const roleId = nodeIdForLabel(compare.result.projection.root, 'Role.Ext_Role');
+        const created = await compare.result.workspace.createPreviewForNodeIds([roleId]);
+        assert.strictEqual(created.ok, true, `only direct Rights/Object/Name should count: ${JSON.stringify(created)}`);
+        assert.ok(created.preview.items.length > 0);
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('resolves generated register cfg suffixes and registry aliases to canonical dependency identities', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      const holderKey = catalogObject('Ext_HolderKey', UUID.objectA);
+      const holderValueManager = catalogObject('Ext_HolderValueManager', UUID.objectB);
+      const holderValueKey = catalogObject('Ext_HolderValueKey', UUID.dependencyEnumValue);
+      const holderAlias = catalogObject('Ext_HolderAlias', UUID.dependencyEnum);
+      const keyDependency: ExtensionCompareObjectFixture = {
+        type: 'InformationRegister', name: 'RecordKeyDependency', uuid: UUID.registerKey, belonging: 'Own',
+      };
+      const valueManagerDependency: ExtensionCompareObjectFixture = {
+        type: 'Constant', name: 'ValueManagerDependency', uuid: UUID.registerManager, belonging: 'Own',
+      };
+      const valueKeyDependency: ExtensionCompareObjectFixture = {
+        type: 'Constant', name: 'ValueKeyDependency', uuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', belonging: 'Own',
+      };
+      const aliasDependency: ExtensionCompareObjectFixture = {
+        type: 'FilterCriterion', name: 'AliasDependency', uuid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', belonging: 'Own',
+      };
+      await writeDesignerConfiguration(target, { uuid: UUID.target });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+        objects: [holderKey, holderValueManager, holderValueKey, holderAlias, keyDependency, valueManagerDependency, valueKeyDependency, aliasDependency],
+      });
+      await writeCompareBytes(source, 'Catalogs/Ext_HolderKey/Ext/References.xml', '<Metadata><Type>cfg:InformationRegisterRecordKey.RecordKeyDependency</Type></Metadata>');
+      await writeCompareBytes(source, 'Catalogs/Ext_HolderValueManager/Ext/References.xml', '<Metadata><Type>cfg:ConstantValueManager.ValueManagerDependency</Type></Metadata>');
+      await writeCompareBytes(source, 'Catalogs/Ext_HolderValueKey/Ext/References.xml', '<Metadata><Type>cfg:ConstantValueKey.ValueKeyDependency</Type></Metadata>');
+      await writeCompareBytes(source, 'Catalogs/Ext_HolderAlias/Ext/References.xml', '<Metadata><Type>cfg:FilterCriteria.AliasDependency</Type></Metadata>');
+
+      const compare = await openCompare(tempRoot, target, source);
+      try {
+        const cases = [
+          { holder: holderKey, dependency: keyDependency, label: 'register RecordKey suffix' },
+          { holder: holderValueManager, dependency: valueManagerDependency, label: 'Constant ValueManager suffix' },
+          { holder: holderValueKey, dependency: valueKeyDependency, label: 'Constant ValueKey suffix' },
+          { holder: holderAlias, dependency: aliasDependency, label: 'registry root-tag alias' },
+        ];
+        for (const scenario of cases) {
+          const holderId = nodeIdForLabel(compare.result.projection.root, `Catalog.${scenario.holder.name}`);
+          const dependencyDescriptor = scenario.dependency.type;
+          const dependencyId = nodeIdForLabel(compare.result.projection.root, `${dependencyDescriptor}.${scenario.dependency.name}`);
+          const holderOnly = await compare.result.workspace.createPreviewForNodeIds([holderId]);
+          assert.strictEqual(holderOnly.ok, false, `${scenario.label} must resolve to an unselected dependency`);
+          const selectedDependency = await compare.result.workspace.createPreviewForNodeIds([holderId, dependencyId]);
+          assert.strictEqual(selectedDependency.ok, true, `${scenario.label} must resolve to its canonical object: ${JSON.stringify(selectedDependency)}`);
+        }
       } finally {
         compare.dispose();
       }

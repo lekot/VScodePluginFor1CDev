@@ -1,5 +1,5 @@
 import { XMLBuilder, XMLParser } from 'fast-xml-parser';
-import { CFE_BORROW_TYPE_MATRIX } from '../../extensionSupport/cfeProject/borrowObjectBuilder';
+import { COMMON_MODULE_BORROWED_BOOLEAN_PROPERTIES } from '../../extensionSupport/cfeProject/borrowObjectBuilder';
 import type { ExtensionIndexedObject } from './extensionMetadataIndex';
 import { getValueByLocalName, localName } from '../../parsers/xmlNavHelpers';
 import { XmlParser } from '../../parsers/xmlParser';
@@ -8,7 +8,7 @@ import { compareCodeUnits } from '../../utils/compareCodeUnits';
 const SIMPLE_PROPERTIES = new Set(['Synonym', 'Comment']);
 const INTERCEPT_KINDS = new Set(['Before', 'After', 'Instead']);
 const PROPERTY_STATES = new Set(['Notify', 'MultiState', 'Extended']);
-const COMMON_MODULE_PROPERTIES = CFE_BORROW_TYPE_MATRIX.CommonModule?.copiedBooleanProperties ?? [];
+const COMMON_MODULE_PROPERTIES = COMMON_MODULE_BORROWED_BOOLEAN_PROPERTIES;
 const PRESERVE_ORDER_OPTIONS = {
   ignoreAttributes: false,
   attributeNamePrefix: '@_',

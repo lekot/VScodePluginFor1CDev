@@ -1,0 +1,600 @@
+{
+  "formatVersion": "2.20",
+  "roots": [
+    {
+      "rootType": "Catalog",
+      "generatedTypes": [
+        {
+          "namePrefix": "CatalogObject",
+          "category": "Object"
+        },
+        {
+          "namePrefix": "CatalogRef",
+          "category": "Ref"
+        },
+        {
+          "namePrefix": "CatalogSelection",
+          "category": "Selection"
+        },
+        {
+          "namePrefix": "CatalogList",
+          "category": "List"
+        },
+        {
+          "namePrefix": "CatalogManager",
+          "category": "Manager"
+        }
+      ]
+    },
+    {
+      "rootType": "Document",
+      "generatedTypes": [
+        {
+          "namePrefix": "DocumentObject",
+          "category": "Object"
+        },
+        {
+          "namePrefix": "DocumentRef",
+          "category": "Ref"
+        },
+        {
+          "namePrefix": "DocumentSelection",
+          "category": "Selection"
+        },
+        {
+          "namePrefix": "DocumentList",
+          "category": "List"
+        },
+        {
+          "namePrefix": "DocumentManager",
+          "category": "Manager"
+        }
+      ]
+    },
+    {
+      "rootType": "Enum",
+      "generatedTypes": [
+        {
+          "namePrefix": "EnumRef",
+          "category": "Ref"
+        },
+        {
+          "namePrefix": "EnumManager",
+          "category": "Manager"
+        },
+        {
+          "namePrefix": "EnumList",
+          "category": "List"
+        }
+      ]
+    },
+    {
+      "rootType": "Report",
+      "generatedTypes": [
+        {
+          "namePrefix": "ReportObject",
+          "category": "Object"
+        },
+        {
+          "namePrefix": "ReportManager",
+          "category": "Manager"
+        }
+      ]
+    },
+    {
+      "rootType": "DataProcessor",
+      "generatedTypes": [
+        {
+          "namePrefix": "DataProcessorObject",
+          "category": "Object"
+        },
+        {
+          "namePrefix": "DataProcessorManager",
+          "category": "Manager"
+        }
+      ]
+    },
+    {
+      "rootType": "ChartOfCharacteristicTypes",
+      "generatedTypes": [
+        {
+          "namePrefix": "ChartOfCharacteristicTypesObject",
+          "category": "Object"
+        },
+        {
+          "namePrefix": "ChartOfCharacteristicTypesRef",
+          "category": "Ref"
+        },
+        {
+          "namePrefix": "ChartOfCharacteristicTypesSelection",
+          "category": "Selection"
+        },
+        {
+          "namePrefix": "ChartOfCharacteristicTypesList",
+          "category": "List"
+        },
+        {
+          "namePrefix": "Characteristic",
+          "category": "Characteristic"
+        },
+        {
+          "namePrefix": "ChartOfCharacteristicTypesManager",
+          "category": "Manager"
+        }
+      ]
+    },
+    {
+      "rootType": "ChartOfAccounts",
+      "generatedTypes": [
+        {
+          "namePrefix": "ChartOfAccountsObject",
+          "category": "Object"
+        },
+        {
+          "namePrefix": "ChartOfAccountsRef",
+          "category": "Ref"
+        },
+        {
+          "namePrefix": "ChartOfAccountsSelection",
+          "category": "Selection"
+        },
+        {
+          "namePrefix": "ChartOfAccountsList",
+          "category": "List"
+        },
+        {
+          "namePrefix": "ChartOfAccountsManager",
+          "category": "Manager"
+        },
+        {
+          "namePrefix": "ChartOfAccountsExtDimensionTypes",
+          "category": "ExtDimensionTypes"
+        },
+        {
+          "namePrefix": "ChartOfAccountsExtDimensionTypesRow",
+          "category": "ExtDimensionTypesRow"
+        }
+      ]
+    },
+    {
+      "rootType": "ChartOfCalculationTypes",
+      "generatedTypes": [
+        {
+          "namePrefix": "ChartOfCalculationTypesObject",
+          "category": "Object"
+        },
+        {
+          "namePrefix": "ChartOfCalculationTypesRef",
+          "category": "Ref"
+        },
+        {
+          "namePrefix": "ChartOfCalculationTypesSelection",
+          "category": "Selection"
+        },
+        {
+          "namePrefix": "ChartOfCalculationTypesList",
+          "category": "List"
+        },
+        {
+          "namePrefix": "ChartOfCalculationTypesManager",
+          "category": "Manager"
+        },
+        {
+          "namePrefix": "DisplacingCalculationTypes",
+          "category": "DisplacingCalculationTypes"
+        },
+        {
+          "namePrefix": "DisplacingCalculationTypesRow",
+          "category": "DisplacingCalculationTypesRow"
+        },
+        {
+          "namePrefix": "BaseCalculationTypes",
+          "category": "BaseCalculationTypes"
+        },
+        {
+          "namePrefix": "BaseCalculationTypesRow",
+          "category": "BaseCalculationTypesRow"
+        },
+        {
+          "namePrefix": "LeadingCalculationTypes",
+          "category": "LeadingCalculationTypes"
+        },
+        {
+          "namePrefix": "LeadingCalculationTypesRow",
+          "category": "LeadingCalculationTypesRow"
+        }
+      ]
+    },
+    {
+      "rootType": "InformationRegister",
+      "generatedTypes": [
+        {
+          "namePrefix": "InformationRegisterRecord",
+          "category": "Record"
+        },
+        {
+          "namePrefix": "InformationRegisterManager",
+          "category": "Manager"
+        },
+        {
+          "namePrefix": "InformationRegisterSelection",
+          "category": "Selection"
+        },
+        {
+          "namePrefix": "InformationRegisterList",
+          "category": "List"
+        },
+        {
+          "namePrefix": "InformationRegisterRecordSet",
+          "category": "RecordSet"
+        },
+        {
+          "namePrefix": "InformationRegisterRecordKey",
+          "category": "RecordKey"
+        },
+        {
+          "namePrefix": "InformationRegisterRecordManager",
+          "category": "RecordManager"
+        }
+      ]
+    },
+    {
+      "rootType": "AccumulationRegister",
+      "generatedTypes": [
+        {
+          "namePrefix": "AccumulationRegisterRecord",
+          "category": "Record"
+        },
+        {
+          "namePrefix": "AccumulationRegisterManager",
+          "category": "Manager"
+        },
+        {
+          "namePrefix": "AccumulationRegisterSelection",
+          "category": "Selection"
+        },
+        {
+          "namePrefix": "AccumulationRegisterList",
+          "category": "List"
+        },
+        {
+          "namePrefix": "AccumulationRegisterRecordSet",
+          "category": "RecordSet"
+        },
+        {
+          "namePrefix": "AccumulationRegisterRecordKey",
+          "category": "RecordKey"
+        }
+      ]
+    },
+    {
+      "rootType": "AccountingRegister",
+      "generatedTypes": [
+        {
+          "namePrefix": "AccountingRegisterRecord",
+          "category": "Record"
+        },
+        {
+          "namePrefix": "AccountingRegisterExtDimensions",
+          "category": "ExtDimensions"
+        },
+        {
+          "namePrefix": "AccountingRegisterRecordSet",
+          "category": "RecordSet"
+        },
+        {
+          "namePrefix": "AccountingRegisterRecordKey",
+          "category": "RecordKey"
+        },
+        {
+          "namePrefix": "AccountingRegisterSelection",
+          "category": "Selection"
+        },
+        {
+          "namePrefix": "AccountingRegisterList",
+          "category": "List"
+        },
+        {
+          "namePrefix": "AccountingRegisterManager",
+          "category": "Manager"
+        }
+      ]
+    },
+    {
+      "rootType": "CalculationRegister",
+      "generatedTypes": [
+        {
+          "namePrefix": "CalculationRegisterRecord",
+          "category": "Record"
+        },
+        {
+          "namePrefix": "CalculationRegisterManager",
+          "category": "Manager"
+        },
+        {
+          "namePrefix": "CalculationRegisterSelection",
+          "category": "Selection"
+        },
+        {
+          "namePrefix": "CalculationRegisterList",
+          "category": "List"
+        },
+        {
+          "namePrefix": "CalculationRegisterRecordSet",
+          "category": "RecordSet"
+        },
+        {
+          "namePrefix": "CalculationRegisterRecordKey",
+          "category": "RecordKey"
+        },
+        {
+          "namePrefix": "RecalculationsManager",
+          "category": "Recalcs"
+        }
+      ]
+    },
+    {
+      "rootType": "BusinessProcess",
+      "generatedTypes": [
+        {
+          "namePrefix": "BusinessProcessObject",
+          "category": "Object"
+        },
+        {
+          "namePrefix": "BusinessProcessRef",
+          "category": "Ref"
+        },
+        {
+          "namePrefix": "BusinessProcessSelection",
+          "category": "Selection"
+        },
+        {
+          "namePrefix": "BusinessProcessList",
+          "category": "List"
+        },
+        {
+          "namePrefix": "BusinessProcessManager",
+          "category": "Manager"
+        },
+        {
+          "namePrefix": "BusinessProcessRoutePointRef",
+          "category": "RoutePointRef"
+        }
+      ]
+    },
+    {
+      "rootType": "Task",
+      "generatedTypes": [
+        {
+          "namePrefix": "TaskObject",
+          "category": "Object"
+        },
+        {
+          "namePrefix": "TaskRef",
+          "category": "Ref"
+        },
+        {
+          "namePrefix": "TaskSelection",
+          "category": "Selection"
+        },
+        {
+          "namePrefix": "TaskList",
+          "category": "List"
+        },
+        {
+          "namePrefix": "TaskManager",
+          "category": "Manager"
+        }
+      ]
+    },
+    {
+      "rootType": "Sequence",
+      "generatedTypes": [
+        {
+          "namePrefix": "SequenceRecord",
+          "category": "Record"
+        },
+        {
+          "namePrefix": "SequenceManager",
+          "category": "Manager"
+        },
+        {
+          "namePrefix": "SequenceRecordSet",
+          "category": "RecordSet"
+        }
+      ]
+    },
+    {
+      "rootType": "Constant",
+      "generatedTypes": [
+        {
+          "namePrefix": "ConstantManager",
+          "category": "Manager"
+        },
+        {
+          "namePrefix": "ConstantValueManager",
+          "category": "ValueManager"
+        },
+        {
+          "namePrefix": "ConstantValueKey",
+          "category": "ValueKey"
+        }
+      ]
+    },
+    {
+      "rootType": "SessionParameter",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "FilterCriterion",
+      "generatedTypes": [
+        {
+          "namePrefix": "FilterCriterionManager",
+          "category": "Manager"
+        },
+        {
+          "namePrefix": "FilterCriterionList",
+          "category": "List"
+        }
+      ]
+    },
+    {
+      "rootType": "ScheduledJob",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "FunctionalOption",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "FunctionalOptionsParameter",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "SettingsStorage",
+      "generatedTypes": [
+        {
+          "namePrefix": "SettingsStorageManager",
+          "category": "Manager"
+        }
+      ]
+    },
+    {
+      "rootType": "EventSubscription",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "CommonModule",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "CommandGroup",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "Role",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "Style",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "WebService",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "HTTPService",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "IntegrationService",
+      "generatedTypes": [
+        {
+          "namePrefix": "IntegrationServiceManager",
+          "category": "Manager"
+        }
+      ]
+    },
+    {
+      "rootType": "Subsystem",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "ExchangePlan",
+      "generatedTypes": [
+        {
+          "namePrefix": "ExchangePlanObject",
+          "category": "Object"
+        },
+        {
+          "namePrefix": "ExchangePlanRef",
+          "category": "Ref"
+        },
+        {
+          "namePrefix": "ExchangePlanSelection",
+          "category": "Selection"
+        },
+        {
+          "namePrefix": "ExchangePlanList",
+          "category": "List"
+        },
+        {
+          "namePrefix": "ExchangePlanManager",
+          "category": "Manager"
+        }
+      ]
+    },
+    {
+      "rootType": "DocumentJournal",
+      "generatedTypes": [
+        {
+          "namePrefix": "DocumentJournalSelection",
+          "category": "Selection"
+        },
+        {
+          "namePrefix": "DocumentJournalList",
+          "category": "List"
+        },
+        {
+          "namePrefix": "DocumentJournalManager",
+          "category": "Manager"
+        }
+      ]
+    },
+    {
+      "rootType": "DefinedType",
+      "generatedTypes": [
+        {
+          "namePrefix": "DefinedType",
+          "category": "DefinedType"
+        }
+      ]
+    },
+    {
+      "rootType": "CommonAttribute",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "CommonCommand",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "CommonForm",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "CommonPicture",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "CommonTemplate",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "DocumentNumerator",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "Language",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "WSReference",
+      "generatedTypes": [
+        {
+          "namePrefix": "WSReferenceManager",
+          "category": "Manager"
+        }
+      ]
+    },
+    {
+      "rootType": "XDTOPackage",
+      "generatedTypes": []
+    },
+    {
+      "rootType": "StyleItem",
+      "generatedTypes": []
+    }
+  ]
+}

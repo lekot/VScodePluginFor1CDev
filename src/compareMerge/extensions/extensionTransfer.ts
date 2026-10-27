@@ -3,6 +3,7 @@ import { validateElementName } from '../../utils/elementNameValidator';
 import type { CompareMessage } from '../domain/compareContracts';
 import type { CompareTreeNode, CompareTreeStatus } from '../compareTreeTypes';
 import type { ExtensionIndexedObject, ExtensionMetadataIndex } from './extensionMetadataIndex';
+import { validateBorrowedObjectSource } from '../../extensionSupport/cfeProject/borrowObjectBuilder';
 import { captureMergePath } from '../merge/mergeSnapshot';
 import type { MergeCandidate } from '../merge/mergePreview';
 import { hasNonEmptyChildObjects, hasUnknownInterceptShape, hasUnsupportedPropertyChanges, isSemanticOverlayChanged, isValidPropertyState, overlaySimpleProperties, replaceRootUuid } from './extensionXmlOverlay';
@@ -106,8 +107,20 @@ export async function analyzeExtensionTransfers(input: {
       reason = await inspectUnregisteredTargetCollision(input.target, incoming);
     }
     if (!reason && action === 'overlay-adopted' && targetMatch.object?.descriptorContent && incoming.descriptorContent) {
+      if (hasDescriptorRootAlias(targetMatch.object) || hasDescriptorRootAlias(incoming)) {
+        reason = 'Наложение свойств не поддерживает альтернативный корневой тег XML; перенос заблокирован до отдельной поддержки этой XML-формы.';
+      }
+    }
+    if (!reason && action === 'overlay-adopted' && targetMatch.object?.descriptorContent && incoming.descriptorContent) {
       const overlay = overlaySimpleProperties(targetMatch.object.descriptorContent, incoming.descriptorContent, incoming.metadataType);
       if ('error' in overlay) {reason = overlay.error;}
+    }
+    if (!reason && action === 'adopted-to-cf-overlay'
+      && (hasDescriptorRootAlias(targetMatch.object) || hasDescriptorRootAlias(incoming))) {
+      reason = 'Наложение свойств не поддерживает альтернативный корневой тег XML; перенос заблокирован до отдельной поддержки этой XML-формы.';
+    }
+    if (!reason && action === 'adopted-cfe-copy' && hasDescriptorRootAlias(incoming)) {
+      reason = 'Переназначение UUID не поддерживает альтернативный корневой тег XML; перенос заблокирован до отдельной поддержки этой XML-формы.';
     }
     const semanticChange = targetMatch.object
       ? isSemanticTransferChanged(action, targetMatch.object, incoming)
@@ -219,6 +232,12 @@ function decideOwnTransfer(
     && targetIdentity?.ownership === 'adopted'
     && targetIdentity.type === identity.type
     && targetIdentity.sourceUuid?.toLowerCase() === identity.uuid.toLowerCase();
+  if (target.rootKind === 'cfe' && input.targetBase && !isBorrowedBaseObject && !isProvenAdoptedTarget) {
+    const baseCollision = knownTargetBaseOwnCollision(input.targetBase, incoming);
+    if (baseCollision) {
+      return { reason: baseCollision };
+    }
+  }
   const isExactOwnTarget = targetIdentity?.ownership === 'own'
     && targetIdentity.type === identity.type
     && targetIdentity.uuid.toLowerCase() === identity.uuid.toLowerCase();
@@ -240,6 +259,15 @@ function decideOwnTransfer(
     if (targetObject && isProvenAdoptedTarget) {
       return { action: 'overlay-adopted' };
     }
+    if (!provenBaseObject?.identity || !provenBaseObject.descriptorContent || !target.formatVersion) {
+      return { reason: 'Для проверки заимствованного объекта отсутствует дескриптор базы или версия целевого XML.' };
+    }
+    const sourceValidation = validateBorrowedObjectSource({
+      sourceXml: provenBaseObject.descriptorContent,
+      identity: provenBaseObject.identity,
+      formatVersion: target.formatVersion,
+    });
+    if (!sourceValidation.ok) {return { reason: `Проверка заимствованного объекта не пройдена: ${sourceValidation.reason}` };}
     return { action: 'borrow-shell' };
   }
   if (targetObject) {
@@ -249,6 +277,26 @@ function decideOwnTransfer(
     return { action: 'full-copy' };
   }
   return { action: 'full-copy' };
+}
+
+function knownTargetBaseOwnCollision(
+  targetBase: ExtensionMetadataIndex,
+  incoming: ExtensionIndexedObject,
+): string | undefined {
+  const identity = incoming.identity;
+  if (!identity || targetBase.rootKind !== 'cf') {
+    return undefined;
+  }
+  const sameQualifiedName = findByQualifiedName(targetBase.objects, incoming.qualifiedName);
+  if (sameQualifiedName) {
+    return `Объект ${incoming.qualifiedName} уже зарегистрирован в доказанной базовой конфигурации; перенос собственного объекта в CFE заблокирован.`;
+  }
+  const sameUuidObject = targetBase.objects.find((object) => object.identity?.ownership === 'own'
+    && sameUuid(object.identity.uuid, identity.uuid));
+  if (sameUuidObject) {
+    return `UUID ${identity.uuid} уже принадлежит объекту ${sameUuidObject.qualifiedName} в доказанной базовой конфигурации; перенос собственного объекта в CFE заблокирован.`;
+  }
+  return undefined;
 }
 
 function decideAdoptedTransfer(
@@ -385,6 +433,10 @@ function isSemanticTransferChanged(
     if (rebound) {descriptorContent = rebound;}
   }
   return !target.descriptorContent.equals(descriptorContent) || !sameSidecarFiles(target.sidecarFiles, incoming.sidecarFiles);
+}
+
+function hasDescriptorRootAlias(object: ExtensionIndexedObject | undefined): boolean {
+  return Boolean(object?.descriptorRootTag && object.descriptorRootTag !== object.metadataType);
 }
 
 function sameSidecarFiles(

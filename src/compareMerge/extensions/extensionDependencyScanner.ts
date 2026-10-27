@@ -1,7 +1,9 @@
 import { XMLValidator } from 'fast-xml-parser';
 import { METADATA_TYPE_DESCRIPTORS } from '../../constants/metadataTypeDescriptors';
+import { getExplicitGeneratedTypeSpecs } from '../../utils/xml/metadataGeneratedTypeSchema';
 import { XmlParser } from '../../parsers/xmlParser';
 import { localName } from '../../parsers/xmlNavHelpers';
+import { scanKnownRootPropertyReferences } from './extensionKnownRootPropertyReferences';
 
 export interface ExtensionDependencyArtifact {
   readonly relativePath: string;
@@ -13,6 +15,7 @@ export interface ExtensionMetadataReference {
   readonly qualifiedName: string;
   readonly metadataType: string;
   readonly objectName: string;
+  readonly requiresCfeDeclaration?: true;
 }
 
 export interface ExtensionDependencyScanResult {
@@ -22,6 +25,7 @@ export interface ExtensionDependencyScanResult {
 
 const ROOT_TYPE_BY_TOKEN = buildRootTypeLookup();
 const NON_REFERENCE_CONTAINERS = new Set(['comment', 'synonym', 'generatedtype', 'module', 'moduletext', 'script', 'scripttext', 'bsl']);
+const ROLE_RIGHTS_XML_PATH = /^Roles\/[^/]+\/Ext\/Rights\.xml$/iu;
 
 /** Finds only typed 1C metadata references in structured XML, never arbitrary text. */
 export function scanExtensionXmlDependencies(
@@ -29,7 +33,7 @@ export function scanExtensionXmlDependencies(
 ): ExtensionDependencyScanResult {
   const references: ExtensionMetadataReference[] = [];
   const errors: Array<{ artifactPath: string; message: string }> = [];
-  const seen = new Set<string>();
+  const referenceIndexes = new Map<string, number>();
 
   for (const artifact of artifacts) {
     if (!artifact.relativePath.toLowerCase().endsWith('.xml')) {continue;}
@@ -54,7 +58,27 @@ export function scanExtensionXmlDependencies(
       continue;
     }
 
-    const addReference = (token: string, syntax: 'cfg' | 'mdObjectRef' | 'designTimeRef'): void => {
+    const appendReference = (metadataType: string, objectName: string, requiresCfeDeclaration = false): void => {
+      const qualifiedName = `${metadataType}.${objectName}`;
+      const key = `${artifact.relativePath.toLowerCase()}\0${qualifiedName.toLowerCase()}`;
+      const existingIndex = referenceIndexes.get(key);
+      if (existingIndex !== undefined) {
+        if (requiresCfeDeclaration && !references[existingIndex]?.requiresCfeDeclaration) {
+          references[existingIndex] = { ...references[existingIndex]!, requiresCfeDeclaration: true };
+        }
+        return;
+      }
+      referenceIndexes.set(key, references.length);
+      references.push({
+        artifactPath: artifact.relativePath,
+        qualifiedName,
+        metadataType,
+        objectName,
+        ...(requiresCfeDeclaration ? { requiresCfeDeclaration: true as const } : {}),
+      });
+    };
+
+    const addReference = (token: string, syntax: 'cfg' | 'mdObjectRef' | 'designTimeRef' | 'rightsName'): void => {
       const value = token.trim();
       const dot = value.indexOf('.');
       if (dot <= 0 || dot === value.length - 1) {
@@ -69,21 +93,31 @@ export function scanExtensionXmlDependencies(
         if (!typeToken.toLowerCase().startsWith('cfg:')) {return;}
         typeToken = typeToken.slice(4);
       }
-      const metadataType = ROOT_TYPE_BY_TOKEN.get(typeToken.toLowerCase());
+      const isConfigurationRootReference = syntax === 'rightsName' && typeToken.toLowerCase() === 'configuration';
+      const metadataType = isConfigurationRootReference
+        ? 'Configuration'
+        : ROOT_TYPE_BY_TOKEN.get(typeToken.toLowerCase());
       const objectPath = value.slice(dot + 1).trim();
       const objectName = objectPath.split('.')[0]?.trim();
-      if (!metadataType || !objectName || !isMetadataName(objectName)) {
+      if (!metadataType || !objectName || !isMetadataName(objectName)
+        || (isConfigurationRootReference && objectPath.includes('.'))) {
         if (syntax !== 'cfg' || value.toLowerCase().startsWith('cfg:')) {
           errors.push({ artifactPath: artifact.relativePath, message: `XML metadata reference type or name is unsupported: ${value}.` });
         }
         return;
       }
-      const qualifiedName = `${metadataType}.${objectName}`;
-      const key = `${artifact.relativePath.toLowerCase()}\0${qualifiedName.toLowerCase()}`;
-      if (seen.has(key)) {return;}
-      seen.add(key);
-      references.push({ artifactPath: artifact.relativePath, qualifiedName, metadataType, objectName });
+      appendReference(metadataType, objectName);
     };
+
+    const knownRootReferences = scanKnownRootPropertyReferences(parsed, artifact.relativePath);
+    errors.push(...knownRootReferences.errors);
+    for (const reference of knownRootReferences.references) {
+      appendReference(reference.metadataType, reference.objectName, reference.requiresCfeDeclaration === true);
+    }
+
+    if (ROLE_RIGHTS_XML_PATH.test(artifact.relativePath.replace(/\\/gu, '/'))) {
+      scanRoleRightsXml(parsed, artifact.relativePath, (value) => addReference(value, 'rightsName'), errors);
+    }
 
     const visit = (value: unknown): void => {
       if (Array.isArray(value)) {
@@ -120,15 +154,57 @@ export function scanExtensionXmlDependencies(
 
 function buildRootTypeLookup(): ReadonlyMap<string, string> {
   const lookup = new Map<string, string>();
-  const knownTypeSuffixes = ['Object', 'Ref', 'Selection', 'List', 'Manager', 'Record', 'RecordSet', 'RecordManager', 'RecordSelection', 'RecordList'];
   for (const descriptor of METADATA_TYPE_DESCRIPTORS) {
     const rootType = descriptor.designerRootTag;
     lookup.set(rootType.toLowerCase(), rootType);
     for (const alias of descriptor.designerRootTagAliases ?? []) {lookup.set(alias.toLowerCase(), rootType);}
     if (descriptor.referenceKind) {lookup.set(descriptor.referenceKind.toLowerCase(), rootType);}
-    for (const suffix of knownTypeSuffixes) {lookup.set(`${rootType}${suffix}`.toLowerCase(), rootType);}
+    for (const generatedType of getExplicitGeneratedTypeSpecs(rootType) ?? []) {
+      lookup.set(generatedType.namePrefix.toLowerCase(), rootType);
+    }
   }
   return lookup;
+}
+
+function scanRoleRightsXml(
+  parsed: Record<string, unknown>,
+  artifactPath: string,
+  addReference: (value: string) => void,
+  errors: Array<{ artifactPath: string; message: string }>,
+): void {
+  const roots = directChildren(parsed);
+  if (roots.length !== 1 || localName(roots[0]![0]).toLowerCase() !== 'rights' || !isRecord(roots[0]![1])) {
+    errors.push({ artifactPath, message: 'Rights.xml должен содержать единственный корневой элемент rights.' });
+    return;
+  }
+  const rights = roots[0]![1] as Record<string, unknown>;
+  for (const objectValue of directChildValues(rights, 'object')) {
+    if (!isRecord(objectValue)) {
+      errors.push({ artifactPath, message: 'Rights.xml содержит некорректный прямой элемент object.' });
+      continue;
+    }
+    const names = directChildValues(objectValue, 'name');
+    if (names.length !== 1) {
+      errors.push({ artifactPath, message: 'Каждый прямой object в Rights.xml должен содержать единственный name.' });
+      continue;
+    }
+    const name = directText(names[0]);
+    if (name === undefined) {
+      errors.push({ artifactPath, message: 'Прямой object/name в Rights.xml не содержит однозначный текст metadata reference.' });
+      continue;
+    }
+    addReference(name);
+  }
+}
+
+function directChildren(value: Record<string, unknown>): Array<readonly [string, unknown]> {
+  return Object.entries(value).filter(([key]) => !isAttributeKey(key) && !key.startsWith('#') && !key.startsWith('?'));
+}
+
+function directChildValues(value: Record<string, unknown>, name: string): unknown[] {
+  return directChildren(value)
+    .filter(([key]) => localName(key).toLowerCase() === name.toLowerCase())
+    .flatMap(([, child]) => Array.isArray(child) ? child : [child]);
 }
 
 function metadataObjectReferenceKind(value: Record<string, unknown>): 'mdObjectRef' | 'designTimeRef' | undefined {
