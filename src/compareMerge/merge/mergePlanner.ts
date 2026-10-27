@@ -2,6 +2,7 @@ import { validateBslRoutineLogicalMergePlan } from '../bsl/bslRoutineMergeExecut
 import type { BslRoutineLogicalManualDiagnostic } from '../bsl/bslRoutineMergePlanTypes';
 import { CompareSession } from '../domain/compareSession';
 import type { CompareMessage, IdentityConflict } from '../domain/compareContracts';
+import { validateCapturedFileWriteOperation } from './capturedFileWrite';
 import {
   cloneMergeOperation,
   compareMessage,
@@ -28,8 +29,10 @@ export {
   type BackupPlanItem,
   type BslRoutineIdentityPayload,
   type BslRoutineOperationPayload,
+  type CapturedFileWritePayload,
   type ConflictResolutionChoice,
   type LogicalRoutineMergePayload,
+  type MergeFileWitness,
   type FileOperationPayload,
   type MergeCandidate,
   type MergeCandidateKind,
@@ -127,7 +130,7 @@ export function validateMergePreflight(input: PreflightInput): PreflightResult {
   const previewSourceId = findPreviewSourceId(input.session, input.previewId);
   const executablePreview = requireExecutableMergePreview(input, diagnostics, previewSourceId);
   const preview = executablePreview
-    ? materializeExecutableMergePreview(executablePreview, diagnostics)
+    ? materializeExecutableMergePreview(executablePreview, diagnostics, input.session)
     : undefined;
 
   if (input.approvedPreviewId !== input.previewId) {
@@ -234,6 +237,9 @@ function candidateToOperation(
   if (isFileOperationKind(candidate.kind)) {
     validateFileOperationCandidate(candidate, diagnostics);
   }
+  if (candidate.kind === 'fileWrite') {
+    diagnostics.push(...validateCapturedFileWriteOperation(candidate, input.session));
+  }
 
   if (diagnostics.length > 0) {
     return undefined;
@@ -246,12 +252,15 @@ function candidateToOperation(
     snapshotId: candidate.snapshotId,
     nodeId: candidate.nodeId,
     targetUri: candidate.targetUri,
+    previewPath: candidate.previewPath,
+    previewEffect: candidate.previewEffect,
     expectedOldHash: candidate.expectedOldHash,
     newHash: candidate.newHash,
     conflictId: candidate.conflictId,
     logicalRoutine: candidate.logicalRoutine,
     xmlPatch: candidate.xmlPatch,
     fileOperation: candidate.fileOperation,
+    fileWrite: candidate.fileWrite,
     bslRoutine: candidate.bslRoutine,
   };
 }
@@ -793,7 +802,8 @@ function requireExecutableMergePreview(
 
 export function materializeExecutableMergePreview(
   preview: MergePreview,
-  diagnostics: CompareMessage[]
+  diagnostics: CompareMessage[],
+  session?: CompareSession,
 ): MergePreview | undefined {
   const payload = preview.payload;
   if (!isStoredMergePreviewPayload(payload)) {
@@ -809,8 +819,19 @@ export function materializeExecutableMergePreview(
   }
 
   for (const operation of payload.operations) {
+    if (!operation || typeof operation !== 'object' || Array.isArray(operation)) {
+      diagnostics.push(compareMessage({
+        severity: 'error',
+        code: 'MERGE_PREVIEW_PAYLOAD_INVALID',
+        sourceId: preview.targetSourceId,
+        suggestedAction: 'Stored merge preview contains a malformed operation.',
+      }));
+      continue;
+    }
     if (!isSupportedOperationKind(operation.kind)) {
       diagnostics.push(unsupportedOperationDiagnostic(operation));
+    } else if (operation.kind === 'fileWrite') {
+      diagnostics.push(...validateCapturedFileWriteOperation(operation, session));
     }
   }
 
@@ -864,6 +885,7 @@ function isSupportedOperationKind(kind: unknown): kind is MergeSupportedOperatio
     kind === 'xmlNodeInsert' ||
     kind === 'xmlNodeDelete' ||
     kind === 'fileCopy' ||
+    kind === 'fileWrite' ||
     kind === 'fileDelete' ||
     kind === 'folderCopy' ||
     kind === 'folderDelete'

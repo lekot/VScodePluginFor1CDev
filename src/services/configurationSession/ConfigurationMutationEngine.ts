@@ -13,6 +13,7 @@ import {
 } from './configurationMutationGateway';
 import type { MutationOutcome } from './ConfigurationSession';
 import { MutationPlan, MutationPlanError } from './mutationPlan';
+import { executePlanUnderWriterLease } from './executePlanWriterLease';
 import type { ConfigurationCapabilities, ConfigurationContext, ConfigurationId } from './types';
 import type { ReconciliationOutcome } from '../../types/reloadContracts';
 import {
@@ -70,6 +71,11 @@ export interface MutationIntent {
   /** `null` records that the target was expected to be absent; `undefined` makes no revision assertion. */
   readonly expectedRevision?: string | null;
   readonly session?: MutationSessionInfo;
+}
+
+export interface ExecutePlanOptions {
+  /** Runs the plan builder only after entering the existing configuration writer lease. */
+  readonly buildUnderLease?: boolean;
 }
 
 export interface SingleFileMutationIntent extends MutationIntent {
@@ -648,6 +654,7 @@ export class ConfigurationMutationEngine {
     target: ResourceLike | ConfigurationContext,
     intent: MutationIntent,
     builder: (snapshot: { rootPath: string; configurationId?: ConfigurationId }) => Promise<MutationPlan<T>> | MutationPlan<T>,
+    options?: ExecutePlanOptions,
   ): Promise<MutationReceipt<T>> {
     const resolved = await this.resolveTarget(target);
 
@@ -690,43 +697,85 @@ export class ConfigurationMutationEngine {
       };
     }
 
-    try {
-      const plan = await builder({ rootPath: resolved.rootPath, configurationId: resolved.configurationId });
-      if (this.deps.runPlanWithOutcome) {
-        const outcome = await this.deps.runPlanWithOutcome(resolved.rootPath, plan);
-        if (outcome.status === 'committed') {
-          return {
-            status: 'committed',
-            result: outcome.value,
-            kind: intent.kind,
-            resourcePath: resolved.rootPath,
-            configurationId: resolved.configurationId,
-            operationId: outcome.operationId,
-            snapshotVersion: outcome.snapshotVersion,
-            ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
-            session: intent.session,
-          };
-        }
-        const error = 'error' in outcome ? outcome.error : undefined;
-        if (outcome.status === 'conflict') {
-          return {
-            status: 'conflict',
-            code: outcome.code,
-            message: error?.message ?? 'Configuration mutation conflicted.',
-            kind: intent.kind,
-            resourcePath: resolved.rootPath,
-            configurationId: resolved.configurationId,
-            operationId: outcome.operationId,
-            snapshotVersion: outcome.snapshotVersion,
-            ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
-            session: intent.session,
-          };
-        }
-        if (outcome.status === 'cancelled') {
+    const executeResolvedPlan = async (): Promise<MutationReceipt<T>> => {
+      try {
+        const plan = await builder({ rootPath: resolved.rootPath, configurationId: resolved.configurationId });
+        if (this.deps.runPlanWithOutcome) {
+          const outcome = await this.deps.runPlanWithOutcome(resolved.rootPath, plan);
+          if (outcome.status === 'committed') {
+            return {
+              status: 'committed',
+              result: outcome.value,
+              kind: intent.kind,
+              resourcePath: resolved.rootPath,
+              configurationId: resolved.configurationId,
+              operationId: outcome.operationId,
+              snapshotVersion: outcome.snapshotVersion,
+              ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+              session: intent.session,
+            };
+          }
+          const error = 'error' in outcome ? outcome.error : undefined;
+          if (outcome.status === 'conflict') {
+            return {
+              status: 'conflict',
+              code: outcome.code,
+              message: error?.message ?? 'Configuration mutation conflicted.',
+              kind: intent.kind,
+              resourcePath: resolved.rootPath,
+              configurationId: resolved.configurationId,
+              operationId: outcome.operationId,
+              snapshotVersion: outcome.snapshotVersion,
+              ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+              session: intent.session,
+            };
+          }
+          if (outcome.status === 'cancelled') {
+            return {
+              status: 'rolledBack',
+              code: 'CANCELLED',
+              message: 'Configuration mutation was cancelled.',
+              kind: intent.kind,
+              resourcePath: resolved.rootPath,
+              configurationId: resolved.configurationId,
+              operationId: outcome.operationId,
+              snapshotVersion: outcome.snapshotVersion,
+              ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+              session: intent.session,
+            };
+          }
+          if (error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT') {
+            return {
+              status: 'conflict',
+              code: 'PLAN_CONFLICT',
+              message: error.message,
+              kind: intent.kind,
+              resourcePath: resolved.rootPath,
+              configurationId: resolved.configurationId,
+              operationId: outcome.operationId,
+              snapshotVersion: outcome.snapshotVersion,
+              ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+              session: intent.session,
+            };
+          }
+          if (isRecoveryRequiredError(error)) {
+            return {
+              status: 'recoveryRequired',
+              code: 'RECOVERY_REQUIRED',
+              message: error!.message,
+              kind: intent.kind,
+              resourcePath: resolved.rootPath,
+              configurationId: resolved.configurationId,
+              operationId: outcome.operationId,
+              snapshotVersion: outcome.snapshotVersion,
+              ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
+              session: intent.session,
+            };
+          }
           return {
             status: 'rolledBack',
-            code: 'CANCELLED',
-            message: 'Configuration mutation was cancelled.',
+            code: error instanceof MutationPlanError ? error.code : 'PLAN_FAILED',
+            message: error?.message ?? 'Configuration mutation failed.',
             kind: intent.kind,
             resourcePath: resolved.rootPath,
             configurationId: resolved.configurationId,
@@ -736,63 +785,43 @@ export class ConfigurationMutationEngine {
             session: intent.session,
           };
         }
-        if (error instanceof MutationPlanError && error.code === 'PLAN_CONFLICT') {
-          return {
-            status: 'conflict',
-            code: 'PLAN_CONFLICT',
-            message: error.message,
-            kind: intent.kind,
-            resourcePath: resolved.rootPath,
-            configurationId: resolved.configurationId,
-            operationId: outcome.operationId,
-            snapshotVersion: outcome.snapshotVersion,
-            ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
-            session: intent.session,
-          };
-        }
-        if (isRecoveryRequiredError(error)) {
-          return {
-            status: 'recoveryRequired',
-            code: 'RECOVERY_REQUIRED',
-            message: error!.message,
-            kind: intent.kind,
-            resourcePath: resolved.rootPath,
-            configurationId: resolved.configurationId,
-            operationId: outcome.operationId,
-            snapshotVersion: outcome.snapshotVersion,
-            ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
-            session: intent.session,
-          };
-        }
+        const runPl = this.deps.runPlan ?? runConfigurationPlan;
+        const result = await runPl(resolved.rootPath, plan);
         return {
-          status: 'rolledBack',
-          code: error instanceof MutationPlanError ? error.code : 'PLAN_FAILED',
-          message: error?.message ?? 'Configuration mutation failed.',
+          status: 'committed',
+          result,
           kind: intent.kind,
           resourcePath: resolved.rootPath,
           configurationId: resolved.configurationId,
-          operationId: outcome.operationId,
-          snapshotVersion: outcome.snapshotVersion,
-          ...(outcome.reconciliation ? { reconciliation: outcome.reconciliation } : {}),
           session: intent.session,
         };
-      }
-      const runPl = this.deps.runPlan ?? runConfigurationPlan;
-      const result = await runPl(resolved.rootPath, plan);
-      return {
-        status: 'committed',
-        result,
-        kind: intent.kind,
-        resourcePath: resolved.rootPath,
-        configurationId: resolved.configurationId,
-        session: intent.session,
-      };
-    } catch (err: unknown) {
-      if (err instanceof MutationPlanError) {
-        if (err.code === 'PLAN_CONFLICT') {
+      } catch (err: unknown) {
+        if (err instanceof MutationPlanError) {
+          if (err.code === 'PLAN_CONFLICT') {
+            return {
+              status: 'conflict',
+              code: 'PLAN_CONFLICT',
+              message: err.message,
+              kind: intent.kind,
+              resourcePath: resolved.rootPath,
+              configurationId: resolved.configurationId,
+              session: intent.session,
+            };
+          }
+          if (err.code === 'RECOVERY_REQUIRED') {
+            return {
+              status: 'recoveryRequired',
+              code: 'RECOVERY_REQUIRED',
+              message: err.message,
+              kind: intent.kind,
+              resourcePath: resolved.rootPath,
+              configurationId: resolved.configurationId,
+              session: intent.session,
+            };
+          }
           return {
-            status: 'conflict',
-            code: 'PLAN_CONFLICT',
+            status: 'rolledBack',
+            code: 'PLAN_FAILED',
             message: err.message,
             kind: intent.kind,
             resourcePath: resolved.rootPath,
@@ -800,38 +829,37 @@ export class ConfigurationMutationEngine {
             session: intent.session,
           };
         }
-        if (err.code === 'RECOVERY_REQUIRED') {
-          return {
-            status: 'recoveryRequired',
-            code: 'RECOVERY_REQUIRED',
-            message: err.message,
-            kind: intent.kind,
-            resourcePath: resolved.rootPath,
-            configurationId: resolved.configurationId,
-            session: intent.session,
-          };
-        }
+        const msg = err instanceof Error ? err.message : String(err);
         return {
           status: 'rolledBack',
           code: 'PLAN_FAILED',
-          message: err.message,
+          message: msg,
           kind: intent.kind,
           resourcePath: resolved.rootPath,
           configurationId: resolved.configurationId,
           session: intent.session,
         };
       }
-      const msg = err instanceof Error ? err.message : String(err);
-      return {
-        status: 'rolledBack',
-        code: 'PLAN_FAILED',
-        message: msg,
-        kind: intent.kind,
+    };
+
+    if (options?.buildUnderLease) {
+      return executePlanUnderWriterLease({
         resourcePath: resolved.rootPath,
         configurationId: resolved.configurationId,
-        session: intent.session,
-      };
+        intent,
+        executePlan: executeResolvedPlan,
+        runMutation: this.deps.runMutation,
+        runMutationWithOutcome: this.deps.runMutationWithOutcome,
+        receiptFromOutcome: (outcome) => mutationReceiptFromOutcome(
+          outcome,
+          intent.kind,
+          resolved.rootPath,
+          resolved.configurationId,
+          intent.session,
+        ),
+      });
     }
+    return executeResolvedPlan();
   }
 
   /**

@@ -17,6 +17,7 @@ export type MergeSupportedOperationKind =
   | 'xmlNodeInsert'
   | 'xmlNodeDelete'
   | 'fileCopy'
+  | 'fileWrite'
   | 'fileDelete'
   | 'folderCopy'
   | 'folderDelete';
@@ -63,6 +64,18 @@ export interface FileOperationPayload {
   destructive: boolean;
 }
 
+export interface MergeFileWitness {
+  sourceId: string;
+  relativePath: string;
+  expectedHash: string;
+  kind?: 'file' | 'directory';
+}
+
+export interface CapturedFileWritePayload {
+  contentBase64: string;
+  witnesses: readonly MergeFileWitness[];
+}
+
 export interface BslRoutineIdentityPayload {
   name: string;
   normalizedName: string;
@@ -87,12 +100,15 @@ export interface MergeCandidate {
   snapshotId: string;
   nodeId: string;
   targetUri?: string;
+  previewPath?: string;
+  previewEffect?: 'create' | 'replace' | 'delete';
   expectedOldHash?: string;
   newHash?: string;
   conflictId?: string;
   logicalRoutine?: LogicalRoutineMergePayload;
   xmlPatch?: XmlPatchPayload;
   fileOperation?: FileOperationPayload;
+  fileWrite?: CapturedFileWritePayload;
   bslRoutine?: BslRoutineOperationPayload;
 }
 
@@ -103,12 +119,15 @@ export interface MergeOperation {
   snapshotId: string;
   nodeId: string;
   targetUri?: string;
+  previewPath?: string;
+  previewEffect?: 'create' | 'replace' | 'delete';
   expectedOldHash?: string;
   newHash?: string;
   conflictId?: string;
   logicalRoutine?: LogicalRoutineMergePayload;
   xmlPatch?: XmlPatchPayload;
   fileOperation?: FileOperationPayload;
+  fileWrite?: CapturedFileWritePayload;
   bslRoutine?: BslRoutineOperationPayload;
 }
 
@@ -219,6 +238,17 @@ export function cloneMergeOperation(operation: MergeOperation): MergeOperation {
           expectedOldHash: operation.fileOperation.expectedOldHash,
           sourceHash: operation.fileOperation.sourceHash,
           destructive: operation.fileOperation.destructive,
+        }
+      : undefined,
+    fileWrite: operation.fileWrite
+      ? {
+          contentBase64: operation.fileWrite.contentBase64,
+          witnesses: operation.fileWrite.witnesses.map((witness) => ({
+            sourceId: witness.sourceId,
+            relativePath: witness.relativePath,
+            expectedHash: witness.expectedHash,
+            kind: witness.kind,
+          })),
         }
       : undefined,
     bslRoutine: operation.bslRoutine

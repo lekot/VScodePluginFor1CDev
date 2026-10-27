@@ -1,3 +1,4 @@
+import * as fs from 'fs/promises';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
@@ -13,6 +14,8 @@ import {
 import { getSelectedNode } from '../helpers/commandHelpers';
 import { Logger } from '../utils/logger';
 import { isConfigurationCompareCancelled } from '../compareMerge/compareCancellation';
+import { CfeProjectManifestStorage } from '../extensionSupport/cfeProject/manifest';
+import type { CompareSide } from '../compareMerge/domain/compareContracts';
 
 export interface RegisterConfigurationCompareCommandsDeps {
   context: vscode.ExtensionContext;
@@ -62,7 +65,7 @@ export async function executeConfigurationCompareCommand(
   const leftRootPath = resolveConfigurationCompareLeftRoot(deps.state, node);
   if (!leftRootPath) {
     void vscode.window.showWarningMessage(
-      'Не удалось определить левую конфигурацию. Откройте или выберите узел конфигурации в дереве.'
+      'Не удалось определить конфигурацию-приёмник (слева). Откройте или выберите узел конфигурации в дереве.'
     );
     return;
   }
@@ -75,6 +78,10 @@ export async function executeConfigurationCompareCommand(
   try {
     const progressTitle = 'Сравнение конфигураций';
     await withConfigurationCompareProgress(deps, progressTitle, async (token) => {
+      const extensionBaseRoots = await resolveConfigurationCompareExtensionBaseRoots(
+        leftRootPath,
+        rightRootPath
+      );
       let configurationId;
       try {
         configurationId = await deps.state.configurationContextResolver
@@ -86,6 +93,7 @@ export async function executeConfigurationCompareCommand(
       const result = await (deps.buildCompare ?? buildConfigurationCompare)({
         leftRootPath,
         rightRootPath,
+        extensionBaseRoots,
         configurationId,
         mutationEngine: deps.state.configurationMutationEngine,
         backupRootPath: createConfigurationCompareBackupRootPath(
@@ -135,10 +143,86 @@ async function pickConfigurationCompareRightRoot(
     canSelectFiles: false,
     canSelectFolders: true,
     canSelectMany: false,
-    title: 'Выберите папку правой конфигурации для сравнения',
+    title: 'Выберите папку источника (справа) для сравнения',
     openLabel: 'Сравнить',
   });
   return pickedRight?.[0]?.fsPath;
+}
+
+/** Resolves only explicit CFE relations from manifests in the active VS Code workspace. */
+export async function resolveConfigurationCompareExtensionBaseRoots(
+  leftRootPath: string,
+  rightRootPath: string,
+  workspaceFolders: readonly vscode.WorkspaceFolder[] = vscode.workspace.workspaceFolders ?? []
+): Promise<Readonly<Partial<Record<CompareSide, string>>>> {
+  if (workspaceFolders.length === 0) {
+    return {};
+  }
+
+  const selectedRoots: Record<CompareSide, string> = {
+    left: await fs.realpath(leftRootPath),
+    right: await fs.realpath(rightRootPath),
+  };
+  const baseRoots: Partial<Record<CompareSide, string>> = {};
+  for (const folder of workspaceFolders) {
+    const workspaceRoot = await fs.realpath(folder.uri.fsPath);
+    const manifest = await new CfeProjectManifestStorage(workspaceRoot).read();
+    for (const project of manifest.projects) {
+      const extensionRoot = await resolveManifestProjectRoot(
+        workspaceRoot,
+        project.extensionConfiguration
+      );
+      if (!extensionRoot) {
+        continue;
+      }
+      const matchingSides = (['left', 'right'] as const).filter((side) =>
+        sameCanonicalRoot(selectedRoots[side], extensionRoot)
+      );
+      if (matchingSides.length === 0) {
+        continue;
+      }
+
+      const baseRoot = await resolveManifestProjectRoot(workspaceRoot, project.baseConfiguration);
+      if (!baseRoot) {
+        throw new Error(
+          `В manifest CFE не найдена базовая конфигурация для ${project.extensionConfiguration}.`
+        );
+      }
+      for (const side of matchingSides) {
+        const previous = baseRoots[side];
+        if (previous && !sameCanonicalRoot(previous, baseRoot)) {
+          throw new Error(
+            `Manifest CFE содержит противоречащие связи для конфигурации ${side === 'left' ? 'слева' : 'справа'}.`
+          );
+        }
+        baseRoots[side] = baseRoot;
+      }
+    }
+  }
+  return baseRoots;
+}
+
+async function resolveManifestProjectRoot(
+  workspaceRoot: string,
+  relativeRoot: string
+): Promise<string | undefined> {
+  try {
+    return await fs.realpath(path.join(workspaceRoot, relativeRoot));
+  } catch (error) {
+    const code = (error as { code?: unknown })?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function sameCanonicalRoot(left: string, right: string): boolean {
+  const normalizedLeft = path.normalize(left);
+  const normalizedRight = path.normalize(right);
+  return process.platform === 'win32'
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
 }
 
 async function withConfigurationCompareProgress(

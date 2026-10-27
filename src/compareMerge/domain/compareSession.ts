@@ -120,7 +120,7 @@ export class CompareSession {
     const snapshotIds: Partial<Record<CompareSide, string>> = {};
 
     for (const source of this.sessionState.sources) {
-      if (source.snapshotId) {
+      if (source.role !== 'base' && source.snapshotId) {
         snapshotIds[source.side] = source.snapshotId;
       }
     }

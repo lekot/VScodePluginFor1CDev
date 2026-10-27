@@ -45,11 +45,7 @@ import type {
 import { CompareSession } from './domain/compareSession';
 import type { CompareMessage, CompareSide, MetadataIdentity } from './domain/compareContracts';
 import { buildConfigurationInventory } from './inventory/configurationInventory';
-import type {
-  ArtifactUnit,
-  ConfigurationInventory,
-  MetadataObjectUnit,
-} from './inventory/configurationInventory';
+import type { ArtifactUnit, ConfigurationInventory, MetadataObjectUnit } from './inventory/configurationInventory';
 import { indexMetadataFile, indexMetadataFolder } from './metadata/metadataIndexer';
 import { matchMetadataIdentities } from './metadata/metadataMatcher';
 import {
@@ -57,10 +53,8 @@ import {
   type CompareTreeProjection,
   type BslRoutineDiffProjectionInput,
 } from './projection/compareTreeProjection';
-import {
-  type CompareCancellationToken,
-  throwIfCompareCancelled,
-} from './compareCancellation';
+import { type CompareCancellationToken, throwIfCompareCancelled } from './compareCancellation';
+import { tryBuildExtensionCompareState } from './extensions/extensionCompare';
 
 const LEFT_SOURCE_ID = 'left-source';
 const RIGHT_SOURCE_ID = 'right-source';
@@ -134,6 +128,7 @@ export interface ConfigurationCompareInput {
   configurationId?: ConfigurationId;
   createdAt?: Date;
   cancellation?: CompareCancellationToken;
+  extensionBaseRoots?: Readonly<Partial<Record<CompareSide, string>>>;
   limits?: ConfigurationCompareLimits;
   io?: ConfigurationCompareIo;
 }
@@ -521,6 +516,10 @@ async function buildConfigurationCompareState(
   input: ConfigurationCompareInput,
   strategy: CompareJoinStrategy = 'right'
 ): Promise<ConfigurationCompareWorkspaceState> {
+  const extensionState = await tryBuildExtensionCompareState(input, strategy);
+  if (extensionState) {
+    return extensionState;
+  }
   const leftRootPath = path.normalize(input.leftRootPath);
   const rightRootPath = path.normalize(input.rightRootPath);
   const createdAt = input.createdAt ?? new Date();

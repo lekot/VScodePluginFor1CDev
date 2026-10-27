@@ -30,6 +30,8 @@ export interface CompareRange {
 export interface CompareSource {
   sourceId: string;
   side: CompareSide;
+  /** Auxiliary sources protect base witnesses and do not own side snapshots. */
+  role?: 'comparison' | 'base';
   kind: CompareSourceKind;
   displayName: string;
   rootUri: string;

@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="CommonModule.T336_Feature" id="a0878a65-bdf5-4c97-96ef-0b95b6f97120" configVersion="f2c9e8100986341bf7971f57d93f5859f22bb58a"/>
+		<Metadata name="CommonModule.T336_Feature.Module" id="a0878a65-bdf5-4c97-96ef-0b95b6f97120.0" configVersion="96ba8d3c7df5be237c4d593e45468633b42ee5a7"/>
+		<Metadata name="CommonModule.тестМодуль" id="6db0e5ad-867c-46c2-b611-b8ee39426e0f" configVersion="ab7e991e9e1fe09e2a13aeb53e16eb9130cf3a47"/>
+		<Metadata name="CommonModule.тестМодуль.Module" id="6db0e5ad-867c-46c2-b611-b8ee39426e0f.0" configVersion="dc5b19e91dbc5c7521d2d99782f398ac02328e3f"/>
+		<Metadata name="Configuration.CDT336B" id="4f648ba0-ffa9-4dc0-8555-b6a4fd5ebb6a" configVersion="778971735ffe35f811762dbd9fc2f1c0ec2bd624"/>
+		<Metadata name="Role.ОсновнаяРоль" id="af581a15-9233-43b9-8aed-be76af42382e" configVersion="198f39accc91f806372e6c7a200ca88973845497"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

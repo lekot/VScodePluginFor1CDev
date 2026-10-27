@@ -2,6 +2,7 @@ import type { CompareTreeNode, CompareTreeStats } from './compareTreeTypes';
 import type { CompareMessage } from './domain/compareContracts';
 import type {
   CompareJoinStrategy,
+  ConfigurationCompareInfo,
   WorkspacePreviewDto,
   WorkspacePreviewItemDto,
 } from './configurationCompareWorkspace';
@@ -23,6 +24,7 @@ export interface ConfigCompareWebviewPayloadDto {
   locked: boolean;
   strategy: CompareJoinStrategy;
   executableNodeIds: string[];
+  comparisonInfo?: ConfigurationCompareInfo;
 }
 
 export interface ConfigComparePreviewItemDto extends WorkspacePreviewItemDto {

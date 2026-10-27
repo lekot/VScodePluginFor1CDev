@@ -1,0 +1,3 @@
+# Preserve the native 1C export bytes and recognize their CRLF endings.
+*.xml -text whitespace=cr-at-eol
+*.bsl -text whitespace=cr-at-eol

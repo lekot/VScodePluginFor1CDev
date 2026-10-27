@@ -434,6 +434,14 @@ function toWebviewPayload(
     locked: lockedOverride ?? payload.locked,
     strategy: payload.strategy ?? 'right',
     executableNodeIds: [...executableNodeIds],
+    comparisonInfo: payload.comparisonInfo
+      ? {
+          ...payload.comparisonInfo,
+          targetLabel: redactCompareDisplayLabel(payload.comparisonInfo.targetLabel),
+          sourceLabel: redactCompareDisplayLabel(payload.comparisonInfo.sourceLabel),
+          limitations: [...payload.comparisonInfo.limitations],
+        }
+      : undefined,
   };
 }
 
@@ -478,7 +486,8 @@ function toPreviewDto(
 ): ConfigComparePreviewDto {
   const items = preview.items.map((item) => ({
     ...item,
-    destructive: findTreeNode(root, item.nodeId)?.destructive === true ? true : undefined,
+    previewPath: redactPreviewPath(item.previewPath),
+    destructive: isPreviewItemDestructive(item, root) ? true : undefined,
   }));
   return {
     previewId: preview.previewId,
@@ -489,6 +498,45 @@ function toPreviewDto(
     diagnostics: [...preview.diagnostics],
     approved,
   };
+}
+
+function isPreviewItemDestructive(
+  item: WorkspacePreviewDto['items'][number],
+  root: CompareTreeNode
+): boolean {
+  if (item.previewEffect === 'create') {
+    return false;
+  }
+  return (
+    item.previewEffect === 'replace' ||
+    item.previewEffect === 'delete' ||
+    item.destructive === true ||
+    findTreeNode(root, item.nodeId)?.destructive === true
+  );
+}
+
+function redactCompareDisplayLabel(value: string): string {
+  return value &&
+    !path.isAbsolute(value) &&
+    !path.win32.isAbsolute(value) &&
+    !path.posix.isAbsolute(value)
+    ? value
+    : 'Конфигурация';
+}
+
+function redactPreviewPath(value: string | undefined): string | undefined {
+  if (
+    !value ||
+    path.isAbsolute(value) ||
+    path.win32.isAbsolute(value) ||
+    path.posix.isAbsolute(value)
+  ) {
+    return undefined;
+  }
+  const normalized = value.replace(/\\/g, '/');
+  return normalized.split('/').some((segment) => segment === '..' || segment === '.')
+    ? undefined
+    : normalized;
 }
 
 function previewRequiresDestructiveConfirmation(
