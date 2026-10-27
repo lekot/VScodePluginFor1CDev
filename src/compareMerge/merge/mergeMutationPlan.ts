@@ -31,8 +31,11 @@ export interface MergeMutationPlanResult {
 export function buildMergeMutationPlan(
   rootPath: string,
   actions: readonly PreparedMergeAction[],
+  assertions: readonly Extract<MutationStep, { readonly type: 'assertFile' | 'assertDirectory' }>[] = [],
 ): MutationPlan<MergeMutationPlanResult> {
-  const steps: MutationStep[] = [];
+  const steps: MutationStep[] = assertions.map((assertion): MutationStep => assertion.type === 'assertFile'
+    ? { type: 'assertFile', targetPath: assertion.targetPath, expected: { ...assertion.expected } }
+    : { type: 'assertDirectory', targetPath: assertion.targetPath, expected: { ...assertion.expected } });
   const applied: MergeMutationPlanResult['applied'][number][] = [];
   const backupPaths: string[] = [];
   const ensuredDirectories: string[] = [];

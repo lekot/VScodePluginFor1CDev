@@ -10,10 +10,11 @@ import {
 import { hashContent, type AtomicFileSystem } from '../../src/services/configurationSession/atomicFileStorage';
 import {
   ConfigurationSession,
+  type MutationExecutionOptions,
   type MutationOutcome,
   type ConfigurationCommitObserver,
 } from '../../src/services/configurationSession/ConfigurationSession';
-import { MutationPlanError } from '../../src/services/configurationSession/mutationPlan';
+import { MutationPlanError, type MutationPlan } from '../../src/services/configurationSession/mutationPlan';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import type {
   ConfigurationCapabilities,
@@ -929,6 +930,163 @@ suite('ConfigurationMutationEngine (#242)', () => {
       assert.strictEqual(receipt.result, 'plan-success');
       assert.strictEqual(await fsp.readFile(file1, 'utf-8'), '<File1Updated/>');
       assert.strictEqual(await fsp.readFile(file2, 'utf-8'), '<File2Created/>');
+    });
+
+    test('buildUnderLease runs the builder and nested plan in one writer lease and preserves its reconciled receipt', async function () {
+      this.timeout(10000);
+      const targetFile = path.join(tmpDir, 'BuiltUnderLease.xml');
+      const events: string[] = [];
+      let observerCalls = 0;
+      const context = createConfigurationContext(
+        tmpDir,
+        configPath,
+        'engine-build-under-lease',
+        { read: true, write: true, process: true },
+        async (commit) => {
+          observerCalls++;
+          events.push('reconcile');
+          assert.strictEqual(commit.kind, 'test.plan-under-lease');
+          return { status: 'succeeded' };
+        },
+      );
+      const engine = new ConfigurationMutationEngine({
+        runMutationWithOutcome: async <T>(
+          _resourcePath: string,
+          kind: string,
+          operation: () => Promise<T>,
+          options?: MutationExecutionOptions<T>,
+        ) => {
+          events.push('lease-admitted');
+          return context.session.enqueue({
+            kind,
+            execute: async () => operation(),
+            ...options,
+          });
+        },
+        runPlan: async <T>(
+          _resourcePath: string,
+          plan: MutationPlan<T>,
+          options?: MutationExecutionOptions<T>,
+        ): Promise<T> => {
+          events.push('nested-plan');
+          const outcome = await context.session.enqueuePlan(plan, options);
+          if (outcome.status === 'committed') {
+            return outcome.value;
+          }
+          throw ('error' in outcome && outcome.error)
+            ? outcome.error
+            : new Error(`Nested plan did not commit (${outcome.status}).`);
+        },
+      });
+
+      try {
+        const receipt = await engine.executePlan(
+          context,
+          { kind: 'test.plan-under-lease' },
+          ({ rootPath, configurationId }) => {
+            events.push('builder');
+            assert.strictEqual(rootPath, tmpDir);
+            assert.strictEqual(configurationId, context.configurationId);
+            return {
+              kind: 'test.plan-under-lease',
+              steps: [{
+                type: 'writeFile',
+                targetPath: targetFile,
+                content: '<BuiltUnderLease/>',
+                encoding: 'utf8',
+                expected: { state: 'missing' },
+              }],
+              result: 'built-and-applied',
+            };
+          },
+          { buildUnderLease: true },
+        );
+
+        assert.strictEqual(receipt.status, 'committed', JSON.stringify(receipt));
+        assert.strictEqual(receipt.result, 'built-and-applied');
+        assert.strictEqual(receipt.configurationId, context.configurationId);
+        assert.ok(receipt.operationId);
+        assert.strictEqual(receipt.snapshotVersion, 1);
+        assert.deepStrictEqual(receipt.reconciliation, { status: 'succeeded' });
+        assert.deepStrictEqual(events, ['lease-admitted', 'builder', 'nested-plan', 'reconcile']);
+        assert.strictEqual(observerCalls, 1, 'nested plan execution shares the outer commit/reconciliation boundary');
+        assert.strictEqual(context.session.snapshotVersion, 1, 'the outer lease commits once');
+        assert.strictEqual(await fsp.readFile(targetFile, 'utf8'), '<BuiltUnderLease/>');
+      } finally {
+        await context.session.dispose();
+      }
+    });
+
+    test('buildUnderLease preserves noncommitted receipts and reconciles only uncertain plan outcomes', async () => {
+      const cases: Array<{
+        readonly name: string;
+        readonly error: MutationPlanError;
+        readonly status: MutationReceipt['status'];
+        readonly code: string;
+        readonly expectReconcile: boolean;
+      }> = [
+        {
+          name: 'conflict',
+          error: new MutationPlanError('PLAN_CONFLICT', 'state changed before plan publication'),
+          status: 'conflict',
+          code: 'PLAN_CONFLICT',
+          expectReconcile: false,
+        },
+        {
+          name: 'recovery-required',
+          error: new MutationPlanError('RECOVERY_REQUIRED', 'rollback could not restore all files'),
+          status: 'recoveryRequired',
+          code: 'RECOVERY_REQUIRED',
+          expectReconcile: true,
+        },
+      ];
+
+      for (const entry of cases) {
+        let observerCalls = 0;
+        const context = createConfigurationContext(
+          tmpDir,
+          configPath,
+          `engine-build-under-lease-${entry.name}`,
+          { read: true, write: true, process: true },
+          async () => {
+            observerCalls++;
+            return { status: 'succeeded' };
+          },
+        );
+        const engine = new ConfigurationMutationEngine({
+          runMutationWithOutcome: async <T>(
+            _resourcePath: string,
+            kind: string,
+            operation: () => Promise<T>,
+            options?: MutationExecutionOptions<T>,
+          ) => context.session.enqueue({
+            kind,
+            execute: async () => operation(),
+            ...options,
+          }),
+          runPlan: async () => { throw entry.error; },
+        });
+
+        try {
+          const receipt = await engine.executePlan(
+            context,
+            { kind: `test.plan-under-lease-${entry.name}` },
+            () => ({ kind: `test.plan-under-lease-${entry.name}`, steps: [], result: 'unused' }),
+            { buildUnderLease: true },
+          );
+
+          assert.strictEqual(receipt.status, entry.status, entry.name);
+          assert.strictEqual(receipt.code, entry.code, entry.name);
+          assert.strictEqual(observerCalls, entry.expectReconcile ? 1 : 0, entry.name);
+          if (entry.expectReconcile) {
+            assert.deepStrictEqual(receipt.reconciliation, { status: 'succeeded' }, entry.name);
+          } else {
+            assert.strictEqual(receipt.reconciliation, undefined, entry.name);
+          }
+        } finally {
+          await context.session.dispose();
+        }
+      }
     });
 
     test('maps plan conflicts, recovery requirements, and unexpected failures to stable receipts', async () => {

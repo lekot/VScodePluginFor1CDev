@@ -1,0 +1,419 @@
+import * as assert from 'assert';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+
+import {
+  buildConfigurationCompare,
+  type ConfigurationCompareInput,
+  type ConfigurationCompareResult,
+} from '../../../src/compareMerge/configurationCompareService';
+import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
+import {
+  createExtensionCompareTempRoot,
+  pathExists,
+  writeCompareBytes,
+  writeDesignerConfiguration,
+  type ExtensionCompareConfigurationFixture,
+  type ExtensionCompareObjectFixture,
+} from '../../helpers/extensionCompareFixtures';
+
+const UUID = {
+  target: '11111111-1111-4111-8111-111111111111',
+  source: '22222222-2222-4222-8222-222222222222',
+  objectA: '33333333-3333-4333-8333-333333333333',
+  objectB: '44444444-4444-4444-8444-444444444444',
+  dependencyEnum: '55555555-5555-4555-8555-555555555555',
+  dependencyEnumValue: '66666666-6666-4666-8666-666666666666',
+} as const;
+
+suite('Extension compare dependency validation (#336)', () => {
+  test('requires an incoming dependency in the selected package, while accepting A plus B', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      await writeDesignerConfiguration(target, { uuid: UUID.target });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: '',
+        objects: [
+          catalogObject('A', UUID.objectA, catalogReferenceToB()),
+          catalogObject('B', UUID.objectB),
+        ],
+      });
+
+      const compare = await openCompare(tempRoot, target, source);
+      try {
+        const aId = nodeIdForLabel(compare.result.projection.root, 'Catalog.A');
+        const bId = nodeIdForLabel(compare.result.projection.root, 'Catalog.B');
+        const onlyA = await compare.result.workspace.createPreviewForNodeIds([aId]);
+
+        assert.strictEqual(
+          onlyA.ok,
+          false,
+          `A's cfg:CatalogRef.B dependency is absent from the target and selected package: ${JSON.stringify(onlyA)}`,
+        );
+        assert.ok(onlyA.diagnostics.some((diagnostic) => diagnostic.blocking));
+        assert.strictEqual(await pathExists(path.join(target, 'Catalogs', 'A.xml')), false);
+
+        const packagePreview = await compare.result.workspace.createPreviewForNodeIds([aId, bId]);
+        assert.strictEqual(packagePreview.ok, true, JSON.stringify(packagePreview));
+        assert.ok(packagePreview.preview.items.length > 0, 'the explicitly selected dependency package creates one preview');
+        assert.ok(packagePreview.preview.items.some((item) => item.label === 'Catalog.A'));
+        assert.ok(packagePreview.preview.items.some((item) => item.label === 'Catalog.B'));
+        assert.strictEqual(await pathExists(path.join(target, 'Catalogs', 'A.xml')), false, 'preview creation does not write targets');
+        assert.strictEqual(await pathExists(path.join(target, 'Catalogs', 'B.xml')), false, 'preview creation does not write targets');
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('blocks an unresolved InformationRegister MDObjectRef captured in a nested XML sidecar', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      await writeDesignerConfiguration(target, { uuid: UUID.target });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+        objects: [catalogObject('Ext_Holder', UUID.objectA)],
+      });
+      await writeCompareBytes(
+        source,
+        path.join('Catalogs', 'Ext_Holder', 'Forms', 'Nested', 'Form.xml'),
+        '<?xml version="1.0" encoding="UTF-8"?><Form xmlns:xr="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><xr:Item xsi:type="xr:MDObjectRef">InformationRegister.Missing</xr:Item></Form>',
+      );
+
+      const compare = await openCompare(tempRoot, target, source);
+      try {
+        const holderId = nodeIdForLabel(compare.result.projection.root, 'Catalog.Ext_Holder');
+        const created = await compare.result.workspace.createPreviewForNodeIds([holderId]);
+
+        assert.strictEqual(
+          created.ok,
+          false,
+          `the nested sidecar's known unsupported-root reference must fail closed: ${JSON.stringify(created)}`,
+        );
+        assert.ok(created.diagnostics.some((diagnostic) => diagnostic.blocking));
+        assert.strictEqual(await pathExists(path.join(target, 'Catalogs', 'Ext_Holder.xml')), false);
+        assert.strictEqual(await pathExists(path.join(target, 'Configuration.xml')), true);
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('blocks an unresolved DesignTimeRef enum value in a nested form ChoiceParameters default value', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      await writeDesignerConfiguration(target, { uuid: UUID.target });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: '',
+        objects: [catalogObject('Holder', UUID.objectA)],
+      });
+      await writeCompareBytes(
+        source,
+        path.join('Catalogs', 'Holder', 'Forms', 'Nested', 'Form.xml'),
+        choiceParameterForm('xr:DesignTimeRef', 'Enum.Dep.EnumValue.Value'),
+      );
+
+      const compare = await openCompare(tempRoot, target, source);
+      try {
+        const holderId = nodeIdForLabel(compare.result.projection.root, 'Catalog.Holder');
+        const created = await compare.result.workspace.createPreviewForNodeIds([holderId]);
+
+        assert.strictEqual(
+          created.ok,
+          false,
+          `an unavailable xr:DesignTimeRef enum dependency must fail closed: ${JSON.stringify(created)}`,
+        );
+        assert.ok(created.diagnostics.some((diagnostic) => diagnostic.blocking));
+        assert.strictEqual(await pathExists(path.join(target, 'Catalogs', 'Holder.xml')), false);
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('accepts a DesignTimeRef enum value when Enum.Dep is selected with the dependent object', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      await writeDesignerConfiguration(target, { uuid: UUID.target });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: '',
+        objects: [
+          catalogObject('Holder', UUID.objectA),
+          rootEnum('Dep', UUID.dependencyEnum),
+        ],
+      });
+      await writeCompareBytes(
+        source,
+        path.join('Catalogs', 'Holder', 'Forms', 'Nested', 'Form.xml'),
+        choiceParameterForm('xr:DesignTimeRef', 'Enum.Dep.EnumValue.Value'),
+      );
+
+      const compare = await openCompare(tempRoot, target, source);
+      try {
+        const holderId = nodeIdForLabel(compare.result.projection.root, 'Catalog.Holder');
+        const enumId = nodeIdForLabel(compare.result.projection.root, 'Enum.Dep');
+        const packagePreview = await compare.result.workspace.createPreviewForNodeIds([holderId, enumId]);
+        assert.strictEqual(packagePreview.ok, true, JSON.stringify(packagePreview));
+        assert.ok(packagePreview.preview.items.some((item) => item.label === 'Catalog.Holder'));
+        assert.ok(packagePreview.preview.items.some((item) => item.label === 'Enum.Dep'));
+        assert.strictEqual(await pathExists(path.join(target, 'Catalogs', 'Holder.xml')), false);
+        assert.strictEqual(await pathExists(path.join(target, 'Enums', 'Dep.xml')), false);
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('requires a source Enum dependency to be selected when it is absent from the target', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      await writeDesignerConfiguration(target, { uuid: UUID.target });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: '',
+        objects: [
+          catalogObject('Holder', UUID.objectA),
+          rootEnum('Dep', UUID.dependencyEnum),
+        ],
+      });
+      await writeCompareBytes(
+        source,
+        path.join('Catalogs', 'Holder', 'Forms', 'Nested', 'Form.xml'),
+        choiceParameterForm('xr:DesignTimeRef', 'Enum.Dep.EnumValue.Value'),
+      );
+
+      const compare = await openCompare(tempRoot, target, source);
+      try {
+        const holderId = nodeIdForLabel(compare.result.projection.root, 'Catalog.Holder');
+        const holderOnly = await compare.result.workspace.createPreviewForNodeIds([holderId]);
+
+        assert.strictEqual(
+          holderOnly.ok,
+          false,
+          `an unselected source enum is not part of the selected dependency package: ${JSON.stringify(holderOnly)}`,
+        );
+        assert.ok(holderOnly.diagnostics.some((diagnostic) => diagnostic.blocking));
+        assert.strictEqual(await pathExists(path.join(target, 'Catalogs', 'Holder.xml')), false);
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('does not treat an xs:string ChoiceParameters value shaped like an enum reference as a dependency', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      await writeDesignerConfiguration(target, { uuid: UUID.target });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: '',
+        objects: [catalogObject('Holder', UUID.objectA)],
+      });
+      await writeCompareBytes(
+        source,
+        path.join('Catalogs', 'Holder', 'Forms', 'Nested', 'Form.xml'),
+        choiceParameterForm('xs:string', 'Enum.Missing'),
+      );
+
+      const compare = await openCompare(tempRoot, target, source);
+      try {
+        const holderId = nodeIdForLabel(compare.result.projection.root, 'Catalog.Holder');
+        const created = await compare.result.workspace.createPreviewForNodeIds([holderId]);
+
+        assert.strictEqual(
+          created.ok,
+          true,
+          `plain string text must not be treated as a metadata reference: ${JSON.stringify(created)}`,
+        );
+        assert.ok(created.preview.items.length > 0);
+        assert.strictEqual(await pathExists(path.join(target, 'Catalogs', 'Holder.xml')), false);
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('does not interpret an ordinary Comment value as an XML metadata reference', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      await writeDesignerConfiguration(target, { uuid: UUID.target });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+        objects: [catalogObject('Ext_Comment', UUID.objectA, '<Comment>Catalog.Missing</Comment>')],
+      });
+
+      const compare = await openCompare(tempRoot, target, source);
+      try {
+        const commentId = nodeIdForLabel(compare.result.projection.root, 'Catalog.Ext_Comment');
+        assert.ok(
+          compare.result.workspace.listMergeableNodeIds().includes(commentId),
+          'text in a Comment element must not block the otherwise supported row',
+        );
+        const created = await compare.result.workspace.createPreviewForNodeIds([commentId]);
+
+        assert.strictEqual(
+          created.ok,
+          true,
+          `plain text inside Comment is not a proven metadata reference: ${JSON.stringify(created)}`,
+        );
+        assert.ok(created.preview.items.length > 0);
+        assert.strictEqual(await pathExists(path.join(target, 'Catalogs', 'Ext_Comment.xml')), false);
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('accepts a selected object dependency already present in the target or its proven base', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const scenarios: Array<{
+        readonly name: string;
+        readonly target: ExtensionCompareConfigurationFixture;
+        readonly base?: ExtensionCompareConfigurationFixture;
+      }> = [
+        {
+          name: 'target object',
+          target: { uuid: UUID.target, objects: [catalogObject('B', UUID.objectB)] },
+        },
+        {
+          name: 'proven base object',
+          target: { uuid: UUID.target, purpose: 'Customization', namePrefix: 'Ext_' },
+          base: { uuid: UUID.target, objects: [catalogObject('B', UUID.objectB)] },
+        },
+      ];
+
+      for (const [index, scenario] of scenarios.entries()) {
+        const caseRoot = path.join(tempRoot, `case-${index}`);
+        const target = path.join(caseRoot, 'target');
+        const source = path.join(caseRoot, 'source');
+        const base = scenario.base ? path.join(caseRoot, 'base') : undefined;
+        await writeDesignerConfiguration(target, scenario.target);
+        await writeDesignerConfiguration(source, {
+          uuid: UUID.source,
+          purpose: 'Customization',
+          namePrefix: 'Ext_',
+          objects: [catalogObject('Ext_A', UUID.objectA, mdObjectReferenceToB())],
+        });
+        if (base && scenario.base) {
+          await writeDesignerConfiguration(base, scenario.base);
+        }
+
+        const extensionBaseRoots = base
+          ? { left: base }
+          : undefined;
+        const compare = await openCompare(tempRoot, target, source, { extensionBaseRoots });
+        try {
+          const aId = nodeIdForLabel(compare.result.projection.root, 'Catalog.Ext_A');
+          const created = await compare.result.workspace.createPreviewForNodeIds([aId]);
+
+          assert.strictEqual(created.ok, true, `${scenario.name}: ${JSON.stringify(created)}`);
+          assert.ok(created.preview.items.length > 0);
+          assert.strictEqual(await pathExists(path.join(target, 'Catalogs', 'Ext_A.xml')), false);
+        } finally {
+          compare.dispose();
+        }
+      }
+    });
+  });
+});
+
+function catalogObject(name: string, uuid: string, propertiesXml = ''): ExtensionCompareObjectFixture {
+  return { type: 'Catalog', name, uuid, belonging: 'Own', propertiesXml };
+}
+
+function catalogReferenceToB(): string {
+  return '<Attributes xmlns:v8="http://v8.1c.ru/8.1/data/core"><Attribute name="Dependency" id="1"><Type><v8:Type>cfg:CatalogRef.B</v8:Type></Type></Attribute></Attributes>';
+}
+
+function mdObjectReferenceToB(): string {
+  return '<xr:Item xmlns:xr="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xr:MDObjectRef">Catalog.B</xr:Item>';
+}
+
+function rootEnum(name: string, uuid: string): ExtensionCompareObjectFixture {
+  return {
+    type: 'Enum',
+    name,
+    uuid,
+    belonging: 'Own',
+    childObjectsXml: `<EnumValue uuid="${UUID.dependencyEnumValue}"><Properties><Name>Value</Name></Properties></EnumValue>`,
+  };
+}
+
+function choiceParameterForm(valueType: 'xr:DesignTimeRef' | 'xs:string', value: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+  <ChildItems>
+    <InputField name="Input" id="1">
+      <ChoiceParameters>
+        <v8:Parameter>
+          <v8:Name>DefaultValue</v8:Name>
+          <v8:Value xsi:type="${valueType}">${value}</v8:Value>
+        </v8:Parameter>
+      </ChoiceParameters>
+    </InputField>
+  </ChildItems>
+</Form>`;
+}
+
+async function openCompare(
+  tempRoot: string,
+  leftRootPath: string,
+  rightRootPath: string,
+  options: Pick<ConfigurationCompareInput, 'extensionBaseRoots'> = {},
+): Promise<{ result: ConfigurationCompareResult; dispose(): void }> {
+  const result = await buildConfigurationCompare({
+    leftRootPath,
+    rightRootPath,
+    backupRootPath: path.join(tempRoot, 'backups'),
+    extensionBaseRoots: options.extensionBaseRoots,
+  });
+  let disposed = false;
+  return {
+    result,
+    dispose: () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      result.workspace.dispose();
+    },
+  };
+}
+
+async function withTempRoot<T>(callback: (tempRoot: string) => Promise<T>): Promise<T> {
+  const tempRoot = await createExtensionCompareTempRoot('issue336-compare-dependencies-');
+  try {
+    return await callback(tempRoot);
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+}
+
+function nodeIdForLabel(root: CompareTreeNode, label: string): string {
+  const matches = collectNodes(root).filter((node) => node.label === label);
+  assert.strictEqual(matches.length, 1, `Expected one row ${label}, got ${matches.length}`);
+  return matches[0]!.id;
+}
+
+function collectNodes(root: CompareTreeNode): CompareTreeNode[] {
+  return [root, ...root.children.flatMap(collectNodes)];
+}

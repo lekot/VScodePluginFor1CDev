@@ -1,5 +1,4 @@
 import * as fs from 'fs/promises';
-import * as path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 import { parseBslRoutines } from '../../bsl/routineRangeProvider';
@@ -30,10 +29,18 @@ import {
   type MutationFailureProjection,
   type NonCommittedMutationReceipt,
 } from '../../services/configurationSession/mutationReceiptError';
-import { assertJournalNamespace, assertNoSymlinkSegments, assertPathWithinRoot, canonicalizePathWithMissingSuffix, isPathInside, isSamePath, PathBoundaryError } from '../../services/configurationSession/pathBoundary';
+import { isPathInside, isSamePath } from '../../services/configurationSession/pathBoundary';
 import { exportMergeBackupArtifacts, MergeBackupArtifactExportError } from './mergeBackupArtifacts';
 import { buildMergeMutationPlan, type PreparedMergeAction } from './mergeMutationPlan';
 import { captureMergePath, mergeSnapshotHash, type MergePathSnapshot, type MergeSnapshotDirectory } from './mergeSnapshot';
+import {
+  ensureSourceInsideRoot,
+  ensureTargetInsideRootAllowMissing,
+  resolveCapturedFileCopyOperation,
+  resolveCapturedFileWriteOperation,
+  resolveMergePathBoundary,
+  verifyCapturedFileWriteWitnesses,
+} from './capturedFileWrite';
 import { applyXmlPatch as applyDomXmlPatch } from '../xml/xmlPatch';
 import {
   materializeTrustedPreflight,
@@ -76,6 +83,7 @@ export interface MergeExecutionResult {
 type ResolvedOperation =
   | ResolvedTextWriteOperation
   | ResolvedFileCopyOperation
+  | ResolvedFileWriteOperation
   | ResolvedFileDeleteOperation
   | ResolvedFolderOperation;
 
@@ -123,6 +131,15 @@ interface ResolvedFileCopyOperation {
   sourceHash: string;
   sourceContentBase64: string;
   before: MergePathSnapshot;
+}
+
+interface ResolvedFileWriteOperation {
+  type: 'fileWrite';
+  operation: MergeOperation;
+  targetPath: string;
+  backupPath: string;
+  before: MergePathSnapshot;
+  contentBase64: string;
 }
 
 interface ResolvedFolderOperation {
@@ -174,7 +191,8 @@ export async function executeBslMergePreview(
   const trustedDiagnostics: CompareMessage[] = [];
   const trustedPreview = materializeExecutableMergePreview(
     input.session.requireExecutablePreview(input.preflight.approvedPreviewId) as MergePreview,
-    trustedDiagnostics
+    trustedDiagnostics,
+    input.session,
   );
   result.diagnostics.push(...trustedDiagnostics.map(cloneCompareMessage));
   if (!trustedPreview) {
@@ -245,6 +263,17 @@ export async function executeBslMergePreview(
 
   const resolvedOperations: ResolvedOperation[] = [];
   const canonicalRootUri = pathToFileURL(capturedCanonicalRoot).toString();
+  const initialWitnessCheck = await verifyCapturedFileWriteWitnesses(
+    trustedOperations,
+    input.session,
+    trustedPreview.targetSourceId,
+  );
+  if (initialWitnessCheck.failures.length > 0) {
+    result.failed.push(...initialWitnessCheck.failures.map((item) =>
+      failure(item.operation, item.code, item.message)
+    ));
+    return result;
+  }
 
   for (const operation of trustedOperations) {
     const sourceRootUri = sourceRootUriFor(input.session, operation.sourceId, operation.snapshotId);
@@ -322,6 +351,18 @@ export async function executeBslMergePreview(
         );
       }
 
+      const witnessCheck = await verifyCapturedFileWriteWitnesses(
+        trustedOperations,
+        input.session,
+        trustedPreview.targetSourceId,
+      );
+      if (witnessCheck.failures.length > 0) {
+        throw new MutationPlanError(
+          'PLAN_CONFLICT',
+          witnessCheck.failures.map((item) => item.message).join(' '),
+        );
+      }
+
       const snapshotsByOperationId = new Map<string, MergePathSnapshot>();
       for (const action of actions) {
         for (const operation of action.operations) {
@@ -350,7 +391,10 @@ export async function executeBslMergePreview(
           .map((operation) => backupPathsByOperationId.get(operation.operationId))
           .filter((backupPath): backupPath is string => backupPath !== undefined),
       }));
-      return buildMergeMutationPlan(capturedCanonicalRoot, actionsWithBackups);
+      return buildMergeMutationPlan(capturedCanonicalRoot, actionsWithBackups, witnessCheck.targetAssertions);
+    },
+    {
+      buildUnderLease: trustedOperations.some((operation) => operation.kind === 'fileWrite'),
     }
   );
 
@@ -450,6 +494,19 @@ async function prepareMutationAction(
       },
     };
   }
+  if (resolved.type === 'fileWrite') {
+    return {
+      action: {
+        targetPath: resolved.targetPath,
+        targetUri: resolved.operation.targetUri!,
+        operations: [resolved.operation],
+        before: resolved.before,
+        kind: 'writeFile',
+        contentBase64: resolved.contentBase64,
+        backupPaths: [],
+      },
+    };
+  }
   if (resolved.type === 'fileDelete') {
     return {
       action: {
@@ -529,7 +586,7 @@ async function resolveOperation(
     if (!targetPath) {
       return { failure: failure(operation, 'MERGE_TARGET_GUARD_MISSING', 'Target uri is not a local file uri.') };
     }
-    const targetBoundary = await resolvePathBoundary(canonicalRootPath, targetPath, false);
+    const targetBoundary = await resolveMergePathBoundary(canonicalRootPath, targetPath, false);
     if ('failure' in targetBoundary) {
       return { failure: failure(operation, targetBoundary.failure.code, targetBoundary.failure.message) };
     }
@@ -546,6 +603,12 @@ async function resolveOperation(
   }
   if (operation.kind === 'fileCopy') {
     return resolveFileCopyOperation(operation, backupPlan, rootUri, sourceRootUri, canonicalTargetPath);
+  }
+  if (operation.kind === 'fileWrite') {
+    const resolution = await resolveCapturedFileWriteOperation(operation, backupPlan, rootUri, canonicalTargetPath);
+    return 'failure' in resolution
+      ? { failure: failure(operation, resolution.failure.code, resolution.failure.message) }
+      : { resolved: { type: 'fileWrite', operation, ...resolution.resolved } };
   }
   if (operation.kind === 'fileDelete') {
     return resolveFileDeleteOperation(operation, backupPlan, rootUri, canonicalTargetPath);
@@ -852,88 +915,16 @@ async function resolveFileCopyOperation(
   sourceRootUri: string | undefined,
   canonicalTargetPath?: string,
 ): Promise<{ resolved: ResolvedFileCopyOperation } | { failure: MergeExecutionOperationResult }> {
-  const payload = operation.fileOperation;
-  if (
-    !payload?.sourcePath ||
-    !payload.sourceHash ||
-    !operation.targetUri ||
-    !operation.expectedOldHash ||
-    !operation.newHash
-  ) {
-    return {
-      failure: failure(operation, 'MERGE_TARGET_GUARD_MISSING', 'File copy operation is incomplete.'),
-    };
-  }
-
-  const backup = backupItemFor(operation, backupPlan);
-  if (!backup) {
-    return {
-      failure: failure(operation, 'MERGE_BACKUP_PLAN_INCOMPLETE', 'Backup plan is missing for operation.'),
-    };
-  }
-
-  const sourcePath = uriToPath(payload.sourcePath) ?? payload.sourcePath;
-  const targetPath = canonicalTargetPath ?? uriToPath(operation.targetUri);
-  if (!targetPath) {
-    return {
-      failure: failure(operation, 'MERGE_TARGET_GUARD_MISSING', 'Target uri is not a file uri.'),
-    };
-  }
-
-  const boundaryFailure = await ensureTargetInsideRootAllowMissing(rootUri, targetPath);
-  if (boundaryFailure) {
-    return { failure: failure(operation, boundaryFailure.code, boundaryFailure.message) };
-  }
-  const sourceBoundaryFailure = await ensureSourceInsideRoot(sourceRootUri, sourcePath, rootUri);
-  if (sourceBoundaryFailure) {
-    return { failure: failure(operation, sourceBoundaryFailure.code, sourceBoundaryFailure.message) };
-  }
-
-  let sourceSnapshot: MergePathSnapshot;
-  try {
-    sourceSnapshot = await captureMergePath(sourcePath);
-  } catch (error) {
-    return {
-      failure: failure(operation, 'MERGE_TARGET_READ_FAILED', `Failed to read source file: ${errorMessage(error)}`),
-    };
-  }
-  if (sourceSnapshot.state === 'missing' || sourceSnapshot.type !== 'file' || sourceSnapshot.contentBase64 === undefined) {
-    return { failure: failure(operation, 'MERGE_SOURCE_HASH_MISMATCH', 'Source file snapshot is unavailable.') };
-  }
-  const sourceHash = mergeSnapshotHash(sourceSnapshot);
-  if (sourceHash !== payload.sourceHash || sourceHash !== operation.newHash) {
-    return {
-      failure: failure(operation, 'MERGE_SOURCE_HASH_MISMATCH', 'Source file hash does not match merge preview.'),
-    };
-  }
-
-  let before: MergePathSnapshot;
-  try {
-    before = await captureMergePath(targetPath);
-  } catch (error) {
-    return { failure: failure(operation, 'MERGE_TARGET_READ_FAILED', `Failed to read target file: ${errorMessage(error)}`) };
-  }
-  const currentHash = before.state === 'missing' ? MISSING_TARGET_HASH : before.type === 'file' ? before.hash : undefined;
-  if (currentHash !== operation.expectedOldHash) {
-    return {
-      failure: failure(operation, 'MERGE_STALE_TARGET_HASH', 'Target file hash changed before execution.'),
-    };
-  }
-
-  return {
-    resolved: {
-      type: 'fileCopy',
-      operation,
-      sourcePath,
-      sourceRootUri: sourceRootUri!,
-      targetPath,
-      backupPath: backup.backupPath,
-      expectedOldHash: operation.expectedOldHash,
-      sourceHash,
-      sourceContentBase64: sourceSnapshot.contentBase64,
-      before,
-    },
-  };
+  const resolution = await resolveCapturedFileCopyOperation(
+    operation,
+    backupPlan,
+    rootUri,
+    sourceRootUri,
+    canonicalTargetPath,
+  );
+  return 'failure' in resolution
+    ? { failure: failure(operation, resolution.failure.code, resolution.failure.message) }
+    : { resolved: { type: 'fileCopy', operation, ...resolution.resolved } };
 }
 
 async function resolveFileDeleteOperation(
@@ -1253,6 +1244,7 @@ function isExecutorSupportedOperation(kind: MergeOperation['kind']): boolean {
     kind === 'xmlNodeInsert' ||
     kind === 'xmlNodeDelete' ||
     kind === 'fileCopy' ||
+    kind === 'fileWrite' ||
     kind === 'fileDelete' ||
     kind === 'folderCopy' ||
     kind === 'folderDelete'
@@ -1283,146 +1275,6 @@ function backupItemFor(
   }
 
   return { backupPath };
-}
-
-async function ensureSourceInsideRoot(
-  sourceRootUri: string | undefined,
-  sourcePath: string,
-  targetRootUri?: string,
-): Promise<{ code: string; message: string } | undefined> {
-  const candidateRootUris = [sourceRootUri, targetRootUri].filter(
-    (rootUri): rootUri is string => rootUri !== undefined
-  );
-  if (candidateRootUris.length === 0) {
-    return {
-      code: 'MERGE_SOURCE_ROOT_MISSING',
-      message: 'Source root uri is not available for copy operation.',
-    };
-  }
-  let lastMessage = 'Merge source path is outside all captured roots.';
-  for (const rootUri of candidateRootUris) {
-    const rootPath = uriToPath(rootUri);
-    if (!rootPath) {
-      continue;
-    }
-    const boundaryFailure = await validatePathBoundary(rootPath, sourcePath, true);
-    if (!boundaryFailure) {
-      return undefined;
-    }
-    lastMessage = boundaryFailure.message;
-  }
-  return { code: 'MERGE_SOURCE_OUTSIDE_ROOT', message: lastMessage };
-}
-
-async function ensureTargetInsideRootAllowMissing(
-  rootUri: string,
-  targetPath: string
-): Promise<{ code: string; message: string } | undefined> {
-  const rootPath = uriToPath(rootUri);
-  if (!rootPath) {
-    return {
-      code: 'MERGE_TARGET_ROOT_MISSING',
-      message: 'Left configuration root uri is not a file uri.',
-    };
-  }
-
-  return validatePathBoundary(rootPath, targetPath, false);
-}
-
-async function validatePathBoundary(
-  rootPath: string,
-  targetPath: string,
-  allowRootTarget: boolean,
-): Promise<{ code: string; message: string } | undefined> {
-  const resolved = await resolvePathBoundary(rootPath, targetPath, allowRootTarget);
-  return 'failure' in resolved ? resolved.failure : undefined;
-}
-
-async function resolvePathBoundary(
-  rootPath: string,
-  targetPath: string,
-  allowRootTarget: boolean,
-): Promise<
-  | { canonicalRoot: string; canonicalTarget: string }
-  | { failure: { code: string; message: string } }
-> {
-  try {
-    const canonicalRoot = await fs.realpath(rootPath);
-    await assertNoRawSymlinkSegments(targetPath);
-    const candidatePath = await canonicalizePathWithMissingSuffix(targetPath);
-    const { canonicalRoot: assertedRoot, canonicalTarget } = await assertPathWithinRoot(
-      canonicalRoot,
-      candidatePath,
-    );
-    if (!isSamePath(canonicalRoot, assertedRoot)) {
-      throw new Error('Configuration root changed while resolving merge target.');
-    }
-    if (!allowRootTarget && isSamePath(canonicalRoot, canonicalTarget)) {
-      return { failure: { code: 'MERGE_TARGET_ROOT_FORBIDDEN', message: 'Merge target cannot be the configuration root.' } };
-    }
-    const journal = await assertJournalNamespace(canonicalRoot);
-    if (
-      isPathInside(journal.canonicalJournalRoot, canonicalTarget)
-      || isPathInside(canonicalTarget, journal.canonicalJournalRoot)
-    ) {
-      return { failure: { code: 'MERGE_JOURNAL_NAMESPACE_FORBIDDEN', message: 'Merge path overlaps the configuration journal namespace.' } };
-    }
-    await assertNoSymlinkSegments(canonicalRoot, canonicalTarget);
-    try {
-      const targetStat = await fs.lstat(canonicalTarget);
-      if (targetStat.isSymbolicLink()) {
-        return { failure: { code: 'MERGE_LINK_UNSUPPORTED', message: 'Merge does not accept symbolic link targets or sources.' } };
-      }
-    } catch (error) {
-      if (!isNotFoundError(error)) {
-        throw error;
-      }
-    }
-    return { canonicalRoot, canonicalTarget };
-  } catch (error) {
-    if (error instanceof PathBoundaryError && error.code === 'PATH_OUTSIDE_ROOT') {
-      return {
-        failure: {
-          code: 'MERGE_TARGET_OUTSIDE_ROOT',
-          message: error.message,
-        },
-      };
-    }
-    return {
-      failure: {
-        code: 'MERGE_PATH_BOUNDARY_FAILED',
-        message: `Merge path boundary check failed: ${errorMessage(error)}`,
-      },
-    };
-  }
-}
-
-async function assertNoRawSymlinkSegments(targetPath: string): Promise<void> {
-  const absolutePath = path.resolve(targetPath);
-  const parsed = path.parse(absolutePath);
-  const segments = path.relative(parsed.root, absolutePath).split(path.sep).filter(Boolean);
-  let cursor = parsed.root;
-  for (let index = 0; index < segments.length; index += 1) {
-    cursor = path.join(cursor, segments[index]!);
-    try {
-      const stat = await fs.lstat(cursor);
-      if (stat.isSymbolicLink()) {
-        throw new Error(`Merge path contains a symbolic link: ${cursor}`);
-      }
-      if (index < segments.length - 1 && !stat.isDirectory()) {
-        throw new Error(`Merge path contains a non-directory parent: ${cursor}`);
-      }
-    } catch (error) {
-      if (isNotFoundError(error)) {
-        return;
-      }
-      throw error;
-    }
-  }
-}
-
-function isNotFoundError(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ENOENT';
 }
 
 function applyBslRoutineInsert(source: string, operation: MergeOperation): string | undefined {

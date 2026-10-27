@@ -11,6 +11,7 @@ import { CompareSession } from './domain/compareSession';
 import type { CompareMessage, CompareSide } from './domain/compareContracts';
 import {
   createMergePreview,
+  MISSING_TARGET_HASH,
   validateMergePreflight,
   type BackupPlan,
   type MergeCandidate,
@@ -23,6 +24,7 @@ import {
   type MergeExecutionResult,
   type MergeExecutorInput,
 } from './merge/mergeExecutor';
+import { isCanonicalWitnessRelativePath } from './merge/capturedFileWrite';
 
 const LEFT_SOURCE_ID = 'left-source';
 export type CompareJoinStrategy = 'left' | 'right' | 'full';
@@ -36,6 +38,14 @@ export interface ConfigCompareWebviewPayload {
   };
   locked: boolean;
   strategy?: CompareJoinStrategy;
+  comparisonInfo?: ConfigurationCompareInfo;
+}
+
+export interface ConfigurationCompareInfo {
+  mode: 'extension';
+  targetLabel: string;
+  sourceLabel: string;
+  limitations: readonly string[];
 }
 
 export interface WorkspaceSelectionState {
@@ -51,6 +61,8 @@ export interface WorkspacePreviewItemDto {
   kind: string;
   status: CompareTreeNode['status'];
   destructive?: boolean;
+  previewPath?: string;
+  previewEffect?: 'create' | 'replace' | 'delete';
 }
 
 export interface WorkspacePreviewDto {
@@ -141,10 +153,20 @@ export type ExecutableCandidateFactoryResult =
 
 export type ExecutableCandidateFactory = () => Promise<ExecutableCandidateFactoryResult>;
 
+export type WorkspaceSelectionMaterializer = (
+  nodeIds: readonly string[]
+) => Promise<
+  | { ok: true; candidates: readonly MergeCandidate[] }
+  | { ok: false; diagnostics: CompareMessage[] }
+>;
+
 export interface ConfigurationCompareWorkspaceState {
   session: CompareSession;
   projection: CompareTreeProjection;
   candidateFactories: ReadonlyMap<string, ExecutableCandidateFactory>;
+  materializeSelection?: WorkspaceSelectionMaterializer;
+  mergeableNodeIds?: readonly string[];
+  comparisonInfo?: ConfigurationCompareInfo;
 }
 
 export interface ConfigurationCompareWorkspaceInput extends ConfigurationCompareWorkspaceState {
@@ -181,6 +203,10 @@ export class ConfigurationCompareWorkspace {
   private readonly executeMerge: (input: MergeExecutorInput) => Promise<MergeExecutionResult>;
   private readonly previewRecords = new Map<string, PreviewRecord>();
   private candidateFactories: Map<string, ExecutableCandidateFactory>;
+  private materializeSelection?: WorkspaceSelectionMaterializer;
+  private mergeableNodeIds: string[] = [];
+  private comparisonInfo?: ConfigurationCompareInfo;
+  private selectionRevision = 0;
   private previewCounter = 0;
   private disposed = false;
   private locked = false;
@@ -199,7 +225,8 @@ export class ConfigurationCompareWorkspace {
     this.createPreview = input.createPreview ?? createMergePreview;
     this.validatePreflight = input.validatePreflight ?? validateMergePreflight;
     this.executeMerge = input.executeMerge ?? executeBslMergePreview;
-    this.candidateFactories = new Map(input.candidateFactories);
+    this.candidateFactories = new Map();
+    this.applyWorkspaceState(input);
   }
 
   get payload(): ConfigCompareWebviewPayload {
@@ -212,11 +239,14 @@ export class ConfigurationCompareWorkspace {
       },
       locked: this.locked,
       strategy: this.strategy,
+      comparisonInfo: this.comparisonInfo,
     };
   }
 
   selectNodeIds(nodeIds: readonly string[]): WorkspaceSelectionState {
-    const executableNodeIds = nodeIds.filter((nodeId) => this.candidateFactories.has(nodeId));
+    this.selectionRevision += 1;
+    const mergeableNodeIds = new Set(this.availableMergeableNodeIds());
+    const executableNodeIds = nodeIds.filter((nodeId) => mergeableNodeIds.has(nodeId));
     const diagnostics =
       executableNodeIds.length > 0 && executableNodeIds.length === nodeIds.length
         ? []
@@ -236,7 +266,7 @@ export class ConfigurationCompareWorkspace {
   }
 
   listMergeableNodeIds(): string[] {
-    return this.disposed ? [] : [...this.candidateFactories.keys()].sort(compareCodeUnits);
+    return this.disposed ? [] : this.availableMergeableNodeIds().sort(compareCodeUnits);
   }
 
   async setStrategy(strategy: CompareJoinStrategy): Promise<WorkspaceStrategyResult> {
@@ -270,7 +300,8 @@ export class ConfigurationCompareWorkspace {
       };
     }
 
-    const unknownNodeIds = nodeIds.filter((nodeId) => !this.candidateFactories.has(nodeId));
+    const mergeableNodeIds = new Set(this.availableMergeableNodeIds());
+    const unknownNodeIds = nodeIds.filter((nodeId) => !mergeableNodeIds.has(nodeId));
     if (unknownNodeIds.length > 0) {
       return {
         ok: false,
@@ -288,57 +319,48 @@ export class ConfigurationCompareWorkspace {
       };
     }
 
-    const nodeId = nodeIds[0];
-    const factory = this.candidateFactories.get(nodeId);
-    if (!factory) {
-      return {
-        ok: false,
-        diagnostics: [
-          diagnostic(
-            'CONFIG_COMPARE_UNKNOWN_SELECTION',
-            'Выбранный узел сравнения не зарегистрирован как исполняемый host-side кандидат merge.',
-            nodeId
-          ),
-        ],
-      };
-    }
-
-    const candidateResult = await factory();
-    if (!candidateResult.ok) {
-      return { ok: false, diagnostics: candidateResult.diagnostics.map(redactDiagnostic) };
-    }
-    const candidates: MergeCandidate[] = [candidateResult.candidate];
-    const additionalDiagnostics: CompareMessage[] = [];
-    for (const extraNodeId of nodeIds.slice(1)) {
-      const extraFactory = this.candidateFactories.get(extraNodeId);
-      if (!extraFactory) {
-        additionalDiagnostics.push(
-          diagnostic(
-            'CONFIG_COMPARE_UNKNOWN_SELECTION',
-            'Selected compare node is not registered as an executable host-side merge candidate.',
-            extraNodeId
-          )
-        );
-        continue;
+    const session = this.session;
+    const materializationRevision = ++this.selectionRevision;
+    let candidates: MergeCandidate[];
+    if (this.materializeSelection) {
+      const result = await this.materializeSelection(nodeIds);
+      const stale = this.materializationContextDiagnostic(session, materializationRevision);
+      if (stale) {
+        return { ok: false, diagnostics: [stale] };
       }
-
-      const extraCandidateResult = await extraFactory();
-      if (extraCandidateResult.ok) {
-        candidates.push(extraCandidateResult.candidate);
-      } else {
-        additionalDiagnostics.push(...extraCandidateResult.diagnostics.map(redactDiagnostic));
+      if (!result.ok) {
+        return { ok: false, diagnostics: result.diagnostics.map(redactDiagnostic) };
       }
-    }
-    if (additionalDiagnostics.length > 0) {
-      return { ok: false, diagnostics: additionalDiagnostics };
+      candidates = [...result.candidates];
+      if (candidates.length === 0) {
+        return {
+          ok: false,
+          diagnostics: [
+            diagnostic(
+              'CONFIG_COMPARE_EMPTY_SELECTION',
+              'Для выбранных объектов не создано операций preview.'
+            ),
+          ],
+        };
+      }
+    } else {
+      const materialized = await this.materializeLegacyCandidates(nodeIds);
+      const stale = this.materializationContextDiagnostic(session, materializationRevision);
+      if (stale) {
+        return { ok: false, diagnostics: [stale] };
+      }
+      if (!materialized.ok) {
+        return { ok: false, diagnostics: materialized.diagnostics };
+      }
+      candidates = materialized.candidates;
     }
 
     const previewId = this.nextPreviewId();
     const validation = this.createPreview({
-      session: this.session,
+      session,
       previewId,
       targetSourceId: LEFT_SOURCE_ID,
-      snapshotIds: currentSnapshotIds(this.session),
+      snapshotIds: currentSnapshotIds(session),
       createdAt: this.createdAt.toISOString(),
       candidates,
       currentTargetHashes: currentTargetHashes(candidates),
@@ -510,7 +532,8 @@ export class ConfigurationCompareWorkspace {
       return { ok: false, payload: this.payload, locked: true, diagnostics: [unavailable] };
     }
 
-    this.invalidateVolatileState();
+    this.previewRecords.clear();
+    this.locked = true;
     if (!this.refreshWorkspace) {
       this.locked = true;
       return {
@@ -540,9 +563,7 @@ export class ConfigurationCompareWorkspace {
         };
       }
       const previousSession = this.session;
-      this.session = refreshed.session;
-      this.projection = refreshed.projection;
-      this.candidateFactories = new Map(refreshed.candidateFactories);
+      this.applyWorkspaceState(refreshed);
       previousSession.dispose();
       this.locked = false;
       return {
@@ -622,12 +643,15 @@ export class ConfigurationCompareWorkspace {
   private redactPreview(preview: MergePreview): WorkspacePreviewDto {
     const items = preview.operations.map((operation) => {
       const node = findNode(this.projection.root, operation.nodeId);
+      const previewPath = safeRelativePreviewPath(operation.previewPath);
       return {
         nodeId: operation.nodeId,
         label: node?.label ?? operation.nodeId,
         kind: node?.kind ?? 'unknown',
         status: node?.status ?? 'changed',
-        ...(node?.destructive ? { destructive: true } : {}),
+        ...(previewOperationIsDestructive(operation, node?.destructive) ? { destructive: true } : {}),
+        ...(previewPath ? { previewPath } : {}),
+        ...(operation.previewEffect ? { previewEffect: operation.previewEffect } : {}),
       };
     });
 
@@ -655,6 +679,90 @@ export class ConfigurationCompareWorkspace {
   private invalidateVolatileState(): void {
     this.previewRecords.clear();
     this.candidateFactories.clear();
+    this.materializeSelection = undefined;
+    this.mergeableNodeIds = [];
+  }
+
+  private availableMergeableNodeIds(): string[] {
+    return this.materializeSelection
+      ? [...this.mergeableNodeIds]
+      : [...this.candidateFactories.keys()];
+  }
+
+  private applyWorkspaceState(state: ConfigurationCompareWorkspaceState): void {
+    this.selectionRevision += 1;
+    this.session = state.session;
+    this.projection = state.projection;
+    this.candidateFactories = new Map(state.candidateFactories);
+    this.materializeSelection = state.materializeSelection;
+    this.mergeableNodeIds = state.materializeSelection
+      ? [...new Set(state.mergeableNodeIds ?? [])]
+      : [...this.candidateFactories.keys()];
+    this.comparisonInfo = state.comparisonInfo;
+  }
+
+  private async materializeLegacyCandidates(
+    nodeIds: readonly string[]
+  ): Promise<{ ok: true; candidates: MergeCandidate[] } | { ok: false; diagnostics: CompareMessage[] }> {
+    const firstNodeId = nodeIds[0];
+    const firstFactory = firstNodeId ? this.candidateFactories.get(firstNodeId) : undefined;
+    if (!firstNodeId || !firstFactory) {
+      return {
+        ok: false,
+        diagnostics: [
+          diagnostic(
+            'CONFIG_COMPARE_UNKNOWN_SELECTION',
+            'Выбранный узел сравнения не зарегистрирован как исполняемый host-side кандидат merge.',
+            firstNodeId
+          ),
+        ],
+      };
+    }
+
+    const firstResult = await firstFactory();
+    if (!firstResult.ok) {
+      return { ok: false, diagnostics: firstResult.diagnostics.map(redactDiagnostic) };
+    }
+
+    const candidates: MergeCandidate[] = [firstResult.candidate];
+    const diagnostics: CompareMessage[] = [];
+    for (const nodeId of nodeIds.slice(1)) {
+      const factory = this.candidateFactories.get(nodeId);
+      if (!factory) {
+        diagnostics.push(
+          diagnostic(
+            'CONFIG_COMPARE_UNKNOWN_SELECTION',
+            'Selected compare node is not registered as an executable host-side merge candidate.',
+            nodeId
+          )
+        );
+        continue;
+      }
+      const result = await factory();
+      if (result.ok) {
+        candidates.push(result.candidate);
+      } else {
+        diagnostics.push(...result.diagnostics.map(redactDiagnostic));
+      }
+    }
+    return diagnostics.length > 0 ? { ok: false, diagnostics } : { ok: true, candidates };
+  }
+
+  private materializationContextDiagnostic(
+    session: CompareSession,
+    selectionRevision: number
+  ): CompareMessage | undefined {
+    const unavailable = this.unavailableDiagnostic();
+    if (unavailable) {
+      return unavailable;
+    }
+    if (this.session !== session || this.selectionRevision !== selectionRevision) {
+      return diagnostic(
+        'CONFIG_COMPARE_SELECTION_STALE',
+        'Выбор или состояние сравнения изменились во время построения preview. Повторите выбор.'
+      );
+    }
+    return undefined;
   }
 
   private nextPreviewId(): string {
@@ -666,7 +774,7 @@ export class ConfigurationCompareWorkspace {
 function currentSnapshotIds(session: CompareSession): Readonly<Partial<Record<CompareSide, string>>> {
   const snapshotIds: Partial<Record<CompareSide, string>> = {};
   for (const source of session.state.sources) {
-    if (source.snapshotId) {
+    if (source.role !== 'base' && source.snapshotId) {
       snapshotIds[source.side] = source.snapshotId;
     }
   }
@@ -685,17 +793,40 @@ function currentTargetHashes(
 }
 
 function previewHasDestructiveOperations(preview: MergePreview): boolean {
-  return preview.operations.some((operation) => {
-    if (operation.fileOperation?.destructive === true) {
-      return true;
-    }
+  return preview.operations.some((operation) => previewOperationIsDestructive(operation));
+}
+
+function previewOperationIsDestructive(
+  operation: MergePreview['operations'][number],
+  legacyNodeDestructive = false
+): boolean {
+  if (operation.kind === 'fileWrite') {
     return (
-      operation.kind === 'xmlNodeDelete' ||
-      operation.kind === 'fileDelete' ||
-      operation.kind === 'folderDelete' ||
-      operation.kind === 'bslRoutineDelete'
+      operation.previewEffect === 'replace' ||
+      operation.previewEffect === 'delete' ||
+      Boolean(operation.expectedOldHash && operation.expectedOldHash !== MISSING_TARGET_HASH)
     );
-  });
+  }
+  if (operation.kind === 'fileDelete') {
+    return true;
+  }
+  if (operation.previewEffect === 'replace' || operation.previewEffect === 'delete') {
+    return true;
+  }
+  return (
+    operation.fileOperation?.destructive === true ||
+    legacyNodeDestructive ||
+    operation.kind === 'xmlNodeDelete' ||
+    operation.kind === 'folderDelete' ||
+    operation.kind === 'bslRoutineDelete'
+  );
+}
+
+function safeRelativePreviewPath(value: string | undefined): string | undefined {
+  if (!value || !isCanonicalWitnessRelativePath(value, 'file')) {
+    return undefined;
+  }
+  return value.replace(/\\/g, '/');
 }
 
 function findNode(node: CompareTreeNode, id: string): CompareTreeNode | undefined {

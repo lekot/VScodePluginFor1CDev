@@ -15,6 +15,11 @@ import type { MutationExpectation, MutationPlan, MutationStep } from '../../serv
 import { assertNoSymlinkSegments, assertPathWithinRoot } from '../../services/configurationSession/pathBoundary';
 import { validateElementName } from '../../utils/elementNameValidator';
 import { parseCfeObjectIdentity, type CfeObjectIdentity } from './ownership';
+import {
+  buildBorrowedObjectShell,
+  CFE_BORROW_TYPE_MATRIX,
+  type CfeBorrowTypeRule,
+} from './borrowObjectBuilder';
 import type { CfeProjectRegistry } from './registry';
 import {
   CfeProjectError,
@@ -22,70 +27,6 @@ import {
   type CfeBorrowObjectRequest,
   type CfeProjectContext,
 } from './types';
-
-interface GeneratedTypeDefinition {
-  readonly prefix: string;
-  readonly category: string;
-}
-
-interface CfeBorrowTypeRule {
-  readonly designerFolder: string;
-  readonly generatedTypes: readonly GeneratedTypeDefinition[];
-  readonly requiresChildObjects: boolean;
-  readonly copiedBooleanProperties?: readonly string[];
-}
-
-/**
- * The first borrow vertical deliberately supports only root types whose shell and
- * dependency closure are backed by the CFE oracle. New types must be added here
- * together with their required properties and dependency test cases.
- */
-export const CFE_BORROW_TYPE_MATRIX: Readonly<Record<string, CfeBorrowTypeRule>> = Object.freeze({
-  Catalog: Object.freeze({
-    designerFolder: 'Catalogs',
-    generatedTypes: Object.freeze([
-      { prefix: 'CatalogObject', category: 'Object' },
-      { prefix: 'CatalogRef', category: 'Ref' },
-      { prefix: 'CatalogSelection', category: 'Selection' },
-      { prefix: 'CatalogList', category: 'List' },
-      { prefix: 'CatalogManager', category: 'Manager' },
-    ]),
-    requiresChildObjects: true,
-  }),
-  Document: Object.freeze({
-    designerFolder: 'Documents',
-    generatedTypes: Object.freeze([
-      { prefix: 'DocumentObject', category: 'Object' },
-      { prefix: 'DocumentRef', category: 'Ref' },
-      { prefix: 'DocumentSelection', category: 'Selection' },
-      { prefix: 'DocumentList', category: 'List' },
-      { prefix: 'DocumentManager', category: 'Manager' },
-    ]),
-    requiresChildObjects: true,
-  }),
-  Enum: Object.freeze({
-    designerFolder: 'Enums',
-    generatedTypes: Object.freeze([
-      { prefix: 'EnumRef', category: 'Ref' },
-      { prefix: 'EnumManager', category: 'Manager' },
-      { prefix: 'EnumList', category: 'List' },
-    ]),
-    requiresChildObjects: true,
-  }),
-  CommonModule: Object.freeze({
-    designerFolder: 'CommonModules',
-    generatedTypes: Object.freeze([]),
-    requiresChildObjects: false,
-    copiedBooleanProperties: Object.freeze([
-      'Global',
-      'ClientManagedApplication',
-      'Server',
-      'ExternalConnection',
-      'ClientOrdinaryApplication',
-      'ServerCall',
-    ]),
-  }),
-});
 
 interface ResolvedBorrowSource {
   readonly identity: CfeObjectIdentity;
@@ -277,7 +218,16 @@ export class CfeBorrowService {
       {
         type: 'writeFile',
         targetPath: objectPath,
-        content: buildAdoptedObjectXml(source, context.formatVersion, localUuid),
+        content: buildBorrowedObjectShell({
+          identity: source.identity,
+          formatVersion: context.formatVersion,
+          localUuid,
+          copiedProperties: source.copiedProperties,
+          generatedTypeIds: source.rule.generatedTypes.map(() => ({
+            typeId: randomUUID(),
+            valueId: randomUUID(),
+          })),
+        }),
         encoding: 'utf8',
         expected: objectExpected,
       },
@@ -388,47 +338,6 @@ function readCopiedProperties(xml: string, rule: CfeBorrowTypeRule): Readonly<Re
   return result;
 }
 
-function buildAdoptedObjectXml(source: ResolvedBorrowSource, formatVersion: string, localUuid: string): string {
-  const { identity, rule } = source;
-  const lines: string[] = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    `<MetaDataObject ${xmlNamespaces(formatVersion)} version="${formatVersion}">`,
-    `\t<${identity.type} uuid="${localUuid}">`,
-  ];
-  if (rule.generatedTypes.length === 0) {
-    lines.push('\t\t<InternalInfo/>');
-  } else {
-    lines.push('\t\t<InternalInfo>');
-    for (const generatedType of rule.generatedTypes) {
-      lines.push(`\t\t\t<xr:GeneratedType name="${generatedType.prefix}.${escapeXml(identity.name)}" category="${generatedType.category}">`);
-      lines.push(`\t\t\t\t<xr:TypeId>${randomUUID()}</xr:TypeId>`);
-      lines.push(`\t\t\t\t<xr:ValueId>${randomUUID()}</xr:ValueId>`);
-      lines.push('\t\t\t</xr:GeneratedType>');
-    }
-    lines.push('\t\t</InternalInfo>');
-  }
-  lines.push('\t\t<Properties>');
-  lines.push('\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>');
-  lines.push(`\t\t\t<Name>${escapeXml(identity.name)}</Name>`);
-  lines.push('\t\t\t<Comment/>');
-  lines.push(`\t\t\t<ExtendedConfigurationObject>${identity.uuid}</ExtendedConfigurationObject>`);
-  for (const property of rule.copiedBooleanProperties ?? []) {
-    lines.push(`\t\t\t<${property}>${source.copiedProperties[property] ?? 'false'}</${property}>`);
-  }
-  lines.push('\t\t</Properties>');
-  if (rule.requiresChildObjects) {
-    lines.push('\t\t<ChildObjects/>');
-  }
-  lines.push(`\t</${identity.type}>`);
-  lines.push('</MetaDataObject>');
-  return `\uFEFF${lines.join('\r\n')}\r\n`;
-}
-
-function xmlNamespaces(formatVersion: string): string {
-  const palette = formatVersion === '2.21' ? ' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"' : '';
-  return `xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform"${palette} xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"`;
-}
-
 function outcomeFromIdentity(status: CfeBorrowObjectOutcome['status'], identity: CfeObjectIdentity): CfeBorrowObjectOutcome {
   if (!identity.sourceUuid) {
     throw new CfeProjectError('CFE_OWNERSHIP_INVALID', 'Найдена локальная CFE-идентичность без UUID исходного объекта.');
@@ -472,10 +381,6 @@ async function resolveInside(rootPath: string, candidatePath: string): Promise<s
   );
   await assertNoSymlinkSegments(canonicalRoot, canonicalTarget);
   return canonicalTarget;
-}
-
-function escapeXml(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
 function isMissing(error: unknown): boolean {

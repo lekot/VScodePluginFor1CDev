@@ -398,6 +398,7 @@ suite('ConfigurationCompareService', () => {
           label: 'RemovedOnLeft',
           kind: 'bslRoutine',
           status: 'leftOnly',
+          destructive: true,
         },
       ]);
 

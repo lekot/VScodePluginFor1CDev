@@ -171,6 +171,12 @@
       background: var(--vscode-editorWidget-background);
     }
 
+    .comparison-info {
+      display: grid;
+      gap: 4px;
+      margin-top: 8px;
+    }
+
     .preview,
     .result {
       display: grid;
@@ -191,10 +197,12 @@
   <main>
     <header>
       <h1 id="title">Сравнение конфигураций</h1>
+      <div class="selection" id="comparisonSides">Приёмник (слева) ← Источник (справа)</div>
       <div class="stats" id="stats"></div>
+      <div class="comparison-info hidden" id="comparisonInfo"></div>
     </header>
     <section class="toolbar" aria-label="Compare controls">
-      <span class="strategy" aria-label="Strategy">
+      <span class="strategy" id="strategyControls" aria-label="Strategy">
         <button class="secondary" data-strategy="left">Left</button>
         <button class="secondary" data-strategy="right">Right</button>
         <button class="secondary" data-strategy="full">Full</button>
@@ -237,6 +245,9 @@
     const elements = {
       title: document.getElementById('title'),
       stats: document.getElementById('stats'),
+      comparisonSides: document.getElementById('comparisonSides'),
+      comparisonInfo: document.getElementById('comparisonInfo'),
+      strategyControls: document.getElementById('strategyControls'),
       tree: document.getElementById('tree'),
       notice: document.getElementById('notice'),
       preview: document.getElementById('preview'),
@@ -363,6 +374,8 @@
         return;
       }
       elements.title.textContent = state.payload.title;
+      elements.comparisonSides.textContent = 'Приёмник (слева) ← Источник (справа)';
+      renderComparisonInfo(state.payload.comparisonInfo);
       renderStats(state.payload.stats);
       const visible = state.payload.root.children
         .map(filterNode)
@@ -382,6 +395,26 @@
       );
     }
 
+    function renderComparisonInfo(info) {
+      elements.comparisonInfo.classList.toggle('hidden', !info);
+      if (!info) {
+        elements.comparisonInfo.replaceChildren();
+        return;
+      }
+      const mode = document.createElement('strong');
+      mode.textContent = 'Семантическое сравнение конфигураций расширений';
+      const sides = document.createElement('div');
+      sides.textContent = `Приёмник (слева): ${info.targetLabel} · Источник (справа): ${info.sourceLabel}`;
+      const limitations = document.createElement('ul');
+      limitations.className = 'tree root';
+      limitations.append(...info.limitations.map((limitation) => {
+        const item = document.createElement('li');
+        item.textContent = limitation;
+        return item;
+      }));
+      elements.comparisonInfo.replaceChildren(mode, sides, limitations);
+    }
+
     function stat(label, value) {
       const item = document.createElement('div');
       item.className = 'stat';
@@ -393,6 +426,7 @@
       const count = selectedExecutableIds().length;
       const canPreview = !state.busy && !state.locked && count > 0;
       const approved = Boolean(state.preview?.approved);
+      elements.strategyControls.classList.toggle('hidden', state.payload.comparisonInfo?.mode === 'extension');
       elements.strategyButtons.forEach((button) => {
         button.classList.toggle('active', button.dataset.strategy === state.payload.strategy);
         button.disabled = state.busy || state.locked;
@@ -437,10 +471,16 @@
       list.append(...preview.items.map((item) => {
         const li = document.createElement('li');
         li.className = item.destructive ? 'destructive' : '';
-        li.textContent = `${item.label} (${item.kind}, ${item.status})`;
+        const effect = item.previewEffect ? `, эффект: ${previewEffectLabel(item.previewEffect)}` : '';
+        const previewPath = item.previewPath ? ` → ${item.previewPath}` : '';
+        li.textContent = `${item.label} (${item.kind}, ${item.status}${effect})${previewPath}`;
         return li;
       }));
       elements.preview.replaceChildren(title, summary, warning, list);
+    }
+
+    function previewEffectLabel(effect) {
+      return effect === 'create' ? 'создание' : effect === 'replace' ? 'замена' : 'удаление';
     }
 
     function renderNotice() {
