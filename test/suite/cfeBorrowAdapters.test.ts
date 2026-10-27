@@ -9,6 +9,7 @@ import { borrowObjectToExtension } from '../../src/extensionSupport/borrowObject
 import { CfeProjectService } from '../../src/extensionSupport/cfeProject/createProject';
 import { MetadataType, type TreeNode } from '../../src/models/treeNode';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
+import { getExplicitGeneratedTypeSpecs } from '../../src/utils/xml/metadataGeneratedTypeSchema';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
 interface Harness {
@@ -207,7 +208,14 @@ async function addOwnCatalog(extension: string, name: string): Promise<void> {
 }
 
 function catalogXml(name: string, uuid: string): string {
-  return `<?xml version="1.0"?><MetaDataObject version="2.20"><Catalog uuid="${uuid}"><Properties><Name>${name}</Name><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>`;
+  const specs = getExplicitGeneratedTypeSpecs('Catalog')!;
+  const seed = Array.from(`Catalog.${name}`).reduce((value, character) => ((value * 31) + character.charCodeAt(0)) >>> 0, 7);
+  const internalInfo = specs.map((spec, index) => {
+    const typeId = `20000000-0000-4000-8000-${String(seed * 100 + (index * 2) + 1).padStart(12, '0')}`;
+    const valueId = `30000000-0000-4000-8000-${String(seed * 100 + (index * 2) + 2).padStart(12, '0')}`;
+    return `<xr:GeneratedType name="${spec.namePrefix}.${name}" category="${spec.category}"><xr:TypeId>${typeId}</xr:TypeId><xr:ValueId>${valueId}</xr:ValueId></xr:GeneratedType>`;
+  }).join('');
+  return `<?xml version="1.0"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.3/xcf/readable" version="2.20"><Catalog uuid="${uuid}"><InternalInfo>${internalInfo}</InternalInfo><Properties><Name>${name}</Name><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>`;
 }
 
 function catalogNode(name: string): TreeNode {

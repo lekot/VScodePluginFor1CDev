@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import {
   getMetadataTypeDescriptorByRootTag,
   METADATA_TYPE_DESCRIPTORS,
+  type MetadataTypeDescriptor,
 } from '../../constants/metadataTypeDescriptors';
 import { CONFIGURATION_XML } from '../../constants/fileNames';
 import {
@@ -15,11 +16,7 @@ import type { MutationExpectation, MutationPlan, MutationStep } from '../../serv
 import { assertNoSymlinkSegments, assertPathWithinRoot } from '../../services/configurationSession/pathBoundary';
 import { validateElementName } from '../../utils/elementNameValidator';
 import { parseCfeObjectIdentity, type CfeObjectIdentity } from './ownership';
-import {
-  buildBorrowedObjectShell,
-  CFE_BORROW_TYPE_MATRIX,
-  type CfeBorrowTypeRule,
-} from './borrowObjectBuilder';
+import { buildBorrowedObjectShellFromSource } from './borrowObjectBuilder';
 import type { CfeProjectRegistry } from './registry';
 import {
   CfeProjectError,
@@ -30,10 +27,10 @@ import {
 
 interface ResolvedBorrowSource {
   readonly identity: CfeObjectIdentity;
-  readonly rule: CfeBorrowTypeRule;
+  readonly descriptor: MetadataTypeDescriptor;
   readonly path: string;
   readonly contentHash: string;
-  readonly copiedProperties: Readonly<Record<string, string>>;
+  readonly sourceXml: string;
 }
 
 /** CFE domain service for transactional root-object borrowing. */
@@ -84,9 +81,9 @@ export class CfeBorrowService {
   ): Promise<ResolvedBorrowSource> {
     if (request.sourceDotPath !== undefined) {
       const { rootTag, name } = parseDotPath(request.sourceDotPath);
-      const rule = requireSupportedType(rootTag);
-      const sourcePath = await resolveInside(context.baseRoot, path.join(rule.designerFolder, `${name}.xml`));
-      return this.readSource(context, sourcePath, rootTag, name);
+      const descriptor = requireSupportedType(rootTag);
+      const sourcePath = await resolveInside(context.baseRoot, path.join(descriptor.designerFolder, `${name}.xml`));
+      return this.readSource(context, sourcePath, descriptor, name);
     }
 
     const sourceUuid = normalizeUuid(request.sourceUuid!);
@@ -111,8 +108,11 @@ export class CfeBorrowService {
         const content = await fs.promises.readFile(candidatePath, 'utf8');
         const identity = parseCfeObjectIdentity(content, path.relative(context.baseRoot, candidatePath).replace(/\\/g, '/'));
         if (identity.uuid.toLocaleLowerCase() === sourceUuid) {
-          requireSupportedType(identity.type);
-          matches.push(await this.readSource(context, candidatePath, rootTag));
+          const descriptor = requireSupportedType(identity.type);
+          if (descriptor.designerRootTag !== rootTag) {
+            continue;
+          }
+          matches.push(await this.readSource(context, candidatePath, descriptor));
         }
       }
     }
@@ -128,7 +128,7 @@ export class CfeBorrowService {
   private async readSource(
     context: CfeProjectContext,
     sourcePath: string,
-    expectedRootTag: string,
+    expectedDescriptor: MetadataTypeDescriptor,
     expectedName?: string,
   ): Promise<ResolvedBorrowSource> {
     const canonicalPath = await resolveInside(context.baseRoot, sourcePath);
@@ -145,20 +145,21 @@ export class CfeBorrowService {
     if (identity.ownership !== 'own') {
       throw new CfeProjectError('CFE_OWNERSHIP_INVALID', 'Исходный объект должен быть собственным объектом связанной основной конфигурации.');
     }
-    if (identity.type !== expectedRootTag || (expectedName !== undefined && identity.name !== expectedName)) {
+    const identityDescriptor = getMetadataTypeDescriptorByRootTag(identity.type);
+    if (identityDescriptor !== expectedDescriptor || (expectedName !== undefined && identity.name !== expectedName)) {
       throw new CfeProjectError('CFE_SOURCE_OBJECT_NOT_FOUND', 'Исходный dot-path не совпадает с XML-идентичностью объекта.');
     }
-    const rule = requireSupportedType(identity.type);
-    const registered = await isRootObjectRegisteredInConfiguration(context.baseRoot, identity.type, identity.name);
+    const canonicalIdentity = { ...identity, type: expectedDescriptor.designerRootTag };
+    const registered = await isRegisteredByDescriptor(context.baseRoot, expectedDescriptor, identity.name);
     if (!registered) {
       throw new CfeProjectError('CFE_SOURCE_OBJECT_NOT_FOUND', 'Исходный объект не зарегистрирован в ChildObjects связанной основной конфигурации.');
     }
     return {
-      identity,
-      rule,
+      identity: canonicalIdentity,
+      descriptor: expectedDescriptor,
       path: canonicalPath,
       contentHash: hashContent(content),
-      copiedProperties: readCopiedProperties(content, rule),
+      sourceXml: content,
     };
   }
 
@@ -186,7 +187,7 @@ export class CfeBorrowService {
       return outcomeFromIdentity('already-borrowed', existing);
     }
 
-    const objectPath = path.join(context.extensionRoot, source.rule.designerFolder, `${source.identity.name}.xml`);
+    const objectPath = path.join(context.extensionRoot, source.descriptor.designerFolder, `${source.identity.name}.xml`);
     const configurationPath = path.join(context.extensionRoot, CONFIGURATION_XML);
     const [objectExpected, configurationContent] = await Promise.all([
       expectationForPath(objectPath),
@@ -198,11 +199,20 @@ export class CfeBorrowService {
         `Имя «${source.identity.type}.${source.identity.name}» уже занято другим объектом CFE.`,
       );
     }
-    if (await isRootObjectRegisteredInConfiguration(context.extensionRoot, source.identity.type, source.identity.name)) {
+    if (await isRegisteredByDescriptor(context.extensionRoot, source.descriptor, source.identity.name)) {
       throw new CfeProjectError('CFE_OWNERSHIP_INVALID', 'ChildObjects CFE уже содержит объект без соответствующей UUID-связи.');
     }
 
     const localUuid = randomUUID();
+    const projection = buildBorrowedObjectShellFromSource({
+      sourceXml: source.sourceXml,
+      identity: source.identity,
+      formatVersion: context.formatVersion,
+      localUuid,
+    });
+    if (!projection.ok) {
+      throw new CfeProjectError('CFE_OWNERSHIP_INVALID', projection.reason);
+    }
     const relativeObjectPath = path.relative(context.extensionRoot, objectPath).replace(/\\/g, '/');
     const result: CfeBorrowObjectOutcome = {
       status: 'borrowed',
@@ -218,16 +228,7 @@ export class CfeBorrowService {
       {
         type: 'writeFile',
         targetPath: objectPath,
-        content: buildBorrowedObjectShell({
-          identity: source.identity,
-          formatVersion: context.formatVersion,
-          localUuid,
-          copiedProperties: source.copiedProperties,
-          generatedTypeIds: source.rule.generatedTypes.map(() => ({
-            typeId: randomUUID(),
-            valueId: randomUUID(),
-          })),
-        }),
+        content: projection.xml,
         encoding: 'utf8',
         expected: objectExpected,
       },
@@ -306,15 +307,29 @@ function parseDotPath(value: string): { rootTag: string; name: string } {
   return { rootTag: parts[0]!, name: parts[1]! };
 }
 
-function requireSupportedType(rootTag: string): CfeBorrowTypeRule {
+function requireSupportedType(rootTag: string): MetadataTypeDescriptor {
   const descriptor = getMetadataTypeDescriptorByRootTag(rootTag);
-  if (!descriptor || descriptor.designerRootTag !== rootTag || !CFE_BORROW_TYPE_MATRIX[rootTag]) {
+  if (!descriptor || !descriptor.structure.designerRootObject) {
     throw new CfeProjectError(
       'CFE_DEPENDENCY_UNSUPPORTED',
-      `Заимствование типа «${rootTag}» пока не поддержано: его каноническое замыкание зависимостей не подтверждено.`,
+      `Заимствование корневого типа «${rootTag}» не поддерживается реестром метаданных.`,
     );
   }
-  return CFE_BORROW_TYPE_MATRIX[rootTag]!;
+  return descriptor;
+}
+
+async function isRegisteredByDescriptor(
+  rootPath: string,
+  descriptor: MetadataTypeDescriptor,
+  objectName: string,
+): Promise<boolean> {
+  const rootTags = [descriptor.designerRootTag, ...(descriptor.designerRootTagAliases ?? [])];
+  for (const rootTag of rootTags) {
+    if (await isRootObjectRegisteredInConfiguration(rootPath, rootTag, objectName)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function normalizeUuid(value: string): string {
@@ -324,18 +339,6 @@ function normalizeUuid(value: string): string {
     throw new CfeProjectError('CFE_VALIDATION_FAILED', 'sourceUuid должен быть ненулевым UUID корневого объекта.');
   }
   return uuid.toLocaleLowerCase();
-}
-
-function readCopiedProperties(xml: string, rule: CfeBorrowTypeRule): Readonly<Record<string, string>> {
-  const result: Record<string, string> = {};
-  for (const property of rule.copiedBooleanProperties ?? []) {
-    const value = scalarElement(xml, property);
-    if (value !== undefined && value !== 'true' && value !== 'false') {
-      throw new CfeProjectError('CFE_OWNERSHIP_INVALID', `Свойство ${property} исходного общего модуля имеет недопустимое значение.`);
-    }
-    result[property] = value ?? 'false';
-  }
-  return result;
 }
 
 function outcomeFromIdentity(status: CfeBorrowObjectOutcome['status'], identity: CfeObjectIdentity): CfeBorrowObjectOutcome {
@@ -350,10 +353,6 @@ function outcomeFromIdentity(status: CfeBorrowObjectOutcome['status'], identity:
     objectPath: identity.path,
     localUuid: identity.uuid,
   };
-}
-
-function scalarElement(xml: string, name: string): string | undefined {
-  return new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, 'i').exec(xml)?.[1]?.trim();
 }
 
 async function expectationForPath(targetPath: string): Promise<MutationExpectation> {

@@ -2,7 +2,7 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { pathToFileURL } from 'url';
 import { throwIfCompareCancelled } from '../compareCancellation';
-import { buildBorrowedObjectShell, CFE_BORROW_TYPE_MATRIX } from '../../extensionSupport/cfeProject/borrowObjectBuilder';
+import { buildBorrowedObjectShellFromSource } from '../../extensionSupport/cfeProject/borrowObjectBuilder';
 import { buildRootObjectConfigurationContent, type RootObjectConfigurationMutation } from '../../services/configurationXmlUpdater';
 import { hashContent } from '../../services/configurationSession/atomicFileStorage';
 import { CONFIGURATION_XML } from '../../constants/fileNames';
@@ -11,8 +11,14 @@ import type { ExtensionCapturedFile, ExtensionIndexedObject, ExtensionMetadataIn
 import type { ExtensionMaterializerInput, ExtensionMaterializerResult, ExtensionTransferRow } from './extensionTransfer';
 import { captureMergePath, mergeSnapshotHash, type MergePathSnapshot } from '../merge/mergeSnapshot';
 import { MISSING_TARGET_HASH, type CapturedFileWritePayload, type FileOperationPayload, type MergeCandidate, type MergeFileWitness } from '../merge/mergePreview';
-import { overlaySimpleProperties, readCommonModuleBooleans, replaceRootUuid } from './extensionXmlOverlay';
+import { overlaySimpleProperties, replaceRootUuid } from './extensionXmlOverlay';
 import { scanExtensionXmlDependencies, type ExtensionMetadataReference } from './extensionDependencyScanner';
+import {
+  preflightOwnRegisterRecorders,
+  scanDocumentRegisterRecords,
+  type RecorderDocumentVersion,
+  type RecorderRegisterRequirement,
+} from './extensionRegisterRecorderGuard';
 import { unsupportedExtensionInterceptReason } from './extensionInterceptScanner';
 
 const LEFT_SOURCE_ID = 'left-source';
@@ -77,12 +83,30 @@ export async function materializeExtensionSelection(
     return { ok: false, diagnostics };
   }
 
-  const collision = outputPathCollision(outputs);
+  const recorderPreflight = buildRecorderPreflight(outputs, input);
+  diagnostics.push(...recorderPreflight.diagnostics);
+  if (diagnostics.length > 0) {
+    return { ok: false, diagnostics };
+  }
+  for (const blocker of recorderPreflight.result.blockers) {
+    const output = outputs.find((candidate) => candidate.row.incoming?.qualifiedName === blocker.registerQualifiedName);
+    diagnostics.push(compareDiagnostic(
+      blocker.message,
+      output?.row.incoming?.sourceId ?? RIGHT_SOURCE_ID,
+      output?.row.id,
+    ));
+  }
+  if (diagnostics.length > 0) {
+    return { ok: false, diagnostics };
+  }
+  const outputsWithRecorderWitnesses = addRecorderWitnesses(outputs, recorderPreflight.result.witnessesByRegister);
+
+  const collision = outputPathCollision(outputsWithRecorderWitnesses);
   if (collision) {
     return { ok: false, diagnostics: [compareDiagnostic(collision, RIGHT_SOURCE_ID)] };
   }
 
-  const dependencyResult = validateSelectedOutputDependencies(outputs, input);
+  const dependencyResult = validateSelectedOutputDependencies(outputsWithRecorderWitnesses, input);
   if (dependencyResult.diagnostics.length > 0) {
     return { ok: false, diagnostics: [...dependencyResult.diagnostics] };
   }
@@ -166,6 +190,140 @@ interface OutputWrite {
   readonly sourceWitnesses: readonly MergeFileWitness[];
 }
 
+function buildRecorderPreflight(
+  outputs: readonly ObjectOutput[],
+  input: ExtensionMaterializerInput,
+): {
+  readonly result: ReturnType<typeof preflightOwnRegisterRecorders>;
+  readonly diagnostics: readonly CompareMessage[];
+} {
+  const diagnostics: CompareMessage[] = [];
+  const registers: RecorderRegisterRequirement[] = [];
+  const selectedDocumentOutputs: RecorderDocumentVersion[] = [];
+  const provenTargetBases = new Map<string, ExtensionMetadataIndex>();
+  for (const output of outputs) {
+    if (output.row.targetBase) {provenTargetBases.set(output.row.targetBase.sourceId, output.row.targetBase);}
+    const incoming = output.row.incoming;
+    if (!incoming) {continue;}
+    const descriptorWrite = output.writes[0];
+    if (incoming.metadataType === 'Document') {
+      if (!descriptorWrite) {
+        diagnostics.push(compareDiagnostic('Выбранный Document output не содержит descriptor write для проверки RegisterRecords.', incoming.sourceId, output.row.id));
+        continue;
+      }
+      const adoptedDocument = isAdoptedDocumentOutput(output);
+      const scanned = scanDocumentRegisterRecords({
+        artifactPath: descriptorWrite.relativePath,
+        xml: descriptorWrite.content,
+        adoptedDocument,
+      });
+      for (const error of scanned.errors) {
+        diagnostics.push(compareDiagnostic(
+          `Не удалось безопасно проверить RegisterRecords в ${error.artifactPath}: ${error.message}`,
+          incoming.sourceId,
+          output.row.id,
+        ));
+      }
+      selectedDocumentOutputs.push({
+        qualifiedName: incoming.qualifiedName,
+        adoptedDocument,
+        registerRecords: scanned,
+        witnesses: descriptorWrite.sourceWitnesses,
+      });
+    }
+
+    if (isRecorderRegisterType(incoming.metadataType)) {
+      registers.push({
+        qualifiedName: incoming.qualifiedName,
+        metadataType: incoming.metadataType,
+        isOwnFullCopy: output.row.action === 'full-copy' && incoming.identity?.ownership !== 'adopted',
+        descriptorXml: descriptorWrite?.content,
+      });
+    }
+  }
+
+  const targetDocuments = input.target.objects
+    .filter((object) => object.metadataType === 'Document')
+    .map((object) => recorderDocumentFromIndex(input.target, object));
+  const provenTargetBaseDocuments = [...provenTargetBases.values()].flatMap((root) => root.objects
+    .filter((object) => object.metadataType === 'Document')
+    .map((object) => recorderDocumentFromIndex(root, object)));
+
+  return {
+    result: preflightOwnRegisterRecorders({ registers, targetDocuments, provenTargetBaseDocuments, selectedDocumentOutputs }),
+    diagnostics,
+  };
+}
+
+function recorderDocumentFromIndex(root: ExtensionMetadataIndex, object: ExtensionIndexedObject): RecorderDocumentVersion {
+  const artifactPath = object.descriptorRelativePath ?? `Documents/${object.name}.xml`;
+  const adoptedDocument = object.identity?.ownership === 'adopted';
+  const registerRecords = object.descriptorContent
+    ? scanDocumentRegisterRecords({ artifactPath, xml: object.descriptorContent, adoptedDocument })
+    : {
+      references: [],
+      inheritsRegisterRecords: false,
+      errors: [{ artifactPath, message: 'Captured descriptor bytes отсутствуют.' }],
+    };
+  if (!object.valid) {
+    return {
+      qualifiedName: object.qualifiedName,
+      adoptedDocument,
+      registerRecords: { references: [], inheritsRegisterRecords: false, errors: [{ artifactPath, message: 'Document descriptor не прошёл проверку identity.' }] },
+      witnesses: recorderDocumentWitnesses(root, object),
+    };
+  }
+  return {
+    qualifiedName: object.qualifiedName,
+    adoptedDocument,
+    registerRecords,
+    witnesses: recorderDocumentWitnesses(root, object),
+  };
+}
+
+function recorderDocumentWitnesses(root: ExtensionMetadataIndex, object: ExtensionIndexedObject): MergeFileWitness[] {
+  const witnesses: MergeFileWitness[] = [];
+  if (root.configurationHash) {
+    witnesses.push({ sourceId: root.sourceId, relativePath: CONFIGURATION_XML, expectedHash: root.configurationHash, kind: 'file' });
+  }
+  if (object.descriptorRelativePath && object.descriptorHash) {
+    witnesses.push({ sourceId: object.sourceId, relativePath: object.descriptorRelativePath, expectedHash: object.descriptorHash, kind: 'file' });
+  }
+  return dedupeWitnesses(witnesses);
+}
+
+function isAdoptedDocumentOutput(output: ObjectOutput): boolean {
+  return output.row.action === 'borrow-shell'
+    || output.row.action === 'overlay-adopted'
+    || output.row.action === 'adopted-cfe-copy'
+    || (output.row.action !== 'adopted-to-cf-overlay' && output.row.incoming?.identity?.ownership === 'adopted');
+}
+
+function isRecorderRegisterType(metadataType: string): boolean {
+  return metadataType === 'AccumulationRegister'
+    || metadataType === 'AccountingRegister'
+    || metadataType === 'CalculationRegister'
+    || metadataType === 'InformationRegister';
+}
+
+function addRecorderWitnesses(
+  outputs: readonly ObjectOutput[],
+  witnessesByRegister: ReadonlyMap<string, readonly MergeFileWitness[]>,
+): ObjectOutput[] {
+  return outputs.map((output) => {
+    const qualifiedName = output.row.incoming?.qualifiedName;
+    const descriptorPath = output.row.incoming?.descriptorRelativePath;
+    const witnesses = qualifiedName ? witnessesByRegister.get(qualifiedName) : undefined;
+    if (!descriptorPath || !witnesses || witnesses.length === 0) {return output;}
+    return {
+      ...output,
+      writes: output.writes.map((write) => write.relativePath === descriptorPath
+        ? { ...write, sourceWitnesses: dedupeWitnesses([...write.sourceWitnesses, ...witnesses]) }
+        : write),
+    };
+  });
+}
+
 function validateSelectedOutputDependencies(
   outputs: readonly ObjectOutput[],
   input: ExtensionMaterializerInput,
@@ -213,6 +371,51 @@ function validateSelectedOutputDependencies(
       diagnostics.push(compareDiagnostic(`Metadata dependency artifact отсутствует в выбранном output: ${reference.artifactPath}`, RIGHT_SOURCE_ID));
       continue;
     }
+    if (reference.metadataType === 'Configuration') {
+      const targetResolution = resolveConfigurationDependencyInIndex(input.target, reference);
+      if (targetResolution.kind === 'found') {
+        addConfigurationDependencyWitness(witnessesByWrite, owner, reference, targetResolution.root, diagnostics);
+        continue;
+      }
+      if (targetResolution.kind === 'invalid') {
+        diagnostics.push(compareDiagnostic(targetResolution.reason, owner.row.incoming?.sourceId ?? RIGHT_SOURCE_ID, owner.row.id));
+        continue;
+      }
+
+      const matchingBases: ExtensionMetadataIndex[] = [];
+      let invalidBaseReason: string | undefined;
+      for (const base of provenTargetBases.values()) {
+        const baseResolution = resolveConfigurationDependencyInIndex(base, reference);
+        if (baseResolution.kind === 'invalid') {
+          invalidBaseReason = baseResolution.reason;
+          break;
+        }
+        if (baseResolution.kind === 'found') {matchingBases.push(baseResolution.root);}
+      }
+      if (invalidBaseReason) {
+        diagnostics.push(compareDiagnostic(invalidBaseReason, owner.row.incoming?.sourceId ?? RIGHT_SOURCE_ID, owner.row.id));
+        continue;
+      }
+      if (matchingBases.length === 1) {
+        addConfigurationDependencyWitness(witnessesByWrite, owner, reference, matchingBases[0]!, diagnostics);
+        continue;
+      }
+      if (matchingBases.length > 1) {
+        diagnostics.push(compareDiagnostic(
+          `Ссылка ${reference.qualifiedName} неоднозначна: имя Configuration.Properties.Name совпадает в нескольких доказанных base.`,
+          owner.row.incoming?.sourceId ?? RIGHT_SOURCE_ID,
+          owner.row.id,
+        ));
+        continue;
+      }
+      diagnostics.push(compareDiagnostic(
+        `Ссылка ${reference.qualifiedName} из ${reference.artifactPath} отсутствует в target, доказанной base и выбранном пакете. Зависимости автоматически не копируются.`,
+        owner.row.incoming?.sourceId ?? RIGHT_SOURCE_ID,
+        owner.row.id,
+      ));
+      continue;
+    }
+
     const selectedMatches = selectedOutputsByName.get(dependencyKey(reference.qualifiedName)) ?? [];
     if (selectedMatches.length === 1) {continue;}
     if (selectedMatches.length > 1) {
@@ -275,6 +478,47 @@ type DependencyResolution =
   | { readonly kind: 'found'; readonly object: ExtensionIndexedObject }
   | { readonly kind: 'ambiguous'; readonly reason: string }
   | { readonly kind: 'invalid'; readonly reason: string };
+
+type ConfigurationDependencyResolution =
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'found'; readonly root: ExtensionMetadataIndex }
+  | { readonly kind: 'invalid'; readonly reason: string };
+
+function resolveConfigurationDependencyInIndex(
+  index: ExtensionMetadataIndex,
+  reference: ExtensionMetadataReference,
+): ConfigurationDependencyResolution {
+  if (!index.hasConfigurationXml || !index.configurationName
+    || dependencyKey(index.configurationName) !== dependencyKey(reference.objectName)) {
+    return { kind: 'missing' };
+  }
+  if (!index.configurationHash) {
+    return { kind: 'invalid', reason: `Невозможно проверить Configuration.xml для ссылки ${reference.qualifiedName} в ${index.sourceId}.` };
+  }
+  return { kind: 'found', root: index };
+}
+
+function addConfigurationDependencyWitness(
+  witnessesByWrite: Map<string, MergeFileWitness[]>,
+  output: ObjectOutput,
+  reference: ExtensionMetadataReference,
+  root: ExtensionMetadataIndex,
+  diagnostics: CompareMessage[],
+): void {
+  if (!root.configurationHash) {
+    diagnostics.push(compareDiagnostic(`Невозможно установить Configuration.xml witness для зависимости ${reference.qualifiedName}.`, root.sourceId, output.row.id));
+    return;
+  }
+  const key = dependencyWriteKey(output, reference.artifactPath);
+  const witnesses = witnessesByWrite.get(key) ?? [];
+  witnesses.push({
+    sourceId: root.sourceId,
+    relativePath: CONFIGURATION_XML,
+    expectedHash: root.configurationHash,
+    kind: 'file',
+  });
+  witnessesByWrite.set(key, witnesses);
+}
 
 function resolveDependencyInIndex(index: ExtensionMetadataIndex, reference: ExtensionMetadataReference): DependencyResolution {
   const matches = index.objects.filter((object) => dependencyKey(object.qualifiedName) === dependencyKey(reference.qualifiedName));
@@ -340,25 +584,23 @@ function buildObjectOutput(input: ExtensionMaterializerInput, row: ExtensionTran
     if (!baseObject?.identity) {
       return { diagnostic: compareDiagnostic('В base отсутствует UUID объекта для shell.', incoming.sourceId, row.id) };
     }
-    const rule = CFE_BORROW_TYPE_MATRIX[identity.type];
-    if (!rule) {
-      return { diagnostic: compareDiagnostic('Для типа объекта нет утверждённого borrowed shell.', incoming.sourceId, row.id) };
-    }
-    const copiedProperties = readCommonModuleBooleans(decodeXml(baseObject.descriptorContent ?? Buffer.alloc(0)), rule.copiedBooleanProperties ?? []);
-    if ('error' in copiedProperties) {
-      return { diagnostic: compareDiagnostic(copiedProperties.error, base.sourceId, row.id) };
-    }
     const localUuid = randomUUID();
     if (input.target.objects.some((object) => object.identity?.uuid.toLowerCase() === localUuid.toLowerCase())) {
       return { diagnostic: compareDiagnostic(`Сгенерированный локальный UUID borrowed shell уже занят в target: ${localUuid}`, input.target.sourceId, row.id) };
     }
-    descriptorContent = Buffer.from(buildBorrowedObjectShell({
+    if (!baseObject.descriptorContent || !input.target.formatVersion) {
+      return { diagnostic: compareDiagnostic('Base descriptor или версия target XML отсутствует для borrowed shell.', base.sourceId, row.id) };
+    }
+    const projection = buildBorrowedObjectShellFromSource({
+      sourceXml: baseObject.descriptorContent,
       identity: baseObject.identity,
-      formatVersion: input.target.formatVersion ?? '2.17',
+      formatVersion: input.target.formatVersion,
       localUuid,
-      copiedProperties: copiedProperties.values,
-      generatedTypeIds: rule.generatedTypes.map(() => ({ typeId: randomUUID(), valueId: randomUUID() })),
-    }), 'utf8');
+    });
+    if (!projection.ok) {
+      return { diagnostic: compareDiagnostic(`Не удалось построить borrowed shell: ${projection.reason}`, base.sourceId, row.id) };
+    }
+    descriptorContent = Buffer.from(projection.xml, 'utf8');
     sidecarFiles = [];
     witnesses.push(...objectWitnessesFor(baseObject));
   } else if (action === 'overlay-adopted') {

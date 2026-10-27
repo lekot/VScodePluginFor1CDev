@@ -38,6 +38,8 @@ export interface ExtensionIndexedObject {
   readonly descriptorRelativePath?: string;
   readonly sidecarRelativePath?: string;
   readonly identity?: CfeObjectIdentity;
+  /** Exact root tag present in descriptor XML; identity.type is registry-canonical. */
+  readonly descriptorRootTag?: string;
   readonly descriptorContent?: Buffer;
   readonly descriptorHash?: string;
   readonly sidecarSnapshot?: MergePathSnapshot;
@@ -58,6 +60,7 @@ export interface ExtensionMetadataIndex {
   readonly configurationHash?: string;
   readonly formatVersion?: string;
   readonly configurationUuid?: string;
+  readonly configurationName?: string;
   readonly objectBelonging?: string;
   readonly purpose?: string;
   readonly namePrefix?: string;
@@ -81,6 +84,7 @@ interface RootProbe {
   configurationHash?: string;
   formatVersion?: string;
   configurationUuid?: string;
+  configurationName?: string;
   objectBelonging?: string;
   purpose?: string;
   namePrefix?: string;
@@ -151,6 +155,7 @@ export async function indexExtensionMetadataRoot(input: {
     configurationHash: probe.configurationHash,
     formatVersion: probe.formatVersion,
     configurationUuid: probe.configurationUuid,
+    configurationName: probe.configurationName,
     objectBelonging: probe.objectBelonging,
     purpose: probe.purpose,
     namePrefix: probe.namePrefix,
@@ -173,6 +178,7 @@ async function probeRoot(input: {
   let configurationHash: string | undefined;
   let formatVersion: string | undefined;
   let configurationUuid: string | undefined;
+  let configurationName: string | undefined;
   let objectBelonging: string | undefined;
   let purpose: string | undefined;
   let namePrefix: string | undefined;
@@ -226,6 +232,7 @@ async function probeRoot(input: {
             }
             const properties = readSingleProperties(configuration);
             if (properties) {
+              configurationName = readSingleText(properties, 'Name');
               objectBelonging = readSingleText(properties, 'ObjectBelonging');
               purpose = readSingleText(properties, 'ConfigurationExtensionPurpose');
               namePrefix = readSingleText(properties, 'NamePrefix');
@@ -279,6 +286,7 @@ async function probeRoot(input: {
     configurationHash,
     formatVersion,
     configurationUuid,
+    configurationName,
     objectBelonging,
     purpose,
     namePrefix,
@@ -298,7 +306,7 @@ async function indexRegisteredObject(input: {
 }): Promise<ExtensionIndexedObject> {
   const { registration } = input;
   const descriptor = getMetadataTypeDescriptorByRootTag(registration.metadataType);
-  const supportedRootType = ['Catalog', 'Document', 'Enum', 'CommonModule'].includes(registration.metadataType);
+  const supportedRootType = descriptor !== undefined;
   if (!descriptor) {
     return invalidObject(input, 'EXTENSION_METADATA_TYPE_UNKNOWN', 'Каталог типа объекта не известен.', undefined, supportedRootType);
   }
@@ -316,10 +324,14 @@ async function indexRegisteredObject(input: {
     if (validation !== true) {
       return invalidObject(input, 'EXTENSION_DESCRIPTOR_MALFORMED', `Дескриптор содержит некорректный XML: ${validation.err?.msg ?? 'ошибка структуры'}.`, relativeDescriptorPath, supportedRootType, descriptorContent);
     }
-    const identity = parseCfeObjectIdentity(descriptorXml, relativeDescriptorPath);
-    if (identity.type !== registration.metadataType || identity.name !== registration.name) {
-      return invalidObject(input, 'EXTENSION_DESCRIPTOR_IDENTITY_MISMATCH', 'Identity дескриптора не совпадает с непосредственной регистрацией Configuration.xml.', relativeDescriptorPath, supportedRootType, descriptorContent, identity);
+    const rawIdentity = parseCfeObjectIdentity(descriptorXml, relativeDescriptorPath);
+    const descriptorIdentityType = getMetadataTypeDescriptorByRootTag(rawIdentity.type)?.designerRootTag ?? rawIdentity.type;
+    if (descriptorIdentityType !== registration.metadataType || rawIdentity.name !== registration.name) {
+      return invalidObject(input, 'EXTENSION_DESCRIPTOR_IDENTITY_MISMATCH', 'Identity дескриптора не совпадает с непосредственной регистрацией Configuration.xml.', relativeDescriptorPath, supportedRootType, descriptorContent, rawIdentity);
     }
+    const identity = descriptorIdentityType === rawIdentity.type
+      ? rawIdentity
+      : { ...rawIdentity, type: descriptorIdentityType };
     const metaDataObject = readSingleElement(XmlParser.parseString(descriptorXml), 'MetaDataObject');
     const descriptorVersion = metaDataObject ? readAttribute(metaDataObject, 'version') : undefined;
     const sidecarRelativePath = `${descriptor.designerFolder}/${registration.name}`;
@@ -347,6 +359,7 @@ async function indexRegisteredObject(input: {
       name: registration.name,
       qualifiedName: registration.qualifiedName,
       descriptorRelativePath: relativeDescriptorPath,
+      descriptorRootTag: rawIdentity.type,
       sidecarRelativePath,
       identity,
       descriptorContent,
@@ -381,6 +394,7 @@ function invalidObject(
     name: input.registration.name,
     qualifiedName: input.registration.qualifiedName,
     descriptorRelativePath,
+    descriptorRootTag: identity?.type,
     identity,
     descriptorContent,
     descriptorHash: descriptorContent ? hash(descriptorContent) : undefined,
@@ -397,7 +411,8 @@ function readRegistrations(childObjects: Record<string, unknown>, diagnostics: E
     if (isXmlMetaKey(rawType) || rawValues === undefined || rawValues === null) {
       continue;
     }
-    const metadataType = localName(rawType);
+    const rawMetadataType = localName(rawType);
+    const metadataType = getMetadataTypeDescriptorByRootTag(rawMetadataType)?.designerRootTag ?? rawMetadataType;
     const values = Array.isArray(rawValues) ? rawValues : [rawValues];
     for (const value of values) {
       const name = scalarText(value);
