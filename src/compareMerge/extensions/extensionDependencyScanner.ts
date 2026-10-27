@@ -15,6 +15,7 @@ export interface ExtensionMetadataReference {
   readonly qualifiedName: string;
   readonly metadataType: string;
   readonly objectName: string;
+  readonly requiresCfeDeclaration?: true;
 }
 
 export interface ExtensionDependencyScanResult {
@@ -32,7 +33,7 @@ export function scanExtensionXmlDependencies(
 ): ExtensionDependencyScanResult {
   const references: ExtensionMetadataReference[] = [];
   const errors: Array<{ artifactPath: string; message: string }> = [];
-  const seen = new Set<string>();
+  const referenceIndexes = new Map<string, number>();
 
   for (const artifact of artifacts) {
     if (!artifact.relativePath.toLowerCase().endsWith('.xml')) {continue;}
@@ -57,12 +58,24 @@ export function scanExtensionXmlDependencies(
       continue;
     }
 
-    const appendReference = (metadataType: string, objectName: string): void => {
+    const appendReference = (metadataType: string, objectName: string, requiresCfeDeclaration = false): void => {
       const qualifiedName = `${metadataType}.${objectName}`;
       const key = `${artifact.relativePath.toLowerCase()}\0${qualifiedName.toLowerCase()}`;
-      if (seen.has(key)) {return;}
-      seen.add(key);
-      references.push({ artifactPath: artifact.relativePath, qualifiedName, metadataType, objectName });
+      const existingIndex = referenceIndexes.get(key);
+      if (existingIndex !== undefined) {
+        if (requiresCfeDeclaration && !references[existingIndex]?.requiresCfeDeclaration) {
+          references[existingIndex] = { ...references[existingIndex]!, requiresCfeDeclaration: true };
+        }
+        return;
+      }
+      referenceIndexes.set(key, references.length);
+      references.push({
+        artifactPath: artifact.relativePath,
+        qualifiedName,
+        metadataType,
+        objectName,
+        ...(requiresCfeDeclaration ? { requiresCfeDeclaration: true as const } : {}),
+      });
     };
 
     const addReference = (token: string, syntax: 'cfg' | 'mdObjectRef' | 'designTimeRef' | 'rightsName'): void => {
@@ -99,7 +112,7 @@ export function scanExtensionXmlDependencies(
     const knownRootReferences = scanKnownRootPropertyReferences(parsed, artifact.relativePath);
     errors.push(...knownRootReferences.errors);
     for (const reference of knownRootReferences.references) {
-      appendReference(reference.metadataType, reference.objectName);
+      appendReference(reference.metadataType, reference.objectName, reference.requiresCfeDeclaration === true);
     }
 
     if (ROLE_RIGHTS_XML_PATH.test(artifact.relativePath.replace(/\\/gu, '/'))) {

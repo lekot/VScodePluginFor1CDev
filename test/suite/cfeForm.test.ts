@@ -11,6 +11,7 @@ import { hashContent } from '../../src/services/configurationSession/atomicFileS
 import type { ExclusiveConfigurationOperation } from '../../src/services/configurationSession/ConfigurationSession';
 import type { MutationPlan } from '../../src/services/configurationSession/mutationPlan';
 import { WorkspaceRegistry } from '../../src/services/configurationSession/WorkspaceRegistry';
+import { buildInternalInfoXml } from '../../src/utils/xml/internalInfoGenerator';
 
 interface Harness {
   readonly workspace: string;
@@ -392,7 +393,8 @@ async function writeBase(base: string, format: string): Promise<void> {
 }
 
 function rootObjectXml(type: string, name: string, uuid: string, format: string): string {
-  return `<?xml version="1.0"?><MetaDataObject version="${format}"><${type} uuid="${uuid}"><Properties><Name>${name}</Name><Comment/></Properties><ChildObjects/></${type}></MetaDataObject>`;
+  const internalInfo = buildInternalInfoXml(type, name, '');
+  return `<?xml version="1.0"?><MetaDataObject xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="${format}"><${type} uuid="${uuid}">${internalInfo}<Properties><Name>${name}</Name><Comment/></Properties><ChildObjects/></${type}></MetaDataObject>`;
 }
 
 function formMetadataXml(name: string, uuid: string, format: string): string {

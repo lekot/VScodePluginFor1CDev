@@ -5,6 +5,7 @@ export interface ExtensionKnownRootPropertyReference {
   readonly qualifiedName: string;
   readonly metadataType: string;
   readonly objectName: string;
+  readonly requiresCfeDeclaration?: true;
 }
 
 export interface ExtensionKnownRootPropertyScanResult {
@@ -17,12 +18,13 @@ interface RootPropertyReferenceSpec {
   readonly propertyName: string;
   readonly referenceType: string;
   readonly optional: boolean;
+  readonly requiresCfeDeclaration: true;
 }
 
 const ROOT_PROPERTY_REFERENCES: readonly RootPropertyReferenceSpec[] = [
-  { rootType: 'AccountingRegister', propertyName: 'ChartOfAccounts', referenceType: 'ChartOfAccounts', optional: false },
-  { rootType: 'CalculationRegister', propertyName: 'ChartOfCalculationTypes', referenceType: 'ChartOfCalculationTypes', optional: false },
-  { rootType: 'ChartOfAccounts', propertyName: 'ExtDimensionTypes', referenceType: 'ChartOfCharacteristicTypes', optional: true },
+  { rootType: 'AccountingRegister', propertyName: 'ChartOfAccounts', referenceType: 'ChartOfAccounts', optional: false, requiresCfeDeclaration: true },
+  { rootType: 'CalculationRegister', propertyName: 'ChartOfCalculationTypes', referenceType: 'ChartOfCalculationTypes', optional: false, requiresCfeDeclaration: true },
+  { rootType: 'ChartOfAccounts', propertyName: 'ExtDimensionTypes', referenceType: 'ChartOfCharacteristicTypes', optional: true, requiresCfeDeclaration: true },
 ];
 
 /** Reads the few untyped references stored as direct properties of known 1C root descriptors. */
@@ -99,6 +101,7 @@ export function scanKnownRootPropertyReferences(
       qualifiedName: `${reference.metadataType}.${reference.objectName}`,
       metadataType: reference.metadataType,
       objectName: reference.objectName,
+      requiresCfeDeclaration: spec.requiresCfeDeclaration,
     });
   }
 

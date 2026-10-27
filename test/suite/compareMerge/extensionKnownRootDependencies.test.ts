@@ -19,6 +19,12 @@ const UUID = {
   source: '22222222-2222-4222-8222-222222222222',
   register: '33333333-3333-4333-8333-333333333333',
   recorder: '44444444-4444-4444-8444-444444444444',
+  accountingRegister: '55555555-5555-4555-8555-555555555555',
+  calculationRegister: '66666666-6666-4666-8666-666666666666',
+  accountsChart: '77777777-7777-4777-8777-777777777777',
+  calculationChart: '88888888-8888-4888-8888-888888888888',
+  targetAccountsChart: '99999999-9999-4999-8999-999999999999',
+  targetCalculationChart: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
 } as const;
 
 suite('Extension known root property dependencies (#336)', () => {
@@ -44,9 +50,28 @@ suite('Extension known root property dependencies (#336)', () => {
 
     assert.deepStrictEqual(result.errors, []);
     assert.deepStrictEqual(result.references, [
-      { artifactPath: 'AccountingRegisters/Ext_Accounting.xml', qualifiedName: 'ChartOfAccounts.Plan', metadataType: 'ChartOfAccounts', objectName: 'Plan' },
-      { artifactPath: 'CalculationRegisters/Ext_Calculation.xml', qualifiedName: 'ChartOfCalculationTypes.Accruals', metadataType: 'ChartOfCalculationTypes', objectName: 'Accruals' },
-      { artifactPath: 'ChartsOfAccounts/Ext_Accounts.xml', qualifiedName: 'ChartOfCharacteristicTypes.Subconto', metadataType: 'ChartOfCharacteristicTypes', objectName: 'Subconto' },
+      { artifactPath: 'AccountingRegisters/Ext_Accounting.xml', qualifiedName: 'ChartOfAccounts.Plan', metadataType: 'ChartOfAccounts', objectName: 'Plan', requiresCfeDeclaration: true },
+      { artifactPath: 'CalculationRegisters/Ext_Calculation.xml', qualifiedName: 'ChartOfCalculationTypes.Accruals', metadataType: 'ChartOfCalculationTypes', objectName: 'Accruals', requiresCfeDeclaration: true },
+      { artifactPath: 'ChartsOfAccounts/Ext_Accounts.xml', qualifiedName: 'ChartOfCharacteristicTypes.Subconto', metadataType: 'ChartOfCharacteristicTypes', objectName: 'Subconto', requiresCfeDeclaration: true },
+    ]);
+  });
+
+  test('preserves the CFE declaration marker when raw and typed discovery paths deduplicate', () => {
+    const result = scanExtensionXmlDependencies([
+      {
+        relativePath: 'AccountingRegisters/Ext_Accounting.xml',
+        content: Buffer.from('<MetaDataObject xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><AccountingRegister><Properties><ChartOfAccounts>ChartOfAccounts.Plan</ChartOfAccounts><OtherReference><xr:Item xsi:type="xr:MDObjectRef">ChartOfAccounts.Plan</xr:Item></OtherReference></Properties></AccountingRegister></MetaDataObject>'),
+      },
+      {
+        relativePath: 'Documents/Ext_Recorder.xml',
+        content: Buffer.from('<MetaDataObject xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Document><Properties><OtherReference><xr:Item xsi:type="xr:MDObjectRef">ChartOfAccounts.Plan</xr:Item></OtherReference></Properties></Document></MetaDataObject>'),
+      },
+    ]);
+
+    assert.deepStrictEqual(result.errors, []);
+    assert.deepStrictEqual(result.references, [
+      { artifactPath: 'AccountingRegisters/Ext_Accounting.xml', qualifiedName: 'ChartOfAccounts.Plan', metadataType: 'ChartOfAccounts', objectName: 'Plan', requiresCfeDeclaration: true },
+      { artifactPath: 'Documents/Ext_Recorder.xml', qualifiedName: 'ChartOfAccounts.Plan', metadataType: 'ChartOfAccounts', objectName: 'Plan' },
     ]);
   });
 
@@ -142,6 +167,139 @@ suite('Extension known root property dependencies (#336)', () => {
         const diagnostic = created.diagnostics.find((item) => item.blocking);
         assert.ok(diagnostic);
         assert.ok(diagnostic.suggestedAction?.includes('ChartOfAccounts.MissingPlan'), JSON.stringify(diagnostic));
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('blocks an own CFE register when its raw chart dependency exists only in the proven base', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const base = path.join(tempRoot, 'base-cf');
+      const target = path.join(tempRoot, 'target-cfe');
+      const source = path.join(tempRoot, 'source-cfe');
+      await writeDesignerConfiguration(base, {
+        objects: [
+          { type: 'ChartOfAccounts', name: 'Plan', uuid: UUID.accountsChart },
+          { type: 'ChartOfCalculationTypes', name: 'Accruals', uuid: UUID.calculationChart },
+        ],
+      });
+      await writeDesignerConfiguration(target, {
+        uuid: UUID.target,
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+      });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+        objects: [
+          {
+            type: 'AccountingRegister',
+            name: 'Ext_Accounting',
+            uuid: UUID.accountingRegister,
+            belonging: 'Own',
+            propertiesXml: '<ChartOfAccounts>ChartOfAccounts.Plan</ChartOfAccounts>',
+          },
+          {
+            type: 'CalculationRegister',
+            name: 'Ext_Calculation',
+            uuid: UUID.calculationRegister,
+            belonging: 'Own',
+            propertiesXml: '<ChartOfCalculationTypes>ChartOfCalculationTypes.Accruals</ChartOfCalculationTypes>',
+          },
+          {
+            type: 'Document',
+            name: 'Ext_Recorder',
+            uuid: UUID.recorder,
+            belonging: 'Own',
+            propertiesXml: '<RegisterRecords xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><xr:Item xsi:type="xr:MDObjectRef">AccountingRegister.Ext_Accounting</xr:Item><xr:Item xsi:type="xr:MDObjectRef">CalculationRegister.Ext_Calculation</xr:Item></RegisterRecords>',
+          },
+        ],
+      });
+
+      const compare = await openCompare(tempRoot, target, source, {
+        extensionBaseRoots: { left: base, right: base },
+      });
+      try {
+        const selectedIds = [
+          nodeIdForLabel(compare.result.projection.root, 'AccountingRegister.Ext_Accounting'),
+          nodeIdForLabel(compare.result.projection.root, 'CalculationRegister.Ext_Calculation'),
+          nodeIdForLabel(compare.result.projection.root, 'Document.Ext_Recorder'),
+        ];
+        const created = await compare.result.workspace.createPreviewForNodeIds(selectedIds);
+
+        assert.strictEqual(created.ok, false, `an own CFE output must declare its raw chart dependency locally: ${JSON.stringify(created)}`);
+        const diagnostic = created.diagnostics.find((item) => item.blocking);
+        assert.ok(diagnostic);
+        assert.match(diagnostic.suggestedAction ?? '', /CFE|заимств|выбран|borrow|select/iu, JSON.stringify(diagnostic));
+        assert.match(diagnostic.suggestedAction ?? '', /выбер|заимств|borrow|select/iu, JSON.stringify(diagnostic));
+      } finally {
+        compare.dispose();
+      }
+    });
+  });
+
+  test('allows own CFE registers when both raw chart dependencies are adopted in the target', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const base = path.join(tempRoot, 'base-cf');
+      const target = path.join(tempRoot, 'target-cfe');
+      const source = path.join(tempRoot, 'source-cfe');
+      await writeDesignerConfiguration(base, {
+        objects: [
+          { type: 'ChartOfAccounts', name: 'Plan', uuid: UUID.accountsChart },
+          { type: 'ChartOfCalculationTypes', name: 'Accruals', uuid: UUID.calculationChart },
+        ],
+      });
+      await writeDesignerConfiguration(target, {
+        uuid: UUID.target,
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+        objects: [
+          { type: 'ChartOfAccounts', name: 'Plan', uuid: UUID.targetAccountsChart, belonging: 'Adopted', anchorUuid: UUID.accountsChart },
+          { type: 'ChartOfCalculationTypes', name: 'Accruals', uuid: UUID.targetCalculationChart, belonging: 'Adopted', anchorUuid: UUID.calculationChart },
+        ],
+      });
+      await writeDesignerConfiguration(source, {
+        uuid: UUID.source,
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+        objects: [
+          {
+            type: 'AccountingRegister',
+            name: 'Ext_Accounting',
+            uuid: UUID.accountingRegister,
+            belonging: 'Own',
+            propertiesXml: '<ChartOfAccounts>ChartOfAccounts.Plan</ChartOfAccounts>',
+          },
+          {
+            type: 'CalculationRegister',
+            name: 'Ext_Calculation',
+            uuid: UUID.calculationRegister,
+            belonging: 'Own',
+            propertiesXml: '<ChartOfCalculationTypes>ChartOfCalculationTypes.Accruals</ChartOfCalculationTypes>',
+          },
+          {
+            type: 'Document',
+            name: 'Ext_Recorder',
+            uuid: UUID.recorder,
+            belonging: 'Own',
+            propertiesXml: '<RegisterRecords xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><xr:Item xsi:type="xr:MDObjectRef">AccountingRegister.Ext_Accounting</xr:Item><xr:Item xsi:type="xr:MDObjectRef">CalculationRegister.Ext_Calculation</xr:Item></RegisterRecords>',
+          },
+        ],
+      });
+
+      const compare = await openCompare(tempRoot, target, source, {
+        extensionBaseRoots: { left: base, right: base },
+      });
+      try {
+        const selectedIds = [
+          nodeIdForLabel(compare.result.projection.root, 'AccountingRegister.Ext_Accounting'),
+          nodeIdForLabel(compare.result.projection.root, 'CalculationRegister.Ext_Calculation'),
+          nodeIdForLabel(compare.result.projection.root, 'Document.Ext_Recorder'),
+        ];
+        const created = await compare.result.workspace.createPreviewForNodeIds(selectedIds);
+        assert.strictEqual(created.ok, true, created.ok ? '' : JSON.stringify(created.diagnostics));
       } finally {
         compare.dispose();
       }

@@ -433,6 +433,18 @@ function validateSelectedOutputDependencies(
       continue;
     }
 
+    if (reference.requiresCfeDeclaration
+      && input.target.rootKind === 'cfe'
+      && owner.row.action === 'full-copy'
+      && owner.row.incoming?.identity?.ownership === 'own') {
+      diagnostics.push(compareDiagnostic(
+        `Ссылка ${reference.qualifiedName} из ${reference.artifactPath} у собственного объекта CFE должна быть объявлена в целевом расширении или выбранном пакете. Выберите или заимствуйте зависимый объект; одной записи в base недостаточно.`,
+        owner.row.incoming.sourceId,
+        owner.row.id,
+      ));
+      continue;
+    }
+
     let resolvedInBase = false;
     for (const base of provenTargetBases.values()) {
       const baseResolution = resolveDependencyInIndex(base, reference);
