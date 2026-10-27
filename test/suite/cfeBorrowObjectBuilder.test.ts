@@ -50,15 +50,17 @@ suite('source-derived borrowed object shell builder', () => {
     for (const sourceRoot of nativeRootGeneratedTypes.roots) {
       assert.ok(getMetadataTypeDescriptorByRootTag(sourceRoot.rootType), `${sourceRoot.rootType} must be in the registry`);
       const schema = getExplicitGeneratedTypeSpecs(sourceRoot.rootType) ?? [];
-      const sort = (types: readonly { readonly namePrefix: string; readonly category: string }[]) =>
-        types.map(({ namePrefix, category }) => `${namePrefix}\0${category}`).sort();
-      const actual = sort(schema);
-      const expected = sort(sourceRoot.generatedTypes);
+      const signatures = (types: readonly { readonly namePrefix: string; readonly category: string }[]) =>
+        types.map(({ namePrefix, category }) => `${namePrefix}\0${category}`);
+      const actual = signatures(schema);
+      const expected = signatures(sourceRoot.generatedTypes);
       if (JSON.stringify(actual) !== JSON.stringify(expected)) {
         mismatches.push({ rootType: sourceRoot.rootType, expected, actual });
       }
     }
     assert.deepStrictEqual(mismatches, [], 'Explicit GeneratedType schemas must match the independent native source shapes');
+    assert.strictEqual(getExplicitGeneratedTypeSpecs('UnknownRootType'), undefined, 'unknown root tags must not get a synthesized Manager schema');
+    assert.strictEqual(getExplicitGeneratedTypeSpecs('toString'), undefined, 'prototype properties are not registered root tags');
   });
 
   test('projects all registry roots from their canonical source descriptors', () => {

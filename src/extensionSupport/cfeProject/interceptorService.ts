@@ -609,7 +609,7 @@ function ensureModulePropertyState(
     );
   }
 
-  const trailingWhitespace = /[\t \r\n]*$/u.exec(xml)?.[0] ?? '';
+  const trailingWhitespace = xml.slice(xml.trimEnd().length);
   const serialized = serializeXmlDocument(document).replace(/\r?\n/gu, newline);
   return {
     content: `${hasBom ? '\uFEFF' : ''}${serialized}${trailingWhitespace}`,
