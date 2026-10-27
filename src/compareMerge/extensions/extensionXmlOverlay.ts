@@ -3,6 +3,7 @@ import { CFE_BORROW_TYPE_MATRIX } from '../../extensionSupport/cfeProject/borrow
 import type { ExtensionIndexedObject } from './extensionMetadataIndex';
 import { getValueByLocalName, localName } from '../../parsers/xmlNavHelpers';
 import { XmlParser } from '../../parsers/xmlParser';
+import { compareCodeUnits } from '../../utils/compareCodeUnits';
 
 const SIMPLE_PROPERTIES = new Set(['Synonym', 'Comment']);
 const INTERCEPT_KINDS = new Set(['Before', 'After', 'Instead']);
@@ -239,7 +240,7 @@ export function hasUnsupportedPropertyChanges(adopted: ExtensionIndexedObject, b
 
 function stableValue(value: unknown): string {
   if (Array.isArray(value)) {return `[${value.map(stableValue).join(',')}]`;}
-  if (isRecord(value)) {return `{${Object.keys(value).sort().map((key) => `${key}:${stableValue(value[key])}`).join(',')}}`;}
+  if (isRecord(value)) {return `{${Object.keys(value).sort(compareCodeUnits).map((key) => `${key}:${stableValue(value[key])}`).join(',')}}`;}
   return JSON.stringify(value);
 }
 
