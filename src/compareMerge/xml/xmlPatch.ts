@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 
+import type { MergeFileWitness } from '../merge/mergePreview';
 import type { XmlAddress } from './xmlAddress';
 import { parseXmlAddressPointer } from './xmlAddress';
 import {
@@ -15,9 +16,22 @@ import {
 export interface XmlPatchPayload {
   kind: 'replaceNode' | 'insertNode' | 'deleteNode';
   target: XmlAddress;
+  insertBefore?: XmlAddress;
+  insertPosition?: 'append';
+  insertOrder?: number;
+  semanticKind?: 'metadataXml' | 'formXml' | 'predefinedXml';
+  semanticContext?: {
+    availableFormReferences?: {
+      attributes?: readonly string[];
+      commands?: readonly string[];
+      elements?: readonly string[];
+    };
+    availableMetadataReferences?: readonly string[];
+  };
   expectedOldHash: string;
   newHash: string;
   replacementXml?: string;
+  sourceWitnesses?: readonly MergeFileWitness[];
 }
 
 export function applyXmlPatch(source: string, patch: XmlPatchPayload): string {
@@ -42,7 +56,9 @@ export function applyXmlPatch(source: string, patch: XmlPatchPayload): string {
 }
 
 export function hashXmlText(source: string): string {
-  return createHash('sha256').update(source.replace(/\r\n/g, '\n').replace(/\r/g, '\n')).digest('hex');
+  return createHash('sha256')
+    .update(source.replace(/\r\n/g, '\n').replace(/\r/g, '\n'))
+    .digest('hex');
 }
 
 function replaceNode(document: XmlDocument, patch: XmlPatchPayload): void {
@@ -65,8 +81,14 @@ function replaceNode(document: XmlDocument, patch: XmlPatchPayload): void {
 
 function insertNode(document: XmlDocument, patch: XmlPatchPayload): void {
   if (isAttributePointer(patch.target.pointer)) {
+    if (patch.insertBefore || patch.insertPosition) {
+      throw new Error('Cannot use insertion position fields for an XML attribute');
+    }
     insertAttribute(document, patch);
     return;
+  }
+  if (patch.insertBefore && patch.insertPosition) {
+    throw new Error('insertBefore and insertPosition cannot be used together');
   }
 
   const replacement = parseReplacement(patch);
@@ -75,15 +97,48 @@ function insertNode(document: XmlDocument, patch: XmlPatchPayload): void {
     throw new Error('Cannot insert XML root node');
   }
 
-  const parentPointer = `/${segments
-    .slice(0, -1)
-    .map((segment) => `${segment.localName}[${segment.selector}]`)
-    .join('/')}`;
+  const parentPointer = patch.target.pointer.slice(0, patch.target.pointer.lastIndexOf('/'));
   const parent = findElementByPointer(document, parentPointer);
   replacement.parent = parent;
 
-  const insertIndex = findInsertIndex(parent, segments[segments.length - 1].localName);
+  const insertIndex = patch.insertBefore
+    ? findAnchorInsertIndex(parent, patch.target, patch.insertBefore)
+    : patch.insertPosition === 'append'
+      ? parent.children.length
+      : findInsertIndex(parent, segments[segments.length - 1].localName);
   parent.children.splice(insertIndex, 0, replacement);
+}
+
+function findAnchorInsertIndex(
+  parent: XmlElement,
+  target: XmlAddress,
+  anchorAddress: XmlAddress
+): number {
+  if (target.filePath !== anchorAddress.filePath) {
+    throw new Error('XML insert-before anchor must be in the same file');
+  }
+  if (isAttributePointer(anchorAddress.pointer)) {
+    throw new Error('XML insert-before anchor must identify an element');
+  }
+
+  const anchor = findElementByPointer({ root: rootOf(parent) }, anchorAddress.pointer);
+  if (anchor.parent !== parent) {
+    throw new Error('XML insert-before anchor must be in the same parent');
+  }
+
+  const index = parent.children.indexOf(anchor);
+  if (index < 0) {
+    throw new Error('XML insert-before anchor is not a child of the target parent');
+  }
+  return index;
+}
+
+function rootOf(element: XmlElement): XmlElement {
+  let root = element;
+  while (root.parent) {
+    root = root.parent;
+  }
+  return root;
 }
 
 function deleteNode(document: XmlDocument, patch: XmlPatchPayload): void {
@@ -168,7 +223,10 @@ function findElementByPointer(document: XmlDocument, pointer: string): XmlElemen
 
   segments.forEach((segment, index) => {
     if (index === 0) {
-      if (current.localName !== segment.localName) {
+      const selectorMatches = /^\d+$/.test(segment.selector)
+        ? Number(segment.selector) === 0
+        : getXmlElementIdentityKey(current) === segment.selector;
+      if (current.localName !== segment.localName || !selectorMatches) {
         throw new Error(`XML address root mismatch: ${pointer}`);
       }
       return;
@@ -194,7 +252,11 @@ function findChildBySelector(
     return candidates[Number(selector)];
   }
 
-  return candidates.find((child) => getXmlElementIdentityKey(child) === selector);
+  const matching = candidates.filter((child) => getXmlElementIdentityKey(child) === selector);
+  if (matching.length > 1) {
+    throw new Error(`XML address is ambiguous: ${localName}[${selector}]`);
+  }
+  return matching[0];
 }
 
 function findInsertIndex(parent: XmlElement, localName: string): number {
@@ -211,9 +273,17 @@ function isAttributePointer(pointer: string): boolean {
 }
 
 function localName(name: string): string {
-  return name.includes(':') ? name.split(':').pop() ?? name : name;
+  return name.includes(':') ? (name.split(':').pop() ?? name) : name;
 }
 
 function unescapePointer(value: string): string {
+  if (/%[\da-f]{2}/i.test(value)) {
+    try {
+      const encoded = value.replace(/%(?![\da-f]{2})/gi, '%25');
+      return decodeURIComponent(encoded);
+    } catch {
+      throw new Error(`Invalid XML attribute address encoding: ${value}`);
+    }
+  }
   return value.replace(/~1/g, '/').replace(/~0/g, '~');
 }

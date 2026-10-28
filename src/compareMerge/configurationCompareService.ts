@@ -5,7 +5,6 @@ import { pathToFileURL } from 'url';
 
 import type { ConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
 import type { ConfigurationId } from '../services/configurationSession/types';
-
 import { compareCodeUnits } from '../utils/compareCodeUnits';
 import {
   buildBslModuleIndex,
@@ -38,10 +37,11 @@ import { fileObjectAdapter } from './adapters/fileObjectAdapter';
 import type {
   AdapterCompareInput,
   AdapterCompareResult,
-  ArtifactKind,
   CompareJoinStrategy,
   MetadataObjectMatch,
 } from './adapters/mergeAdapter';
+import { ambiguousArtifactPairResult, findArtifactPairs } from './adapters/artifactPairing';
+import { attachMetadataReferenceContext, buildMetadataReferenceContext } from './adapters/metadataReferenceContext';
 import { CompareSession } from './domain/compareSession';
 import type { CompareMessage, CompareSide, MetadataIdentity } from './domain/compareContracts';
 import { buildConfigurationInventory } from './inventory/configurationInventory';
@@ -55,6 +55,7 @@ import {
 } from './projection/compareTreeProjection';
 import { type CompareCancellationToken, throwIfCompareCancelled } from './compareCancellation';
 import { tryBuildExtensionCompareState } from './extensions/extensionCompare';
+import { tryBuildEdtUnsupportedState } from './edtUnsupportedCompare';
 
 const LEFT_SOURCE_ID = 'left-source';
 const RIGHT_SOURCE_ID = 'right-source';
@@ -516,6 +517,10 @@ async function buildConfigurationCompareState(
   input: ConfigurationCompareInput,
   strategy: CompareJoinStrategy = 'right'
 ): Promise<ConfigurationCompareWorkspaceState> {
+  const edtState = await tryBuildEdtUnsupportedState(input);
+  if (edtState) {
+    return edtState;
+  }
   const extensionState = await tryBuildExtensionCompareState(input, strategy);
   if (extensionState) {
     return extensionState;
@@ -575,7 +580,6 @@ async function buildConfigurationCompareState(
       }),
     ]);
     throwIfCompareCancelled(input.cancellation);
-
     const leftCollection = await collectBslFileSourcesFromInventory(
       leftInventory,
       input.cancellation,
@@ -701,6 +705,11 @@ async function buildAdapterCompareResults(input: {
   readTextFile?: (filePath: string) => Promise<string>;
 }): Promise<AdapterCompareResult[]> {
   throwIfCompareCancelled(input.cancellation);
+  const metadataReferenceContext = await buildMetadataReferenceContext({
+    inventory: input.leftInventory,
+    sourceId: LEFT_SOURCE_ID,
+    readTextFile: input.readTextFile,
+  });
   const matches = buildMetadataObjectMatches(input);
 
   const results = await mapLimit(matches, input.concurrency, async (match) => {
@@ -722,17 +731,22 @@ async function buildAdapterCompareResults(input: {
 
     for (const artifactKind of ['metadataXml', 'formXml', 'predefinedXml'] as const) {
       throwIfCompareCancelled(input.cancellation);
-      const artifactPair = findArtifactPair(
+      const pairing = findArtifactPairs(
         input.leftInventory,
         input.rightInventory,
         match,
         artifactKind
       );
-      if (!artifactPair || artifactPair.left.contentHash === artifactPair.right.contentHash) {
+      if (pairing.ambiguousRelativePaths.length > 0) {
+        matchResults.push(ambiguousArtifactPairResult(LEFT_SOURCE_ID));
         continue;
       }
-
-      matchResults.push(await compareXmlArtifact(input, match, artifactPair, artifactKind));
+      for (const artifactPair of pairing.pairs) {
+        if (artifactPair.left.contentHash === artifactPair.right.contentHash) {
+          continue;
+        }
+        matchResults.push(await compareXmlArtifact(input, match, artifactPair, artifactKind, metadataReferenceContext));
+      }
     }
     return matchResults;
   }, input.cancellation);
@@ -808,7 +822,8 @@ async function compareXmlArtifact(
   },
   match: MetadataObjectMatch,
   artifactPair: { left: ArtifactUnit; right: ArtifactUnit },
-  artifactKind: 'metadataXml' | 'formXml' | 'predefinedXml'
+  artifactKind: 'metadataXml' | 'formXml' | 'predefinedXml',
+  metadataReferenceContext: Awaited<ReturnType<typeof buildMetadataReferenceContext>>
 ): Promise<AdapterCompareResult> {
   throwIfCompareCancelled(input.cancellation);
   const readTextFile = input.readTextFile ?? ((filePath: string) => fs.readFile(filePath, 'utf-8'));
@@ -823,11 +838,16 @@ async function compareXmlArtifact(
     rightInventory: input.rightInventory,
     match,
     session: input.session,
+    artifactPaths: {
+      left: artifactPair.left.filePath,
+      right: artifactPair.right.filePath,
+    },
     snapshots: {
       left: leftSnapshot,
       right: rightSnapshot,
     },
   };
+  attachMetadataReferenceContext(adapterInput, metadataReferenceContext);
 
   switch (artifactKind) {
     case 'metadataXml':
@@ -837,27 +857,6 @@ async function compareXmlArtifact(
     case 'predefinedXml':
       return predefinedXmlAdapter.compare(adapterInput);
   }
-}
-
-function findArtifactPair(
-  leftInventory: ConfigurationInventory,
-  rightInventory: ConfigurationInventory,
-  match: MetadataObjectMatch,
-  kind: ArtifactKind
-): { left: ArtifactUnit; right: ArtifactUnit } | undefined {
-  const left = match.left ? findArtifact(leftInventory, match.left, kind) : undefined;
-  const right = match.right ? findArtifact(rightInventory, match.right, kind) : undefined;
-  return left && right ? { left, right } : undefined;
-}
-
-function findArtifact(
-  inventory: ConfigurationInventory,
-  object: MetadataObjectUnit,
-  kind: ArtifactKind
-): ArtifactUnit | undefined {
-  return inventory.artifactsByObjectId
-    .get(object.objectId)
-    ?.find((artifact) => artifact.kind === kind);
 }
 
 function findInventoryObjectByDescriptor(

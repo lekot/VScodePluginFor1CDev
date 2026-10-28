@@ -1,0 +1,116 @@
+import { createHash } from 'crypto';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+
+import type { MergeFileWitness } from '../merge/mergePreview';
+import { elementChildren, parseXmlDocument, textContent } from '../xml/xmlDom';
+import type { AdapterCompareInput, ConfigurationInventory } from './mergeAdapter';
+
+export interface MetadataReferenceContextInput {
+  inventory: ConfigurationInventory;
+  sourceId: string;
+  readTextFile?: (filePath: string) => Promise<string>;
+}
+
+export interface MetadataReferenceContext {
+  availableMetadataReferences?: readonly string[];
+  witnesses: readonly MergeFileWitness[];
+}
+
+export function attachMetadataReferenceContext(
+  input: AdapterCompareInput,
+  context: MetadataReferenceContext
+): void {
+  input.semanticValidationContext = context.availableMetadataReferences === undefined
+    ? undefined
+    : { availableMetadataReferences: context.availableMetadataReferences };
+  input.semanticContextWitnesses = context.witnesses;
+}
+
+/** Captures root registrations once and only advertises references backed by indexed descriptors. */
+export async function buildMetadataReferenceContext(
+  input: MetadataReferenceContextInput
+): Promise<MetadataReferenceContext> {
+  const configurationPath = path.join(input.inventory.rootPath, 'Configuration.xml');
+  let source: string;
+  try {
+    source = await (input.readTextFile ?? ((filePath) => fs.readFile(filePath, 'utf8')))(configurationPath);
+  } catch {
+    return { witnesses: [] };
+  }
+
+  let registrations: string[];
+  try {
+    registrations = readRootRegistrations(source);
+  } catch {
+    return { witnesses: [] };
+  }
+
+  const indexedObjects = new Map<string, { qualifiedName: string; hasDescriptorWitness: boolean }[]>();
+  for (const object of input.inventory.objects) {
+    const artifacts = input.inventory.artifactsByObjectId.get(object.objectId) ?? [];
+    const descriptor = artifacts.find((artifact) => artifact.kind === 'metadataXml' && samePath(artifact.filePath, object.descriptorPath));
+    if (!descriptor || !isSha256(descriptor.contentHash)) {
+      continue;
+    }
+    const key = normalizedName(object.qualifiedName);
+    indexedObjects.set(key, [...(indexedObjects.get(key) ?? []), { qualifiedName: object.qualifiedName, hasDescriptorWitness: true }]);
+  }
+
+  const availableMetadataReferences = [...new Set(registrations.flatMap((qualifiedName) => {
+    const indexed = indexedObjects.get(normalizedName(qualifiedName));
+    return indexed?.length === 1 && indexed[0].hasDescriptorWitness ? [indexed[0].qualifiedName] : [];
+  }))].sort((left, right) => left.localeCompare(right));
+
+  return {
+    availableMetadataReferences,
+    witnesses: [{
+      sourceId: input.sourceId,
+      relativePath: 'Configuration.xml',
+      expectedHash: createHash('sha256').update(Buffer.from(source, 'utf8')).digest('hex'),
+      kind: 'file',
+    }],
+  };
+}
+
+function readRootRegistrations(source: string): string[] {
+  const document = parseXmlDocument(source);
+  if (document.root.localName !== 'MetaDataObject') {
+    throw new Error('Unsupported root');
+  }
+  const configurations = elementChildren(document.root).filter((element) => element.localName === 'Configuration');
+  if (configurations.length !== 1) {
+    throw new Error('Missing or ambiguous Configuration');
+  }
+  const childObjects = elementChildren(configurations[0]!).filter((element) => element.localName === 'ChildObjects');
+  if (childObjects.length > 1) {
+    throw new Error('Ambiguous ChildObjects');
+  }
+  if (childObjects.length === 0) {
+    return [];
+  }
+  const registrations: string[] = [];
+  for (const child of elementChildren(childObjects[0]!)) {
+    const name = textContent(child).trim();
+    if (!name) {
+      continue;
+    }
+    registrations.push(`${child.localName}.${name}`);
+  }
+  return registrations;
+}
+
+function normalizedName(value: string): string {
+  return value.trim().normalize('NFC').toLowerCase();
+}
+
+function samePath(left: string, right: string): boolean {
+  const normalizedLeft = path.normalize(left);
+  const normalizedRight = path.normalize(right);
+  return (process.platform === 'win32' ? normalizedLeft.toLowerCase() : normalizedLeft) ===
+    (process.platform === 'win32' ? normalizedRight.toLowerCase() : normalizedRight);
+}
+
+function isSha256(value: string): boolean {
+  return /^sha256:[\da-f]{64}$/iu.test(value) || /^[\da-f]{64}$/iu.test(value);
+}

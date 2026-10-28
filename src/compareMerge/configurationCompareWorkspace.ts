@@ -25,6 +25,7 @@ import {
   type MergeExecutorInput,
 } from './merge/mergeExecutor';
 import { isCanonicalWitnessRelativePath } from './merge/capturedFileWrite';
+import { validateSemanticXmlCandidates } from './merge/semanticXmlPreviewValidation';
 
 const LEFT_SOURCE_ID = 'left-source';
 export type CompareJoinStrategy = 'left' | 'right' | 'full';
@@ -353,6 +354,15 @@ export class ConfigurationCompareWorkspace {
         return { ok: false, diagnostics: materialized.diagnostics };
       }
       candidates = materialized.candidates;
+    }
+
+    const semanticDiagnostics = await validateSemanticXmlCandidates(candidates, this.leftRootPath);
+    const stale = this.materializationContextDiagnostic(session, materializationRevision);
+    if (stale) {
+      return { ok: false, diagnostics: [stale] };
+    }
+    if (semanticDiagnostics.length > 0) {
+      return { ok: false, diagnostics: semanticDiagnostics.map(redactDiagnostic) };
     }
 
     const previewId = this.nextPreviewId();

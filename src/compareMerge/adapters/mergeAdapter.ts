@@ -5,7 +5,7 @@ import type {
   MetadataIdentityMatch,
 } from '../domain/compareContracts';
 import type { CompareSession } from '../domain/compareSession';
-import type { MergeCandidate } from '../merge/mergePreview';
+import type { MergeCandidate, MergeFileWitness } from '../merge/mergePreview';
 
 export type CompareJoinStrategy = 'left' | 'right' | 'full';
 
@@ -60,9 +60,22 @@ export interface XmlAddress {
 export interface XmlPatchPayload {
   kind: 'replaceNode' | 'insertNode' | 'deleteNode';
   target: XmlAddress;
+  insertBefore?: XmlAddress;
+  insertPosition?: 'append';
+  insertOrder?: number;
+  semanticKind?: 'metadataXml' | 'formXml' | 'predefinedXml';
   expectedOldHash: string;
   newHash: string;
   replacementXml?: string;
+  sourceWitnesses?: readonly MergeFileWitness[];
+  semanticContext?: {
+    availableFormReferences?: {
+      attributes?: readonly string[];
+      commands?: readonly string[];
+      elements?: readonly string[];
+    };
+    availableMetadataReferences?: readonly string[];
+  };
 }
 
 export interface FileOperationPayload {
@@ -97,6 +110,23 @@ export interface AdapterCompareInput {
   rightInventory: ConfigurationInventory;
   match: MetadataObjectMatch;
   session: CompareSession;
+  artifactPaths?: { left: string; right: string };
+  /** Captured root-registered metadata references for semantic XML validation. */
+  semanticValidationContext?: {
+    availableFormReferences?: {
+      attributes?: readonly string[];
+      commands?: readonly string[];
+      elements?: readonly string[];
+    };
+    availableMetadataReferences?: readonly string[];
+  };
+  /** Captured descriptor dependencies for metadata references outside the left inventory. */
+  semanticMetadataReferenceWitnesses?: readonly {
+    qualifiedName: string;
+    witness: MergeFileWitness;
+  }[];
+  /** Captured dependencies for semanticValidationContext, including Configuration.xml. */
+  semanticContextWitnesses?: readonly MergeFileWitness[];
   snapshots: { left: string; right: string };
 }
 

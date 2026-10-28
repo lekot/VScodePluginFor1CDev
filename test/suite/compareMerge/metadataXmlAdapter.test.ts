@@ -102,7 +102,7 @@ suite('Metadata XML merge adapter', () => {
     assert.strictEqual(findNodeByLabel(rightOnly.nodes, 'LocalOnly'), undefined);
   });
 
-  test('builds executable right-only XML subtree candidate for missing parent', async () => {
+  test('keeps an unverified right-only metadata subtree visible but read-only', async () => {
     const left = [
       '<MetaDataObject>',
       '  <Properties>',
@@ -130,23 +130,12 @@ suite('Metadata XML merge adapter', () => {
     const item = requireNodeByLabel(result.nodes, 'NewItem');
 
     assert.strictEqual(item.status, 'rightOnly');
-    assert.strictEqual(item.mergeable, true);
-    assert.ok(result.candidateFactories.has(item.id));
-    const presentation = requireNodeByLabel(item.children, 'Presentation');
-    assert.strictEqual(presentation.status, 'rightOnly');
-    assert.strictEqual(presentation.rightValue, 'Created');
-    assert.strictEqual(presentation.mergeable, false);
-
-    const candidateResult = await result.candidateFactories.get(item.id)!();
-    assert.strictEqual(candidateResult.ok, true);
-    const patch = candidateResult.candidate.xmlPatch!;
-    assert.strictEqual(patch.kind, 'insertNode');
-    assert.match(patch.target.pointer, /\/Item\[id=new\]$/);
-    const applied = applyXmlPatch(left, patch);
-    assert.match(applied, /<Item id="new"><Name>NewItem<\/Name><Presentation>Created<\/Presentation><\/Item>/);
+    assert.strictEqual(item.mergeable, false);
+    assert.strictEqual(item.mergeState?.state, 'readOnly');
+    assert.match(item.mergeState?.reason ?? '', /структура XML не подтверждена/iu);
   });
 
-  test('builds executable left-only XML subtree candidate that deletes parent element', async () => {
+  test('keeps an unverified left-only metadata subtree visible but read-only', async () => {
     const left = [
       '<MetaDataObject>',
       '  <Item id="old">',
@@ -165,29 +154,17 @@ suite('Metadata XML merge adapter', () => {
     const item = requireNodeByLabel(result.nodes, 'OldItem');
 
     assert.strictEqual(item.status, 'leftOnly');
-    assert.strictEqual(item.mergeable, true);
-    assert.strictEqual(item.destructive, true);
-    assert.ok(result.candidateFactories.has(item.id));
-    const presentation = requireNodeByLabel(item.children, 'Presentation');
-    assert.strictEqual(presentation.status, 'leftOnly');
-    assert.strictEqual(presentation.leftValue, 'Removed');
-    assert.strictEqual(presentation.mergeable, false);
-
-    const candidateResult = await result.candidateFactories.get(item.id)!();
-    assert.strictEqual(candidateResult.ok, true);
-    const patch = candidateResult.candidate.xmlPatch!;
-    assert.strictEqual(patch.kind, 'deleteNode');
-    assert.match(patch.target.pointer, /\/Item\[id=old\]$/);
-    const applied = applyXmlPatch(left, patch);
-    assert.doesNotMatch(applied, /<Item id="old">/);
+    assert.strictEqual(item.mergeable, false);
+    assert.strictEqual(item.mergeState?.state, 'readOnly');
+    assert.match(item.mergeState?.reason ?? '', /структура XML не подтверждена/iu);
   });
 
   test('builds executable XML attribute patch candidate', async () => {
-    const left = '<MetaDataObject><Item id="same" role="old"><Name>Same</Name></Item></MetaDataObject>';
+    const left = '<MetaDataObject><Catalog uuid="same" role="old"><Properties><Name>Same</Name></Properties></Catalog></MetaDataObject>';
     const result = await metadataXmlAdapter.compare(
       makeInput({
         left,
-        right: '<MetaDataObject><Item id="same" role="new"><Name>Same</Name></Item></MetaDataObject>',
+        right: '<MetaDataObject><Catalog uuid="same" role="new"><Properties><Name>Same</Name></Properties></Catalog></MetaDataObject>',
       })
     );
 
@@ -201,9 +178,9 @@ suite('Metadata XML merge adapter', () => {
     assert.strictEqual(candidateResult.ok, true);
     const patch = candidateResult.candidate.xmlPatch!;
     assert.strictEqual(patch.kind, 'replaceNode');
-    assert.match(patch.target.pointer, /\/Item\[id=same\]\/@role$/);
+    assert.match(patch.target.pointer, /\/Catalog\[metadata-root%3DCatalog%3Bname%3Dsame\]\/@role$/);
     const applied = applyXmlPatch(left, patch);
-    assert.match(applied, /<Item id="same" role="new">/);
+    assert.match(applied, /<Catalog uuid="same" role="new">/);
   });
 
   test('builds executable XML patch for namespaced 1C elements', async () => {
@@ -236,7 +213,7 @@ suite('Metadata XML merge adapter', () => {
     const patch = candidateResult.candidate.xmlPatch!;
     assert.doesNotMatch(patch.target.pointer, /v8:/);
     const applied = applyXmlPatch(left, patch);
-    assert.match(applied, /<v8:Synonym>New goods<\/v8:Synonym>/);
+    assert.match(applied, /<v8:Synonym(?:\s[^>]*)?>New goods<\/v8:Synonym>/);
   });
 
   test('builds unique executable patches for repeated anonymous XML siblings', async () => {

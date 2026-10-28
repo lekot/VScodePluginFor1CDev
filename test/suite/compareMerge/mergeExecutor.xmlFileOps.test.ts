@@ -26,6 +26,7 @@ import { CompareSession } from '../../../src/compareMerge/domain/compareSession'
 import { metadataXmlAdapter } from '../../../src/compareMerge/adapters/xmlMetadataAdapter';
 import type { AdapterCompareInput } from '../../../src/compareMerge/adapters/mergeAdapter';
 import type { MergeExecutorInput } from '../../../src/compareMerge/merge/mergeExecutor';
+import { hashXmlText } from '../../../src/compareMerge/xml/xmlPatch';
 import { executeMergeInputWithRuntime } from './mergeMutationTestSupport';
 import {
   createMergePreview,
@@ -74,8 +75,9 @@ suite('MergeExecutor XML and file operations', () => {
     const backupDir = path.join(path.dirname(rootDir), `${path.basename(rootDir)}-backups`);
     tempDirs.push(backupDir);
     const xmlPath = path.join(rootDir, 'Catalogs', 'Products.xml');
+    const sourcePath = path.join(snapshotDir, 'Catalogs', 'Products.xml');
     const backupPath = path.join(backupDir, 'Products.xml.bak');
-    const leftXml = [
+    const leftXml = '\uFEFF' + [
       '<MetaDataObject>',
       '  <Properties>',
       '    <Name>Products</Name>',
@@ -83,8 +85,8 @@ suite('MergeExecutor XML and file operations', () => {
       '    <Comment>Keep local comment</Comment>',
       '  </Properties>',
       '</MetaDataObject>',
-    ].join('\n');
-    const rightXml = [
+    ].join('\r\n') + '\r\n';
+    const rightXml = '\uFEFF' + [
       '<MetaDataObject>',
       '  <Properties>',
       '    <Name>Products</Name>',
@@ -92,8 +94,8 @@ suite('MergeExecutor XML and file operations', () => {
       '    <Comment>Incoming comment not selected</Comment>',
       '  </Properties>',
       '</MetaDataObject>',
-    ].join('\n');
-    const expectedXml = [
+    ].join('\r\n') + '\r\n';
+    const expectedXml = '\uFEFF' + [
       '<MetaDataObject>',
       '  <Properties>',
       '    <Name>Products</Name>',
@@ -101,10 +103,12 @@ suite('MergeExecutor XML and file operations', () => {
       '    <Comment>Keep local comment</Comment>',
       '  </Properties>',
       '</MetaDataObject>',
-    ].join('\n');
+    ].join('\r\n') + '\r\n';
 
     await fs.mkdir(path.dirname(xmlPath), { recursive: true });
+    await fs.mkdir(path.dirname(sourcePath), { recursive: true });
     await fs.writeFile(xmlPath, leftXml, 'utf8');
+    await fs.writeFile(sourcePath, rightXml, 'utf8');
 
     const session = await makeSession(rootDir, snapshotDir);
     const adapterResult = await metadataXmlAdapter.compare(
@@ -114,6 +118,8 @@ suite('MergeExecutor XML and file operations', () => {
     const candidateResult = await adapterResult.candidateFactories.get(synonym.id)!();
     assert.strictEqual(candidateResult.ok, true);
     const candidate = candidateResult.candidate;
+    const sourceWitness = candidate.xmlPatch?.sourceWitnesses?.find((item) => item.sourceId === 'right-source');
+    assert.strictEqual(sourceWitness?.expectedHash, createHash('sha256').update(Buffer.from(rightXml, 'utf8')).digest('hex'));
 
     const previewId = 'preview-selected-xml-property';
     const preview = createMergePreview({
@@ -180,6 +186,7 @@ suite('MergeExecutor XML and file operations', () => {
     const backupDir = path.join(path.dirname(rootDir), `${path.basename(rootDir)}-backups`);
     tempDirs.push(backupDir);
     const xmlPath = path.join(rootDir, 'Catalogs', 'Products.xml');
+    const sourcePath = path.join(snapshotDir, 'Catalogs', 'Products.xml');
     const firstBackupPath = path.join(backupDir, 'Products.first.xml.bak');
     const secondBackupPath = path.join(backupDir, 'Products.second.xml.bak');
     const leftXml = [
@@ -202,7 +209,9 @@ suite('MergeExecutor XML and file operations', () => {
     ].join('\n');
 
     await fs.mkdir(path.dirname(xmlPath), { recursive: true });
+    await fs.mkdir(path.dirname(sourcePath), { recursive: true });
     await fs.writeFile(xmlPath, leftXml, 'utf8');
+    await fs.writeFile(sourcePath, rightXml, 'utf8');
 
     const session = await makeSession(rootDir, snapshotDir);
     const adapterResult = await metadataXmlAdapter.compare(
@@ -270,6 +279,91 @@ suite('MergeExecutor XML and file operations', () => {
     ]);
     assert.strictEqual(await readText(xmlPath), rightXml);
     assert.strictEqual(await readText(firstBackupPath), leftXml);
+  });
+
+  test('rejects semantically invalid final XML before writing the target', async () => {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-semantic-xml-invalid-'));
+    tempDirs.push(rootDir);
+    const snapshotDir = path.join(rootDir, 'snapshot');
+    const backupDir = path.join(path.dirname(rootDir), `${path.basename(rootDir)}-backups`);
+    tempDirs.push(backupDir);
+    const xmlPath = path.join(rootDir, 'Catalogs', 'Products', 'Forms', 'Edit', 'Ext', 'Form.xml');
+    const sourcePath = path.join(snapshotDir, 'Catalogs', 'Products', 'Forms', 'Edit', 'Ext', 'Form.xml');
+    const backupPath = path.join(backupDir, 'Form.xml.bak');
+    const leftXml = '<Form><ChildItems><InputField name="A" id="1"/><InputField name="B" id="2"/></ChildItems><Attributes/><Commands/></Form>';
+    const rightXml = leftXml.replace('id="2"', 'id="1"');
+    const targetUri = pathToFileURL(xmlPath).toString();
+
+    await fs.mkdir(path.dirname(xmlPath), { recursive: true });
+    await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+    await fs.writeFile(xmlPath, leftXml, 'utf8');
+    await fs.writeFile(sourcePath, rightXml, 'utf8');
+
+    const session = await makeSession(rootDir, snapshotDir);
+    const candidate: MergeCandidate = {
+      kind: 'xmlNodeReplace',
+      sourceId: 'right-source',
+      snapshotId: 'snapshot-right-1',
+      nodeId: 'xml:form:duplicate-id',
+      targetUri,
+      expectedOldHash: hashXmlText(leftXml),
+      newHash: hashXmlText(rightXml),
+      xmlPatch: {
+        kind: 'replaceNode',
+        target: {
+          filePath: targetUri,
+          pointer: '/Form/ChildItems/InputField[1]',
+          displayPath: 'Form/ChildItems/InputField[1]',
+        },
+        expectedOldHash: hashXmlText(leftXml),
+        newHash: hashXmlText(rightXml),
+        replacementXml: '<InputField name="B" id="1"/>',
+        semanticKind: 'formXml',
+        sourceWitnesses: [{
+          sourceId: 'right-source',
+          relativePath: path.relative(snapshotDir, sourcePath),
+          expectedHash: createHash('sha256').update(Buffer.from(rightXml, 'utf8')).digest('hex'),
+          kind: 'file',
+        }],
+      },
+    };
+    const previewId = 'preview-semantic-xml-invalid';
+    const preview = createMergePreview({
+      session,
+      previewId,
+      targetSourceId: 'left-source',
+      snapshotIds: { left: 'snapshot-left-1', right: 'snapshot-right-1' },
+      createdAt: '2026-05-30T10:10:00.000Z',
+      candidates: [candidate],
+      currentTargetHashes: { [targetUri]: hashXmlText(leftXml) },
+    });
+    assert.strictEqual(preview.ok, true, JSON.stringify(preview.diagnostics));
+    const operation = preview.preview.operations[0]!;
+    session.approvePreview(previewId);
+    const preflight = validateMergePreflight({
+      session,
+      previewId,
+      approvedPreviewId: previewId,
+      currentTargetHashes: { [targetUri]: hashXmlText(leftXml) },
+      backupPlan: {
+        previewId,
+        strategy: 'copyBeforeWrite',
+        items: [{ operationId: operation.operationId, targetUri, backupUri: pathToFileURL(backupPath).toString(), expectedOldHash: hashXmlText(leftXml) }],
+      },
+      rollbackPlan: {
+        previewId,
+        strategy: 'restoreBackups',
+        items: [{ operationId: operation.operationId, targetUri, backupUri: pathToFileURL(backupPath).toString(), restoreHash: hashXmlText(leftXml) }],
+      },
+    });
+    assert.strictEqual(preflight.ok, true, JSON.stringify(preflight.diagnostics));
+
+    const result = await executeBslMergePreview({ session, preflight });
+
+    assert.strictEqual(result.applied.length, 0);
+    assert.strictEqual(result.failed[0]?.code, 'XML_FORM_DUPLICATE_ID');
+    assert.strictEqual(await readText(xmlPath), leftXml);
+    assert.strictEqual(await exists(backupPath), false);
   });
 
   test('applies BSL routine insert from incoming source text', async () => {
@@ -1189,6 +1283,10 @@ function makeXmlAdapterInput(
       },
     },
     session,
+    artifactPaths: {
+      left: xmlPath,
+      right: path.join(snapshotDir, 'Catalogs', 'Products.xml'),
+    },
     snapshots: { left, right },
   };
 }

@@ -50,9 +50,22 @@ export interface XmlAddress {
 export interface XmlPatchPayload {
   kind: 'replaceNode' | 'insertNode' | 'deleteNode';
   target: XmlAddress;
+  insertBefore?: XmlAddress;
+  insertPosition?: 'append';
+  insertOrder?: number;
+  semanticKind?: 'metadataXml' | 'formXml' | 'predefinedXml';
   expectedOldHash: string;
   newHash: string;
   replacementXml?: string;
+  sourceWitnesses?: readonly MergeFileWitness[];
+  semanticContext?: {
+    availableFormReferences?: {
+      attributes?: readonly string[];
+      commands?: readonly string[];
+      elements?: readonly string[];
+    };
+    availableMetadataReferences?: readonly string[];
+  };
 }
 
 export interface FileOperationPayload {
@@ -225,9 +238,36 @@ export function cloneMergeOperation(operation: MergeOperation): MergeOperation {
       ? {
           kind: operation.xmlPatch.kind,
           target: { ...operation.xmlPatch.target },
+          insertBefore: operation.xmlPatch.insertBefore
+            ? { ...operation.xmlPatch.insertBefore }
+            : undefined,
+          insertPosition: operation.xmlPatch.insertPosition,
+          insertOrder: operation.xmlPatch.insertOrder,
+          semanticKind: operation.xmlPatch.semanticKind,
           expectedOldHash: operation.xmlPatch.expectedOldHash,
           newHash: operation.xmlPatch.newHash,
           replacementXml: operation.xmlPatch.replacementXml,
+          sourceWitnesses: operation.xmlPatch.sourceWitnesses?.map((witness) => ({ ...witness })),
+          semanticContext: operation.xmlPatch.semanticContext
+            ? {
+                availableFormReferences: operation.xmlPatch.semanticContext.availableFormReferences
+                  ? {
+                      attributes: operation.xmlPatch.semanticContext.availableFormReferences.attributes
+                        ? [...operation.xmlPatch.semanticContext.availableFormReferences.attributes]
+                        : undefined,
+                      commands: operation.xmlPatch.semanticContext.availableFormReferences.commands
+                        ? [...operation.xmlPatch.semanticContext.availableFormReferences.commands]
+                        : undefined,
+                      elements: operation.xmlPatch.semanticContext.availableFormReferences.elements
+                        ? [...operation.xmlPatch.semanticContext.availableFormReferences.elements]
+                        : undefined,
+                    }
+                  : undefined,
+                availableMetadataReferences: operation.xmlPatch.semanticContext.availableMetadataReferences
+                  ? [...operation.xmlPatch.semanticContext.availableMetadataReferences]
+                  : undefined,
+              }
+            : undefined,
         }
       : undefined,
     fileOperation: operation.fileOperation

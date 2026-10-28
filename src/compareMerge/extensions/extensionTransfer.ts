@@ -6,6 +6,7 @@ import type { ExtensionIndexedObject, ExtensionMetadataIndex } from './extension
 import { validateBorrowedObjectSource } from '../../extensionSupport/cfeProject/borrowObjectBuilder';
 import { captureMergePath } from '../merge/mergeSnapshot';
 import type { MergeCandidate } from '../merge/mergePreview';
+import type { ExecutableCandidateFactory } from '../adapters/mergeAdapter';
 import { hasNonEmptyChildObjects, hasUnknownInterceptShape, hasUnsupportedPropertyChanges, isSemanticOverlayChanged, isValidPropertyState, overlaySimpleProperties, replaceRootUuid } from './extensionXmlOverlay';
 
 export { materializeExtensionSelection } from './extensionMaterializer';
@@ -49,7 +50,28 @@ export interface ExtensionMaterializerInput {
   readonly rows: readonly ExtensionTransferRow[];
   readonly leftSnapshotId: string;
   readonly rightSnapshotId: string;
+  /** Host-created adapter candidates keyed by projected semantic child id; never populated from webview data. */
+  readonly semanticSelections?: ReadonlyMap<string, ExtensionSemanticSelection>;
+  readonly rootPurposeSelection?: ExtensionRootPurposeSelection;
   readonly cancellation?: import('../compareCancellation').CompareCancellationToken;
+}
+
+export interface ExtensionSemanticSelection {
+  readonly nodeId: string;
+  readonly rowId: string;
+  readonly kind: 'metadataXml' | 'formXml' | 'predefinedXml';
+  readonly targetRelativePath: string;
+  readonly sourceRelativePath: string;
+  readonly targetHash: string;
+  readonly sourceHash: string;
+  readonly candidateFactory: ExecutableCandidateFactory;
+}
+
+export interface ExtensionRootPurposeSelection {
+  readonly nodeId: string;
+  readonly targetHash: string;
+  readonly sourceHash: string;
+  readonly candidateFactory: ExecutableCandidateFactory;
 }
 
 export type ExtensionMaterializerResult =
@@ -250,9 +272,6 @@ function decideOwnTransfer(
       || validateElementName(identity.name, []) !== null) {
       return { reason: 'Имя собственного объекта не соответствует NamePrefix целевого CFE.' };
     }
-    if (!targetObject && target.purpose === 'Patch') {
-      return { reason: 'Создание собственного объекта в CFE назначения Patch не поддержано.' };
-    }
   }
 
   if (isBorrowedBaseObject) {
@@ -343,9 +362,6 @@ function decideAdoptedTransfer(
   }
   if (!sameProvenBase) {
     return { reason: 'Для CFE↔CFE adopted transfer не доказана эквивалентность базовых root/object descriptors.' };
-  }
-  if (input.target.purpose !== input.incoming.purpose) {
-    return { reason: 'Перенос adopted object между разными ConfigurationExtensionPurpose не поддержан.' };
   }
   if (targetObject && (targetObject.identity?.ownership !== 'adopted'
     || !sameUuid(targetObject.identity.sourceUuid, identity.sourceUuid))) {
