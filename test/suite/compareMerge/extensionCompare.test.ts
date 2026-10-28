@@ -8,6 +8,8 @@ import {
   type ConfigurationCompareInput,
   type ConfigurationCompareResult,
 } from '../../../src/compareMerge/configurationCompareService';
+import { pairedXmlSidecars } from '../../../src/compareMerge/extensions/extensionSemanticProjection';
+import type { ExtensionIndexedObject } from '../../../src/compareMerge/extensions/extensionMetadataIndex';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 import { METADATA_TYPE_DESCRIPTORS } from '../../../src/constants/metadataTypeDescriptors';
 import { createMergeMutationTestRuntime } from './mergeMutationTestSupport';
@@ -50,6 +52,28 @@ const TARGET_LOCAL_UUID = 'b1020304-5060-4708-90ab-cdef01234567';
 const OTHER_LOCAL_UUID = 'c1020304-5060-4708-90ab-cdef01234567';
 
 suite('Extension-aware configuration compare', () => {
+  test('pairs normalized owner-relative Form and Predefined sidecars without collapsing Linux case-distinct forms', async () => {
+    const sidecarFiles = [
+      'Forms/Main/Ext/Form.xml',
+      'Forms/main/Ext/Form.xml',
+      'Forms/Secondary/Ext/Form.xml',
+      'Ext/Predefined.xml',
+    ].map((relativePath, index) => ({ relativePath: `Catalogs/Owner/${relativePath}`, hash: String(index).padStart(64, '0') }));
+    const target = indexedSidecarOwner('left-source', 'left', sidecarFiles);
+    const incoming = indexedSidecarOwner('right-source', 'right', sidecarFiles);
+    const result = await withPlatform('linux', async () => pairedXmlSidecars(target, incoming));
+
+    assert.deepStrictEqual(result.duplicatePaths, []);
+    assert.deepStrictEqual(result.pairs.map((pair) => pair.relativePath).sort(), [
+      'Ext/Predefined.xml',
+      'Forms/Main/Ext/Form.xml',
+      'Forms/Secondary/Ext/Form.xml',
+      'Forms/main/Ext/Form.xml',
+    ]);
+    assert.strictEqual(result.pairs.filter((pair) => pair.kind === 'formXml').length, 3);
+    assert.strictEqual(result.pairs.filter((pair) => pair.kind === 'predefinedXml').length, 1);
+  });
+
   test('admits the supported root types across Designer XML 2.17–2.21', async function (this: Mocha.Context) {
     this.timeout(180000);
     await withTempRoot(async (tempRoot) => {
@@ -921,10 +945,13 @@ suite('Extension-aware configuration compare', () => {
         await writeCompareBytes(source, formPath('Main'), formXml('source Main', item.id === 'adopted'));
         await writeCompareBytes(target, formPath('Secondary'), '<Form><WindowTitle>target Secondary</WindowTitle></Form>');
         await writeCompareBytes(source, formPath('Secondary'), '<Form><WindowTitle>source Secondary</WindowTitle></Form>');
+        const predefinedPath = `${item.relativeFolder}/Ext/Predefined.xml`;
+        await writeCompareBytes(target, predefinedPath, '<PredefinedData><Item id="33333333-3333-4333-8333-333333333333"><Name>One</Name><Description>target predefined</Description></Item></PredefinedData>');
+        await writeCompareBytes(source, predefinedPath, '<PredefinedData><Item id="33333333-3333-4333-8333-333333333333"><Name>One</Name><Description>source predefined</Description></Item></PredefinedData>');
 
-        const compare = await openCompare(tempRoot, target, source, {
+        const compare = await withPlatform('linux', () => openCompare(tempRoot, target, source, {
           extensionBaseRoots: item.base ? { left: item.base, right: item.base } : undefined,
-        });
+        }));
         try {
           const row = collectNodes(compare.result.projection.root).find((node) => node.label === `${item.type}.${item.name}`);
           assert.ok(row, `${item.id}: transfer row should be visible`);
@@ -933,12 +960,21 @@ suite('Extension-aware configuration compare', () => {
             && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Forms/Main/Ext/Form.xml')
             && node.rightValue?.includes('source Main'));
           assert.ok(mainForm, `${item.id}: Main Form.xml should have a selectable semantic node`);
+          const secondaryForm = collectNodes(row!).find((node) => node.mergeable
+            && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Forms/Secondary/Ext/Form.xml')
+            && node.rightValue?.includes('source Secondary'));
+          assert.ok(secondaryForm, `${item.id}: Secondary Form.xml should remain a distinct selectable node`);
+          const predefined = collectNodes(row!).find((node) => node.mergeable
+            && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Ext/Predefined.xml')
+            && node.rightValue?.includes('source predefined'));
+          assert.ok(predefined, `${item.id}: Predefined.xml should have a selectable semantic node`);
 
           const preview = await createPreview(compare.result, [mainForm!.id]);
           await execute(compare.result, preview.previewId);
 
           assert.match(await readUtf8(target, formPath('Main')), /source Main/u);
           assert.match(await readUtf8(target, formPath('Secondary')), /target Secondary/u);
+          assert.match(await readUtf8(target, `${item.relativeFolder}/Ext/Predefined.xml`), /target predefined/u);
           assert.match(await readUtf8(target, `${item.relativeFolder}.xml`), /<MetaDataObject/u);
           if (item.id === 'adopted' && item.base) {
             await writeCompareBytes(source, formPath('Main'), formXml('source Main after compare', true));
@@ -1846,6 +1882,35 @@ async function withTempRoot<T>(callback: (tempRoot: string) => Promise<T>): Prom
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
+}
+
+async function withPlatform<T>(platform: NodeJS.Platform, callback: () => T | Promise<T>): Promise<T> {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { ...original, value: platform });
+  try {
+    return await callback();
+  } finally {
+    Object.defineProperty(process, 'platform', original);
+  }
+}
+
+function indexedSidecarOwner(
+  sourceId: string,
+  side: 'left' | 'right',
+  sidecarFiles: ExtensionIndexedObject['sidecarFiles'],
+): ExtensionIndexedObject {
+  return {
+    side,
+    sourceId,
+    metadataType: 'Catalog',
+    name: 'Owner',
+    qualifiedName: 'Catalog.Owner',
+    descriptorRelativePath: 'Catalogs/Owner.xml',
+    sidecarRelativePath: 'Catalogs/Owner',
+    sidecarFiles,
+    supportedRootType: true,
+    valid: true,
+  };
 }
 
 function onlyMergeableNodeId(result: ConfigurationCompareResult): string {

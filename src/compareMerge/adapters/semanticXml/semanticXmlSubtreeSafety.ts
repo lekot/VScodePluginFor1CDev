@@ -41,9 +41,6 @@ export function hasUnsupportedChangedAttributes(left: XmlElement, right: XmlElem
     if (leftValues.get(name) === rightValues.get(name) && leftNamespace === rightNamespace) {
       continue;
     }
-    if (name === 'xmlns' || name.startsWith('xmlns:')) {
-      return true;
-    }
     if (leftNamespace !== rightNamespace) {
       return true;
     }

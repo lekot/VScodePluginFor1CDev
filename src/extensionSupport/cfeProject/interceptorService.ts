@@ -597,27 +597,25 @@ function ensureModulePropertyState(
     internalInfo.parent = metadataObject;
     metadataObject.children.splice(propertiesIndex, 0, internalInfo, { kind: 'text', text: beforeProperties });
     const readablePrefix = ensureReadablePrefix(internalInfo);
-    appendPropertyState(internalInfo, createPropertyState(readablePrefix, moduleKind, objectIndent, newline), objectIndent, newline);
+    appendPropertyState(internalInfo, createPropertyState(readablePrefix, moduleKind, objectIndent), objectIndent);
   } else {
     const internalInfoIndent = indentationBefore(metadataObject, internalInfo);
     const readablePrefix = ensureReadablePrefix(internalInfo);
     appendPropertyState(
       internalInfo,
-      createPropertyState(readablePrefix, moduleKind, internalInfoIndent, newline),
+      createPropertyState(readablePrefix, moduleKind, internalInfoIndent),
       internalInfoIndent,
-      newline,
     );
   }
 
-  const trailingWhitespace = xml.slice(xml.trimEnd().length);
   const serialized = serializeXmlDocument(document).replace(/\r?\n/gu, newline);
   return {
-    content: `${hasBom ? '\uFEFF' : ''}${serialized}${trailingWhitespace}`,
+    content: `${hasBom ? '\uFEFF' : ''}${serialized}`,
     changed: true,
   };
 }
 
-function createPropertyState(prefix: string, property: CfeModuleKind, indent: string, newline: string): XmlElement {
+function createPropertyState(prefix: string, property: CfeModuleKind, indent: string): XmlElement {
   const childIndent = `${indent}\t`;
   const nestedIndent = `${childIndent}\t`;
   const propertyState = createXmlElement(`${prefix}:PropertyState`, 'PropertyState');
@@ -626,11 +624,11 @@ function createPropertyState(prefix: string, property: CfeModuleKind, indent: st
   propertyElement.parent = propertyState;
   stateElement.parent = propertyState;
   propertyState.children = [
-    { kind: 'text', text: `${newline}${nestedIndent}` },
+    { kind: 'text', text: `\n${nestedIndent}` },
     propertyElement,
-    { kind: 'text', text: `${newline}${nestedIndent}` },
+    { kind: 'text', text: `\n${nestedIndent}` },
     stateElement,
-    { kind: 'text', text: `${newline}${childIndent}` },
+    { kind: 'text', text: `\n${childIndent}` },
   ];
   return propertyState;
 }
@@ -639,7 +637,6 @@ function appendPropertyState(
   internalInfo: XmlElement,
   propertyState: XmlElement,
   indent: string,
-  newline: string,
 ): void {
   const lastChild = internalInfo.children[internalInfo.children.length - 1];
   const trailingText = lastChild?.kind === 'text' && /^\s*$/u.test(lastChild.text) ? lastChild.text : undefined;
@@ -649,9 +646,9 @@ function appendPropertyState(
   }
   propertyState.parent = internalInfo;
   internalInfo.children.push(
-    { kind: 'text', text: `${newline}${closingIndent}\t` },
+    { kind: 'text', text: `\n${closingIndent}\t` },
     propertyState,
-    { kind: 'text', text: trailingText ?? `${newline}${closingIndent}` },
+    { kind: 'text', text: trailingText ?? `\n${closingIndent}` },
   );
 }
 

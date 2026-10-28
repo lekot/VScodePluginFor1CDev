@@ -400,7 +400,7 @@ function semanticSelectionReason(row: ExtensionTransferRow): string | undefined 
   return row.reason ?? 'Семантическое XML-слияние доступно только для совпавших собственных объектов и adopted-объектов с доказанной общей базой.';
 }
 
-function pairedXmlSidecars(
+export function pairedXmlSidecars(
   target: ExtensionIndexedObject,
   incoming: ExtensionIndexedObject,
 ): {
@@ -413,7 +413,7 @@ function pairedXmlSidecars(
   for (const [key, targetFile] of targetFiles.files) {
     const sourceFile = sourceFiles.files.get(key);
     if (!sourceFile) {continue;}
-    const fileName = path.posix.basename(key);
+    const fileName = path.posix.basename(key).toLowerCase();
     const definition = XML_FILES.find((item) => item.fileName === fileName);
     if (!definition) {continue;}
     pairs.push({ kind: definition.kind, relativePath: ownerRelativePath(target, targetFile.relativePath), target: targetFile, source: sourceFile });

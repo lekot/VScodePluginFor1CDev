@@ -426,6 +426,34 @@ suite('Semantic XML deep merge (#335)', () => {
     assert.match(applyXmlPatch(existing, candidate.candidate.xmlPatch!), /evil:marker="opaque"[^>]*>After/u);
   });
 
+  test('allows a second merge of a leaf with a redundant inherited namespace declaration', async () => {
+    const target = '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><WindowTitle>Before</WindowTitle><Attributes/><Commands/><ChildItems/></Form>';
+    const firstSource = target.replace('Before', 'First');
+    const first = await formXmlAdapter.compare(makeInput(target, firstSource));
+    const firstLeaf = requireNode(first.nodes, 'WindowTitle');
+    const firstCandidate = await first.candidateFactories.get(firstLeaf.id)!();
+    assert.strictEqual(firstCandidate.ok, true);
+    const firstApplied = applyXmlPatch(target, firstCandidate.candidate.xmlPatch!);
+    assert.match(firstApplied, /<WindowTitle xmlns="http:\/\/v8\.1c\.ru\/8\.3\/xcf\/logform">First<\/WindowTitle>/u);
+
+    const secondSource = firstSource.replace('First', 'Second');
+    const second = await formXmlAdapter.compare(makeInput(firstApplied, secondSource));
+    const secondLeaf = requireNode(second.nodes, 'WindowTitle');
+    assert.strictEqual(secondLeaf.mergeState?.state, 'ready');
+    const secondCandidate = await second.candidateFactories.get(secondLeaf.id)!();
+    assert.strictEqual(secondCandidate.ok, true);
+    assert.match(applyXmlPatch(firstApplied, secondCandidate.candidate.xmlPatch!), /<WindowTitle(?: xmlns="http:\/\/v8\.1c\.ru\/8\.3\/xcf\/logform")?>Second<\/WindowTitle>/u);
+  });
+
+  test('blocks namespace rebinding when an unchanged unknown attribute uses the prefix', async () => {
+    const left = '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:evil="urn:before"><Catalog><Properties><Name>Products</Name><Comment evil:marker="same">Before</Comment></Properties></Catalog></MetaDataObject>';
+    const right = left.replace('xmlns:evil="urn:before"', 'xmlns:evil="urn:after"').replace('>Before</Comment>', '>After</Comment>');
+    const result = await metadataXmlAdapter.compare(makeInput(left, right));
+    const comment = requireNode(result.nodes, 'Comment');
+    assert.strictEqual(comment.mergeState?.state, 'readOnly');
+    assert.strictEqual(result.candidateFactories.has(comment.id), false);
+  });
+
   test('keeps real native Form.xml and Predefined.xml namespaces selectable', async () => {
     const fixtureRoot = path.join(process.cwd(), 'test', 'fixtures', 'compareMerge', 'extensions', 'native-2.20', 'managed-form-base');
     const nativeFormPath = path.join(fixtureRoot, 'Catalogs', 'Справочник55', 'Forms', 'Matrix_858451263b1b_a1_mo2z8b69_1b', 'Ext', 'Form.xml');

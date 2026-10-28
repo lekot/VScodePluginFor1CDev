@@ -81,6 +81,8 @@ suite('CFE structural interceptors', () => {
     this.timeout(15_000);
     for (const format of ['2.17', '2.18', '2.19', '2.20', '2.21']) {
       await withHarness(format, async (harness) => {
+        const objectXmlPath = path.join(harness.extension, 'Catalogs', 'Products.xml');
+        const objectXmlBefore = await fs.promises.readFile(objectXmlPath, 'utf8');
         const outcome = await harness.interceptor.createInterceptor({
           extensionConfigurationId: harness.extensionConfigurationId,
           targetSourceUuid: UUIDS.catalog,
@@ -97,12 +99,25 @@ suite('CFE structural interceptors', () => {
         assert.match(module, /#Область СерверныеМетоды\r\n\r\n#Если Сервер И НЕ ВнешнееСоединение Тогда/u);
         assert.match(module, /&НаСервере\r\n&Перед\("ПриЗаписи"\)\r\nАсинх Процедура Ext_ПриЗаписи\(/u);
         assert.match(module, /TODO: код перед вызовом оригинального метода/u);
-        const objectXml = await fs.promises.readFile(path.join(harness.extension, 'Catalogs', 'Products.xml'), 'utf8');
+        const objectXml = await fs.promises.readFile(objectXmlPath, 'utf8');
+        const rootTag = '<MetaDataObject';
+        assert.strictEqual(
+          objectXml.slice(0, objectXml.indexOf(rootTag)),
+          objectXmlBefore.slice(0, objectXmlBefore.indexOf(rootTag)),
+          'BOM, declaration, and prolog must be preserved exactly',
+        );
+        assert.strictEqual(
+          objectXml.match(/\s*$/u)?.[0],
+          objectXmlBefore.match(/\s*$/u)?.[0],
+          'the XML document epilog must be preserved exactly after adding PropertyState',
+        );
         if (format === '2.17' || format === '2.18') {
           assert.doesNotMatch(objectXml, /<xr:Property>ObjectModule<\/xr:Property>/u);
           assert.strictEqual(outcome.propertyStateUpdated, false);
         } else {
+          assert.doesNotMatch(objectXml, /&#13;/u, 'formatting whitespace must not become a carriage-return character reference');
           assert.match(objectXml, /<xr:Property>ObjectModule<\/xr:Property>\s*<xr:State>Extended<\/xr:State>/u);
+          assert.match(objectXml, /<xr:Property>ObjectModule<\/xr:Property>\r\n\t\t<xr:State>Extended<\/xr:State>/u);
           assert.strictEqual(outcome.propertyStateUpdated, true);
         }
         const repeated = await harness.interceptor.createInterceptor({

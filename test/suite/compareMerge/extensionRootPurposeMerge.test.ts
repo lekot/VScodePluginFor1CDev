@@ -165,7 +165,7 @@ suite('CFE root purpose semantic merge', () => {
       const relativeForm = 'CommonModules/Ext_Module/Forms/Main/Ext/Form.xml';
       await writeCompareBytes(target, relativeForm, '<Form><WindowTitle>Target</WindowTitle></Form>');
       await writeCompareBytes(source, relativeForm, '<Form><WindowTitle>Broken</Form>');
-      const compare = await openCompare(tempRoot, target, source);
+      const compare = await withPlatform('linux', () => openCompare(tempRoot, target, source));
       try {
         const form = findNode(compare.result.projection.root, 'Форма: Forms/Main/Ext');
         assert.strictEqual(form.mergeable, false);
@@ -237,4 +237,11 @@ async function withTempRoot<T>(callback: (root: string) => Promise<T>): Promise<
   const root = await createExtensionCompareTempRoot('issue335-purpose-merge-');
   try {return await callback(root);}
   finally {await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });}
+}
+
+async function withPlatform<T>(platform: NodeJS.Platform, callback: () => T | Promise<T>): Promise<T> {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { ...original, value: platform });
+  try {return await callback();}
+  finally {Object.defineProperty(process, 'platform', original);}
 }

@@ -6,6 +6,8 @@ import {
   ExternalArtifactProjectService,
 } from '../../src/services/externalProcessor/externalArtifactProjectService';
 
+const standaloneFormNamespaces = ' xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"';
+
 suite('ExternalArtifactProjectService', () => {
   let temporaryRoot: string;
   let workspaceRoot: string;
@@ -119,7 +121,7 @@ suite('ExternalArtifactProjectService', () => {
         'utf8'
       );
       const formXmlPath = path.join(objectDirectory, 'Forms', 'Main', 'Ext', 'Form.xml');
-      const formXml = '<Form><Attributes><Attribute><Type><v8:Type>cfg:DataProcessorObject.Processor</v8:Type></Type></Attribute></Attributes></Form>';
+      const formXml = `<Form${standaloneFormNamespaces}><Attributes><Attribute><Type><v8:Type>cfg:DataProcessorObject.Processor</v8:Type></Type></Attribute></Attributes></Form>`;
       fs.writeFileSync(formXmlPath, formXml, 'utf8');
       fs.writeFileSync(path.join(objectDirectory, 'Templates', 'Layout', 'Ext', 'Template.xml'), '<Template>DataProcessor.Processor.Template.Layout</Template>', 'utf8');
       fs.writeFileSync(path.join(objectDirectory, 'Forms', 'Main', 'Ext', 'Form', 'Module.bsl'), 'Функция ТипОбъекта()\n Возврат "DataProcessorObject.Processor";\nКонецФункции', 'utf8');
@@ -145,7 +147,7 @@ suite('ExternalArtifactProjectService', () => {
       assert.ok(rootXml.includes('uuid="11111111-1111-4111-8111-111111111111"'));
       assert.strictEqual(
         fs.readFileSync(path.join(result.projectDirectory, 'Processor', 'Forms', 'Main', 'Ext', 'Form.xml'), 'utf8'),
-        '<Form><Attributes><Attribute><Type><v8:Type>cfg:ExternalDataProcessorObject.Processor</v8:Type></Type></Attribute></Attributes></Form>'
+        `<Form${standaloneFormNamespaces}><Attributes><Attribute><Type><v8:Type>cfg:ExternalDataProcessorObject.Processor</v8:Type></Type></Attribute></Attributes></Form>`
       );
       assert.strictEqual(
         fs.readFileSync(path.join(result.projectDirectory, 'Processor', 'Templates', 'Layout', 'Ext', 'Template.xml'), 'utf8'),
@@ -187,7 +189,7 @@ suite('ExternalArtifactProjectService', () => {
     );
     fs.writeFileSync(
       path.join(objectDirectory, 'Forms', 'Main', 'Ext', 'Form.xml'),
-      '<Form><Attributes><Attribute><Type><v8:Type>cfg:ReportObject.MonthlyReport</v8:Type></Type></Attribute></Attributes></Form>',
+      `<Form${standaloneFormNamespaces}><Attributes><Attribute><Type><v8:Type>cfg:ReportObject.MonthlyReport</v8:Type></Type></Attribute></Attributes></Form>`,
       'utf8'
     );
 
@@ -206,8 +208,45 @@ suite('ExternalArtifactProjectService', () => {
     assert.ok(!rootXml.includes('<UseStandardCommands>'));
     assert.strictEqual(
       fs.readFileSync(path.join(result.projectDirectory, 'MonthlyReport', 'Forms', 'Main', 'Ext', 'Form.xml'), 'utf8'),
-      '<Form><Attributes><Attribute><Type><v8:Type>cfg:ExternalReportObject.MonthlyReport</v8:Type></Type></Attribute></Attributes></Form>'
+      `<Form${standaloneFormNamespaces}><Attributes><Attribute><Type><v8:Type>cfg:ExternalReportObject.MonthlyReport</v8:Type></Type></Attribute></Attributes></Form>`
     );
+  });
+
+  test('rejects an embedded form fragment with unbound namespace prefixes without publishing the export', async () => {
+    const sourceDirectory = path.join(workspaceRoot, 'Configuration', 'DataProcessors');
+    const objectDirectory = path.join(sourceDirectory, 'Processor');
+    const destinationParent = path.join(workspaceRoot, 'external');
+    const destinationDirectory = path.join(destinationParent, 'Processor_src');
+    const formsDirectory = path.join(objectDirectory, 'Forms');
+    const templatesDirectory = path.join(objectDirectory, 'Templates');
+    fs.mkdirSync(path.join(formsDirectory, 'Main', 'Ext'), { recursive: true });
+    fs.mkdirSync(path.join(templatesDirectory, 'Layout', 'Ext'), { recursive: true });
+    fs.mkdirSync(destinationParent);
+    const sourceRootPath = path.join(sourceDirectory, 'Processor.xml');
+    const malformedFormPath = path.join(formsDirectory, 'Main', 'Ext', 'Form.xml');
+    const malformedFormXml = '<Form><Attributes><Attribute><Type><v8:Type>cfg:DataProcessorObject.Processor</v8:Type></Type></Attribute></Attributes></Form>';
+    fs.writeFileSync(sourceRootPath, embeddedObjectXml('2.20'), 'utf8');
+    fs.writeFileSync(malformedFormPath, malformedFormXml, 'utf8');
+    fs.writeFileSync(
+      path.join(formsDirectory, 'Main.xml'),
+      '<MetaDataObject><Form uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Main</Name></Properties></Form></MetaDataObject>',
+      'utf8'
+    );
+    fs.writeFileSync(
+      path.join(templatesDirectory, 'Layout.xml'),
+      '<MetaDataObject><Template uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Layout</Name></Properties></Template></MetaDataObject>',
+      'utf8'
+    );
+
+    await assert.rejects(
+      service.exportEmbedded({ workspaceRoot, sourceRootXmlPath: sourceRootPath, destinationDirectory }),
+      /Unbound XML namespace prefix: v8/u
+    );
+
+    assert.strictEqual(fs.existsSync(destinationDirectory), false);
+    assert.deepStrictEqual(fs.readdirSync(destinationParent), []);
+    assert.strictEqual(fs.readFileSync(sourceRootPath, 'utf8'), embeddedObjectXml('2.20'));
+    assert.strictEqual(fs.readFileSync(malformedFormPath, 'utf8'), malformedFormXml);
   });
 
   test('rejects declared Form and Template children when their sibling metadata XML is missing', async () => {
