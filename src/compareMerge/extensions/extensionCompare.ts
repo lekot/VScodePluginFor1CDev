@@ -300,7 +300,7 @@ function buildExtensionProjection(
   if (diagnostics.length > 0 || semanticDiagnostics.length > 0) {
     const diagnosticNodes = [
       ...diagnostics.map(({ sourceId, diagnostic }, index) => diagnosticNode(sourceId, diagnostic, index)),
-      ...semanticDiagnostics.map(semanticDiagnosticNode),
+      ...semanticDiagnostics.map((message, index) => semanticDiagnosticNode(message, index)),
     ];
     groups.push(branch('extensionDiagnostics', 'Диагностика', 'extensionDiagnosticGroup', diagnosticNodes));
   }
