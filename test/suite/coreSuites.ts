@@ -165,7 +165,7 @@ export const coreSuiteFiles: string[] = [
   'suite/filterCriterionContentFileUpdater.test.js',
   'suite/filterCriterionWizardService.test.js',
   'suite/filterCriterionWizard.test.js',
-'suite/subsystemCompositionRefResolver.test.js',
+  'suite/subsystemCompositionRefResolver.test.js',
   'suite/compositionObjectCollector.test.js',
   'suite/compositionCollectorV2.test.js',
   'suite/subsystemCompositionEditorProvider.test.js',
@@ -268,6 +268,8 @@ export const coreSuiteFiles: string[] = [
   'suite/compareMerge/mergeExecutor.xmlFileOps.test.js',
   'suite/compareMerge/mergeMutationEngine.test.js',
   'suite/compareMerge/extensionCompare.test.js',
+  'suite/compareMerge/extensionPurposeTransfer.test.js',
+  'suite/compareMerge/extensionRootPurposeMerge.test.js',
   'suite/compareMerge/extensionTransferBaseIdentity.test.js',
   'suite/compareMerge/extensionCompareNative.test.js',
   'suite/compareMerge/extensionCompareDependencies.test.js',
@@ -290,6 +292,8 @@ export const coreSuiteFiles: string[] = [
   'suite/compareMerge/metadataXmlAdapter.test.js',
   'suite/compareMerge/formXmlAdapter.test.js',
   'suite/compareMerge/predefinedXmlAdapter.test.js',
+  'suite/compareMerge/metadataReferenceContext.test.js',
+  'suite/compareMerge/semanticXmlDeepMerge.test.js',
   'suite/compareMerge/xmlDomDiffPatch.test.js',
   'suite/bslSourceLocals.test.js',
   'suite/bslDebugSessionWatchCache.test.js',
@@ -392,7 +396,5 @@ export const coreSuiteFiles: string[] = [
   'suite/formEditorSync.test.js',
   'suite/mutationEngineIntegrity.test.js',
   'suite/agentSkdIntegrity.test.js',
-  ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
-    ? []
-    : ['suite/containerMatrix.e2e.test.js']),
+  ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1' ? [] : ['suite/containerMatrix.e2e.test.js']),
 ];

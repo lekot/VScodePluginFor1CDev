@@ -42,6 +42,7 @@ import {
   verifyCapturedFileWriteWitnesses,
 } from './capturedFileWrite';
 import { applyXmlPatch as applyDomXmlPatch } from '../xml/xmlPatch';
+import { applySelectedXmlPatches } from './semanticXmlMerge';
 import {
   materializeTrustedPreflight,
   materializeExecutableMergePreview,
@@ -394,7 +395,11 @@ export async function executeBslMergePreview(
       return buildMergeMutationPlan(capturedCanonicalRoot, actionsWithBackups, witnessCheck.targetAssertions);
     },
     {
-      buildUnderLease: trustedOperations.some((operation) => operation.kind === 'fileWrite'),
+      buildUnderLease: trustedOperations.some(
+        (operation) =>
+          operation.kind === 'fileWrite' ||
+          (isXmlOperationKind(operation.kind) && Boolean(operation.xmlPatch?.sourceWitnesses?.length))
+      ),
     }
   );
 
@@ -1090,7 +1095,7 @@ function buildExecutionUnits(
       }
     }
 
-    units.push(group.length === 1 ? resolved : buildXmlTextWriteGroup(group));
+    units.push(buildXmlTextWriteGroup(group));
   }
 
   return units;
@@ -1115,30 +1120,18 @@ function buildXmlTextWriteGroup(
 function applyXmlTextWriteGroup(
   group: ResolvedXmlTextWriteGroup
 ): { ok: true; source: string } | { ok: false; code: string; message: string } {
-  let nextSource = group.currentSource;
-  for (const resolved of group.operations) {
-    if (!resolved.operation.xmlPatch) {
-      return {
-        ok: false,
-        code: 'MERGE_XML_PATCH_FAILED',
-        message: `XML merge operation ${resolved.operation.operationId} is missing patch payload.`,
-      };
-    }
-    try {
-      nextSource = applyDomXmlPatch(nextSource, {
-        ...resolved.operation.xmlPatch,
-        expectedOldHash: hashText(nextSource),
-      });
-    } catch (error) {
-      return {
-        ok: false,
-        code: 'MERGE_XML_PATCH_FAILED',
-        message: `XML patch target cannot be resolved: ${errorMessage(error)}`,
-      };
-    }
+  const missingPatch = group.operations.find((resolved) => !resolved.operation.xmlPatch);
+  if (missingPatch) {
+    return {
+      ok: false,
+      code: 'MERGE_XML_PATCH_FAILED',
+      message: `XML merge operation ${missingPatch.operation.operationId} is missing patch payload.`,
+    };
   }
-
-  return { ok: true, source: nextSource };
+  return applySelectedXmlPatches(
+    group.currentSource,
+    group.operations.map((resolved) => resolved.operation.xmlPatch!),
+  );
 }
 
 function isXmlTextWrite(resolved: ResolvedOperation): resolved is ResolvedTextWriteOperation {

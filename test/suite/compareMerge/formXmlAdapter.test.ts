@@ -76,7 +76,7 @@ suite('Form XML merge adapter', () => {
     const candidateResult = await result.candidateFactories.get(item.id)!();
     assert.strictEqual(candidateResult.ok, true);
     const applied = applyXmlPatch(left, candidateResult.candidate.xmlPatch!);
-    assert.match(applied, /<Item id="new"><Name>NewItem<\/Name><Title>Created<\/Title><\/Item>/);
+    assert.match(applied, /<Item id="new">\s*<Name>NewItem<\/Name>\s*<Title>Created<\/Title>\s*<\/Item>/);
   });
 });
 

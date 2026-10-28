@@ -1,11 +1,22 @@
-import type { XmlAddress } from './xmlAddress';
+import { XMLValidator } from 'fast-xml-parser';
+import { encodeXmlAddressComponent, type XmlAddress } from './xmlAddress';
 
 export interface XmlDocument {
   declaration?: string;
   root: XmlElement;
+  hasBom?: boolean;
+  lineEnding?: '\r\n' | '\n' | '\r';
+  prolog?: XmlTopLevelNode[];
+  epilog?: XmlTopLevelNode[];
 }
 
-export type XmlChildNode = XmlElement | XmlTextNode | XmlCdataNode | XmlCommentNode | XmlProcessingInstructionNode;
+export type XmlChildNode =
+  | XmlElement
+  | XmlTextNode
+  | XmlCdataNode
+  | XmlCommentNode
+  | XmlProcessingInstructionNode;
+export type XmlTopLevelNode = XmlTextNode | XmlCommentNode | XmlProcessingInstructionNode;
 
 export interface XmlElement {
   kind: 'element';
@@ -44,24 +55,54 @@ export interface XmlProcessingInstructionNode {
 }
 
 export function parseXmlDocument(source: string): XmlDocument {
-  const parser = new Parser(source);
-  return parser.parse();
+  const hasBom = source.startsWith('\uFEFF');
+  const xmlSource = hasBom ? source.slice(1) : source;
+  if (containsDoctype(xmlSource)) {
+    throw new Error('Invalid XML: document type declarations are not supported');
+  }
+
+  const validation = XMLValidator.validate(xmlSource);
+  if (validation !== true) {
+    throw new Error(`Invalid XML: ${validation.err.msg}`);
+  }
+
+  const document = new Parser(xmlSource).parse();
+  document.hasBom = hasBom;
+  document.lineEnding = detectLineEnding(source);
+  validateNamespaceBindings(
+    document.root,
+    new Map([['xml', 'http://www.w3.org/XML/1998/namespace']])
+  );
+  return document;
 }
 
 export function serializeXmlDocument(document: XmlDocument): string {
-  const body = serializeXmlElement(document.root);
-  return document.declaration ? `${document.declaration}\n${body}` : body;
+  const lineEnding = document.lineEnding ?? '\n';
+  const declaration = document.declaration
+    ? `${document.declaration}${document.prolog === undefined ? lineEnding : ''}`
+    : '';
+  const prolog = (document.prolog ?? []).map(serializeXmlTopLevelNode).join('');
+  const root = serializeXmlElement(document.root, lineEnding);
+  const epilog = (document.epilog ?? []).map(serializeXmlTopLevelNode).join('');
+  return `${document.hasBom ? '\uFEFF' : ''}${declaration}${prolog}${root}${epilog}`;
 }
 
-export function serializeXmlElement(element: XmlElement): string {
+export function serializeXmlElement(
+  element: XmlElement,
+  lineEnding: '\r\n' | '\n' | '\r' = '\n'
+): string {
   const attrs = element.attributes
-    .map((attr) => ` ${attr.name}=${attr.quote}${escapeAttribute(attr.value)}${attr.quote}`)
+    .map(
+      (attr) => ` ${attr.name}=${attr.quote}${escapeAttribute(attr.value, attr.quote)}${attr.quote}`
+    )
     .join('');
   if (element.children.length === 0) {
     return `<${element.name}${attrs}/>`;
   }
 
-  return `<${element.name}${attrs}>${element.children.map(serializeXmlChild).join('')}</${element.name}>`;
+  return `<${element.name}${attrs}>${element.children
+    .map((child) => serializeXmlChild(child, lineEnding))
+    .join('')}</${element.name}>`;
 }
 
 export function cloneXmlElement(element: XmlElement): XmlElement {
@@ -76,13 +117,38 @@ export function cloneXmlElement(element: XmlElement): XmlElement {
   return clone;
 }
 
+/** Serializes a detached subtree while carrying its effective namespace bindings on the root. */
+export function captureXmlSubtree(element: XmlElement): string {
+  const clone = cloneXmlElement(element);
+  const inheritedDeclarations = new Map<string, XmlAttribute>();
+  let current: XmlElement | undefined = element;
+  while (current) {
+    for (const attribute of current.attributes) {
+      if (attribute.name === 'xmlns' || attribute.name.startsWith('xmlns:')) {
+        if (!inheritedDeclarations.has(attribute.name)) {
+          inheritedDeclarations.set(attribute.name, attribute);
+        }
+      }
+    }
+    current = current.parent;
+  }
+
+  for (const declaration of inheritedDeclarations.values()) {
+    if (!clone.attributes.some((attribute) => attribute.name === declaration.name)) {
+      clone.attributes.push({ ...declaration });
+    }
+  }
+
+  return serializeXmlElement(clone);
+}
+
 export function buildXmlAddress(filePath: string, element: XmlElement): XmlAddress {
   const elements = ancestors(element);
   const pointer = elements
     .map((item) => {
       const identityKey = getXmlElementIdentityKey(item);
       const selector = identityKey ?? String(ordinalAmongSameLocalName(item));
-      return `${item.localName}[${selector}]`;
+      return `${encodeXmlAddressComponent(item.localName)}[${encodeXmlAddressComponent(selector)}]`;
     })
     .join('/');
   const identityKey = getXmlElementIdentityKey(element);
@@ -101,9 +167,49 @@ export function buildXmlAddress(filePath: string, element: XmlElement): XmlAddre
 }
 
 export function getXmlElementIdentityKey(element: XmlElement): string | undefined {
-  const attrIdentity = findIdentityAttribute(element);
-  if (attrIdentity) {
-    return attrIdentity;
+  const uuid = findAttributeByLocalName(element, 'uuid');
+  if (uuid && element.parent?.localName === 'MetaDataObject') {
+    const properties = elementChildren(element).find((child) => child.localName === 'Properties');
+    const name = properties ? getDirectChildText(properties, 'Name') : undefined;
+    if (name) {
+      const separator = element.name.indexOf(':');
+      const prefix = separator < 0 ? '' : element.name.slice(0, separator);
+      const namespaceUri = lookupNamespace(element, prefix);
+      const expandedName = namespaceUri ? `{${namespaceUri}}${element.localName}` : element.localName;
+      return `metadata-root=${expandedName};name=${name.trim().normalize('NFC').toLocaleLowerCase('en-US')}`;
+    }
+  }
+  if (uuid) {
+    return `uuid=${uuid.value}`;
+  }
+  const id = findAttributeByLocalName(element, 'id');
+  if (id) {
+    return `id=${id.value}`;
+  }
+  const name = findAttributeByLocalName(element, 'name');
+  if (name) {
+    return `name=${name.value}`;
+  }
+
+  if (element.localName === 'Item' && element.parent?.localName === 'Content') {
+    const itemValue = textContent(element).trim().normalize('NFC');
+    if (itemValue) {
+      return `Item=${itemValue}`;
+    }
+  }
+
+  if (element.localName === 'Type' && element.parent?.localName === 'Type') {
+    const typeName = textContent(element).trim().normalize('NFC');
+    if (typeName) {
+      return `Type=${expandQName(element, typeName)}`;
+    }
+  }
+
+  if (element.localName === 'item') {
+    const language = getDirectChildText(element, 'lang');
+    if (language) {
+      return `lang=${language.normalize('NFC')}`;
+    }
   }
 
   const directName = getDirectChildText(element, 'Name');
@@ -115,7 +221,11 @@ export function getXmlElementIdentityKey(element: XmlElement): string | undefine
     (child): child is XmlElement => child.kind === 'element' && child.localName === 'Properties'
   );
   const propertiesName = properties ? getDirectChildText(properties, 'Name') : undefined;
-  return propertiesName ? `Properties.Name=${propertiesName}` : undefined;
+  if (propertiesName) {
+    return `Properties.Name=${propertiesName}`;
+  }
+
+  return undefined;
 }
 
 export function elementChildren(element: XmlElement): XmlElement[] {
@@ -124,17 +234,20 @@ export function elementChildren(element: XmlElement): XmlElement[] {
 
 export function textContent(element: XmlElement): string {
   return element.children
-    .filter((child): child is XmlTextNode | XmlCdataNode => child.kind === 'text' || child.kind === 'cdata')
+    .filter(
+      (child): child is XmlTextNode | XmlCdataNode =>
+        child.kind === 'text' || child.kind === 'cdata'
+    )
     .map((child) => child.text)
     .join('');
 }
 
-function serializeXmlChild(child: XmlChildNode): string {
+function serializeXmlChild(child: XmlChildNode, lineEnding: '\r\n' | '\n' | '\r' = '\n'): string {
   switch (child.kind) {
     case 'element':
-      return serializeXmlElement(child);
+      return serializeXmlElement(child, lineEnding);
     case 'text':
-      return escapeText(child.text);
+      return escapeText(child.text, lineEnding);
     case 'cdata':
       return `<![CDATA[${child.text}]]>`;
     case 'comment':
@@ -142,6 +255,10 @@ function serializeXmlChild(child: XmlChildNode): string {
     case 'processingInstruction':
       return `<?${child.text}?>`;
   }
+}
+
+function serializeXmlTopLevelNode(node: XmlTopLevelNode): string {
+  return node.kind === 'text' ? node.text : serializeXmlChild(node);
 }
 
 function cloneXmlChild(child: XmlChildNode, parent: XmlElement): XmlChildNode {
@@ -174,18 +291,11 @@ function ordinalAmongSameLocalName(element: XmlElement): number {
     .indexOf(element);
 }
 
-function findIdentityAttribute(element: XmlElement): string | undefined {
-  for (const attr of element.attributes) {
-    const lowerName = attr.localName.toLowerCase();
-    if (lowerName === 'uuid' || lowerName === 'id') {
-      return `${lowerName}=${attr.value}`;
-    }
-    if (attr.localName === 'Name') {
-      return `Name=${attr.value}`;
-    }
-  }
-
-  return undefined;
+function findAttributeByLocalName(element: XmlElement, name: string): XmlAttribute | undefined {
+  const normalizedName = name.toLowerCase();
+  return element.attributes.find(
+    (attribute) => attribute.localName.toLowerCase() === normalizedName
+  );
 }
 
 function getDirectChildText(element: XmlElement, localName: string): string | undefined {
@@ -206,25 +316,183 @@ function identityValue(identityKey: string | undefined): string | undefined {
   return index < 0 ? undefined : identityKey.slice(index + 1);
 }
 
+function expandQName(element: XmlElement, value: string): string {
+  const normalized = value.trim().normalize('NFC');
+  const separator = normalized.indexOf(':');
+  if (
+    separator <= 0 ||
+    separator !== normalized.lastIndexOf(':') ||
+    separator === normalized.length - 1
+  ) {
+    return normalized;
+  }
+
+  const prefix = normalized.slice(0, separator);
+  const localPart = normalized.slice(separator + 1);
+  const namespaceUri = lookupNamespace(element, prefix);
+  return namespaceUri ? `{${namespaceUri}}${localPart}` : normalized;
+}
+
+function lookupNamespace(element: XmlElement, prefix: string): string | undefined {
+  if (prefix === 'xml') {
+    return 'http://www.w3.org/XML/1998/namespace';
+  }
+
+  const declarationName = prefix ? `xmlns:${prefix}` : 'xmlns';
+  let current: XmlElement | undefined = element;
+  while (current) {
+    const declaration = current.attributes.find((attribute) => attribute.name === declarationName);
+    if (declaration) {
+      return declaration.value || undefined;
+    }
+    current = current.parent;
+  }
+
+  return undefined;
+}
+
 function localName(name: string): string {
-  return name.includes(':') ? name.split(':').pop() ?? name : name;
+  return name.includes(':') ? (name.split(':').pop() ?? name) : name;
 }
 
-function escapeText(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function escapeText(value: string, lineEnding: '\r\n' | '\n' | '\r' = '\n'): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\r/g, '&#13;')
+    .replace(/\n/g, lineEnding);
 }
 
-function escapeAttribute(value: string): string {
-  return escapeText(value).replace(/"/g, '&quot;');
+function escapeAttribute(value: string, quote: '"' | "'"): string {
+  const escapedWhitespace = escapeText(value).replace(/\t/g, '&#9;').replace(/\n/g, '&#10;');
+  return quote === '"'
+    ? escapedWhitespace.replace(/"/g, '&quot;')
+    : escapedWhitespace.replace(/'/g, '&apos;');
 }
 
 function unescapeXml(value: string): string {
-  return value
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&');
+  const invalidReference = /&(?!(?:#x[\da-fA-F]+|#\d+|quot|apos|lt|gt|amp);)/.exec(value);
+  if (invalidReference) {
+    throw new Error(`Invalid XML entity reference: ${invalidReference[0]}`);
+  }
+
+  return value.replace(
+    /&(#x[\da-fA-F]+|#\d+|quot|apos|lt|gt|amp);/g,
+    (entity: string, value: string) => {
+      switch (value) {
+        case 'quot':
+          return '"';
+        case 'apos':
+          return "'";
+        case 'lt':
+          return '<';
+        case 'gt':
+          return '>';
+        case 'amp':
+          return '&';
+        default: {
+          const codePoint = value.startsWith('#x')
+            ? Number.parseInt(value.slice(2), 16)
+            : Number.parseInt(value.slice(1), 10);
+          if (!isValidXmlCodePoint(codePoint)) {
+            throw new Error(`Invalid XML character reference: ${entity}`);
+          }
+          return String.fromCodePoint(codePoint);
+        }
+      }
+    }
+  );
+}
+
+function validateNamespaceBindings(element: XmlElement, inherited: Map<string, string>): void {
+  const namespaces = new Map(inherited);
+  for (const attribute of element.attributes) {
+    if (attribute.name === 'xmlns') {
+      validateNamespaceUri(attribute.value, '');
+      namespaces.set('', attribute.value);
+      continue;
+    }
+    if (!attribute.name.startsWith('xmlns:')) {
+      continue;
+    }
+
+    const prefix = attribute.name.slice('xmlns:'.length);
+    if (!prefix || prefix === 'xmlns') {
+      throw new Error(`Invalid XML namespace prefix declaration: ${attribute.name}`);
+    }
+    if (prefix === 'xml') {
+      if (attribute.value !== 'http://www.w3.org/XML/1998/namespace') {
+        throw new Error('Invalid XML namespace prefix binding for xml');
+      }
+    } else {
+      if (!attribute.value) {
+        throw new Error(`Invalid XML namespace prefix binding for ${prefix}`);
+      }
+      validateNamespaceUri(attribute.value, prefix);
+    }
+    namespaces.set(prefix, attribute.value);
+  }
+
+  const elementName = splitQualifiedName(element.name);
+  if (elementName.prefix && !namespaces.get(elementName.prefix)) {
+    throw new Error(`Unbound XML namespace prefix: ${elementName.prefix}`);
+  }
+
+  const expandedAttributes = new Set<string>();
+  for (const attribute of element.attributes) {
+    if (attribute.name === 'xmlns' || attribute.name.startsWith('xmlns:')) {
+      continue;
+    }
+    const attributeName = splitQualifiedName(attribute.name);
+    const namespaceUri = attributeName.prefix ? namespaces.get(attributeName.prefix) : '';
+    if (attributeName.prefix && !namespaceUri) {
+      throw new Error(`Unbound XML namespace prefix: ${attributeName.prefix}`);
+    }
+    const expandedName = `${namespaceUri ?? ''}\0${attributeName.localName}`;
+    if (expandedAttributes.has(expandedName)) {
+      throw new Error(`Duplicate XML attribute by namespace: ${attribute.name}`);
+    }
+    expandedAttributes.add(expandedName);
+  }
+
+  for (const child of element.children) {
+    if (child.kind === 'element') {
+      validateNamespaceBindings(child, namespaces);
+    }
+  }
+}
+
+function validateNamespaceUri(value: string, prefix: string): void {
+  const namespaceNamespace = 'http://www.w3.org/2000/xmlns/';
+  if (
+    value === namespaceNamespace ||
+    (prefix !== 'xml' && value === 'http://www.w3.org/XML/1998/namespace')
+  ) {
+    throw new Error(`Invalid XML namespace URI for prefix ${prefix || '(default)'}`);
+  }
+}
+
+function splitQualifiedName(name: string): { prefix?: string; localName: string } {
+  const firstColon = name.indexOf(':');
+  if (firstColon < 0) {
+    return { localName: name };
+  }
+  if (firstColon === 0 || firstColon !== name.lastIndexOf(':') || firstColon === name.length - 1) {
+    throw new Error(`Invalid XML qualified name: ${name}`);
+  }
+  return { prefix: name.slice(0, firstColon), localName: name.slice(firstColon + 1) };
+}
+
+function isValidXmlCodePoint(codePoint: number): boolean {
+  return (
+    codePoint === 0x9 ||
+    codePoint === 0xa ||
+    codePoint === 0xd ||
+    (codePoint >= 0x20 && codePoint <= 0xd7ff) ||
+    (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
+    (codePoint >= 0x10000 && codePoint <= 0x10ffff)
+  );
 }
 
 class Parser {
@@ -234,18 +502,67 @@ class Parser {
 
   parse(): XmlDocument {
     const declaration = this.readDeclaration();
-    const children = this.readChildren();
-    const root = children.find((child): child is XmlElement => child.kind === 'element');
+    const prolog: XmlTopLevelNode[] = [];
+    let root: XmlElement | undefined;
+    while (this.index < this.source.length && !root) {
+      if (this.source.startsWith('<!--', this.index)) {
+        prolog.push(this.readComment());
+      } else if (this.source.startsWith('<?', this.index)) {
+        prolog.push(this.readProcessingInstruction());
+      } else if (this.source.startsWith('</', this.index)) {
+        throw new Error('Invalid XML: unexpected closing tag before root element');
+      } else if (
+        this.source.startsWith('<![CDATA[', this.index) ||
+        this.source.startsWith('<!', this.index)
+      ) {
+        throw new Error('Invalid XML: unexpected declaration before root element');
+      } else if (this.source[this.index] === '<') {
+        root = this.readElement();
+      } else {
+        const text = this.readText(true);
+        if (text.text.trim()) {
+          throw new Error('Invalid XML: text is not allowed before the root element');
+        }
+        prolog.push(text);
+      }
+    }
+
     if (!root) {
       throw new Error('Invalid XML: missing root element');
     }
 
-    return { declaration, root };
+    const epilog: XmlTopLevelNode[] = [];
+    while (this.index < this.source.length) {
+      if (this.source.startsWith('<!--', this.index)) {
+        epilog.push(this.readComment());
+      } else if (this.source.startsWith('<?', this.index)) {
+        epilog.push(this.readProcessingInstruction());
+      } else if (this.source.startsWith('</', this.index)) {
+        throw new Error('Invalid XML: unexpected closing tag after root element');
+      } else if (
+        this.source.startsWith('<![CDATA[', this.index) ||
+        this.source.startsWith('<!', this.index)
+      ) {
+        throw new Error('Invalid XML: unexpected declaration after root element');
+      } else if (this.source[this.index] === '<') {
+        throw new Error('Invalid XML: multiple root elements');
+      } else {
+        const text = this.readText(true);
+        if (text.text.trim()) {
+          throw new Error('Invalid XML: text is not allowed after the root element');
+        }
+        epilog.push(text);
+      }
+    }
+
+    return { declaration, root, prolog, epilog };
   }
 
   private readDeclaration(): string | undefined {
-    this.skipWhitespace();
-    if (!this.source.startsWith('<?xml', this.index)) {
+    if (
+      !this.source.startsWith('<?xml', this.index) ||
+      !/[\s?]/.test(this.source[this.index + 5] ?? '')
+    ) {
       return undefined;
     }
 
@@ -264,7 +581,10 @@ class Parser {
     while (this.index < this.source.length) {
       if (this.source.startsWith('</', this.index)) {
         const name = this.readClosingTag();
-        if (closingName && name !== closingName) {
+        if (!closingName) {
+          throw new Error(`Invalid XML: unexpected closing ${name}`);
+        }
+        if (name !== closingName) {
           throw new Error(`Invalid XML: expected closing ${closingName}, got ${name}`);
         }
         return children;
@@ -281,6 +601,9 @@ class Parser {
       if (this.source.startsWith('<?', this.index)) {
         children.push(this.readProcessingInstruction());
         continue;
+      }
+      if (this.source.startsWith('<!', this.index)) {
+        throw new Error('Invalid XML declaration inside an element');
       }
       if (this.source[this.index] === '<') {
         children.push(this.readElement(parent));
@@ -335,10 +658,11 @@ class Parser {
     return name;
   }
 
-  private readText(): XmlTextNode {
+  private readText(preserveLineEndings = false): XmlTextNode {
     const next = this.source.indexOf('<', this.index);
     const end = next < 0 ? this.source.length : next;
-    const text = unescapeXml(this.source.slice(this.index, end));
+    const rawText = this.source.slice(this.index, end);
+    const text = unescapeXml(preserveLineEndings ? rawText : rawText.replace(/\r\n?/g, '\n'));
     this.index = end;
     return { kind: 'text', text };
   }
@@ -375,12 +699,6 @@ class Parser {
     this.index = end + 2;
     return { kind: 'processingInstruction', text };
   }
-
-  private skipWhitespace(): void {
-    while (/\s/.test(this.source[this.index] ?? '')) {
-      this.index += 1;
-    }
-  }
 }
 
 function findTagEnd(source: string, start: number): number {
@@ -405,18 +723,94 @@ function findTagEnd(source: string, start: number): number {
 
 function parseAttributes(source: string): XmlAttribute[] {
   const attributes: XmlAttribute[] = [];
-  const regex = /([^\s=]+)\s*=\s*("([^"]*)"|'([^']*)')/g;
-  let match: RegExpExecArray | null;
+  let index = 0;
+  while (index < source.length) {
+    while (/\s/.test(source[index] ?? '')) {
+      index += 1;
+    }
+    if (index >= source.length) {
+      break;
+    }
 
-  while ((match = regex.exec(source)) !== null) {
-    const quote = match[2].startsWith("'") ? "'" : '"';
+    const nameStart = index;
+    while (index < source.length && !/[\s=]/.test(source[index])) {
+      index += 1;
+    }
+    const name = source.slice(nameStart, index);
+    if (!name) {
+      throw new Error('Invalid XML attribute name');
+    }
+
+    while (/\s/.test(source[index] ?? '')) {
+      index += 1;
+    }
+    if (source[index] !== '=') {
+      throw new Error(`Invalid XML attribute ${name}: missing equals sign`);
+    }
+    index += 1;
+    while (/\s/.test(source[index] ?? '')) {
+      index += 1;
+    }
+
+    const quote = source[index];
+    if (quote !== '"' && quote !== "'") {
+      throw new Error(`Invalid XML attribute ${name}: value must be quoted`);
+    }
+    index += 1;
+    const valueStart = index;
+    while (index < source.length && source[index] !== quote) {
+      index += 1;
+    }
+    if (index >= source.length) {
+      throw new Error(`Invalid XML attribute ${name}: missing closing quote`);
+    }
+    const rawValue = source
+      .slice(valueStart, index)
+      .replace(/\r\n?/g, '\n')
+      .replace(/[\t\n]/g, ' ');
+    index += 1;
     attributes.push({
-      name: match[1],
-      localName: localName(match[1]),
-      value: unescapeXml(match[3] ?? match[4] ?? ''),
-      quote,
+      name,
+      localName: localName(name),
+      value: unescapeXml(rawValue),
+      quote: quote as '"' | "'",
     });
   }
 
   return attributes;
+}
+
+function containsDoctype(source: string): boolean {
+  let index = 0;
+  while (index < source.length) {
+    const declarationStart = source.indexOf('<!', index);
+    if (declarationStart < 0) {
+      return false;
+    }
+    if (source.startsWith('<!--', declarationStart)) {
+      const commentEnd = source.indexOf('-->', declarationStart + 4);
+      index = commentEnd < 0 ? source.length : commentEnd + 3;
+      continue;
+    }
+    if (source.startsWith('<![CDATA[', declarationStart)) {
+      const cdataEnd = source.indexOf(']]>', declarationStart + 9);
+      index = cdataEnd < 0 ? source.length : cdataEnd + 3;
+      continue;
+    }
+    if (source.startsWith('<?', declarationStart)) {
+      const instructionEnd = source.indexOf('?>', declarationStart + 2);
+      index = instructionEnd < 0 ? source.length : instructionEnd + 2;
+      continue;
+    }
+    if (source.slice(declarationStart, declarationStart + 9).toUpperCase() === '<!DOCTYPE') {
+      return true;
+    }
+    index = declarationStart + 2;
+  }
+  return false;
+}
+
+function detectLineEnding(source: string): '\r\n' | '\n' | '\r' {
+  const lineEnding = /\r\n|\n|\r/.exec(source)?.[0];
+  return lineEnding === '\r\n' || lineEnding === '\r' || lineEnding === '\n' ? lineEnding : '\n';
 }

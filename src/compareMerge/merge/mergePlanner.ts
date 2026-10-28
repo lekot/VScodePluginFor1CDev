@@ -3,6 +3,8 @@ import type { BslRoutineLogicalManualDiagnostic } from '../bsl/bslRoutineMergePl
 import { CompareSession } from '../domain/compareSession';
 import type { CompareMessage, IdentityConflict } from '../domain/compareContracts';
 import { validateCapturedFileWriteOperation } from './capturedFileWrite';
+import { findXmlPatchConflict } from './semanticXmlMerge';
+import { validateXmlPatchCandidate } from './xmlPatchCandidateGuard';
 import {
   cloneMergeOperation,
   compareMessage,
@@ -19,7 +21,6 @@ import {
   type RollbackPlan,
   type StoredMergePreviewPayload,
   type BslRoutineOperationPayload,
-  type XmlPatchPayload,
 } from './mergePreview';
 
 export { MISSING_TARGET_HASH } from './mergePreview';
@@ -82,6 +83,23 @@ export function createMergePreview(input: CreateMergePreviewInput): PreviewValid
       operations.push(operation);
     }
   });
+
+  if (diagnostics.length === 0) {
+    const conflict = findXmlPatchConflict(
+      operations.flatMap((operation) => operation.xmlPatch ? [operation.xmlPatch] : [])
+    );
+    if (conflict) {
+      diagnostics.push(
+        compareMessage({
+          severity: 'error',
+          code: conflict.code,
+          sourceId: input.targetSourceId,
+          path: operations.find((operation) => operation.xmlPatch)?.targetUri,
+          suggestedAction: conflict.message,
+        })
+      );
+    }
+  }
 
   if (diagnostics.length === 0 && operations.length === 0) {
     diagnostics.push(
@@ -232,7 +250,7 @@ function candidateToOperation(
     validateBslRoutineOperationCandidate(candidate, diagnostics);
   }
   if (isXmlOperationKind(candidate.kind)) {
-    validateXmlPatchCandidate(candidate, diagnostics);
+    validateXmlPatchCandidate(candidate, diagnostics, input.session);
   }
   if (isFileOperationKind(candidate.kind)) {
     validateFileOperationCandidate(candidate, diagnostics);
@@ -327,90 +345,6 @@ function validateTargetHash(
         nodeId: operation.nodeId,
         path: operation.targetUri,
         suggestedAction: 'Refresh compare snapshots before creating or executing the merge preview.',
-      })
-    );
-  }
-}
-
-function validateXmlPatchCandidate(
-  candidate: MergeCandidate,
-  diagnostics: CompareMessage[]
-): void {
-  if (!candidate.xmlPatch) {
-    diagnostics.push(
-      compareMessage({
-        severity: 'error',
-        code: 'MERGE_XML_PATCH_MISSING',
-        sourceId: candidate.sourceId,
-        nodeId: candidate.nodeId,
-        path: candidate.targetUri,
-        suggestedAction: 'XML merge operation is missing patch payload.',
-      })
-    );
-    return;
-  }
-
-  if (xmlKindForOperation(candidate.kind) !== candidate.xmlPatch.kind) {
-    diagnostics.push(
-      compareMessage({
-        severity: 'error',
-        code: 'MERGE_XML_PATCH_KIND_MISMATCH',
-        sourceId: candidate.sourceId,
-        nodeId: candidate.nodeId,
-        path: candidate.targetUri,
-        suggestedAction: 'XML merge operation kind must match patch payload kind.',
-      })
-    );
-  }
-  if (
-    candidate.targetUri &&
-    candidate.xmlPatch.target.filePath &&
-    candidate.xmlPatch.target.filePath !== candidate.targetUri
-  ) {
-    diagnostics.push(
-      compareMessage({
-        severity: 'error',
-        code: 'MERGE_XML_PATCH_TARGET_MISMATCH',
-        sourceId: candidate.sourceId,
-        nodeId: candidate.nodeId,
-        path: candidate.targetUri,
-        suggestedAction: 'XML patch target must match operation target uri.',
-      })
-    );
-  }
-  if (candidate.expectedOldHash && candidate.xmlPatch.expectedOldHash !== candidate.expectedOldHash) {
-    diagnostics.push(
-      compareMessage({
-        severity: 'error',
-        code: 'MERGE_XML_PATCH_GUARD_MISMATCH',
-        sourceId: candidate.sourceId,
-        nodeId: candidate.nodeId,
-        path: candidate.targetUri,
-        suggestedAction: 'XML patch hash guard must match operation hash guard.',
-      })
-    );
-  }
-  if (candidate.newHash && candidate.xmlPatch.newHash !== candidate.newHash) {
-    diagnostics.push(
-      compareMessage({
-        severity: 'error',
-        code: 'MERGE_XML_PATCH_NEW_HASH_MISMATCH',
-        sourceId: candidate.sourceId,
-        nodeId: candidate.nodeId,
-        path: candidate.targetUri,
-        suggestedAction: 'XML patch new hash must match operation new hash.',
-      })
-    );
-  }
-  if (candidate.xmlPatch.kind !== 'deleteNode' && !candidate.xmlPatch.replacementXml) {
-    diagnostics.push(
-      compareMessage({
-        severity: 'error',
-        code: 'MERGE_XML_PATCH_REPLACEMENT_MISSING',
-        sourceId: candidate.sourceId,
-        nodeId: candidate.nodeId,
-        path: candidate.targetUri,
-        suggestedAction: 'XML insert/replace operation must include replacement XML.',
       })
     );
   }
@@ -832,7 +766,24 @@ export function materializeExecutableMergePreview(
       diagnostics.push(unsupportedOperationDiagnostic(operation));
     } else if (operation.kind === 'fileWrite') {
       diagnostics.push(...validateCapturedFileWriteOperation(operation, session));
+    } else if (isXmlOperationKind(operation.kind)) {
+      validateXmlPatchCandidate(operation, diagnostics, session);
     }
+  }
+
+  const xmlConflict = findXmlPatchConflict(
+    payload.operations.flatMap((operation) => operation.xmlPatch ? [operation.xmlPatch] : [])
+  );
+  if (xmlConflict) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: xmlConflict.code,
+        sourceId: preview.targetSourceId,
+        path: payload.operations.find((operation) => operation.xmlPatch)?.targetUri,
+        suggestedAction: xmlConflict.message,
+      })
+    );
   }
 
   if (diagnostics.length > 0) {
@@ -912,20 +863,6 @@ function bslPayloadKindForOperation(
   }
   if (kind === 'bslRoutineDelete') {
     return 'deleteRoutine';
-  }
-
-  return undefined;
-}
-
-function xmlKindForOperation(kind: MergeCandidate['kind']): XmlPatchPayload['kind'] | undefined {
-  if (kind === 'xmlNodeReplace') {
-    return 'replaceNode';
-  }
-  if (kind === 'xmlNodeInsert') {
-    return 'insertNode';
-  }
-  if (kind === 'xmlNodeDelete') {
-    return 'deleteNode';
   }
 
   return undefined;

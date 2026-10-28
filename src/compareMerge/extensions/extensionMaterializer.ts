@@ -4,14 +4,17 @@ import { pathToFileURL } from 'url';
 import { throwIfCompareCancelled } from '../compareCancellation';
 import { buildBorrowedObjectShellFromSource } from '../../extensionSupport/cfeProject/borrowObjectBuilder';
 import { buildRootObjectConfigurationContent, type RootObjectConfigurationMutation } from '../../services/configurationXmlUpdater';
-import { hashContent } from '../../services/configurationSession/atomicFileStorage';
 import { CONFIGURATION_XML } from '../../constants/fileNames';
 import type { CompareMessage } from '../domain/compareContracts';
 import type { ExtensionCapturedFile, ExtensionIndexedObject, ExtensionMetadataIndex } from './extensionMetadataIndex';
-import type { ExtensionMaterializerInput, ExtensionMaterializerResult, ExtensionTransferRow } from './extensionTransfer';
+import type { ExtensionMaterializerInput, ExtensionMaterializerResult, ExtensionSemanticSelection, ExtensionTransferRow } from './extensionTransfer';
 import { captureMergePath, mergeSnapshotHash, type MergePathSnapshot } from '../merge/mergeSnapshot';
-import { MISSING_TARGET_HASH, type CapturedFileWritePayload, type FileOperationPayload, type MergeCandidate, type MergeFileWitness } from '../merge/mergePreview';
+import { MISSING_TARGET_HASH, type FileOperationPayload, type MergeCandidate, type MergeFileWitness } from '../merge/mergePreview';
 import { overlaySimpleProperties, replaceRootUuid } from './extensionXmlOverlay';
+import { buildSemanticObjectOutput } from './extensionSemanticMaterializer';
+import { buildRootPurposeConfigurationOutput } from './extensionRootPurposeMaterializer';
+import { createCapturedExtensionWriteCandidate } from './extensionCapturedWriteBuilder';
+import { hydrateSelectedObjectSidecars, outputPathCollision } from './extensionMaterializerSupport';
 import { scanExtensionXmlDependencies, type ExtensionMetadataReference } from './extensionDependencyScanner';
 import {
   preflightOwnRegisterRecorders,
@@ -32,13 +35,43 @@ export async function materializeExtensionSelection(
     return { ok: false, diagnostics: [compareDiagnostic('Выберите хотя бы один поддерживаемый объект.', RIGHT_SOURCE_ID)] };
   }
   const rowById = new Map(input.rows.map((row) => [row.id, row]));
-  const selectedRows = nodeIds.map((id) => rowById.get(id));
-  for (let index = 0; index < selectedRows.length; index++) {
-    const row = selectedRows[index];
-    if (!row) {
-      diagnostics.push(compareDiagnostic('Выбранный узел отсутствует в текущем семантическом сравнении.', RIGHT_SOURCE_ID, nodeIds[index]));
-    } else if (!row.mergeable || !row.action || !row.incoming) {
-      diagnostics.push(compareDiagnostic(row.reason ?? 'Объект нельзя безопасно перенести.', RIGHT_SOURCE_ID, row.id));
+  const selectedRowIds = new Set<string>();
+  const wholeTransferRowIds = new Set<string>();
+  const selectedSemantic = new Map<string, ExtensionSemanticSelection[]>();
+  const rootPurposeSelected = input.rootPurposeSelection !== undefined && nodeIds.includes(input.rootPurposeSelection.nodeId);
+  for (const nodeId of nodeIds) {
+    if (rootPurposeSelected && nodeId === input.rootPurposeSelection!.nodeId) {continue;}
+    const row = rowById.get(nodeId);
+    if (row) {
+      wholeTransferRowIds.add(row.id);
+      selectedRowIds.add(row.id);
+      continue;
+    }
+    const selection = input.semanticSelections?.get(nodeId);
+    const parent = selection ? rowById.get(selection.rowId) : undefined;
+    if (!selection || !parent || selection.nodeId !== nodeId) {
+      diagnostics.push(compareDiagnostic('Выбранный узел отсутствует в текущем семантическом сравнении.', RIGHT_SOURCE_ID, nodeId));
+      continue;
+    }
+    const parentSelections = selectedSemantic.get(parent.id) ?? [];
+    parentSelections.push(selection);
+    selectedSemantic.set(parent.id, parentSelections);
+    selectedRowIds.add(parent.id);
+  }
+  for (const [rowId] of selectedSemantic) {
+    const row = rowById.get(rowId);
+    if (wholeTransferRowIds.has(rowId)) {
+      diagnostics.push(compareDiagnostic('Нельзя одновременно выбрать полный перенос объекта и отдельные XML-изменения. Снимите один из вариантов.', RIGHT_SOURCE_ID, rowId));
+    }
+    if (!row?.mergeable || !row.action || !row.incoming || !row.target ||
+        (row.action !== 'full-copy' && row.action !== 'adopted-cfe-copy')) {
+      diagnostics.push(compareDiagnostic('Семантическое XML-слияние доступно только для сопоставленных собственных объектов и adopted объектов CFE с подтверждённой базой.', RIGHT_SOURCE_ID, rowId));
+    }
+  }
+  const requestedRows = [...selectedRowIds].map((rowId) => rowById.get(rowId));
+  for (const row of requestedRows) {
+    if (!row?.mergeable || !row.action || !row.incoming) {
+      diagnostics.push(compareDiagnostic(row?.reason ?? 'Объект нельзя безопасно перенести.', RIGHT_SOURCE_ID, row?.id));
     }
   }
   if (diagnostics.length > 0) {
@@ -46,13 +79,17 @@ export async function materializeExtensionSelection(
   }
 
   const selected: ExtensionTransferRow[] = [];
-  for (const row of selectedRows as ExtensionTransferRow[]) {
+  for (const row of requestedRows as ExtensionTransferRow[]) {
     throwIfCompareCancelled(input.cancellation);
     const hydrated = await hydrateSelectedObjectSidecars(input.incoming, row, input.cancellation);
     if ('diagnostic' in hydrated) {diagnostics.push(hydrated.diagnostic);}
     else {selected.push(hydrated);}
   }
   if (diagnostics.length > 0) {return { ok: false, diagnostics };}
+
+  const addedMetadataReferences = selected
+    .filter((row) => !row.target && row.action === 'full-copy' && row.incoming)
+    .map((row) => row.incoming!.qualifiedName);
 
   for (const row of selected) {
     if (row.action !== 'adopted-cfe-copy') {continue;}
@@ -72,7 +109,7 @@ export async function materializeExtensionSelection(
 
   const outputs: ObjectOutput[] = [];
   for (const row of selected) {
-    const output = buildObjectOutput(input, row);
+    const output = await buildObjectOutput(input, row, selectedSemantic.get(row.id), addedMetadataReferences);
     if ('diagnostic' in output) {
       diagnostics.push(output.diagnostic);
       continue;
@@ -129,7 +166,7 @@ export async function materializeExtensionSelection(
 
   for (const output of outputsWithDependencyWitnesses) {
     for (const write of output.writes) {
-      const candidate = await createFileWriteCandidate(input, output, write, sourceRootById);
+      const candidate = await createCapturedExtensionWriteCandidate(input, output.row, write, sourceRootById);
       if ('diagnostic' in candidate) {
         diagnostics.push(candidate.diagnostic);
       } else {
@@ -145,23 +182,44 @@ export async function materializeExtensionSelection(
       }
     }
   }
-  if (registrationMutations.length > 0) {
-    const built = buildRegistrationOutput(input.target, registrationMutations);
+  if (registrationMutations.length > 0 || rootPurposeSelected) {
+    const built = registrationMutations.length > 0
+      ? buildRegistrationOutput(input.target, registrationMutations)
+      : input.target.configurationContent ? { content: input.target.configurationContent } : { diagnostic: compareDiagnostic('Целевой Configuration.xml отсутствует.', input.target.sourceId) };
     if ('diagnostic' in built) {
       diagnostics.push(built.diagnostic);
     } else {
-      const output: ObjectOutput = {
-        row: selected[0]!,
-        outputRelativePaths: [CONFIGURATION_XML],
-        writes: [{ relativePath: CONFIGURATION_XML, content: built.content, sourceWitnesses: selected.flatMap((row) => objectWitnesses(row)) }],
-        deletePaths: [],
-        addRegistration: undefined,
-      };
-      const candidate = await createFileWriteCandidate(input, output, output.writes[0]!, sourceRootById, true);
-      if ('diagnostic' in candidate) {
-        diagnostics.push(candidate.diagnostic);
-      } else {
-        candidates.push(candidate);
+      let content = built.content;
+      let sourceWitnesses = selected.flatMap((row) => objectWitnesses(row));
+      if (rootPurposeSelected && input.rootPurposeSelection) {
+        const rootPurpose = await buildRootPurposeConfigurationOutput({
+          target: input.target,
+          incoming: input.incoming,
+          targetContent: content,
+          selectedAdditions: addedMetadataReferences,
+          selection: input.rootPurposeSelection,
+        });
+        if ('diagnostic' in rootPurpose) {
+          diagnostics.push(rootPurpose.diagnostic);
+        } else {
+          content = rootPurpose.content;
+          sourceWitnesses = [...sourceWitnesses, ...rootPurpose.sourceWitnesses];
+        }
+      }
+      if (diagnostics.length === 0) {
+        const output: ObjectOutput = {
+          row: selected[0] ?? rootPurposeRow(input),
+          outputRelativePaths: [CONFIGURATION_XML],
+          writes: [{ relativePath: CONFIGURATION_XML, content, sourceWitnesses: dedupeWitnesses(sourceWitnesses) }],
+          deletePaths: [],
+          addRegistration: undefined,
+        };
+        const candidate = await createCapturedExtensionWriteCandidate(input, output.row, output.writes[0]!, sourceRootById, true);
+        if ('diagnostic' in candidate) {
+          diagnostics.push(candidate.diagnostic);
+        } else {
+          candidates.push(candidate);
+        }
       }
     }
   }
@@ -182,6 +240,9 @@ interface ObjectOutput {
   readonly writes: readonly OutputWrite[];
   readonly deletePaths: readonly string[];
   readonly addRegistration?: RootObjectConfigurationMutation;
+  readonly effectiveDescriptorRelativePath?: string;
+  readonly effectiveDescriptorContent?: Buffer;
+  readonly effectiveDescriptorWitnesses?: readonly MergeFileWitness[];
 }
 
 interface OutputWrite {
@@ -205,16 +266,18 @@ function buildRecorderPreflight(
     if (output.row.targetBase) {provenTargetBases.set(output.row.targetBase.sourceId, output.row.targetBase);}
     const incoming = output.row.incoming;
     if (!incoming) {continue;}
-    const descriptorWrite = output.writes[0];
+    const descriptorWrite = output.writes.find((write) => write.relativePath === output.effectiveDescriptorRelativePath);
+    const descriptorContent = descriptorWrite?.content ?? output.effectiveDescriptorContent;
+    const descriptorRelativePath = descriptorWrite?.relativePath ?? output.effectiveDescriptorRelativePath;
     if (incoming.metadataType === 'Document') {
-      if (!descriptorWrite) {
+      if (!descriptorContent || !descriptorRelativePath) {
         diagnostics.push(compareDiagnostic('Выбранный Document output не содержит descriptor write для проверки RegisterRecords.', incoming.sourceId, output.row.id));
         continue;
       }
       const adoptedDocument = isAdoptedDocumentOutput(output);
       const scanned = scanDocumentRegisterRecords({
-        artifactPath: descriptorWrite.relativePath,
-        xml: descriptorWrite.content,
+        artifactPath: descriptorRelativePath,
+        xml: descriptorContent,
         adoptedDocument,
       });
       for (const error of scanned.errors) {
@@ -228,7 +291,7 @@ function buildRecorderPreflight(
         qualifiedName: incoming.qualifiedName,
         adoptedDocument,
         registerRecords: scanned,
-        witnesses: descriptorWrite.sourceWitnesses,
+        witnesses: descriptorWrite?.sourceWitnesses ?? output.effectiveDescriptorWitnesses ?? [],
       });
     }
 
@@ -237,7 +300,7 @@ function buildRecorderPreflight(
         qualifiedName: incoming.qualifiedName,
         metadataType: incoming.metadataType,
         isOwnFullCopy: output.row.action === 'full-copy' && incoming.identity?.ownership !== 'adopted',
-        descriptorXml: descriptorWrite?.content,
+        descriptorXml: descriptorContent,
       });
     }
   }
@@ -575,7 +638,12 @@ function dependencyKey(qualifiedName: string): string {
   return qualifiedName.toLocaleLowerCase();
 }
 
-function buildObjectOutput(input: ExtensionMaterializerInput, row: ExtensionTransferRow): ObjectOutput | { diagnostic: CompareMessage } {
+async function buildObjectOutput(
+  input: ExtensionMaterializerInput,
+  row: ExtensionTransferRow,
+  semanticSelections: readonly ExtensionSemanticSelection[] = [],
+  addedMetadataReferences: readonly string[] = [],
+): Promise<ObjectOutput | { diagnostic: CompareMessage }> {
   const incoming = row.incoming!;
   const action = row.action!;
   const identity = incoming.identity!;
@@ -588,6 +656,19 @@ function buildObjectOutput(input: ExtensionMaterializerInput, row: ExtensionTran
     return { diagnostic: compareDiagnostic('Не удалось вычислить target descriptor path.', incoming.sourceId, row.id) };
   }
   const witnesses = objectWitnesses(row);
+  if (semanticSelections.length > 0) {
+    const result = await buildSemanticObjectOutput({
+      targetRootPath: input.target.canonicalRootPath ?? input.target.rootPath,
+      sourceRootPath: input.incoming.canonicalRootPath ?? input.incoming.rootPath,
+      targetDescriptorRelativePath: targetDescriptorRel,
+      row,
+      witnesses,
+      selections: semanticSelections,
+      addedMetadataReferences,
+    });
+    if ('diagnostic' in result) {return result;}
+    return { row, ...result, deletePaths: [], addRegistration: undefined };
+  }
   let descriptorContent: Buffer;
   let sidecarFiles: readonly ExtensionCapturedFile[];
   if (action === 'borrow-shell') {
@@ -678,7 +759,16 @@ function buildObjectOutput(input: ExtensionMaterializerInput, row: ExtensionTran
   const addRegistration = targetRecord
     ? undefined
     : { type: 'add', rootTag: identity.type, objectName: identity.name } as const;
-  return { row, outputRelativePaths, writes, deletePaths, addRegistration };
+  return {
+    row,
+    outputRelativePaths,
+    writes,
+    deletePaths,
+    addRegistration,
+    effectiveDescriptorRelativePath: targetDescriptorRel,
+    effectiveDescriptorContent: descriptorContent,
+    effectiveDescriptorWitnesses: writes[0]?.sourceWitnesses ?? witnesses,
+  };
 }
 
 function objectWitnesses(row: ExtensionTransferRow): MergeFileWitness[] {
@@ -736,63 +826,6 @@ function buildRegistrationOutput(
     content = `\uFEFF${content}`;
   }
   return { content: Buffer.from(content, 'utf8') };
-}
-
-async function createFileWriteCandidate(
-  input: ExtensionMaterializerInput,
-  output: ObjectOutput,
-  write: OutputWrite,
-  roots: ReadonlyMap<string, ExtensionMetadataIndex>,
-  isRegistration = false,
-): Promise<MergeCandidate | { diagnostic: CompareMessage }> {
-  const targetRoot = input.target.canonicalRootPath ?? input.target.rootPath;
-  const targetPath = path.join(targetRoot, write.relativePath);
-  let targetSnapshot: MergePathSnapshot;
-  try {
-    targetSnapshot = await captureMergePath(targetPath, { retainContent: false });
-  } catch (error) {
-    return { diagnostic: compareDiagnostic(`Не удалось проверить target path ${write.relativePath}: ${errorMessage(error)}`, LEFT_SOURCE_ID, output.row.id) };
-  }
-  const expectedOldHash = snapshotHashOrMissing(targetSnapshot);
-  if (targetSnapshot.state !== 'missing' && targetSnapshot.type !== 'file') {
-    return { diagnostic: compareDiagnostic(`Target path ${write.relativePath} уже является каталогом или special file.`, LEFT_SOURCE_ID, output.row.id) };
-  }
-  if (expectedOldHash === undefined) {
-    return { diagnostic: compareDiagnostic(`Не удалось вычислить hash текущего target path ${write.relativePath}.`, LEFT_SOURCE_ID, output.row.id) };
-  }
-  const originalExpected = expectedTargetHashAtCompare(output.row, write.relativePath, input.target);
-  if (originalExpected !== undefined && originalExpected !== expectedOldHash) {
-    return { diagnostic: compareDiagnostic(`Target path изменился после сравнения: ${write.relativePath}`, LEFT_SOURCE_ID, output.row.id) };
-  }
-  const targetWitness: MergeFileWitness = {
-    sourceId: input.target.sourceId,
-    relativePath: write.relativePath,
-    expectedHash: expectedOldHash,
-    kind: 'file',
-  };
-  const witnesses = dedupeWitnesses([...write.sourceWitnesses, targetWitness]);
-  const payload: CapturedFileWritePayload = {
-    contentBase64: write.content.toString('base64'),
-    witnesses,
-  };
-  const candidate: MergeCandidate = {
-    kind: 'fileWrite',
-    sourceId: RIGHT_SOURCE_ID,
-    snapshotId: input.rightSnapshotId,
-    nodeId: isRegistration ? 'extension:configuration-registration' : output.row.id,
-    targetUri: pathToFileURL(targetPath).toString(),
-    expectedOldHash,
-    newHash: hashContent(write.content),
-    fileWrite: payload,
-    previewPath: write.relativePath,
-    previewEffect: expectedOldHash === MISSING_TARGET_HASH ? 'create' : 'replace',
-  };
-  for (const witness of witnesses) {
-    if (!roots.has(witness.sourceId)) {
-      return { diagnostic: compareDiagnostic(`Source witness отсутствует в compare session: ${witness.sourceId}`, witness.sourceId, output.row.id) };
-    }
-  }
-  return candidate;
 }
 
 async function createFileDeleteCandidate(
@@ -891,65 +924,9 @@ function expectedTargetHashAtCompare(
   return MISSING_TARGET_HASH;
 }
 
-function outputPathCollision(outputs: readonly ObjectOutput[]): string | undefined {
-  const owners = new Map<string, { rowId: string; path: string }>();
-  const allPaths = outputs.flatMap((output) => output.outputRelativePaths);
-  for (const output of outputs) {
-    for (const relativePath of output.outputRelativePaths) {
-      const key = path.normalize(relativePath).replace(/\\/g, '/').toLocaleLowerCase();
-      const existing = owners.get(key);
-      if (existing && existing.rowId !== output.row.id) {
-        return `Выбранные объекты пересекаются по target path: ${existing.path} и ${relativePath}.`;
-      }
-      owners.set(key, { rowId: output.row.id, path: relativePath });
-    }
-  }
-  const unique = [...new Set(allPaths.map((item) => path.normalize(item).replace(/\\/g, '/').toLocaleLowerCase()))];
-  for (let left = 0; left < unique.length; left++) {
-    for (let right = left + 1; right < unique.length; right++) {
-      const a = unique[left]!;
-      const b = unique[right]!;
-      if (a.startsWith(`${b}/`) || b.startsWith(`${a}/`)) {
-        return `Выбранные outputs имеют вложенные target paths: ${a} и ${b}.`;
-      }
-    }
-  }
-  return undefined;
-}
-
 function findOwnBaseObject(base: ExtensionMetadataIndex, type: string, uuid: string): ExtensionIndexedObject | undefined {
   return base.objects.find((object) => object.valid && object.identity?.ownership === 'own'
     && object.metadataType === type && object.identity.uuid.toLowerCase() === uuid.toLowerCase());
-}
-
-async function hydrateSelectedObjectSidecars(
-  incomingRoot: ExtensionMetadataIndex,
-  row: ExtensionTransferRow,
-  cancellation: ExtensionMaterializerInput['cancellation'],
-): Promise<ExtensionTransferRow | { diagnostic: CompareMessage }> {
-  const incoming = row.incoming;
-  if (!incoming || (row.action !== 'full-copy' && row.action !== 'adopted-cfe-copy') || incoming.sidecarFiles.length === 0) {
-    return row;
-  }
-  const rootPath = incomingRoot.canonicalRootPath ?? incomingRoot.rootPath;
-  const sidecarFiles: ExtensionCapturedFile[] = [];
-  for (const file of incoming.sidecarFiles) {
-    throwIfCompareCancelled(cancellation);
-    if (file.content) {
-      sidecarFiles.push(file);
-      continue;
-    }
-    try {
-      const snapshot = await captureMergePath(path.join(rootPath, file.relativePath), { retainContent: true });
-      if (snapshot.state !== 'file' || snapshot.hash !== file.hash || snapshot.contentBase64 === undefined) {
-        return { diagnostic: compareDiagnostic(`Sidecar изменился после сравнения: ${file.relativePath}`, incoming.sourceId, row.id) };
-      }
-      sidecarFiles.push({ ...file, content: Buffer.from(snapshot.contentBase64, 'base64') });
-    } catch (error) {
-      return { diagnostic: compareDiagnostic(`Не удалось захватить sidecar ${file.relativePath}: ${errorMessage(error)}`, incoming.sourceId, row.id) };
-    }
-  }
-  return { ...row, incoming: { ...incoming, sidecarFiles } };
 }
 
 function dedupeWitnesses(witnesses: readonly MergeFileWitness[]): MergeFileWitness[] {
@@ -974,6 +951,17 @@ function compareDiagnostic(message: string, sourceId: string, nodeId?: string): 
     nodeId,
     blocking: true,
     suggestedAction: message,
+  };
+}
+
+function rootPurposeRow(input: ExtensionMaterializerInput): ExtensionTransferRow {
+  return {
+    id: input.rootPurposeSelection?.nodeId ?? 'extension:root-purpose',
+    qualifiedName: 'ConfigurationExtensionPurpose',
+    status: 'changed',
+    targetRoot: input.target,
+    incomingRoot: input.incoming,
+    mergeable: true,
   };
 }
 

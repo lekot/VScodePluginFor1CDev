@@ -31,6 +31,32 @@ suite('ConfigurationCompareService', () => {
     );
   });
 
+  test('shows an explicit unsupported diagnostic for EDT roots instead of an empty Designer compare', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-edt-'));
+    const leftRoot = path.join(tempRoot, 'edt-project');
+    const rightRoot = path.join(tempRoot, 'edt-src-root');
+    let result: Awaited<ReturnType<typeof buildConfigurationCompareWithoutMutationRuntime>> | undefined;
+    try {
+      await writeFile(path.join(leftRoot, 'src', 'Configuration', 'Configuration.mdo'), '<Configuration/>');
+      await writeFile(path.join(rightRoot, 'Configuration', 'Configuration.mdo'), '<Configuration/>');
+      result = await buildConfigurationCompareWithoutMutationRuntime({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+      });
+
+      const diagnostics = collectNodes(result.projection.root, (node) =>
+        node.kind === 'diagnostic' && node.label === 'CONFIG_COMPARE_EDT_UNSUPPORTED'
+      );
+      assert.strictEqual(diagnostics.length, 2);
+      assert.strictEqual(result.session.state.messages.filter((message) => message.code === 'CONFIG_COMPARE_EDT_UNSUPPORTED').length, 2);
+      assert.strictEqual(result.workspace.selectNodeIds([]).canCreatePreview, false);
+    } finally {
+      result?.workspace.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   test('bounds BSL reads by configured concurrency', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-bounded-'));
     const leftRoot = path.join(tempRoot, 'left');
@@ -779,14 +805,73 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
-  test('full strategy keeps same-name different-uuid conflict and descriptor property merge', async () => {
+  test('pairs multiple nested Form.xml artifacts by owner-relative path and executes each file once', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-multiple-forms-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const backupRoot = path.join(tempRoot, 'backups');
+    const formPaths = ['Forms/Edit', 'Forms/ReadOnly'];
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'Products', 'catalog-products', 'Products');
+      await writeCatalogDescriptor(rightRoot, 'Products', 'catalog-products', 'Products');
+      for (const relativeFormPath of formPaths) {
+        await writeFile(
+          path.join(leftRoot, 'Catalogs', 'Products', relativeFormPath, 'Ext', 'Form.xml'),
+          formXml(`${relativeFormPath} left`)
+        );
+        await writeFile(
+          path.join(rightRoot, 'Catalogs', 'Products', relativeFormPath, 'Ext', 'Form.xml'),
+          formXml(`${relativeFormPath} right`)
+        );
+      }
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: backupRoot,
+      });
+      const formTitles = collectNodes(
+        result.projection.root,
+        (node) => node.kind === 'xmlProperty' && node.label === 'Title'
+      );
+
+      assert.strictEqual(formTitles.length, 2);
+      assert.strictEqual(new Set(formTitles.map((node) => node.id)).size, 2);
+      assert.deepStrictEqual(
+        formTitles.map((node) => path.relative(leftRoot, node.mergeState?.targetFilePath ?? '')).sort(),
+        formPaths.map((relativeFormPath) =>
+          path.join('Catalogs', 'Products', relativeFormPath, 'Ext', 'Form.xml')
+        ).sort()
+      );
+
+      const preview = await result.workspace.createPreviewForNodeIds(formTitles.map((node) => node.id));
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      assert.strictEqual(preview.preview.operationCount, 2);
+      result.workspace.approvePreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+      for (const relativeFormPath of formPaths) {
+        assert.strictEqual(
+          await readText(path.join(leftRoot, 'Catalogs', 'Products', relativeFormPath, 'Ext', 'Form.xml')),
+          formXml(`${relativeFormPath} right`)
+        );
+      }
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('merges scalar descriptor properties across a same-name UUID conflict while preserving target identity', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
     const rightRoot = path.join(tempRoot, 'right');
+    const targetUuid = '11111111-1111-4111-8111-111111111111';
+    const incomingUuid = '22222222-2222-4222-8222-222222222222';
 
     try {
-      await writeCatalogDescriptor(leftRoot, 'Products', 'left-catalog-products', 'Old goods');
-      await writeCatalogDescriptor(rightRoot, 'Products', 'right-catalog-products', 'New goods');
+      await writeCatalogDescriptor(leftRoot, 'Products', targetUuid, 'Old goods');
+      await writeCatalogDescriptor(rightRoot, 'Products', incomingUuid, 'New goods');
 
       const result = await buildConfigurationCompare({
         leftRootPath: leftRoot,
@@ -801,15 +886,9 @@ suite('ConfigurationCompareService', () => {
           node.label === 'Catalog.Products' &&
           node.conflict?.kind === 'sameNameDifferentUuid'
       );
-      const defaultSynonym = requireNodeByLabel(
-        result.projection.root,
-        'Synonym',
-        'Old goods',
-        'New goods'
-      );
-
+      const defaultSynonym = requireNodeByLabel(result.projection.root, 'Synonym', 'Old goods', 'New goods');
       assert.strictEqual(defaultConflict.mergeable, false);
-      assert.strictEqual(defaultSynonym.mergeable, true);
+      assert.strictEqual(defaultSynonym.mergeable, true, 'a scalar property can merge without changing the target UUID');
       assert.ok(result.workspace.listMergeableNodeIds().includes(defaultSynonym.id));
 
       const strategy = await result.workspace.setStrategy('full');
@@ -822,16 +901,19 @@ suite('ConfigurationCompareService', () => {
           node.label === 'Catalog.Products' &&
           node.conflict?.kind === 'sameNameDifferentUuid'
       );
-      const synonym = requireNodeByLabel(
-        result.workspace.payload.root,
-        'Synonym',
-        'Old goods',
-        'New goods'
-      );
-
+      const synonym = requireNodeByLabel(result.workspace.payload.root, 'Synonym', 'Old goods', 'New goods');
       assert.strictEqual(identityConflict.mergeable, false);
-      assert.strictEqual(synonym.mergeable, true);
+      assert.strictEqual(synonym.mergeable, true, 'full strategy may merge scalar properties under the visible identity conflict');
       assert.ok(result.workspace.listMergeableNodeIds().includes(synonym.id));
+      const preview = await result.workspace.createPreviewForNodeIds([synonym.id]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview.diagnostics));
+      result.workspace.approvePreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+      const targetDescriptor = await readText(path.join(leftRoot, 'Catalogs', 'Products', 'Products.xml'));
+      assert.match(targetDescriptor, new RegExp(`<Catalog uuid="${targetUuid}">`, 'u'));
+      assert.match(targetDescriptor, /<Synonym>New goods<\/Synonym>/u);
+      assert.doesNotMatch(targetDescriptor, new RegExp(incomingUuid, 'u'));
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

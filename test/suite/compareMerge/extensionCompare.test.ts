@@ -125,7 +125,7 @@ suite('Extension-aware configuration compare', () => {
           ...(base ? { extensionBaseRoots: { left: base } } : {}),
         });
         try {
-          const nodeIds = compare.result.workspace.listMergeableNodeIds();
+          const nodeIds = mergeableTransferRowIds(compare.result);
           assert.strictEqual(nodeIds.length, ROOT_TYPES.length,
             `${direction.id}: every registered metadata root should be mergeable`);
           const preview = await createPreview(compare.result, nodeIds);
@@ -219,7 +219,7 @@ suite('Extension-aware configuration compare', () => {
         extensionBaseRoots: { left: base, right: base },
       });
       try {
-        const nodeIds = compare.result.workspace.listMergeableNodeIds();
+        const nodeIds = mergeableTransferRowIds(compare.result);
         assert.strictEqual(nodeIds.length, ROOT_TYPES.length, 'all adopted registry roots should pass the existing guards');
         const preview = await createPreview(compare.result, nodeIds);
         await execute(compare.result, preview.previewId);
@@ -288,7 +288,7 @@ suite('Extension-aware configuration compare', () => {
         extensionBaseRoots: { left: base, right: base },
       });
       try {
-        const nodeIds = compare.result.workspace.listMergeableNodeIds();
+        const nodeIds = mergeableTransferRowIds(compare.result);
         assert.strictEqual(nodeIds.length, REGISTER_ROOT_TYPES.length,
           'all four adopted register roots should remain selectable with inline children');
         const preview = await createPreview(compare.result, nodeIds);
@@ -427,7 +427,7 @@ suite('Extension-aware configuration compare', () => {
         extensionBaseRoots: { right: target },
       });
       try {
-        const nodeIds = compare.result.workspace.listMergeableNodeIds();
+        const nodeIds = mergeableTransferRowIds(compare.result);
         assert.strictEqual(nodeIds.length, ROOT_TYPES.length, 'all registry roots should retain the existing overlay eligibility');
         const preview = await createPreview(compare.result, nodeIds);
         await execute(compare.result, preview.previewId);
@@ -858,6 +858,124 @@ suite('Extension-aware configuration compare', () => {
     });
   });
 
+  test('applies one selected form from multiple own and adopted CFE forms without replacing sibling files', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const cases = [
+        {
+          id: 'own',
+          type: 'Catalog' as const,
+          name: 'Ext_Orders',
+          localUuid: UUID.catalog,
+          anchorUuid: undefined,
+          base: undefined,
+          relativeFolder: 'Catalogs/Ext_Orders',
+        },
+        {
+          id: 'adopted',
+          type: 'CommonModule' as const,
+          name: 'Shared',
+          localUuid: UUID.commonModuleLocal,
+          anchorUuid: UUID.commonModule,
+          base: path.join(tempRoot, 'base-cf'),
+          relativeFolder: 'CommonModules/Shared',
+        },
+      ];
+
+      for (const item of cases) {
+        const caseRoot = path.join(tempRoot, item.id);
+        const target = path.join(caseRoot, 'target-cfe');
+        const source = path.join(caseRoot, 'source-cfe');
+        const formPath = (form: string): string => `${item.relativeFolder}/Forms/${form}/Ext/Form.xml`;
+        const adopted = item.anchorUuid ? { belonging: 'Adopted' as const, anchorUuid: item.anchorUuid } : {};
+        const targetObject: ExtensionCompareObjectFixture = {
+          type: item.type,
+          name: item.name,
+          uuid: item.localUuid,
+          ...adopted,
+        };
+        const sourceObject: ExtensionCompareObjectFixture = {
+          ...targetObject,
+          uuid: item.anchorUuid ? UUID.catalogOther : item.localUuid,
+        };
+        if (item.base) {
+          await writeDesignerConfiguration(item.base, {
+            objects: [
+              { type: item.type, name: item.name, uuid: item.anchorUuid! },
+              ...(item.id === 'adopted' ? [{ type: 'Catalog', name: 'Known', uuid: UUID.catalog }] : []),
+            ],
+          });
+        }
+        await writeDesignerConfiguration(target, {
+          purpose: 'Customization',
+          namePrefix: 'Ext_',
+          objects: [targetObject],
+        });
+        await writeDesignerConfiguration(source, {
+          purpose: 'Customization',
+          namePrefix: 'Ext_',
+          objects: [sourceObject],
+        });
+        const formXml = (title: string, addBaseReference = false): string =>
+          `<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"><Attributes>${addBaseReference ? '<Attribute name="Object" id="1"><Type><v8:Type>cfg:CatalogRef.Known</v8:Type></Type></Attribute>' : ''}</Attributes><Commands/><ChildItems/><WindowTitle>${title}</WindowTitle></Form>`;
+        await writeCompareBytes(target, formPath('Main'), formXml('target Main'));
+        await writeCompareBytes(source, formPath('Main'), formXml('source Main', item.id === 'adopted'));
+        await writeCompareBytes(target, formPath('Secondary'), '<Form><WindowTitle>target Secondary</WindowTitle></Form>');
+        await writeCompareBytes(source, formPath('Secondary'), '<Form><WindowTitle>source Secondary</WindowTitle></Form>');
+
+        const compare = await openCompare(tempRoot, target, source, {
+          extensionBaseRoots: item.base ? { left: item.base, right: item.base } : undefined,
+        });
+        try {
+          const row = collectNodes(compare.result.projection.root).find((node) => node.label === `${item.type}.${item.name}`);
+          assert.ok(row, `${item.id}: transfer row should be visible`);
+          assert.ok(compare.result.workspace.listMergeableNodeIds().includes(row!.id), `${item.id}: parent transfer must remain selectable`);
+          const mainForm = collectNodes(row!).find((node) => node.mergeable
+            && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Forms/Main/Ext/Form.xml')
+            && node.rightValue?.includes('source Main'));
+          assert.ok(mainForm, `${item.id}: Main Form.xml should have a selectable semantic node`);
+
+          const preview = await createPreview(compare.result, [mainForm!.id]);
+          await execute(compare.result, preview.previewId);
+
+          assert.match(await readUtf8(target, formPath('Main')), /source Main/u);
+          assert.match(await readUtf8(target, formPath('Secondary')), /target Secondary/u);
+          assert.match(await readUtf8(target, `${item.relativeFolder}.xml`), /<MetaDataObject/u);
+          if (item.id === 'adopted' && item.base) {
+            await writeCompareBytes(source, formPath('Main'), formXml('source Main after compare', true));
+            const staleBaseCompare = await openCompare(tempRoot, target, source, {
+              extensionBaseRoots: { left: item.base, right: item.base },
+            });
+            try {
+              const staleRow = collectNodes(staleBaseCompare.result.projection.root)
+                .find((node) => node.kind === 'extensionMetadataObject' && node.label === `${item.type}.${item.name}`);
+              assert.ok(staleRow);
+              const changedForm = collectNodes(staleRow!).find((node) => node.mergeable
+                && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Forms/Main/Ext/Form.xml')
+                && node.rightValue?.includes('source Main after compare'));
+              assert.ok(changedForm, 'the modified source form should remain selectively mergeable');
+              const stalePreview = await createPreview(staleBaseCompare.result, [changedForm!.id]);
+              const targetFormBeforeStaleExecution = await fs.readFile(path.join(target, formPath('Main')));
+              const baseDescriptor = await readUtf8(item.base, 'Catalogs/Known.xml');
+              await writeCompareBytes(item.base, 'Catalogs/Known.xml', baseDescriptor.replace(
+                '</Properties>', '<Comment>changed after preview</Comment></Properties>'
+              ));
+              const approved = staleBaseCompare.result.workspace.approvePreview(stalePreview.previewId);
+              assert.strictEqual(approved.ok, true);
+              const staleExecution = await staleBaseCompare.result.workspace.executeApprovedPreview(stalePreview.previewId, { destructiveConfirmed: true });
+              assert.strictEqual(staleExecution.ok, false);
+              assert.ok(staleExecution.result?.failed.some((item) => item.code === 'MERGE_WITNESS_MISMATCH'), JSON.stringify(staleExecution.result?.failed));
+              assert.deepStrictEqual(await fs.readFile(path.join(target, formPath('Main'))), targetFormBeforeStaleExecution);
+            } finally {
+              await staleBaseCompare.dispose();
+            }
+          }
+        } finally {
+          await compare.dispose();
+        }
+      }
+    });
+  });
+
   test('CFE→CF adopted overlay updates the base object while preserving its full descriptor and UUID', async () => {
     await withTempRoot(async (tempRoot) => {
       const target = path.join(tempRoot, 'base-cf');
@@ -932,28 +1050,31 @@ suite('Extension-aware configuration compare', () => {
 
   test('new own objects obey CFE purpose and prefix rules while an existing own object can be updated', async () => {
     await withTempRoot(async (tempRoot) => {
-      for (const purpose of ['AddOn', 'Customization', 'Patch'] as const) {
-        const caseRoot = path.join(tempRoot, purpose);
+      const cases = [
+        { purpose: 'AddOn' as const, type: 'Catalog' as const, mergeable: true },
+        { purpose: 'Customization' as const, type: 'Catalog' as const, mergeable: true },
+        { purpose: 'Patch' as const, type: 'CommonModule' as const, mergeable: true },
+        { purpose: 'Patch' as const, type: 'Catalog' as const, mergeable: true },
+      ];
+      for (const [index, item] of cases.entries()) {
+        const caseRoot = path.join(tempRoot, `${item.purpose}-${item.type}-${index}`);
         const base = path.join(caseRoot, 'base-cf');
         const incoming = path.join(caseRoot, 'incoming-cf');
         const target = path.join(caseRoot, 'target-cfe');
         const object: ExtensionCompareObjectFixture = {
-          type: 'Catalog',
+          type: item.type,
           name: 'Ext_New',
           uuid: UUID.catalog,
         };
         await writeDesignerConfiguration(base);
         await writeDesignerConfiguration(incoming, { objects: [object] });
-        await writeDesignerConfiguration(target, { purpose, namePrefix: 'Ext_' });
+        await writeDesignerConfiguration(target, { purpose: item.purpose, namePrefix: 'Ext_' });
         const compare = await openCompare(tempRoot, target, incoming, {
           extensionBaseRoots: { left: base },
         });
         try {
-          const mergeable = compare.result.workspace.listMergeableNodeIds().length === 1;
-          assert.strictEqual(mergeable, purpose !== 'Patch', `${purpose} own-object creation policy`);
-          if (purpose === 'Patch') {
-            assertBlocked(compare.result, 'Patch creation should remain visible and blocked');
-          }
+          const mergeable = mergeableTransferRowIds(compare.result).length === 1;
+          assert.strictEqual(mergeable, item.mergeable, `${item.purpose} ${item.type} own-object creation policy`);
         } finally {
           await compare.dispose();
         }
@@ -1728,15 +1849,21 @@ async function withTempRoot<T>(callback: (tempRoot: string) => Promise<T>): Prom
 }
 
 function onlyMergeableNodeId(result: ConfigurationCompareResult): string {
-  const nodeIds = result.workspace.listMergeableNodeIds();
-  assert.strictEqual(nodeIds.length, 1, `Expected one mergeable object, got ${nodeIds.length}: ${JSON.stringify({
+  const nodeIds = mergeableTransferRowIds(result);
+  assert.strictEqual(nodeIds.length, 1, `Expected one mergeable object row, got ${nodeIds.length}: ${JSON.stringify({
     nodeIds,
-    rows: collectNodes(result.projection.root).map((node) => ({ label: node.label, state: node.mergeState, conflict: node.conflict })),
+    rows: collectNodes(result.projection.root).map((node) => ({ label: node.label, kind: node.kind, state: node.mergeState, conflict: node.conflict })),
     messages: result.session.state.messages,
   })}`);
   const selected = result.workspace.selectNodeIds(nodeIds);
   assert.strictEqual(selected.canCreatePreview, true);
   return nodeIds[0]!;
+}
+
+function mergeableTransferRowIds(result: ConfigurationCompareResult): string[] {
+  return collectNodes(result.projection.root)
+    .filter((node) => node.kind === 'extensionMetadataObject' && node.mergeable === true)
+    .map((node) => node.id);
 }
 
 function nodeIdForLabel(root: CompareTreeNode, label: string): string {

@@ -11,6 +11,7 @@ import { throwIfCompareCancelled } from '../compareCancellation';
 import type { CompareJoinStrategy, ConfigurationCompareInfo, ConfigurationCompareWorkspaceState } from '../configurationCompareWorkspace';
 import { indexExtensionMetadataRoot, SUPPORTED_EXTENSION_FORMATS, type ExtensionIndexDiagnostic, type ExtensionMetadataIndex } from './extensionMetadataIndex';
 import { analyzeExtensionTransfers, materializeExtensionSelection, type ExtensionTransferRow } from './extensionTransfer';
+import { projectExtensionSemanticNodes } from './extensionSemanticProjection';
 
 const LEFT_SOURCE_ID = 'left-source';
 const RIGHT_SOURCE_ID = 'right-source';
@@ -186,8 +187,21 @@ export async function tryBuildExtensionCompareState(
   });
   throwIfCompareCancelled(input.cancellation);
 
+  const semanticProjection = await projectExtensionSemanticNodes({
+    target: left,
+    incoming: right,
+    rows: analysis.rows,
+    session,
+    leftSnapshotId,
+    rightSnapshotId,
+    globalBlockReason,
+    cancellation: input.cancellation,
+  });
+  const semanticDiagnostics = semanticProjection.diagnostics.map(redactSemanticDiagnostic);
+  for (const message of semanticDiagnostics) {session.addMessage(message);}
+
   const rootDiagnostics = collectVisibleDiagnostics([left, right, ...Object.values(baseIndexes).filter(isDefined)]);
-  const projection = buildExtensionProjection(analysis.nodes, rootDiagnostics);
+  const projection = buildExtensionProjection(semanticProjection.nodes, rootDiagnostics, semanticProjection.rootPurposeNode, semanticDiagnostics);
   const comparisonInfo: ConfigurationCompareInfo = {
     mode: 'extension',
     targetLabel: safeBasename(leftRootPath),
@@ -204,12 +218,14 @@ export async function tryBuildExtensionCompareState(
     session,
     projection,
     candidateFactories: new Map(),
-    mergeableNodeIds: analysis.mergeableNodeIds,
+    mergeableNodeIds: [...analysis.mergeableNodeIds, ...semanticProjection.mergeableNodeIds.filter((id) => !analysis.mergeableNodeIds.includes(id))],
     comparisonInfo,
     materializeSelection: (nodeIds) => materializeExtensionSelection({
       target: left,
       incoming: right,
       rows,
+      semanticSelections: semanticProjection.selections,
+      rootPurposeSelection: semanticProjection.rootPurposeSelection,
       leftSnapshotId,
       rightSnapshotId,
       cancellation: input.cancellation,
@@ -275,11 +291,17 @@ function hashIndex(index: ExtensionMetadataIndex): string {
 function buildExtensionProjection(
   objectNodes: readonly CompareTreeNode[],
   diagnostics: readonly { readonly sourceId: string; readonly diagnostic: ExtensionIndexDiagnostic }[],
+  rootPurposeNode?: CompareTreeNode,
+  semanticDiagnostics: readonly CompareMessage[] = [],
 ): CompareTreeProjection {
   const groups: CompareTreeNode[] = [];
+  if (rootPurposeNode) {groups.push(branch('extensionRootProperties', 'Свойства расширения', 'extensionRootPropertyGroup', [rootPurposeNode]));}
   if (objectNodes.length > 0) {groups.push(branch('extensionObjects', 'Объекты', 'extensionObjectGroup', [...objectNodes]));}
-  if (diagnostics.length > 0) {
-    const diagnosticNodes = diagnostics.map(({ sourceId, diagnostic }, index) => diagnosticNode(sourceId, diagnostic, index));
+  if (diagnostics.length > 0 || semanticDiagnostics.length > 0) {
+    const diagnosticNodes = [
+      ...diagnostics.map(({ sourceId, diagnostic }, index) => diagnosticNode(sourceId, diagnostic, index)),
+      ...semanticDiagnostics.map(semanticDiagnosticNode),
+    ];
     groups.push(branch('extensionDiagnostics', 'Диагностика', 'extensionDiagnosticGroup', diagnosticNodes));
   }
   const root = branch('configCompare', 'Сравнение расширений конфигурации', 'configCompare', groups);
@@ -306,6 +328,23 @@ function diagnosticNode(sourceId: string, diagnostic: ExtensionIndexDiagnostic, 
     rightValue: safeMessage,
     mergeable: false,
     ...(diagnostic.qualifiedName ? { payloadRef: `extension:${diagnostic.qualifiedName}` } : {}),
+    conflict: { kind: 'unsupported', blocking: true, message: safeMessage },
+    mergeState: { state: 'blocked', reason: safeMessage },
+    children: [],
+  };
+}
+
+function semanticDiagnosticNode(message: CompareMessage, index: number): CompareTreeNode {
+  const safeMessage = message.suggestedAction ?? message.code;
+  return {
+    id: `extension:diagnostic:semantic:${message.sourceId}:${message.code}:${index}`,
+    label: message.code,
+    kind: 'diagnostic',
+    status: 'changed',
+    leftValue: message.path,
+    rightValue: safeMessage,
+    mergeable: false,
+    ...(message.nodeId ? { payloadRef: message.nodeId } : {}),
     conflict: { kind: 'unsupported', blocking: true, message: safeMessage },
     mergeState: { state: 'blocked', reason: safeMessage },
     children: [],
@@ -344,7 +383,20 @@ function isRootWideDiagnostic(diagnostic: ExtensionIndexDiagnostic): boolean {
 }
 
 function indexDiagnosticMessage(diagnostic: ExtensionIndexDiagnostic): string {
-  return diagnostic.message.replace(/(?:[A-Za-z]:\\|\\\\|\/)[^\s"'<>]*/gu, '[путь]');
+  return redactMachinePaths(diagnostic.message);
+}
+
+function redactSemanticDiagnostic(message: CompareMessage): CompareMessage {
+  const redact = (value: string | undefined): string | undefined => value?.replace(/(?:[A-Za-z]:\\|\\\\|\/)[^\s"'<>]*/gu, '[путь]');
+  return {
+    ...message,
+    ...(message.path ? { path: redact(message.path) } : {}),
+    ...(message.suggestedAction ? { suggestedAction: redact(message.suggestedAction) } : {}),
+  };
+}
+
+function redactMachinePaths(value: string): string {
+  return value.replace(/(?:[A-Za-z]:\\|\\\\|\/)[^\s"'<>]*/gu, '[путь]');
 }
 
 function rootsOverlap(left: ExtensionMetadataIndex, right: ExtensionMetadataIndex): boolean {

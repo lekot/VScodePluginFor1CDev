@@ -1,6 +1,9 @@
 import * as assert from 'assert';
+import { createHash } from 'crypto';
+import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 
 import { indexBslModuleSource, type BslModuleIdentity } from '../../../src/compareMerge/bsl/bslModuleIndexer';
 import { createBslRoutineLogicalMergePlan } from '../../../src/compareMerge/bsl/bslRoutineLogicalMerge';
@@ -13,6 +16,7 @@ import {
 import { CompareSession } from '../../../src/compareMerge/domain/compareSession';
 import type { CompareMessage } from '../../../src/compareMerge/domain/compareContracts';
 import type { MergeCandidate } from '../../../src/compareMerge/merge/mergePlanner';
+import { hashXmlText } from '../../../src/compareMerge/xml/xmlPatch';
 
 suite('ConfigurationCompareWorkspace', () => {
   test('resolves only host-side registered node ids and rejects forged webview input', async () => {
@@ -78,6 +82,136 @@ suite('ConfigurationCompareWorkspace', () => {
       'CONFIG_COMPARE_PREVIEW_NOT_FOUND',
     ]);
     assert.strictEqual(executeCalls, 0);
+  });
+
+  test('rejects semantically invalid selected XML before creating or approving preview', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'compare-workspace-semantic-xml-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const targetPath = path.join(leftRoot, 'Catalogs', 'Products', 'Forms', 'Edit', 'Ext', 'Form.xml');
+    const sourcePath = path.join(rightRoot, 'Catalogs', 'Products', 'Forms', 'Edit', 'Ext', 'Form.xml');
+    const backupRootPath = path.join(tempRoot, 'backups');
+    const baseline = '<Form><ChildItems><InputField name="A" id="1"/><InputField name="B" id="2"/></ChildItems><Attributes/><Commands/></Form>';
+    const invalidFinal = '<Form><ChildItems><InputField name="A" id="1"/><InputField name="B" id="1"/></ChildItems><Attributes/><Commands/></Form>';
+    const incoming = baseline.replace('id="2"', 'id="1"');
+    const targetUri = pathToFileURL(targetPath).toString();
+    const rightRootUri = pathToFileURL(rightRoot).toString();
+
+    try {
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+      await fs.writeFile(targetPath, baseline, 'utf8');
+      await fs.writeFile(sourcePath, incoming, 'utf8');
+
+      const session = CompareSession.create({
+        sessionId: 'semantic-workspace-session',
+        createdAt: '2026-05-30T10:00:00.000Z',
+        sources: [
+          { sourceId: 'left-source', side: 'left', kind: 'workspace', displayName: 'Left', rootUri: pathToFileURL(leftRoot).toString(), writable: true },
+          { sourceId: 'right-source', side: 'right', kind: 'snapshot', displayName: 'Right', rootUri: rightRootUri, writable: false },
+        ],
+      });
+      session.registerSnapshot({
+        snapshotId: 'snapshot-left-1', sourceId: 'left-source', snapshotRoot: pathToFileURL(leftRoot).toString(),
+        origin: pathToFileURL(leftRoot).toString(), createdAt: '2026-05-30T10:00:00.000Z',
+        retentionUntil: '2026-05-30T12:00:00.000Z', sourceRevision: 'left', readOnly: false,
+        cleanupPolicy: 'manual', contentHash: 'left',
+      });
+      session.registerSnapshot({
+        snapshotId: 'snapshot-right-1', sourceId: 'right-source', snapshotRoot: rightRootUri,
+        origin: rightRootUri, createdAt: '2026-05-30T10:00:00.000Z',
+        retentionUntil: '2026-05-30T12:00:00.000Z', sourceRevision: 'right', readOnly: true,
+        cleanupPolicy: 'manual', contentHash: 'right',
+      });
+
+      const nodeId = 'xml:form:duplicate-id';
+      const candidate: MergeCandidate = {
+        kind: 'xmlNodeReplace', sourceId: 'right-source', snapshotId: 'snapshot-right-1', nodeId,
+        targetUri, expectedOldHash: hashXmlText(baseline), newHash: hashXmlText(invalidFinal),
+        xmlPatch: {
+          kind: 'replaceNode',
+          target: { filePath: targetUri, pointer: '/Form/ChildItems/InputField[1]', displayPath: 'Form/ChildItems/InputField[1]' },
+          expectedOldHash: hashXmlText(baseline), newHash: hashXmlText(invalidFinal),
+          replacementXml: '<InputField name="B" id="1"/>', semanticKind: 'formXml',
+          sourceWitnesses: [{ sourceId: 'right-source', relativePath: path.relative(rightRoot, sourcePath), expectedHash: createHash('sha256').update(Buffer.from(incoming, 'utf8')).digest('hex'), kind: 'file' }],
+        },
+      };
+      const node: CompareTreeNode = {
+        id: nodeId, label: 'InputField B', kind: 'formItem', status: 'changed', mergeable: true,
+        mergeState: { state: 'ready', targetFilePath: targetPath }, children: [],
+      };
+      const workspace = new ConfigurationCompareWorkspace({
+        session,
+        projection: { root: { id: 'root', label: 'Compare', kind: 'configCompare', status: 'changed', children: [node] }, stats: { total: 1, different: 1, mergeable: 1 } },
+        candidateFactories: new Map([[nodeId, async () => ({ ok: true, candidate })]]),
+        leftRootPath: leftRoot, rightRootPath: rightRoot, backupRootPath,
+      });
+
+      const preview = await workspace.createPreviewForNodeIds([nodeId]);
+
+      assert.strictEqual(preview.ok, false);
+      assert.ok(preview.diagnostics.some((item) => item.code === 'XML_FORM_DUPLICATE_ID'));
+      assert.strictEqual(workspace.approvePreview('preview-1').ok, false);
+      assert.strictEqual(await fs.readFile(targetPath, 'utf8'), baseline);
+
+      const legacyNodeId = 'xml:form:legacy-patch';
+      const legacyFinal = baseline.replace('name="A"', 'name="A2"');
+      const legacyCandidate: MergeCandidate = {
+        ...candidate,
+        nodeId: legacyNodeId,
+        newHash: hashXmlText(legacyFinal),
+        xmlPatch: {
+          kind: 'replaceNode',
+          target: { filePath: targetUri, pointer: '/Form/ChildItems/InputField[1]', displayPath: 'Form/ChildItems/InputField[1]' },
+          expectedOldHash: hashXmlText(baseline), newHash: hashXmlText(legacyFinal),
+          replacementXml: '<InputField name="A2" id="1"/>',
+        },
+      };
+      const combinedWorkspace = new ConfigurationCompareWorkspace({
+        session,
+        projection: {
+          root: {
+            id: 'root', label: 'Compare', kind: 'configCompare', status: 'changed', children: [
+              node,
+              { ...node, id: legacyNodeId, label: 'Legacy XML edit' },
+            ],
+          },
+          stats: { total: 2, different: 2, mergeable: 2 },
+        },
+        candidateFactories: new Map([
+          [nodeId, async () => ({ ok: true, candidate })],
+          [legacyNodeId, async () => ({ ok: true, candidate: legacyCandidate })],
+        ]),
+        leftRootPath: leftRoot, rightRootPath: rightRoot, backupRootPath,
+      });
+      const mixedPreview = await combinedWorkspace.createPreviewForNodeIds([nodeId, legacyNodeId]);
+      assert.strictEqual(mixedPreview.ok, false);
+      assert.ok(mixedPreview.diagnostics.some((item) => item.code === 'MERGE_XML_SEMANTIC_KIND_MISMATCH'));
+
+      const unsupportedNodeId = 'xml:form:unsupported-kind';
+      const unsupportedCandidate = {
+        ...candidate,
+        nodeId: unsupportedNodeId,
+        xmlPatch: { ...candidate.xmlPatch!, semanticKind: 'futureXml' },
+      } as unknown as MergeCandidate;
+      const unsupportedWorkspace = new ConfigurationCompareWorkspace({
+        session,
+        projection: {
+          root: {
+            id: 'root', label: 'Compare', kind: 'configCompare', status: 'changed',
+            children: [{ ...node, id: unsupportedNodeId }],
+          },
+          stats: { total: 1, different: 1, mergeable: 1 },
+        },
+        candidateFactories: new Map([[unsupportedNodeId, async () => ({ ok: true, candidate: unsupportedCandidate })]]),
+        leftRootPath: leftRoot, rightRootPath: rightRoot, backupRootPath,
+      });
+      const unsupportedPreview = await unsupportedWorkspace.createPreviewForNodeIds([unsupportedNodeId]);
+      assert.strictEqual(unsupportedPreview.ok, false);
+      assert.ok(unsupportedPreview.diagnostics.some((item) => item.code === 'MERGE_XML_SEMANTIC_KIND_UNSUPPORTED'));
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
   });
 
   test('redacts candidate diagnostics before returning preview errors', async () => {

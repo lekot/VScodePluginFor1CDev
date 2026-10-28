@@ -10,27 +10,44 @@ export interface XmlAddressSegment {
   selector: string;
 }
 
+export function encodeXmlAddressComponent(value: string): string {
+  return encodeURIComponent(value)
+    .replace(/[!'()*~]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replace(/\[/g, '%5B')
+    .replace(/\]/g, '%5D');
+}
+
 export function parseXmlAddressPointer(pointer: string): XmlAddressSegment[] {
   if (!pointer.startsWith('/')) {
     throw new Error(`Invalid XML address pointer: ${pointer}`);
   }
 
-  return pointer
-    .slice(1)
-    .split('/')
-    .filter(Boolean)
-    .map((segment) => {
-      const match = /^(.+)\[(.*)\]$/.exec(segment);
-      if (!match) {
-        return {
-          localName: decodeURIComponent(segment),
-          selector: '0',
-        };
-      }
+  const encodedSegments = pointer.slice(1).split('/');
+  if (encodedSegments.length === 0 || encodedSegments.some((segment) => !segment)) {
+    throw new Error(`Invalid XML address pointer: ${pointer}`);
+  }
 
+  return encodedSegments.map((segment) => {
+    const match = /^(.+)\[(.*)\]$/.exec(segment);
+    if (!match) {
       return {
-        localName: decodeURIComponent(match[1]),
-        selector: decodeURIComponent(match[2]),
+        localName: decodeXmlAddressComponent(segment, pointer),
+        selector: '0',
       };
-    });
+    }
+
+    return {
+      localName: decodeXmlAddressComponent(match[1], pointer),
+      selector: decodeXmlAddressComponent(match[2], pointer),
+    };
+  });
+}
+
+function decodeXmlAddressComponent(value: string, pointer: string): string {
+  try {
+    const encoded = value.replace(/%(?![\da-f]{2})/gi, '%25');
+    return decodeURIComponent(encoded);
+  } catch {
+    throw new Error(`Invalid XML address encoding: ${pointer}`);
+  }
 }

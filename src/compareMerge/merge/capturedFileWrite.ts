@@ -82,8 +82,20 @@ export function validateCapturedFileWritePayload(
     return ['Captured file-write content is not canonical base64.'];
   }
 
+  return validateMergeFileWitnesses(payload.witnesses, sourceIds);
+}
+
+/** Checks witness shape, source membership, hashes, and canonical source-relative paths. */
+export function validateMergeFileWitnesses(
+  witnesses: unknown,
+  sourceIds?: ReadonlySet<string>,
+): string[] {
+  if (!Array.isArray(witnesses)) {
+    return ['File witnesses are missing or malformed.'];
+  }
+
   const failures: string[] = [];
-  for (const value of payload.witnesses) {
+  for (const value of witnesses) {
     if (!isRecord(value)) {
       failures.push('Captured file-write witness is malformed.');
       continue;
@@ -192,20 +204,35 @@ export async function verifyCapturedFileWriteWitnesses(
   const targetAssertions = new Map<string, MergeWitnessAssertion>();
 
   for (const operation of operations) {
-    if (operation.kind !== 'fileWrite') {
-      continue;
+    let witnesses: readonly MergeFileWitness[] | undefined;
+    if (operation.kind === 'fileWrite') {
+      const payloadFailures = validateCapturedFileWritePayload(operation.fileWrite, sourceIds);
+      if (payloadFailures.length > 0) {
+        failures.push({
+          operation,
+          code: 'MERGE_FILE_WRITE_PAYLOAD_INVALID',
+          message: payloadFailures[0]!,
+        });
+        continue;
+      }
+      witnesses = operation.fileWrite!.witnesses;
+    } else if (isXmlOperation(operation.kind) && operation.xmlPatch?.sourceWitnesses) {
+      const witnessFailures = validateMergeFileWitnesses(operation.xmlPatch.sourceWitnesses, sourceIds);
+      if (witnessFailures.length > 0) {
+        failures.push({
+          operation,
+          code: 'MERGE_XML_SOURCE_WITNESS_INVALID',
+          message: witnessFailures[0]!,
+        });
+        continue;
+      }
+      witnesses = operation.xmlPatch.sourceWitnesses;
     }
-    const payloadFailures = validateCapturedFileWritePayload(operation.fileWrite, sourceIds);
-    if (payloadFailures.length > 0) {
-      failures.push({
-        operation,
-        code: 'MERGE_FILE_WRITE_PAYLOAD_INVALID',
-        message: payloadFailures[0]!,
-      });
+    if (!witnesses) {
       continue;
     }
 
-    for (const witness of operation.fileWrite!.witnesses) {
+    for (const witness of witnesses) {
       const checked = await checkWitness(session, witness);
       if ('failure' in checked) {
         failures.push({ operation, ...checked.failure });
@@ -232,6 +259,10 @@ export async function verifyCapturedFileWriteWitnesses(
   }
 
   return { failures, targetAssertions: [...targetAssertions.values()] };
+}
+
+function isXmlOperation(kind: MergeOperation['kind']): boolean {
+  return kind === 'xmlNodeReplace' || kind === 'xmlNodeInsert' || kind === 'xmlNodeDelete';
 }
 
 export async function resolveCapturedFileWriteOperation(

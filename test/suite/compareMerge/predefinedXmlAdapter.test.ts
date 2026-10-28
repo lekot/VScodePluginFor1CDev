@@ -17,7 +17,7 @@ suite('Predefined XML merge adapter', () => {
           '    <Name>Main</Name>',
           '    <Presentation>Old main</Presentation>',
           '  </Item>',
-          '  <Item>',
+          '  <Item id="by-name">',
           '    <Name>ByName</Name>',
           '    <Presentation>Old named</Presentation>',
           '  </Item>',
@@ -26,10 +26,10 @@ suite('Predefined XML merge adapter', () => {
         right: [
           '<PredefinedData>',
           '  <Item id="main">',
-          '    <Name>MainRenamed</Name>',
+          '    <Name>Main</Name>',
           '    <Presentation>New main</Presentation>',
           '  </Item>',
-          '  <Item>',
+          '  <Item id="by-name">',
           '    <Name>ByName</Name>',
           '    <Presentation>New named</Presentation>',
           '  </Item>',
@@ -38,7 +38,7 @@ suite('Predefined XML merge adapter', () => {
       })
     );
 
-    const main = requireNodeByLabel(result.nodes, 'MainRenamed');
+    const main = requireNodeByLabel(result.nodes, 'Main');
     const mainPresentation = requireNodeByLabel(main.children, 'Presentation');
     const byName = requireNodeByLabel(result.nodes, 'ByName');
     const byNamePresentation = requireNodeByLabel(byName.children, 'Presentation');
