@@ -9,8 +9,11 @@ import {
   type ConfigurationCompareResult,
 } from '../../../src/compareMerge/configurationCompareService';
 import { pairedXmlSidecars } from '../../../src/compareMerge/extensions/extensionSemanticProjection';
-import type { ExtensionIndexedObject } from '../../../src/compareMerge/extensions/extensionMetadataIndex';
+import type { ExtensionIndexedObject, ExtensionMetadataIndex } from '../../../src/compareMerge/extensions/extensionMetadataIndex';
+import { analyzeExtensionTransfers } from '../../../src/compareMerge/extensions/extensionTransfer';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
+import { elementChildren, parseXmlDocument, textContent, type XmlElement } from '../../../src/compareMerge/xml/xmlDom';
+import { namespaceUriForName } from '../../../src/compareMerge/adapters/semanticXml/semanticXmlIdentity';
 import { METADATA_TYPE_DESCRIPTORS } from '../../../src/constants/metadataTypeDescriptors';
 import { createMergeMutationTestRuntime } from './mergeMutationTestSupport';
 import {
@@ -72,6 +75,106 @@ suite('Extension-aware configuration compare', () => {
     ]);
     assert.strictEqual(result.pairs.filter((pair) => pair.kind === 'formXml').length, 3);
     assert.strictEqual(result.pairs.filter((pair) => pair.kind === 'predefinedXml').length, 1);
+  });
+
+  test('uses and leases the exact nested Template descriptor version for its DCS sidecar', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cfe');
+      const source = path.join(tempRoot, 'source-cfe');
+      const owner: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalog, childObjectsXml: '<Template>PrintTemplate</Template>',
+      };
+      const writeRoots = async (targetTemplateVersion: string, sourceTemplateVersion: string) => {
+        await writeDesignerConfiguration(target, { purpose: 'Customization', objects: [mdClassesFixture(owner)] });
+        await writeDesignerConfiguration(source, { purpose: 'Customization', objects: [mdClassesFixture(owner)] });
+        const descriptor = (version: string) =>
+          `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="${version}"><Template uuid="99999999-9999-4999-8999-999999999999"><Properties><Name>PrintTemplate</Name></Properties></Template></MetaDataObject>`;
+        await writeCompareBytes(target, 'Catalogs/Products/Templates/PrintTemplate.xml', descriptor(targetTemplateVersion));
+        await writeCompareBytes(source, 'Catalogs/Products/Templates/PrintTemplate.xml', descriptor(sourceTemplateVersion));
+        await writeCompareBytes(target, 'Catalogs/Products/Templates/PrintTemplate/Ext/Template.xml', extensionDcsXml('SELECT 1'));
+        await writeCompareBytes(source, 'Catalogs/Products/Templates/PrintTemplate/Ext/Template.xml', extensionDcsXml('SELECT 2'));
+      };
+
+      await writeRoots('2.20', '2.22');
+      const unsupportedVersionCompare = await openCompare(tempRoot, target, source);
+      try {
+        const unsupported = unsupportedVersionCompare.result.session.state.messages.find((message) =>
+          message.code === 'XML_DCS_OWNER_VERSION_UNSUPPORTED',
+        );
+        assert.ok(unsupported, `the nested 2.22 Template must block DCS despite a 2.20 parent Catalog: ${JSON.stringify(unsupportedVersionCompare.result.session.state.messages)}`);
+        assert.match(unsupported!.suggestedAction ?? '', /исходного дескриптора «2\.22»/u);
+      } finally {
+        await unsupportedVersionCompare.dispose();
+      }
+
+      await fs.rm(target, { recursive: true, force: true });
+      await fs.rm(source, { recursive: true, force: true });
+      await writeRoots('2.20', '2.20');
+      const leaseCompare = await openCompare(tempRoot, target, source, { withRuntime: true });
+      try {
+        const query = collectNodes(leaseCompare.result.projection.root).find((node) =>
+          node.kind === 'xmlProperty' && node.payloadRef?.includes('query') && node.rightValue?.includes('SELECT 2'),
+        );
+        assert.ok(query, `a selected DCS query change should be available: ${JSON.stringify(collectNodes(leaseCompare.result.projection.root).map((node) => ({label: node.label, kind: node.kind, state: node.mergeState})))}`);
+        const preview = await leaseCompare.result.workspace.createPreviewForNodeIds([query!.id]);
+        assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+        if (!preview.ok) {return;}
+        await fs.writeFile(path.join(source, 'Catalogs/Products/Templates/PrintTemplate.xml'),
+          (await readUtf8(source, 'Catalogs/Products/Templates/PrintTemplate.xml')).replace('version="2.20"', 'version="2.21"'),
+          'utf8');
+        const approval = leaseCompare.result.workspace.approvePreview(preview.preview.previewId);
+        assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+        const execution = await leaseCompare.result.workspace.executeApprovedPreview(preview.preview.previewId, { destructiveConfirmed: true });
+        assert.strictEqual(execution.ok, false, JSON.stringify(execution));
+        assert.ok(execution.result?.failed.some((operation) => operation.code === 'MERGE_WITNESS_MISMATCH'), JSON.stringify(execution));
+        assert.strictEqual(await readUtf8(target, 'Catalogs/Products/Templates/PrintTemplate/Ext/Template.xml'), extensionDcsXml('SELECT 1'));
+      } finally {
+        await leaseCompare.dispose();
+      }
+    });
+  });
+
+  test('copies a nested Form registration with its captured package while preserving target-only siblings', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cf');
+      const owner = (childObjectsXml: string): ExtensionCompareObjectFixture => {
+        const fixture: ExtensionCompareObjectFixture = {
+          type: 'Catalog', name: 'Products', uuid: UUID.catalog, childObjectsXml,
+        };
+        return {
+          ...fixture,
+          descriptorXml: metadataObjectXml(fixture)
+            .replace('<MetaDataObject', '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"'),
+        };
+      };
+      await writeDesignerConfiguration(target, { objects: [owner('')] });
+      await writeDesignerConfiguration(source, { objects: [owner('<Form>Editor</Form>')] });
+      const nestedDescriptor = (synonym: string): string =>
+        `<?xml version="1.0"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="99999999-9999-4999-8999-999999999999"><Properties><Name>Editor</Name><Synonym>${synonym}</Synonym></Properties></Form></MetaDataObject>`;
+      await writeCompareBytes(source, 'Catalogs/Products/Forms/Editor.xml', nestedDescriptor('source editor'));
+      await writeCompareBytes(source, 'Catalogs/Products/Forms/Editor/Ext/Form.xml', '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Events/><ChildItems/></Form>');
+      await writeCompareBytes(source, 'Catalogs/Products/Forms/Editor/Ext/Form.bin', Buffer.from([0, 255, 17]));
+      await writeCompareBytes(target, 'Catalogs/Products/Forms/Existing/Ext/Form.xml', '<Form version="2.20"><WindowTitle>keep sibling</WindowTitle></Form>');
+      const siblingBefore = await fs.readFile(path.join(target, 'Catalogs/Products/Forms/Existing/Ext/Form.xml'));
+
+      const compare = await openCompare(tempRoot, target, source, { withRuntime: true });
+      try {
+        const packageRegistration = collectNodes(compare.result.projection.root).find((node) =>
+          node.mergeable && node.kind === 'xmlElement' && node.label.includes('Форма') && node.rightValue?.includes('Editor'));
+        assert.ok(packageRegistration, 'new nested Form registration should be selectable as a linked package');
+        const preview = await createPreview(compare.result, [packageRegistration!.id]);
+        await execute(compare.result, preview.previewId);
+
+        assertMdClassesElementText(await readUtf8(target, 'Catalogs/Products.xml'), 'Form', 'Editor');
+        assert.match(await readUtf8(target, 'Catalogs/Products/Forms/Editor.xml'), /source editor/u);
+        assert.match(await readUtf8(target, 'Catalogs/Products/Forms/Editor/Ext/Form.xml'), /<Events\s*\/>/u);
+        assert.deepStrictEqual(await fs.readFile(path.join(target, 'Catalogs/Products/Forms/Editor/Ext/Form.bin')), Buffer.from([0, 255, 17]));
+        assert.deepStrictEqual(await fs.readFile(path.join(target, 'Catalogs/Products/Forms/Existing/Ext/Form.xml')), siblingBefore);
+      } finally {
+        await compare.dispose();
+      }
+    });
   });
 
   test('admits the supported root types across Designer XML 2.17–2.21', async function (this: Mocha.Context) {
@@ -235,8 +338,10 @@ suite('Extension-aware configuration compare', () => {
       await writeDesignerConfiguration(base, { objects: baseObjects });
       await writeDesignerConfiguration(target, { purpose: 'Customization', objects: targetObjects });
       await writeDesignerConfiguration(source, { purpose: 'Customization', objects: sourceObjects });
-      await writeRegistrySidecars(target, targetObjects, 'target');
-      await writeRegistrySidecars(source, sourceObjects, 'source');
+      // Adopted Role Rights are separately guarded; this whole-row fixture
+      // covers descriptors and ordinary package files only.
+      await writeRegistrySidecars(target, targetObjects, 'target', false);
+      await writeRegistrySidecars(source, sourceObjects, 'source', false);
 
       const compare = await openCompare(tempRoot, target, source, {
         withRuntime: true,
@@ -244,7 +349,7 @@ suite('Extension-aware configuration compare', () => {
       });
       try {
         const nodeIds = mergeableTransferRowIds(compare.result);
-        assert.strictEqual(nodeIds.length, ROOT_TYPES.length, 'all adopted registry roots should pass the existing guards');
+        assert.strictEqual(nodeIds.length, ROOT_TYPES.length, 'all adopted registry roots without Rights.xml should pass the existing guards');
         const preview = await createPreview(compare.result, nodeIds);
         await execute(compare.result, preview.previewId);
 
@@ -257,6 +362,10 @@ suite('Extension-aware configuration compare', () => {
             `${sourceObject.type} should retain the target-local UUID`);
           assert.match(xml, new RegExp(`<ExtendedConfigurationObject>${baseObjects[index]!.uuid}<\\/ExtendedConfigurationObject>`, 'u'),
             `${sourceObject.type} should keep the shared base anchor`);
+          if (sourceObject.type === 'Role') {
+            assert.strictEqual(await pathExists(path.join(target, descriptor.designerFolder, sourceObject.name, 'Ext', 'Rights.xml')), false,
+              'the adopted Role Rights sidecar is intentionally outside this whole-row fixture');
+          }
           const copiedMarker = await fs.readFile(path.join(
             target,
             descriptor.designerFolder,
@@ -738,6 +847,705 @@ suite('Extension-aware configuration compare', () => {
         assert.match(xml, /<Global>true<\/Global>/u);
         assert.match(xml, /<ServerCall>true<\/ServerCall>/u);
         assert.match(xml, /<ExternalConnection>true<\/ExternalConnection>/u);
+      } finally {
+        await compare.dispose();
+      }
+    });
+  });
+
+  test('CF→CFE accepts an updated export against the target extension’s older proven base', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const base = path.join(tempRoot, 'older-base-cf');
+      const source = path.join(tempRoot, 'updated-cf');
+      const target = path.join(tempRoot, 'target-cfe');
+      const baseObject: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalog,
+        propertiesXml: '<Synonym>base synonym</Synonym><Comment>base comment</Comment>',
+      };
+      const sourceObject: ExtensionCompareObjectFixture = {
+        ...baseObject,
+        propertiesXml: '<Synonym>updated from current CF</Synonym><Comment>base comment</Comment>',
+      };
+      const adoptedObject: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalogLocal,
+        belonging: 'Adopted', anchorUuid: UUID.catalog,
+        propertiesXml: '<Synonym>base synonym</Synonym><Comment>local extension note</Comment>',
+      };
+      await writeDesignerConfiguration(base, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
+      await writeDesignerConfiguration(source, { name: 'Shared configuration', objects: [mdClassesFixture(sourceObject)] });
+      await writeDesignerConfiguration(target, { purpose: 'Customization', objects: [mdClassesFixture(adoptedObject)] });
+      const baseBefore = await fs.readFile(path.join(base, 'Catalogs/Products.xml'));
+      const sourceBefore = await fs.readFile(path.join(source, 'Catalogs/Products.xml'));
+
+      const compare = await openCompare(tempRoot, target, source, {
+        withRuntime: true,
+        extensionBaseRoots: { left: base },
+      });
+      try {
+        const row = collectNodes(compare.result.projection.root)
+          .find((node) => node.kind === 'extensionMetadataObject' && node.label === 'Catalog.Products');
+        assert.ok(row, 'the proven adopted object should remain visible');
+        assert.strictEqual(row!.mergeable, false, 'the old whole-row transfer gate must remain closed for a stale base snapshot');
+        const synonym = collectNodes(row!).find((node) => node.rightValue?.includes('updated from current CF')
+          && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Catalogs/Products.xml'));
+        assert.ok(synonym, `the changed inherited property should be projected as a granular child: ${JSON.stringify(collectNodes(row!).map((node) => ({ label: node.label, rightValue: node.rightValue, mergeable: node.mergeable, state: node.mergeState, conflict: node.conflict })))}`);
+        assert.strictEqual(synonym!.mergeable, true, synonym!.mergeState?.reason ?? synonym!.conflict?.message);
+        const preview = await createPreview(compare.result, [synonym!.id]);
+        await execute(compare.result, preview.previewId);
+
+        const output = await readUtf8(target, 'Catalogs/Products.xml');
+        assert.match(output, new RegExp(`<Catalog uuid="${UUID.catalogLocal}"`, 'u'));
+        assert.match(output, new RegExp(`<ExtendedConfigurationObject>${UUID.catalog}</ExtendedConfigurationObject>`, 'u'));
+        assertMdClassesElementText(output, 'Synonym', 'updated from current CF');
+        assert.match(output, /<Comment>local extension note<\/Comment>/u,
+          'the selected base update must preserve the extension’s unrelated local property');
+        assert.deepStrictEqual(await fs.readFile(path.join(source, 'Catalogs/Products.xml')), sourceBefore);
+        assert.deepStrictEqual(await fs.readFile(path.join(base, 'Catalogs/Products.xml')), baseBefore);
+      } finally {
+        await compare.dispose();
+      }
+    });
+  });
+
+  test('keeps adopted TemplateType and body transitions read-only while allowing an unrelated property in both directions', async () => {
+    for (const direction of ['cf-to-cfe', 'cfe-to-cf', 'cfe-cfe-adopted'] as const) {
+      await withTempRoot(async (tempRoot) => {
+        const base = path.join(tempRoot, 'old-base-cf');
+        const target = path.join(tempRoot, direction === 'cf-to-cfe' || direction === 'cfe-cfe-adopted' ? 'target-cfe' : 'current-target-cf');
+        const incoming = path.join(tempRoot, direction === 'cf-to-cfe' ? 'updated-source-cf' : 'incoming-cfe');
+        const oldTemplate: ExtensionCompareObjectFixture = {
+          type: 'CommonTemplate', name: 'Print', uuid: UUID.catalog,
+          propertiesXml: '<TemplateType>SpreadsheetDocument</TemplateType><Synonym>Base</Synonym>',
+        };
+        const updatedTemplate: ExtensionCompareObjectFixture = {
+          ...oldTemplate,
+          propertiesXml: '<TemplateType>HTMLDocument</TemplateType><Synonym>Selected synonym</Synonym>',
+        };
+        const adoptedTemplate: ExtensionCompareObjectFixture = {
+          ...oldTemplate,
+          uuid: UUID.catalogLocal,
+          belonging: 'Adopted',
+          anchorUuid: UUID.catalog,
+          propertiesXml: '<TemplateType>SpreadsheetDocument</TemplateType><Synonym>Target-only synonym</Synonym>',
+        };
+        await writeDesignerConfiguration(base, { name: 'Shared configuration', objects: [mdClassesFixture(oldTemplate)] });
+        if (direction === 'cf-to-cfe') {
+          await writeDesignerConfiguration(target, { purpose: 'Customization', name: 'Shared configuration', objects: [mdClassesFixture(adoptedTemplate)] });
+          await writeDesignerConfiguration(incoming, { name: 'Shared configuration', objects: [mdClassesFixture(updatedTemplate)] });
+          await writeCompareBytes(target, 'CommonTemplates/Print/Ext/Template.xml', '<spreadsheet>target old body</spreadsheet>');
+          await writeCompareBytes(incoming, 'CommonTemplates/Print/Ext/Template.html', '<html>incoming new body</html>');
+        } else if (direction === 'cfe-cfe-adopted') {
+          const updatedAdoptedTemplate = { ...adoptedTemplate, propertiesXml: '<TemplateType>HTMLDocument</TemplateType><Synonym>Selected synonym</Synonym>' };
+          await writeDesignerConfiguration(target, { purpose: 'Customization', name: 'Shared configuration', objects: [mdClassesFixture(adoptedTemplate)] });
+          await writeDesignerConfiguration(incoming, { purpose: 'Customization', name: 'Shared configuration', objects: [mdClassesFixture(updatedAdoptedTemplate)] });
+          await writeCompareBytes(target, 'CommonTemplates/Print/Ext/Template.xml', '<spreadsheet>target old body</spreadsheet>');
+          await writeCompareBytes(incoming, 'CommonTemplates/Print/Ext/Template.html', '<html>incoming new body</html>');
+        } else {
+          await writeDesignerConfiguration(target, { name: 'Shared configuration', objects: [mdClassesFixture(oldTemplate)] });
+          await writeDesignerConfiguration(incoming, { purpose: 'Customization', name: 'Shared configuration', objects: [mdClassesFixture({ ...adoptedTemplate, propertiesXml: '<TemplateType>HTMLDocument</TemplateType><Synonym>Selected synonym</Synonym>' })] });
+          await writeCompareBytes(target, 'CommonTemplates/Print/Ext/Template.xml', '<spreadsheet>target old body</spreadsheet>');
+          await writeCompareBytes(incoming, 'CommonTemplates/Print/Ext/Template.html', '<html>incoming new body</html>');
+        }
+
+        const compare = await openCompare(tempRoot, target, incoming, {
+          extensionBaseRoots: direction === 'cf-to-cfe' ? { left: base }
+            : direction === 'cfe-to-cf' ? { right: base } : { left: base, right: base },
+        });
+        try {
+          const nodes = collectNodes(compare.result.projection.root);
+          const templateType = nodes.find((node) => node.kind === 'xmlProperty' && node.label === 'TemplateType'
+            && node.rightValue === 'HTMLDocument'
+            && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('CommonTemplates/Print.xml'));
+          assert.ok(templateType, `${direction}: changed TemplateType should remain visible in the adopted descriptor`);
+          assert.strictEqual(templateType!.mergeable, false,
+            `${direction}: TemplateType must not be independently selected without a captured body bundle`);
+          const synonym = nodes.find((node) => node.kind === 'xmlProperty' && node.label === 'Synonym'
+            && node.rightValue === 'Selected synonym'
+            && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('CommonTemplates/Print.xml'));
+          assert.ok(synonym, `${direction}: the unrelated Synonym change should remain visible`);
+          assert.strictEqual(synonym!.mergeable, true,
+            `${direction}: a scoped TemplateType blocker must not disable unrelated supported properties`);
+          const templateTransitions = nodes.filter((node) => node.kind === 'linkedTemplateTypeTransition'
+            && (node.label.includes('SpreadsheetDocument') || node.label.includes('HTMLDocument')));
+          assert.ok(templateTransitions.every((node) => node.mergeable !== true),
+            `${direction}: an adopted transition must not borrow an unproven stale body bundle`);
+          const bodyNodes = nodes.filter((node) => node.kind === 'fileArtifact'
+            && ['Template.xml', 'Template.html'].some((name) => (node.mergeState?.targetFilePath ?? '').endsWith(name)));
+          assert.ok(bodyNodes.every((node) => node.mergeable !== true),
+            `${direction}: body-only changes must not bypass the blocked TemplateType transition`);
+        } finally {
+          await compare.dispose();
+        }
+      });
+    }
+  });
+
+  test('keeps reordered inherited metadata children read-only in CF→CFE semantic projection', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const base = path.join(tempRoot, 'base-cf');
+      const source = path.join(tempRoot, 'updated-cf');
+      const target = path.join(tempRoot, 'target-cfe');
+      const attributeUuid = new Map([
+        ['First', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+        ['Second', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],
+      ]);
+      const attributes = (names: readonly string[]): string => names.map((name) =>
+        `<Attribute uuid="${attributeUuid.get(name)}"><Properties><Name>${name}</Name></Properties></Attribute>`,
+      ).join('');
+      const baseObject: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalog,
+        childObjectsXml: attributes(['First', 'Second']),
+      };
+      const sourceObject: ExtensionCompareObjectFixture = {
+        ...baseObject,
+        childObjectsXml: attributes(['Second', 'First']),
+      };
+      const adoptedObject: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalogLocal,
+        belonging: 'Adopted', anchorUuid: UUID.catalog,
+        childObjectsXml: '',
+      };
+      await writeAdoptedProjectionConfiguration(base, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
+      await writeAdoptedProjectionConfiguration(source, { name: 'Shared configuration', objects: [mdClassesFixture(sourceObject)] });
+      await writeAdoptedProjectionConfiguration(target, { purpose: 'Customization', name: 'Shared configuration', objects: [mdClassesFixture(adoptedObject)] });
+
+      const compare = await openCompare(tempRoot, target, source, { extensionBaseRoots: { left: base } });
+      try {
+        const ordered = collectNodes(compare.result.projection.root).filter((node) =>
+          (node.kind === 'metadataOrderMove' || node.kind === 'xmlOrder')
+            && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Catalogs/Products.xml'),
+        );
+        assert.ok(ordered.length > 0, `the inherited reorder should remain visible: ${JSON.stringify(collectNodes(compare.result.projection.root).map((node) => ({ label: node.label, kind: node.kind, target: node.mergeState?.targetFilePath, mergeable: node.mergeable })))}`);
+        assert.strictEqual(ordered.some((node) => node.kind === 'metadataOrderMove' && node.mergeable), false,
+          'an adopted descriptor encoder does not preserve the selected inherited ChildObjects order');
+        assert.ok(ordered.every((node) => node.mergeable === false),
+          'the order difference must remain a visible read-only decision');
+      } finally {
+        await compare.dispose();
+      }
+    });
+  });
+
+  test('keeps reordered inherited EnumValues read-only in CF→CFE semantic projection', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const base = path.join(tempRoot, 'base-cf');
+      const source = path.join(tempRoot, 'updated-cf');
+      const target = path.join(tempRoot, 'target-cfe');
+      const values = new Map([
+        ['First', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+        ['Second', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],
+      ]);
+      const enumValues = (names: readonly string[]): string => names.map((name) =>
+        `<EnumValue uuid="${values.get(name)}"><Properties><Name>${name}</Name></Properties></EnumValue>`,
+      ).join('');
+      const baseObject: ExtensionCompareObjectFixture = {
+        type: 'Enum', name: 'Statuses', uuid: UUID.catalog,
+        childObjectsXml: enumValues(['First', 'Second']),
+      };
+      const sourceObject: ExtensionCompareObjectFixture = {
+        ...baseObject,
+        childObjectsXml: enumValues(['Second', 'First']),
+      };
+      const adoptedObject: ExtensionCompareObjectFixture = {
+        type: 'Enum', name: 'Statuses', uuid: UUID.catalogLocal,
+        belonging: 'Adopted', anchorUuid: UUID.catalog,
+        childObjectsXml: '',
+      };
+      await writeAdoptedProjectionConfiguration(base, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
+      await writeAdoptedProjectionConfiguration(source, { name: 'Shared configuration', objects: [mdClassesFixture(sourceObject)] });
+      await writeAdoptedProjectionConfiguration(target, { purpose: 'Customization', name: 'Shared configuration', objects: [mdClassesFixture(adoptedObject)] });
+
+      const compare = await openCompare(tempRoot, target, source, { extensionBaseRoots: { left: base } });
+      try {
+        const ordered = collectNodes(compare.result.projection.root).filter((node) =>
+          (node.kind === 'metadataOrderMove' || node.kind === 'xmlOrder')
+            && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Enums/Statuses.xml'),
+        );
+        assert.ok(ordered.length > 0, `the inherited EnumValue reorder should remain visible: ${JSON.stringify(collectNodes(compare.result.projection.root).map((node) => ({ label: node.label, kind: node.kind, target: node.mergeState?.targetFilePath, mergeable: node.mergeable })))}`);
+        assert.strictEqual(ordered.some((node) => node.kind === 'metadataOrderMove' && node.mergeable), false,
+          'the adopted metadata capability must also cover the Enum-specific order projection');
+        assert.ok(ordered.every((node) => node.mergeable === false),
+          'the Enum order difference must remain a visible read-only decision');
+      } finally {
+        await compare.dispose();
+      }
+    });
+  });
+
+  test('keeps reordered borrowed Form sections read-only in CF→CFE semantic projection', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const base = path.join(tempRoot, 'base-cf');
+      const source = path.join(tempRoot, 'updated-cf');
+      const target = path.join(tempRoot, 'target-cfe');
+      const formUuid = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+      const localFormUuid = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+      const owner = (uuid: string, belonging?: 'Adopted', anchorUuid?: string): ExtensionCompareObjectFixture => ({
+        type: 'Catalog', name: 'Products', uuid, belonging, anchorUuid,
+        childObjectsXml: '<Form>Editor</Form>',
+      });
+      const formDescriptor = (uuid: string, belonging?: 'Adopted', anchorUuid?: string): string => {
+        const ownership = belonging ? `<ObjectBelonging>${belonging}</ObjectBelonging>` : '';
+        const anchor = anchorUuid ? `<ExtendedConfigurationObject>${anchorUuid}</ExtendedConfigurationObject>` : '';
+        return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="${uuid}"><Properties>${ownership}<Name>Editor</Name>${anchor}</Properties></Form></MetaDataObject>`;
+      };
+      const formIds = new Map([['First', 1], ['Second', 2]]);
+      const formXml = (names: readonly string[]): string =>
+        `<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><AutoCommandBar name="Auto" id="-1"/><ChildItems/><Attributes>${names.map((name) => `<Attribute name="${name}" id="${formIds.get(name)}"/>`).join('')}</Attributes><Commands/><Parameters/></Form>`;
+      const writeFormPackage = async (root: string, descriptor: string, attributes: readonly string[]): Promise<void> => {
+        await writeCompareBytes(root, 'Catalogs/Products/Forms/Editor.xml', descriptor);
+        await writeCompareBytes(root, 'Catalogs/Products/Forms/Editor/Ext/Form.xml', formXml(attributes));
+      };
+
+      await writeDesignerConfiguration(base, { name: 'Shared configuration', objects: [mdClassesFixture(owner(UUID.catalog))] });
+      await writeDesignerConfiguration(source, { name: 'Shared configuration', objects: [mdClassesFixture(owner(UUID.catalog))] });
+      await writeDesignerConfiguration(target, { purpose: 'Customization', objects: [mdClassesFixture(owner(UUID.catalogLocal, 'Adopted', UUID.catalog))] });
+      await writeFormPackage(base, formDescriptor(formUuid), ['First', 'Second']);
+      await writeFormPackage(source, formDescriptor(formUuid), ['Second', 'First']);
+      await writeCompareBytes(target, 'Catalogs/Products/Forms/Editor.xml', formDescriptor(localFormUuid, 'Adopted', formUuid));
+
+      const compare = await openCompare(tempRoot, target, source, { extensionBaseRoots: { left: base } });
+      try {
+        const projected = collectNodes(compare.result.projection.root);
+        const attributes = projected.find((node) => node.kind === 'formGroup' && node.label === 'Attributes');
+        assert.deepStrictEqual(attributes?.children.map((node) => node.label), ['Second', 'First'],
+          'the borrowed Form projection must compare the captured source sequence using stable element IDs');
+        const mergeableMoves = projected.filter((node) => node.kind === 'metadataOrderMove' && node.mergeable
+          && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Catalogs/Products/Forms/Editor/Ext/Form.xml'));
+        assert.strictEqual(mergeableMoves.length, 0,
+          'the adopted Form route must not offer a reorder operation that its encoder cannot preserve');
+      } finally {
+        await compare.dispose();
+      }
+    });
+  });
+
+  test('CFE→CF applies selected adopted changes against the source extension’s older base', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const base = path.join(tempRoot, 'older-base-cf');
+      const target = path.join(tempRoot, 'current-target-cf');
+      const source = path.join(tempRoot, 'source-cfe');
+      const baseObject: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalog,
+        propertiesXml: '<Synonym>old base</Synonym><Comment>old base comment</Comment>',
+      };
+      const targetObject: ExtensionCompareObjectFixture = {
+        ...baseObject,
+        propertiesXml: '<Synonym>current target</Synonym><Comment>target-only detail</Comment>',
+      };
+      const adoptedObject: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalogLocal,
+        belonging: 'Adopted', anchorUuid: UUID.catalog,
+        propertiesXml: '<Synonym>extension selection</Synonym>',
+      };
+      await writeDesignerConfiguration(base, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
+      await writeDesignerConfiguration(target, { name: 'Shared configuration', objects: [mdClassesFixture(targetObject)] });
+      await writeDesignerConfiguration(source, { purpose: 'Customization', objects: [mdClassesFixture(adoptedObject)] });
+      const baseBefore = await fs.readFile(path.join(base, 'Catalogs/Products.xml'));
+      const sourceBefore = await fs.readFile(path.join(source, 'Catalogs/Products.xml'));
+
+      const compare = await openCompare(tempRoot, target, source, {
+        withRuntime: true,
+        extensionBaseRoots: { right: base },
+      });
+      try {
+        const row = collectNodes(compare.result.projection.root)
+          .find((node) => node.kind === 'extensionMetadataObject' && node.label === 'Catalog.Products');
+        assert.ok(row, 'the exact target owner should remain visible');
+        assert.strictEqual(row!.mergeable, false, 'the whole-row action must retain its exact-base gate');
+        const synonym = collectNodes(row!).find((node) => node.rightValue?.includes('extension selection')
+          && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Catalogs/Products.xml'));
+        assert.ok(synonym, `the adopted overlay should be compared over the captured old base: ${JSON.stringify(collectNodes(row!).map((node) => ({ label: node.label, rightValue: node.rightValue, mergeable: node.mergeable, state: node.mergeState, conflict: node.conflict })))}`);
+        assert.strictEqual(synonym!.mergeable, true, synonym!.mergeState?.reason ?? synonym!.conflict?.message);
+        const preview = await createPreview(compare.result, [synonym!.id]);
+        await execute(compare.result, preview.previewId);
+
+        const output = await readUtf8(target, 'Catalogs/Products.xml');
+        assert.match(output, new RegExp(`<Catalog uuid="${UUID.catalog}"`, 'u'));
+        assert.doesNotMatch(output, /ObjectBelonging|ExtendedConfigurationObject/u);
+        assertMdClassesElementText(output, 'Synonym', 'extension selection');
+        assert.match(output, /<Comment>target-only detail<\/Comment>/u,
+          'the current target CF is the logical target; old base bytes must not replace its unselected properties');
+        assert.deepStrictEqual(await fs.readFile(path.join(base, 'Catalogs/Products.xml')), baseBefore);
+        assert.deepStrictEqual(await fs.readFile(path.join(source, 'Catalogs/Products.xml')), sourceBefore);
+      } finally {
+        await compare.dispose();
+      }
+    });
+  });
+
+  test('semantic-only adopted projection rejects different CF configuration identity, wrong anchor, and ambiguous base owner', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const cases = [
+        { id: 'configuration UUID', baseUuid: UUID.targetConfiguration, sourceUuid: UUID.sourceConfiguration },
+        { id: 'configuration name', baseName: 'Older name', sourceName: 'Current name' },
+        { id: 'adopted anchor', anchorUuid: UUID.catalogOther },
+        { id: 'ambiguous base owner', duplicate: true },
+      ];
+      for (const [index, item] of cases.entries()) {
+        const caseRoot = path.join(tempRoot, `proof-${index}`);
+        const base = path.join(caseRoot, 'base');
+        const source = path.join(caseRoot, 'source');
+        const target = path.join(caseRoot, 'target');
+        const baseObject: ExtensionCompareObjectFixture = {
+          type: 'Catalog', name: 'Products', uuid: UUID.catalog,
+          propertiesXml: '<Synonym>base</Synonym>',
+        };
+        const duplicate = item.duplicate ? {
+          type: 'Catalog' as const, name: 'Other', uuid: UUID.catalog,
+        } : undefined;
+        await writeDesignerConfiguration(base, {
+          uuid: item.baseUuid,
+          name: item.baseName ?? 'Shared configuration',
+          objects: duplicate ? [mdClassesFixture(baseObject), mdClassesFixture(duplicate)] : [mdClassesFixture(baseObject)],
+        });
+        await writeDesignerConfiguration(source, {
+          uuid: item.sourceUuid,
+          name: item.sourceName ?? 'Shared configuration',
+          objects: [mdClassesFixture({ ...baseObject, propertiesXml: '<Synonym>current</Synonym>' })],
+        });
+        await writeDesignerConfiguration(target, {
+          purpose: 'Customization',
+          objects: [mdClassesFixture({
+            type: 'Catalog', name: 'Products', uuid: UUID.catalogLocal,
+            belonging: 'Adopted', anchorUuid: item.anchorUuid ?? UUID.catalog,
+            propertiesXml: '<Synonym>base</Synonym>',
+          })],
+        });
+        const compare = await openCompare(tempRoot, target, source, { extensionBaseRoots: { left: base } });
+        try {
+          const row = collectNodes(compare.result.projection.root)
+            .find((node) => node.kind === 'extensionMetadataObject' && node.label === 'Catalog.Products');
+          assert.ok(row, `${item.id}: the row remains visible for diagnosis`);
+          assert.strictEqual(row!.mergeable, false, `${item.id}: whole-row transfer stays blocked`);
+          assert.strictEqual(collectNodes(row!).some((node) => node.id !== row!.id && node.mergeable), false,
+            `${item.id}: no semantic child may bypass a failed proof`);
+        } finally {
+          await compare.dispose();
+        }
+      }
+    });
+  });
+
+  test('keeps borrowed Role Rights read-only across CF↔CFE boundaries in both directions', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const base = path.join(tempRoot, 'rights-old-base');
+      const current = path.join(tempRoot, 'rights-current-cf');
+      const extension = path.join(tempRoot, 'rights-cfe');
+      const baseRole = mdClassesFixture({
+        type: 'Role', name: 'Sales', uuid: UUID.catalog,
+        propertiesXml: '<Comment>base role</Comment>',
+      });
+      const currentRole = mdClassesFixture({
+        type: 'Role', name: 'Sales', uuid: UUID.catalog,
+        propertiesXml: '<Comment>current role</Comment>',
+      });
+      const adoptedRole = mdClassesFixture({
+        type: 'Role', name: 'Sales', uuid: UUID.catalogLocal,
+        belonging: 'Adopted', anchorUuid: UUID.catalog,
+        propertiesXml: '<Comment>extension role</Comment>',
+      });
+      await writeAdoptedProjectionConfiguration(base, { name: 'Shared configuration', objects: [mdClassesFixture(baseRole)] });
+      await writeAdoptedProjectionConfiguration(current, { name: 'Shared configuration', objects: [mdClassesFixture(currentRole)] });
+      await writeAdoptedProjectionConfiguration(extension, { purpose: 'Customization', name: 'Shared configuration', objects: [mdClassesFixture(adoptedRole)] });
+      await writeCompareBytes(base, 'Roles/Sales/Ext/Rights.xml', extensionRoleRightsXml('false'));
+      await writeCompareBytes(current, 'Roles/Sales/Ext/Rights.xml', extensionRoleRightsXml('true'));
+      await writeCompareBytes(extension, 'Roles/Sales/Ext/Rights.xml', extensionRoleRightsXml('false'));
+
+      const cfToCfe = await openCompare(tempRoot, extension, current, {
+        extensionBaseRoots: { left: base },
+      });
+      try {
+        const row = collectNodes(cfToCfe.result.projection.root).find((node) =>
+          node.kind === 'extensionMetadataObject' && node.label === 'Role.Sales',
+        );
+        assert.ok(row, 'the borrowed Role row is visible');
+        const blockers = collectNodes(row!).filter((node) => node.kind === 'roleRightsProjectionBlocker');
+        assert.strictEqual(blockers.length, 1, 'the changed Rights sidecar is represented by a scoped blocker');
+        assert.strictEqual(blockers[0]!.mergeable, false);
+        assert.match(blockers[0]!.mergeState?.reason ?? '', /inherit\/allow\/deny/u);
+        assert.strictEqual(collectNodes(row!).some((node) => node.kind === 'xmlProperty'
+          && node.payloadRef?.includes('rights-right') && node.mergeable), false,
+        'the raw Role Rights adapter never emits executable right patches for a borrowed owner');
+        assert.strictEqual(collectNodes(row!).some((node) => node.id !== row!.id && node.mergeable), true,
+          'the independent descriptor projection remains available');
+      } finally {
+        await cfToCfe.dispose();
+      }
+
+      const cfeToCf = await openCompare(tempRoot, current, extension, {
+        extensionBaseRoots: { right: base },
+      });
+      try {
+        const row = collectNodes(cfeToCf.result.projection.root).find((node) =>
+          node.kind === 'extensionMetadataObject' && node.label === 'Role.Sales',
+        );
+        assert.ok(row, 'the reverse borrowed Role row is visible');
+        const blockers = collectNodes(row!).filter((node) => node.kind === 'roleRightsProjectionBlocker');
+        assert.strictEqual(blockers.length, 1);
+        assert.strictEqual(blockers[0]!.mergeable, false);
+        assert.strictEqual(collectNodes(row!).some((node) => node.kind === 'xmlProperty'
+          && node.payloadRef?.includes('rights-right') && node.mergeable), false);
+      } finally {
+        await cfeToCf.dispose();
+      }
+    });
+  });
+
+  test('semantic-only proof rejects unsupported selected owners and duplicate qualified base identities', async () => {
+    const baseObject = semanticIndexedObject({
+      sourceId: 'base-cf', side: 'left', ownership: 'own', uuid: UUID.catalog,
+      descriptorRelativePath: 'Catalogs/Products.xml',
+    });
+    const currentObject = semanticIndexedObject({
+      sourceId: 'current-cf', side: 'right', ownership: 'own', uuid: UUID.catalog,
+      descriptorRelativePath: 'Catalogs/Products.xml',
+    });
+    const targetObject = semanticIndexedObject({
+      sourceId: 'target-cfe', side: 'left', ownership: 'adopted', uuid: UUID.catalogLocal,
+      anchorUuid: UUID.catalog, descriptorRelativePath: 'Catalogs/Products.xml',
+    });
+    const incomingObject = semanticIndexedObject({
+      sourceId: 'current-cf', side: 'right', ownership: 'own', uuid: UUID.catalog,
+      descriptorRelativePath: 'Catalogs/Products.xml',
+    });
+    const baseRoot = semanticIndex('base-cf', 'left', 'cf', [baseObject]);
+    const currentRoot = semanticIndex('current-cf', 'right', 'cf', [currentObject]);
+    const targetRoot = semanticIndex('target-cfe', 'left', 'cfe', [targetObject]);
+    const incomingRoot = semanticIndex('current-cf', 'right', 'cf', [incomingObject]);
+
+    const unsupportedTargetRoot = semanticIndex('target-cfe', 'left', 'cfe', [
+      { ...targetObject, unsupportedReason: 'Unsupported selected target descriptor shape.' },
+    ]);
+    const unsupportedAnalysis = await analyzeExtensionTransfers({
+      target: unsupportedTargetRoot,
+      incoming: incomingRoot,
+      targetBase: baseRoot,
+      targetBaseIsIncoming: false,
+      incomingBaseIsTarget: false,
+    });
+    assert.strictEqual(unsupportedAnalysis.rows[0]!.semanticAction, undefined,
+      'an otherwise valid target with an unsupported descriptor must not receive the semantic-only capability');
+
+    const duplicateBaseObject = semanticIndexedObject({
+      sourceId: 'base-cf', side: 'left', ownership: 'own', uuid: UUID.catalogOther,
+      descriptorRelativePath: 'Catalogs/ProductsDuplicate.xml',
+    });
+    const duplicateBaseRoot = semanticIndex('base-cf', 'left', 'cf', [baseObject, duplicateBaseObject]);
+    const duplicateAnalysis = await analyzeExtensionTransfers({
+      target: targetRoot,
+      incoming: incomingRoot,
+      targetBase: duplicateBaseRoot,
+      targetBaseIsIncoming: false,
+      incomingBaseIsTarget: false,
+    });
+    assert.strictEqual(duplicateAnalysis.rows[0]!.semanticAction, undefined,
+      'a second own descriptor with the same qualified name but another UUID makes the selected base identity ambiguous');
+  });
+
+  test('an unselected source-only object cannot satisfy an adopted Type reference in the target', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const base = path.join(tempRoot, 'older-base-cf');
+      const target = path.join(tempRoot, 'target-cfe');
+      const source = path.join(tempRoot, 'current-cf');
+      const baseDimensionUuid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const targetDimensionUuid = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      const baseProduct: ExtensionCompareObjectFixture = {
+        type: 'Catalog',
+        name: 'Products',
+        uuid: UUID.catalog,
+        childObjectsXml: `<Dimension uuid="${baseDimensionUuid}"><Properties><Name>Length</Name><Type xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema"><v8:Type>xs:string</v8:Type></Type></Properties></Dimension>`,
+      };
+      const sourceProduct: ExtensionCompareObjectFixture = {
+        ...baseProduct,
+        childObjectsXml: `<Dimension uuid="${baseDimensionUuid}"><Properties><Name>Length</Name><Type xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"><v8:Type>cfg:CatalogRef.SourceOnly</v8:Type></Type></Properties></Dimension>`,
+      };
+      const targetProduct: ExtensionCompareObjectFixture = {
+        ...baseProduct,
+        uuid: UUID.catalogLocal,
+        belonging: 'Adopted',
+        anchorUuid: UUID.catalog,
+        childObjectsXml: `<Dimension uuid="${targetDimensionUuid}"><Properties><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>${baseDimensionUuid}</ExtendedConfigurationObject><Name>Length</Name><Type xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema"><v8:Type>xs:string</v8:Type></Type></Properties></Dimension>`,
+      };
+      await writeDesignerConfiguration(base, { objects: [mdClassesFixture(baseProduct)] });
+      await writeDesignerConfiguration(target, { purpose: 'Customization', objects: [mdClassesFixture(targetProduct)] });
+      await writeDesignerConfiguration(source, {
+        objects: [
+          mdClassesFixture(sourceProduct),
+          mdClassesFixture({ type: 'Catalog', name: 'SourceOnly', uuid: UUID.catalogOther }),
+        ],
+      });
+
+      const compare = await openCompare(tempRoot, target, source, { extensionBaseRoots: { left: base } });
+      try {
+        const row = collectNodes(compare.result.projection.root)
+          .find((node) => node.kind === 'extensionMetadataObject' && node.label === 'Catalog.Products');
+        assert.ok(row, 'the adopted owner remains visible');
+        const matchingType = collectNodes(row!).filter((node) => node.rightValue?.includes('CatalogRef.SourceOnly'));
+        assert.strictEqual(matchingType.some((node) => node.mergeable), false,
+          'the incoming-only Catalog.SourceOnly registration is not present in the target or its captured base');
+        const blockedFile = collectNodes(row!).find((node) => node.kind === 'extensionSemanticFile'
+          && node.mergeState?.state === 'blocked');
+        assert.ok(blockedFile, 'the descriptor-level reference error should remain visible as a blocking file diagnostic');
+      } finally {
+        await compare.dispose();
+      }
+    });
+  });
+
+  test('cross-boundary adopted Rights remain read-only when omission changes effective access', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const base = path.join(tempRoot, 'older-base-cf');
+      const target = path.join(tempRoot, 'target-cfe');
+      const source = path.join(tempRoot, 'current-cf');
+      const roleUuid = UUID.commonModule;
+      const roleLocalUuid = UUID.commonModuleLocal;
+      const baseCatalog: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalog,
+      };
+      const targetCatalog: ExtensionCompareObjectFixture = {
+        ...baseCatalog, uuid: UUID.catalogLocal, belonging: 'Adopted', anchorUuid: UUID.catalog,
+      };
+      const baseRole: ExtensionCompareObjectFixture = {
+        type: 'Role', name: 'Ext_Role', uuid: roleUuid, propertiesXml: '<Comment>base</Comment>',
+      };
+      const targetRole: ExtensionCompareObjectFixture = {
+        ...baseRole,
+        uuid: roleLocalUuid,
+        belonging: 'Adopted',
+        anchorUuid: roleUuid,
+      };
+      const sourceRole: ExtensionCompareObjectFixture = {
+        ...baseRole,
+        propertiesXml: '<Comment>current</Comment>',
+      };
+      const rightsXml = (right?: string) => `<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"><setForNewObjects>false</setForNewObjects><setForAttributesByDefault>true</setForAttributesByDefault><independentRightsOfChildObjects>false</independentRightsOfChildObjects><object><name>Catalog.Products</name>${right ?? ''}</object></Rights>`;
+      const readRight = '<right><name>Read</name><value>true</value></right>';
+
+      await writeAdoptedProjectionConfiguration(base, { name: 'Shared configuration', objects: [mdClassesFixture(baseCatalog), mdClassesFixture(baseRole)] });
+      await writeAdoptedProjectionConfiguration(target, { purpose: 'Customization', name: 'Shared configuration', namePrefix: 'Ext_', objects: [mdClassesFixture(targetCatalog), mdClassesFixture(targetRole)] });
+      await writeAdoptedProjectionConfiguration(source, { name: 'Shared configuration', objects: [mdClassesFixture(baseCatalog), mdClassesFixture(sourceRole)] });
+      await writeCompareBytes(base, 'Roles/Ext_Role/Ext/Rights.xml', rightsXml(readRight));
+      await writeCompareBytes(target, 'Roles/Ext_Role/Ext/Rights.xml', rightsXml(readRight));
+      // In Rights.xml 2.20, omission resolves to setForNewObjects=false. A raw delete in the CFE overlay would instead inherit the proven base's true value.
+      await writeCompareBytes(source, 'Roles/Ext_Role/Ext/Rights.xml', rightsXml());
+
+      const compare = await openCompare(tempRoot, target, source, { extensionBaseRoots: { left: base } });
+      try {
+        const owner = collectNodes(compare.result.projection.root).find((node) =>
+          node.kind === 'extensionMetadataObject' && node.label === 'Role.Ext_Role');
+        assert.ok(owner, 'the Role row remains visible');
+        assert.ok(collectNodes(owner!).some((node) => node.kind === 'xmlProperty' && node.label === 'Comment' && node.mergeable === true),
+          `the valid adopted descriptor delta remains independently selectable: ${JSON.stringify(collectNodes(owner!).map((node) => ({ id: node.id, label: node.label, kind: node.kind, mergeable: node.mergeable, mergeState: node.mergeState, conflict: node.conflict })))}`);
+        const rightsNode = collectNodes(owner!).find((node) =>
+          node.kind === 'roleRightsProjectionBlocker' && node.label.startsWith('Права роли:'));
+        assert.ok(rightsNode, 'the changed Rights artifact remains visible');
+        assert.ok(collectNodes(rightsNode!).some((node) => node.status === 'changed'),
+          'the changed effective-right delta remains visible for diagnosis');
+        assert.strictEqual(rightsNode!.mergeable, false,
+          'raw CF omission must not be selectable as a CFE override deletion');
+        assert.strictEqual(collectNodes(rightsNode!).some((node) => node.mergeable === true), false,
+          'no child patch may bypass the ownership-specific Rights blocker');
+        assert.strictEqual(rightsNode!.mergeState?.state, 'blocked', 'the ownership-specific blocker should explain the read-only scope');
+      } finally {
+        await compare.dispose();
+      }
+    });
+  });
+
+  test('an older captured CF base changing after preview invalidates adopted semantic execution', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const base = path.join(tempRoot, 'older-base-cf');
+      const source = path.join(tempRoot, 'updated-cf');
+      const target = path.join(tempRoot, 'target-cfe');
+      const baseObject: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalog,
+        propertiesXml: '<Synonym>base</Synonym>',
+      };
+      await writeDesignerConfiguration(base, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
+      await writeDesignerConfiguration(source, {
+        name: 'Shared configuration',
+        objects: [mdClassesFixture({ ...baseObject, propertiesXml: '<Synonym>updated source</Synonym>' })],
+      });
+      await writeDesignerConfiguration(target, {
+        purpose: 'Customization',
+        objects: [mdClassesFixture({
+          type: 'Catalog', name: 'Products', uuid: UUID.catalogLocal,
+          belonging: 'Adopted', anchorUuid: UUID.catalog,
+          propertiesXml: '<Synonym>base</Synonym>',
+        })],
+      });
+      const compare = await openCompare(tempRoot, target, source, {
+        withRuntime: true,
+        extensionBaseRoots: { left: base },
+      });
+      try {
+        const row = collectNodes(compare.result.projection.root)
+          .find((node) => node.kind === 'extensionMetadataObject' && node.label === 'Catalog.Products');
+        assert.ok(row);
+        const synonym = collectNodes(row!).find((node) => node.rightValue?.includes('updated source')
+          && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Catalogs/Products.xml'));
+        assert.ok(synonym, 'the supported property should be available before dependency drift');
+        const preview = await createPreview(compare.result, [synonym!.id]);
+        const targetBefore = await fs.readFile(path.join(target, 'Catalogs/Products.xml'));
+        await writeCompareBytes(base, 'Catalogs/Products.xml', (await readUtf8(base, 'Catalogs/Products.xml')).replace('>base<', '>edited after preview<'));
+
+        const approved = compare.result.workspace.approvePreview(preview.previewId);
+        assert.strictEqual(approved.ok, true);
+        const executed = await compare.result.workspace.executeApprovedPreview(preview.previewId, { destructiveConfirmed: true });
+        assert.strictEqual(executed.ok, false);
+        assert.ok(executed.result?.failed.some((item) => item.code === 'MERGE_WITNESS_MISMATCH'),
+          JSON.stringify(executed.result?.failed));
+        assert.deepStrictEqual(await fs.readFile(path.join(target, 'Catalogs/Products.xml')), targetBefore);
+      } finally {
+        await compare.dispose();
+      }
+    });
+  });
+
+  test('an older CF Configuration.xml witness is rechecked before adopted semantic execution', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const base = path.join(tempRoot, 'older-base-cf');
+      const source = path.join(tempRoot, 'updated-cf');
+      const target = path.join(tempRoot, 'target-cfe');
+      const baseObject: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalog,
+        propertiesXml: '<Synonym>base</Synonym>',
+      };
+      await writeDesignerConfiguration(base, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
+      await writeDesignerConfiguration(source, {
+        name: 'Shared configuration',
+        objects: [mdClassesFixture({ ...baseObject, propertiesXml: '<Synonym>current source</Synonym>' })],
+      });
+      await writeDesignerConfiguration(target, {
+        purpose: 'Customization',
+        objects: [mdClassesFixture({
+          type: 'Catalog', name: 'Products', uuid: UUID.catalogLocal,
+          belonging: 'Adopted', anchorUuid: UUID.catalog,
+          propertiesXml: '<Synonym>base</Synonym>',
+        })],
+      });
+      const compare = await openCompare(tempRoot, target, source, {
+        withRuntime: true,
+        extensionBaseRoots: { left: base },
+      });
+      try {
+        const row = collectNodes(compare.result.projection.root)
+          .find((node) => node.kind === 'extensionMetadataObject' && node.label === 'Catalog.Products');
+        assert.ok(row);
+        const synonym = collectNodes(row!).find((node) => node.rightValue?.includes('current source')
+          && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Catalogs/Products.xml'));
+        assert.ok(synonym, 'the source update should be selectable before configuration drift');
+        const preview = await createPreview(compare.result, [synonym!.id]);
+        const targetBefore = await fs.readFile(path.join(target, 'Catalogs/Products.xml'));
+        const config = await readUtf8(base, 'Configuration.xml');
+        await writeCompareBytes(base, 'Configuration.xml', config.replace('Shared configuration', 'Changed after preview'));
+
+        assert.strictEqual(compare.result.workspace.approvePreview(preview.previewId).ok, true);
+        const executed = await compare.result.workspace.executeApprovedPreview(preview.previewId, { destructiveConfirmed: true });
+        assert.strictEqual(executed.ok, false);
+        assert.ok(executed.result?.failed.some((item) => item.code === 'MERGE_WITNESS_MISMATCH'),
+          JSON.stringify(executed.result?.failed));
+        assert.deepStrictEqual(await fs.readFile(path.join(target, 'Catalogs/Products.xml')), targetBefore);
       } finally {
         await compare.dispose();
       }
@@ -1875,6 +2683,18 @@ async function openCompare(
   }
 }
 
+async function writeAdoptedProjectionConfiguration(
+  rootPath: string,
+  fixture: ExtensionCompareConfigurationFixture,
+): Promise<void> {
+  await writeDesignerConfiguration(rootPath, fixture);
+  const configurationPath = path.join(rootPath, 'Configuration.xml');
+  const xml = await fs.readFile(configurationPath, 'utf8');
+  const qualified = xml.replace('<MetaDataObject ', '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" ');
+  assert.notStrictEqual(qualified, xml, 'the adopted projection fixture must qualify Configuration.xml in MDClasses');
+  await fs.writeFile(configurationPath, qualified, 'utf8');
+}
+
 async function withTempRoot<T>(callback: (tempRoot: string) => Promise<T>): Promise<T> {
   const tempRoot = await createExtensionCompareTempRoot();
   try {
@@ -1911,6 +2731,99 @@ function indexedSidecarOwner(
     supportedRootType: true,
     valid: true,
   };
+}
+
+function semanticIndex(
+  rootPath: string,
+  side: 'left' | 'right',
+  rootKind: 'cf' | 'cfe',
+  objects: ExtensionIndexedObject[],
+): ExtensionMetadataIndex {
+  const configurationContent = Buffer.from('<Configuration/>', 'utf8');
+  return {
+    rootPath,
+    canonicalRootPath: rootPath,
+    sourceId: rootPath,
+    side,
+    rootKind,
+    hasConfigurationXml: true,
+    configurationContent,
+    configurationHash: createHash('sha256').update(configurationContent).digest('hex'),
+    formatVersion: '2.20',
+    configurationUuid: UUID.targetConfiguration,
+    configurationName: 'Shared configuration',
+    objectBelonging: rootKind === 'cfe' ? 'Own' : undefined,
+    purpose: rootKind === 'cfe' ? 'Customization' : undefined,
+    objects,
+    diagnostics: [],
+    cfeMarkerSeen: rootKind === 'cfe',
+  };
+}
+
+function semanticIndexedObject(input: {
+  sourceId: string;
+  side: 'left' | 'right';
+  ownership: 'own' | 'adopted';
+  uuid: string;
+  anchorUuid?: string;
+  descriptorRelativePath: string;
+}): ExtensionIndexedObject {
+  const markerXml = input.ownership === 'adopted'
+    ? `<ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>${input.anchorUuid}</ExtendedConfigurationObject>`
+    : '';
+  const descriptorContent = Buffer.from(
+    `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="${input.uuid}"><Properties><Name>Products</Name>${markerXml}</Properties><ChildObjects/></Catalog></MetaDataObject>`,
+    'utf8',
+  );
+  return {
+    side: input.side,
+    sourceId: input.sourceId,
+    metadataType: 'Catalog',
+    name: 'Products',
+    qualifiedName: 'Catalog.Products',
+    descriptorRelativePath: input.descriptorRelativePath,
+    identity: {
+      ownership: input.ownership,
+      type: 'Catalog',
+      name: 'Products',
+      uuid: input.uuid,
+      path: input.descriptorRelativePath,
+      ...(input.anchorUuid ? { sourceUuid: input.anchorUuid } : {}),
+    },
+    descriptorContent,
+    descriptorHash: createHash('sha256').update(descriptorContent).digest('hex'),
+    sidecarFiles: [],
+    supportedRootType: true,
+    valid: true,
+  };
+}
+
+function extensionRoleRightsXml(read: 'true' | 'false'): string {
+  return `<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20">` +
+    '<setForNewObjects>false</setForNewObjects><setForAttributesByDefault>true</setForAttributesByDefault>' +
+    '<independentRightsOfChildObjects>false</independentRightsOfChildObjects>' +
+    `<object><name>Catalog.Products</name><right><name>Read</name><value>${read}</value></right></object></Rights>`;
+}
+
+function extensionDcsXml(query: 'SELECT 1' | 'SELECT 2'): string {
+  return `<d:DataCompositionSchema xmlns:d="http://v8.1c.ru/8.1/data-composition-system/schema" ` +
+    `xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings">` +
+    '<d:dataSource><d:name>Source</d:name><d:dataSourceType>Local</d:dataSourceType></d:dataSource>' +
+    `<d:dataSet xsi:type="d:DataSetQuery"><d:name>Query</d:name><d:dataSource>Source</d:dataSource><d:query>${query}</d:query></d:dataSet>` +
+    '<d:settingsVariant><dcsset:name>Default</dcsset:name><d:settings/></d:settingsVariant>' +
+    '</d:DataCompositionSchema>';
+}
+
+function assertMdClassesElementText(xml: string, localName: string, expectedText: string): void {
+  const values: string[] = [];
+  const visit = (element: XmlElement): void => {
+    if (element.localName === localName && namespaceUriForName(element) === 'http://v8.1c.ru/8.3/MDClasses') {
+      values.push(textContent(element));
+    }
+    for (const child of elementChildren(element)) {visit(child);}
+  };
+  visit(parseXmlDocument(xml).root);
+  assert.deepStrictEqual(values, [expectedText], `Expected one MDClasses:${localName} with selected value`);
 }
 
 function onlyMergeableNodeId(result: ConfigurationCompareResult): string {
@@ -1985,6 +2898,12 @@ function registryDescriptor(type: ExtensionCompareRootType) {
   const descriptor = METADATA_TYPE_DESCRIPTORS.find((item) => item.designerRootTag === type);
   assert.ok(descriptor, `Expected ${type} to exist in the metadata type registry`);
   return descriptor;
+}
+
+function mdClassesFixture(fixture: ExtensionCompareObjectFixture): ExtensionCompareObjectFixture {
+  const descriptorXml = metadataObjectXml(fixture)
+    .replace('<MetaDataObject', '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"');
+  return { ...fixture, descriptorXml };
 }
 
 function createRegistryObjects(uuidScope: number, comment: string): ExtensionCompareObjectFixture[] {
@@ -2083,6 +3002,7 @@ async function writeRegistrySidecars(
   rootPath: string,
   objects: readonly ExtensionCompareObjectFixture[],
   variant: 'target' | 'source',
+  includeRoleRights = true,
 ): Promise<void> {
   for (const object of objects) {
     const folder = registryDescriptor(object.type).designerFolder;
@@ -2098,7 +3018,7 @@ async function writeRegistrySidecars(
       await writeCompareBytes(rootPath, `${objectPath}/Ext/RecordSetModule.bsl`, `${variant}:${object.type}:record-set-module`);
       await writeCompareBytes(rootPath, `${objectPath}/Ext/ManagerModule.bsl`, `${variant}:${object.type}:manager-module`);
     }
-    if (object.type === 'Role') {
+    if (object.type === 'Role' && includeRoleRights) {
       await writeCompareBytes(
         rootPath,
         `${objectPath}/Ext/Rights.xml`,

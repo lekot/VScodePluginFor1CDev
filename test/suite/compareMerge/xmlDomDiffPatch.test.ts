@@ -3,14 +3,16 @@ import * as assert from 'assert';
 import {
   buildXmlAddress,
   captureXmlSubtree,
+  elementChildren,
   getXmlElementIdentityKey,
   parseXmlDocument,
   serializeXmlDocument,
+  textContent,
   type XmlElement,
 } from '../../../src/compareMerge/xml/xmlDom';
 import { parseXmlAddressPointer } from '../../../src/compareMerge/xml/xmlAddress';
 import { diffXmlDocuments } from '../../../src/compareMerge/xml/xmlDiff';
-import { applyXmlPatch, hashXmlText } from '../../../src/compareMerge/xml/xmlPatch';
+import { applyXmlPatch, applyXmlPatchBatch, hashXmlText, type XmlPatchPayload } from '../../../src/compareMerge/xml/xmlPatch';
 
 suite('XmlDomDiffPatch', () => {
   test('builds stable paths from local names and identity keys', () => {
@@ -270,7 +272,7 @@ suite('XmlDomDiffPatch', () => {
 
     assert.throws(
       () => applyXmlPatch(source, patch as Parameters<typeof applyXmlPatch>[1]),
-      /same parent/i
+      /XML insertion anchor and destination must resolve to the same final parent/i
     );
   });
 
@@ -321,6 +323,76 @@ suite('XmlDomDiffPatch', () => {
       () => applyXmlPatch(source, patch as Parameters<typeof applyXmlPatch>[1]),
       /cannot be used together/i
     );
+  });
+
+  test('synthesizes one missing metadata ChildObjects for selected registrations in source order', () => {
+    const source = metadataOwnerWithoutChildObjects();
+    const document = parseXmlDocument(source);
+    const owner = elementChildren(document.root)[0]!;
+    const patches = [
+      synthesizedRegistrationPatch(source, owner, 'Form', 1, 'Second', 1),
+      synthesizedRegistrationPatch(source, owner, 'Form', 0, 'First', 0),
+    ];
+
+    const result = applyXmlPatchBatch(source, patches);
+    const mergedOwner = elementChildren(parseXmlDocument(result).root)[0]!;
+    const childObjects = elementChildren(mergedOwner).find((element) => element.localName === 'ChildObjects');
+
+    assert.ok(childObjects);
+    assert.deepStrictEqual(elementChildren(childObjects).map((element) => textContent(element)), ['First', 'Second']);
+    assert.strictEqual(elementChildren(mergedOwner).findIndex((element) => element.localName === 'ChildObjects'), 2);
+    assert.match(result, /<!--target-comment-->/u);
+    assert.match(result, /<FutureTarget>keep<\/FutureTarget>/u);
+    assert.doesNotMatch(result, /<Template>/u, 'an unselected source Template must not be copied with the container');
+  });
+
+  test('synthesizes only one selected registration and preserves target-only children', () => {
+    const source = metadataOwnerWithoutChildObjects();
+    const document = parseXmlDocument(source);
+    const owner = elementChildren(document.root)[0]!;
+    const patch = synthesizedRegistrationPatch(source, owner, 'Form', 0, 'Main', 0);
+
+    const result = applyXmlPatchBatch(source, [patch]);
+    const mergedOwner = elementChildren(parseXmlDocument(result).root)[0]!;
+    const childObjects = elementChildren(mergedOwner).find((element) => element.localName === 'ChildObjects');
+
+    assert.ok(childObjects);
+    assert.deepStrictEqual(elementChildren(childObjects).map((element) => [element.localName, textContent(element)]), [['Form', 'Main']]);
+    assert.match(result, /<FutureTarget>keep<\/FutureTarget>/u);
+    assert.match(result, /<!--target-comment-->/u);
+  });
+
+  test('rejects synthetic ChildObjects inserts with stale hashes, duplicate identity, or a removed owner', () => {
+    const source = metadataOwnerWithoutChildObjects();
+    const owner = elementChildren(parseXmlDocument(source).root)[0]!;
+    const first = synthesizedRegistrationPatch(source, owner, 'Form', 0, 'Main', 0);
+    const duplicate = synthesizedRegistrationPatch(source, owner, 'Form', 1, 'Main', 1);
+    const stale = { ...first, expectedOldHash: hashXmlText(source + ' ') };
+    const ownerRemoval: XmlPatchPayload = {
+      kind: 'deleteNode', target: buildXmlAddress('Products.xml', owner),
+      expectedOldHash: hashXmlText(source), newHash: 'removed-owner', semanticKind: 'metadataXml',
+    };
+
+    assert.throws(() => applyXmlPatchBatch(source, [stale]), /hash guard/i);
+    assert.throws(() => applyXmlPatchBatch(source, [first, duplicate]), /duplicate|identity|same registration/i);
+    assert.throws(() => applyXmlPatchBatch(source, [first, ownerRemoval]), /owner|removed|synthesized/i);
+  });
+
+  test('rejects synthetic ChildObjects inserts with an existing container or foreign owner namespace', () => {
+    const source = metadataOwnerWithoutChildObjects();
+    const owner = elementChildren(parseXmlDocument(source).root)[0]!;
+    const patch = synthesizedRegistrationPatch(source, owner, 'Form', 0, 'Main', 0);
+    const existingContainer = source.replace('</Catalog>', '<ChildObjects/></Catalog>');
+    const stalePatch = { ...patch, expectedOldHash: hashXmlText(existingContainer) };
+    const foreignSource = source.replace(
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">',
+      '<MetaDataObject xmlns="urn:foreign">'
+    );
+    const foreignOwner = elementChildren(parseXmlDocument(foreignSource).root)[0]!;
+    const foreignPatch = synthesizedRegistrationPatch(foreignSource, foreignOwner, 'Form', 0, 'Main', 0);
+
+    assert.throws(() => applyXmlPatchBatch(existingContainer, [stalePatch]), /already has|ChildObjects/i);
+    assert.throws(() => applyXmlPatchBatch(foreignSource, [foreignPatch]), /namespace|owner/i);
   });
 
   test('rejects malformed documents instead of accepting a partial root', () => {
@@ -477,7 +549,100 @@ suite('XmlDomDiffPatch', () => {
     );
   });
 
+  test('synthesizes one Events container for selected individual Event inserts in source order', () => {
+    const source = '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems><InputField name="Field" id="1"><Title>Target only</Title></InputField></ChildItems><Attributes/><Commands/></Form>';
+    const expectedOldHash = hashXmlText(source);
+    const makePatch = (name: string, order: number): XmlPatchPayload => ({
+      kind: 'insertNode',
+      target: {
+        filePath: 'Form.xml',
+        pointer: `/Form[0]/ChildItems[0]/InputField[id%3D1]/Events[0]/Event[name%3D${name}]`,
+        displayPath: `Form > InputField Field > Events > Event ${name}`,
+        identityKey: `name=${name}`,
+      },
+      destinationParent: {
+        filePath: 'Form.xml',
+        pointer: '/Form[0]/ChildItems[0]/InputField[id%3D1]/Events[0]',
+        displayPath: 'Form > InputField Field > Events',
+      },
+      createDestinationEvents: true,
+      insertPosition: 'append',
+      insertOrder: order,
+      semanticKind: 'formXml',
+      expectedOldHash,
+      newHash: `sha256:${name}`,
+      replacementXml: `<Event xmlns="http://v8.1c.ru/8.3/xcf/logform" name="${name}">${name}</Event>`,
+    } as unknown as XmlPatchPayload);
+
+    const merged = applyXmlPatchBatch(source, [makePatch('OnClose', 2), makePatch('OnOpen', 0)]);
+    const root = parseXmlDocument(merged).root;
+    const field = elementChildren(elementChildren(root).find((element) => element.localName === 'ChildItems')!)[0]!;
+    const events = elementChildren(field).find((element) => element.localName === 'Events');
+    assert.ok(events);
+    assert.deepStrictEqual(elementChildren(events!).map((event) => textContent(event)), ['OnOpen', 'OnClose']);
+    assert.strictEqual(textContent(elementChildren(field).find((element) => element.localName === 'Title')!), 'Target only');
+    assert.ok(merged.indexOf('<Events') < merged.indexOf('<Attributes'));
+  });
+
+  test('rejects synthesized Events insertion when a foreign namespace lookalike already exists', () => {
+    const source = '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:foreign="urn:foreign" version="2.20"><ChildItems><InputField name="Field" id="1"><foreign:Events/></InputField></ChildItems><Attributes/><Commands/></Form>';
+    const patch = {
+      kind: 'insertNode',
+      target: { filePath: 'Form.xml', pointer: '/Form[0]/ChildItems[0]/InputField[id%3D1]/Events[0]/Event[name%3DOnOpen]', displayPath: 'Event', identityKey: 'name=OnOpen' },
+      destinationParent: { filePath: 'Form.xml', pointer: '/Form[0]/ChildItems[0]/InputField[id%3D1]/Events[0]', displayPath: 'Events' },
+      createDestinationEvents: true,
+      insertPosition: 'append',
+      insertOrder: 0,
+      semanticKind: 'formXml',
+      expectedOldHash: hashXmlText(source),
+      newHash: 'sha256:event',
+      replacementXml: '<Event xmlns="http://v8.1c.ru/8.3/xcf/logform" name="OnOpen">OnOpen</Event>',
+    } as unknown as XmlPatchPayload;
+
+    assert.throws(() => applyXmlPatchBatch(source, [patch]), /Events|namespace|container/iu);
+  });
+
   test('rejects numeric references to characters outside the XML character range', () => {
     assert.throws(() => parseXmlDocument('<Root>&#xD800;</Root>'), /invalid XML character/i);
   });
 });
+
+const MD_CLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
+
+function metadataOwnerWithoutChildObjects(): string {
+  return `<MetaDataObject xmlns="${MD_CLASSES_NAMESPACE}"><Catalog uuid="catalog-products"><InternalInfo/><Properties><Name>Products</Name></Properties><!--target-comment--><FutureTarget>keep</FutureTarget></Catalog></MetaDataObject>`;
+}
+
+function synthesizedRegistrationPatch(
+  source: string,
+  owner: XmlElement,
+  registrationKind: 'Form' | 'Template' | 'Command',
+  registrationOrdinal: number,
+  registrationName: string,
+  sourceOrder: number,
+): XmlPatchPayload {
+  const ownerAddress = buildXmlAddress('Products.xml', owner);
+  const destinationParent = {
+    ...ownerAddress,
+    pointer: ownerAddress.pointer + '/ChildObjects[0]',
+    displayPath: ownerAddress.displayPath + ' > ChildObjects',
+    identityKey: undefined,
+  };
+  return {
+    kind: 'insertNode',
+    target: {
+      ...destinationParent,
+      pointer: destinationParent.pointer + `/${registrationKind}[${registrationOrdinal}]`,
+      displayPath: destinationParent.displayPath + ` > ${registrationKind}`,
+      identityKey: undefined,
+    },
+    destinationParent,
+    createDestinationChildObjects: true,
+    insertPosition: 'append',
+    insertOrder: sourceOrder,
+    semanticKind: 'metadataXml',
+    expectedOldHash: hashXmlText(source),
+    newHash: `new-${registrationKind}-${registrationOrdinal}`,
+    replacementXml: `<${registrationKind} xmlns="${MD_CLASSES_NAMESPACE}">${registrationName}</${registrationKind}>`,
+  } as unknown as XmlPatchPayload;
+}

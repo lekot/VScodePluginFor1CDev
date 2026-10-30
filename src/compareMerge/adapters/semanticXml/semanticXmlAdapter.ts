@@ -1,27 +1,18 @@
-import * as path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
-
-import { compareCodeUnits } from '../../../utils/compareCodeUnits';
 import type { CompareTreeNode, CompareTreeStatus } from '../../compareTreeTypes';
 import type { CompareMessage } from '../../domain/compareContracts';
-import type { MergeCandidate } from '../../merge/mergePreview';
-import { encodeXmlAddressComponent } from '../../xml/xmlAddress';
 import {
   captureXmlSubtree,
-  getXmlElementIdentityKey,
   parseXmlDocument as parseDomXmlDocument,
   type XmlElement,
 } from '../../xml/xmlDom';
-import { applyXmlPatch, hashXmlText } from '../../xml/xmlPatch';
+import { hashXmlText } from '../../xml/xmlPatch';
 import {
   expandedXmlName,
   localXmlName as localName,
-  semanticXmlIdentityKey,
+  namespaceUriForName,
 } from './semanticXmlIdentity';
 import {
   HARD_DIAGNOSTIC_CODES,
-  isProtectedXmlAttribute,
-  isSupportedAttributeNamespace,
   isSupportedElementNamespace,
   isSupportedRootNamespace,
   isKnownMetadataStructure,
@@ -37,23 +28,60 @@ import {
 } from './semanticXmlIdentityPolicy';
 import {
   isMetadataObjectRefItem,
-  knownRootPropertyReferencesInXml,
-  metadataReferenceFromType,
-  metadataReferencesInSubsystemContent,
 } from './semanticXmlMetadataReferences';
+import { metadataReferencesInXml } from './semanticXmlMetadataScan';
+import { roleRightsMetadataReferences } from './semanticXmlRights';
 import { hasMetadataSiblingNameCollision } from './semanticXmlMetadataIdentity';
 import { hasUnsupportedChangedAttributes, isFormEventElement, unsupportedSubtreeReason, wrapXmlElement } from './semanticXmlSubtreeSafety';
+import { buildFormPlacementProjection, type FormPlacementProjection } from './semanticXmlFormPlacement';
+import { formPlacementContainerNode, formPlacementNode } from './semanticXmlFormPlacementNodes';
+import { enumValueOrderNodes, isSupportedEnumValueStructure, projectEnumValueOrder } from './semanticXmlEnumValueOrder';
+import { changedKindsInOrder, hasCrossKindOrderChange, orderScopeForInsertion, projectOrderedCollectionChanges } from './semanticXmlOrderedCollections';
+import { childLocation, locationForElement, locationForRoot, type Location } from './semanticXmlLocation';
+import { readOnlyContainerGroup } from './semanticXmlAdapterContainers';
+import {
+  elementDisplayName,
+  linkedDefaultObjectFormAllowed,
+  linkedEventHandlerAllowed,
+  linkedMetadataRegistrationAllowed,
+} from './semanticXmlAdapterLabels';
+export { childText, elementDisplayName } from './semanticXmlAdapterLabels';
+import { insertionPosition, type XmlInsertionPosition } from './semanticXmlInsertion';
+import {
+  canSynthesizeMetadataChildObjects,
+  metadataRegistrationCandidateNode,
+  missingMetadataRegistrationContainer,
+} from './semanticXmlMetadataRegistration';
 import { validateSemanticXmlMerge, type SemanticXmlKind } from './semanticXmlValidator';
 import type {
   AdapterCompareInput,
   AdapterCompareResult,
   ExecutableCandidateFactory,
   MergeAdapter,
-  MetadataObjectUnit,
   XmlPatchPayload,
 } from '../mergeAdapter';
-
-const FALLBACK_RIGHT_SOURCE_ID = 'right-source';
+import { LINKED_FORM_REFERENCE_PROPERTIES } from '../../linkedDesignerUtils';
+import {
+  hasReorder,
+  indexChildren,
+  isPropertyLeaf,
+  localFilePath,
+  rightSnapshotId,
+  rightSourceId,
+  semanticKind,
+  shouldShowStatus,
+  stableNodePrefix,
+  targetDescriptorPath,
+  targetUri,
+} from './semanticXmlAdapterUtils';
+import {
+  compareAttributes,
+  propertyNode,
+  readOnlyNode,
+  readOnlyOrderNode,
+  readOnlyPropertyNode,
+  subtreeNode,
+} from './semanticXmlAdapterNodes';
 
 export interface XmlElementNode {
   name: string;
@@ -82,26 +110,14 @@ export interface XmlAdapterProjectionOptions {
   knownComplexElement?: (input: XmlElementKindInput) => boolean;
 }
 
-interface Location {
-  pointer: string;
-  displayPath: string;
-  identityKey?: string;
-}
-
-interface IndexedChild {
+export interface IndexedChild {
   element: XmlElementNode;
   selector: string;
   key: string;
   position: number;
 }
 
-interface InsertionPosition {
-  insertBefore?: XmlPatchPayload['insertBefore'];
-  insertPosition?: XmlPatchPayload['insertPosition'];
-  insertOrder?: number;
-}
-
-interface CompareContext {
+export interface CompareContext {
   input: AdapterCompareInput;
   options: XmlAdapterProjectionOptions;
   kind: SemanticXmlKind;
@@ -109,10 +125,12 @@ interface CompareContext {
   sourceId: string;
   snapshotId: string;
   leftRoot: XmlElementNode;
+  rightRoot: XmlElementNode;
   candidateFactories: Map<string, ExecutableCandidateFactory>;
   diagnostics: CompareMessage[];
   sourceWitnesses: NonNullable<XmlPatchPayload['sourceWitnesses']>;
   semanticContext: XmlPatchPayload['semanticContext'];
+  formPlacement?: FormPlacementProjection;
 }
 
 export const metadataXmlAdapter: MergeAdapter = {
@@ -133,6 +151,9 @@ export const metadataXmlAdapter: MergeAdapter = {
         }
         if (name === 'Item') {
           return localName(parent?.name ?? '') === 'Content' && isMetadataObjectRefItem(element.dom);
+        }
+        if (name === 'EnumValue') {
+          return isSupportedEnumValueStructure(element);
         }
         return isKnownMetadataStructure(name);
       },
@@ -174,7 +195,8 @@ export function buildXmlAdapterResult(
     return { nodes: [], candidateFactories: factories, diagnostics };
   }
 
-  const expectedRoot = kind === 'metadataXml' ? 'MetaDataObject' : kind === 'formXml' ? 'Form' : 'PredefinedData';
+  const expectedRoot = kind === 'metadataXml' ? 'MetaDataObject' : kind === 'formXml' ? 'Form'
+    : kind === 'predefinedXml' ? 'PredefinedData' : kind === 'roleRightsXml' ? 'Rights' : 'DataCompositionSchema';
   if (localName(left.name) !== expectedRoot || localName(right.name) !== expectedRoot ||
     !isSupportedRootNamespace(left.dom, kind) || !isSupportedRootNamespace(right.dom, kind)) {
     diagnostics.push({
@@ -226,7 +248,10 @@ export function buildXmlAdapterResult(
     input,
     { left: options.targetFilePath, right: options.sourceFilePath },
     kind,
-    kind === 'metadataXml' || kind === 'formXml' ? metadataReferencesInXml(left, right) : []
+    kind === 'metadataXml' || kind === 'formXml' ? metadataReferencesInXml(left, right)
+      : kind === 'roleRightsXml'
+        ? [...new Set([...roleRightsMetadataReferences(left.dom), ...roleRightsMetadataReferences(right.dom)])]
+        : []
   );
   const context: CompareContext = {
     input,
@@ -236,11 +261,26 @@ export function buildXmlAdapterResult(
     sourceId: rightSourceId(input),
     snapshotId: rightSnapshotId(input),
     leftRoot: left,
+    rightRoot: right,
     candidateFactories: factories,
     diagnostics,
     sourceWitnesses: witnesses.sourceWitnesses,
     semanticContext: witnesses.semanticContext,
+    formPlacement: kind === 'formXml' ? buildFormPlacementProjection(left, right) : undefined,
   };
+  for (const placement of context.formPlacement?.placementsByRight.values() ?? []) {
+    if (placement.reason) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'XML_FORM_PLACEMENT_OWNER_UNRESOLVED',
+        phase: 'compare',
+        sourceId: context.sourceId,
+        path: options.targetFilePath,
+        blocking: false,
+        suggestedAction: placement.reason,
+      });
+    }
+  }
   const children = compareChildren(left, right, locationForRoot(left), context, 1);
   if (children.length === 0) {
     return { nodes: [], candidateFactories: factories, diagnostics };
@@ -262,23 +302,6 @@ export function parseXmlDocument(source: string): XmlElementNode {
   return wrapXmlElement(parseDomXmlDocument(source).root);
 }
 
-export function childText(element: XmlElementNode | undefined, childName: string): string | undefined {
-  return element?.children.find((child) => localName(child.name) === childName)?.text;
-}
-
-export function elementDisplayName(element: XmlElementNode): string {
-  const properties = element.children.find((child) => localName(child.name) === 'Properties');
-  return childText(element, 'Name') ??
-    childText(properties, 'Name') ??
-    element.attributes.name ??
-    element.attributes.Name ??
-    element.attributes.id ??
-    element.attributes.ID ??
-    element.attributes.uuid ??
-    element.attributes.UUID ??
-    element.name;
-}
-
 function compareChildren(
   leftParent: XmlElementNode,
   rightParent: XmlElementNode,
@@ -294,17 +317,64 @@ function compareChildren(
   ];
   const nodes = compareAttributes(leftParent, rightParent, parentLocation, context);
   for (const key of keys) {
-    const l = leftIndex.map.get(key);
+    const localLeft = leftIndex.map.get(key);
     const r = rightIndex.map.get(key);
-    const element = r?.element ?? l?.element;
+    if (!r && localLeft && context.formPlacement?.rightByLeft.has(localLeft.element)) {
+      continue;
+    }
+    const globalLeft = !localLeft && r ? context.formPlacement?.leftByRight.get(r.element) : undefined;
+    const leftElement = localLeft?.element ?? globalLeft;
+    const element = r?.element ?? leftElement;
     if (!element) {
       continue;
     }
-    const status: CompareTreeStatus = !l ? 'rightOnly' : !r ? 'leftOnly' : 'changed';
+    const status: CompareTreeStatus = !leftElement ? 'rightOnly' : !r ? 'leftOnly' : 'changed';
     if (!shouldShowStatus(status, context.input.strategy)) {
       continue;
     }
-    if (!l && r && context.kind === 'metadataXml' && hasMetadataSiblingNameCollision(leftParent.dom, r.element.dom)) {
+    if (!localLeft && r && canSynthesizeMetadataChildObjects({
+      leftOwner: leftParent,
+      rightOwner: rightParent,
+      container: r.element,
+      leftRoot: context.leftRoot,
+      rightRoot: context.rightRoot,
+      kind: context.kind,
+    })) {
+      nodes.push(missingMetadataRegistrationContainer({
+        container: r.element,
+        parentLocation: locationForElement(leftParent),
+        targetFilePath: context.options.targetFilePath,
+        nodeIdPrefix: context.options.nodeIdPrefix,
+        canMerge: (candidate) => linkedMetadataRegistrationAllowed(candidate, context.input) &&
+          (namespaceUriForName(candidate.dom) ?? '') === (namespaceUriForName(leftParent.dom) ?? '') &&
+          isSupportedElementNamespace(candidate.dom) &&
+          !unsupportedSubtreeReason(candidate, r.element, depth + 1, context.kind, context.options.knownComplexElement),
+        buildCandidate: (candidate) => metadataRegistrationCandidateNode({
+          ...candidate,
+          input: context.input,
+          nodeIdPrefix: context.options.nodeIdPrefix,
+          targetFilePath: context.options.targetFilePath,
+          targetUri: targetUri(context.options.targetFilePath),
+          expectedOldHash: context.expectedOldHash,
+          sourceId: context.sourceId,
+          snapshotId: context.snapshotId,
+          sourceWitnesses: context.sourceWitnesses,
+          semanticContext: context.semanticContext,
+          candidateFactories: context.candidateFactories,
+        }),
+        buildReadOnly: (candidate, location) => readOnlyNode(
+          candidate,
+          undefined,
+          'rightOnly',
+          location,
+          context,
+          depth + 1,
+          'Для переноса регистрации требуется подтверждённый пакет формы, макета или команды.',
+        ),
+      }));
+      continue;
+    }
+    if (!leftElement && r && context.kind === 'metadataXml' && hasMetadataSiblingNameCollision(leftParent.dom, r.element.dom)) {
       nodes.push(readOnlyNode(
         r.element,
         undefined,
@@ -316,13 +386,38 @@ function compareChildren(
       ));
       continue;
     }
+    const synthesizedPlacements = !localLeft && r && context.kind === 'formXml' && localName(r.element.name) === 'ChildItems'
+      ? (context.formPlacement?.placementsByRightParent.get(r.element) ?? [])
+        .filter((placement) => placement.destinationOwner === leftParent && placement.createDestinationChildItems === true)
+      : [];
+    if (synthesizedPlacements.length > 0) {
+      nodes.push(formPlacementContainerNode(r!.element, synthesizedPlacements, context));
+      continue;
+    }
+    if (!localLeft && r && context.kind === 'formXml' && localName(r.element.name) === 'Events' &&
+        namespaceUriForName(r.element.dom) === namespaceUriForName(context.leftRoot.dom) &&
+        !leftParent.children.some((child) => localName(child.name) === 'Events')) {
+      nodes.push(missingFormEventsGroup(r.element, childLocation(parentLocation, r.element, r.selector), context, depth));
+      continue;
+    }
     const node = compareElement({
-      left: l?.element,
+      left: leftElement,
       right: r?.element,
       parent: rightParent,
-      location: childLocation(parentLocation, element, l?.selector ?? r?.selector ?? '0'),
+      location: leftElement
+        ? locationForElement(leftElement)
+        : childLocation(parentLocation, element, r?.selector ?? '0'),
       status,
-      insertion: !l && r ? insertionPosition(rightParent, r.element, context) : undefined,
+      insertion: !leftElement && r
+        ? insertionPosition(
+          rightParent,
+          r.element,
+          context.leftRoot,
+          targetUri(context.options.targetFilePath),
+          context.kind,
+          orderScopeForInsertion(leftParent, rightParent, r.element, context),
+        )
+        : undefined,
       context,
       depth,
     });
@@ -330,7 +425,31 @@ function compareChildren(
       nodes.push(node);
     }
   }
-  if (hasReorder(leftIndex.ordered, rightIndex.ordered)) {
+  const placements = context.formPlacement?.placementsByRightParent.get(rightParent) ?? [];
+  if (placements.length > 0 && localName(rightParent.name) === 'ChildItems') {
+    nodes.push(...placements.map((placement) => formPlacementNode(placement, leftParent, context)));
+  }
+  const enumMoves = context.kind === 'metadataXml' && context.input.allowMetadataChildOrder !== false &&
+      localName(leftParent.name) === 'ChildObjects' &&
+      localName(rightParent.name) === 'ChildObjects'
+    ? projectEnumValueOrder(context.leftRoot, context.rightRoot, leftParent, rightParent)
+    : undefined;
+  if (enumMoves?.length) {
+    nodes.push(...enumValueOrderNodes(enumMoves, leftParent, context));
+  }
+  const orderedProjection = projectOrderedCollectionChanges(context.leftRoot, context.rightRoot, leftParent, rightParent, context);
+  nodes.push(...orderedProjection.nodes);
+  const changedKinds = changedKindsInOrder(leftIndex.ordered, rightIndex.ordered);
+  const enumChanged = changedKinds.has('EnumValue');
+  const unsupportedKinds = new Set(orderedProjection.unsupportedKinds);
+  if (enumChanged && enumMoves?.length) {unsupportedKinds.delete('EnumValue');}
+  const withinKindsHandled = changedKinds.size > 0 && [...changedKinds].every((kind) => kind === 'EnumValue'
+    ? enumMoves !== undefined && enumMoves.length > 0
+    : orderedProjection.changedKinds.has(kind) && !unsupportedKinds.has(kind));
+  const crossKindChange = context.kind === 'metadataXml' && localName(leftParent.name) === 'ChildObjects' &&
+    hasCrossKindOrderChange(leftIndex.ordered, rightIndex.ordered);
+  if (hasReorder(leftIndex.ordered, rightIndex.ordered) && placements.length === 0 &&
+      (crossKindChange || !withinKindsHandled)) {
     nodes.push(readOnlyOrderNode(parentLocation, context));
   }
   return nodes;
@@ -342,7 +461,7 @@ function compareElement(input: {
   parent: XmlElementNode;
   location: Location;
   status: CompareTreeStatus;
-  insertion?: InsertionPosition;
+  insertion?: XmlInsertionPosition;
   context: CompareContext;
   depth: number;
 }): CompareTreeNode | undefined {
@@ -362,28 +481,66 @@ function compareElement(input: {
   if (input.context.kind === 'formXml' && localName(element.name) === 'BaseForm') {
     return readOnlyNode(element, input.left, input.status, input.location, input.context, input.depth, 'Снимок унаследованной части BaseForm доступен только для чтения.');
   }
-  if (input.context.kind === 'formXml' && isFormEventElement(element)) {
+  if (
+    input.status === 'leftOnly' && input.left && !input.right &&
+    ((input.context.kind === 'metadataXml' && localName(element.name) === 'ChildObjects' &&
+      element.children.some((child) => ['Form', 'Template', 'Command'].includes(localName(child.name)))) ||
+      (input.context.kind === 'formXml' && localName(element.name) === 'Events'))
+  ) {
+    return absentContainerGroup(input.left, input.location, input.context, input.depth);
+  }
+  if (input.context.kind === 'formXml' && input.right && isFormEventElement(element) && element.text?.trim() &&
+      !linkedEventHandlerAllowed(element, input.context.input)) {
     return readOnlyNode(element, input.left, input.status, input.location, input.context, input.depth, 'Обработчик события зависит от BSL-модуля формы; без проверки модуля его изменение доступно только для чтения.');
   }
+  if (!input.left && input.context.formPlacement?.hasRelocatedDescendant(element)) {
+    return readOnlyNode(element, input.left, input.status, input.location, input.context, input.depth, 'Контейнер назначения для существующего элемента формы отсутствует в целевой форме; перенос доступен только для чтения.');
+  }
   if (isFileBackedMetadataRegistration(input.context.kind, element, input.parent)) {
-    return readOnlyNode(
-      element,
-      input.left,
-      input.status,
-      input.location,
-      input.context,
-      input.depth,
-      'Переносите форму, макет или команду целиком вместе с дескриптором и файлами.'
-    );
+    if (!linkedMetadataRegistrationAllowed(element, input.context.input)) {
+      return readOnlyNode(
+        element,
+        input.left,
+        input.status,
+        input.location,
+        input.context,
+        input.depth,
+        'Переносите форму, макет или команду целиком вместе с дескриптором и файлами.'
+      );
+    }
+    if (input.status === 'leftOnly' || input.status === 'rightOnly') {
+      const registration = input.right ?? input.left;
+      if (registration) {
+        const unsafeRegistration = unsupportedSubtreeReason(
+          registration,
+          input.parent,
+          input.depth,
+          input.context.kind,
+          input.context.options.knownComplexElement,
+        );
+        if (unsafeRegistration) {
+          return readOnlyNode(element, input.left, input.status, input.location, input.context, input.depth, unsafeRegistration);
+        }
+        return subtreeNode(registration, input.status, input.location, input.context, input.depth, input.insertion, input.parent);
+      }
+    }
   }
   if (isDefaultObjectFormReference(input.context.kind, element, input.parent)) {
-    return readOnlyPropertyNode(
-      element,
-      input.status,
-      input.location,
-      input.context,
-      'Ссылка на форму доступна только для чтения, пока не подтверждён перенос целевой формы вместе с файлами.'
-    );
+    const elementNamespace = namespaceUriForName(element.dom);
+    const parentNamespace = namespaceUriForName(input.parent.dom);
+    const exactMetadataNamespace = elementNamespace === 'http://v8.1c.ru/8.3/MDClasses' &&
+      parentNamespace === 'http://v8.1c.ru/8.3/MDClasses';
+    const supportedClearNamespace = exactMetadataNamespace || (!elementNamespace && !parentNamespace);
+    const clearsReference = supportedClearNamespace && Boolean(input.left) && (!input.right || !input.right.text?.trim());
+    if (!clearsReference && (!exactMetadataNamespace || !input.right || !linkedDefaultObjectFormAllowed(element, input.context.input))) {
+      return readOnlyPropertyNode(
+        element,
+        input.status,
+        input.location,
+        input.context,
+        'Ссылка на форму доступна только для чтения, пока не подтверждён перенос целевой формы вместе с файлами.'
+      );
+    }
   }
   if (!input.left || !input.right) {
     const unsafeNewLeaf = unsupportedSubtreeReason(
@@ -391,7 +548,8 @@ function compareElement(input: {
       input.parent,
       input.depth,
       input.context.kind,
-      input.context.options.knownComplexElement
+      input.context.options.knownComplexElement,
+      (candidate) => !input.right || linkedEventHandlerAllowed(candidate, input.context.input),
     );
     if (unsafeNewLeaf) {
       return readOnlyNode(element, input.left, input.status, input.location, input.context, input.depth, unsafeNewLeaf);
@@ -433,13 +591,15 @@ function compareElement(input: {
         input.parent,
         input.depth,
         input.context.kind,
-        input.context.options.knownComplexElement
+        input.context.options.knownComplexElement,
+        (candidate) => linkedEventHandlerAllowed(candidate, input.context.input),
       ) ?? unsupportedSubtreeReason(
         input.left,
         input.left.parent,
         input.depth,
         input.context.kind,
-        input.context.options.knownComplexElement
+        input.context.options.knownComplexElement,
+        () => true,
       );
       if (unsafeQualifier) {
         return readOnlyNode(element, input.left, input.status, input.location, input.context, input.depth, unsafeQualifier);
@@ -476,7 +636,8 @@ function compareElement(input: {
       input.parent,
       input.depth,
       input.context.kind,
-      input.context.options.knownComplexElement
+      input.context.options.knownComplexElement,
+      (candidate) => !input.right || linkedEventHandlerAllowed(candidate, input.context.input),
     );
     if (unsafeSubtree) {
       return readOnlyNode(element, input.left, input.status, input.location, input.context, input.depth, unsafeSubtree);
@@ -509,292 +670,87 @@ function compareElement(input: {
   };
 }
 
-function compareAttributes(
+/** Keeps package and event deletes individually selectable when the source omits their wrapper. */
+function absentContainerGroup(
   left: XmlElementNode,
-  right: XmlElementNode,
-  parentLocation: Location,
-  context: CompareContext
-): CompareTreeNode[] {
-  const names = [...new Set([...Object.keys(left.attributes), ...Object.keys(right.attributes)])].sort(compareCodeUnits);
-  const result: CompareTreeNode[] = [];
-  for (const name of names) {
-    const leftValue = left.attributes[name];
-    const rightValue = right.attributes[name];
-    if (leftValue === rightValue) {
-      continue;
-    }
-    const status: CompareTreeStatus = leftValue === undefined ? 'rightOnly' : rightValue === undefined ? 'leftOnly' : 'changed';
-    if (!shouldShowStatus(status, context.input.strategy)) {
-      continue;
-    }
-    const location: Location = {
-      pointer: parentLocation.pointer + '/@' + encodeXmlAddressComponent(name),
-      displayPath: parentLocation.displayPath + '/@' + name,
-      identityKey: parentLocation.identityKey,
-    };
-    const attributeNode: XmlElementNode = {
-      name: '@' + name,
-      attributes: {},
-      children: [],
-      text: rightValue ?? leftValue ?? '',
-      dom: right.dom,
-      parent: right.parent,
-    };
-    result.push(
-      isProtectedXmlAttribute(name, context.kind)
-        ? readOnlyPropertyNode(attributeNode, status, location, context, 'Атрибут определяет идентичность или формат XML и не редактируется отдельно.')
-        : !isSupportedAttributeNamespace(right.dom, name)
-          ? readOnlyPropertyNode(attributeNode, status, location, context, 'Атрибут использует неподдерживаемое пространство имён и доступен только для чтения.')
-        : propertyNode({
-            element: attributeNode,
-            leftValue: leftValue ?? '',
-            rightValue: rightValue ?? '',
-            status,
-            location,
-            context,
-          })
-    );
-  }
-  return result;
-}
-
-function propertyNode(input: {
-  element: XmlElementNode;
-  leftValue: string;
-  rightValue: string;
-  status: CompareTreeStatus;
-  location: Location;
-  context: CompareContext;
-  insertion?: InsertionPosition;
-}): CompareTreeNode {
-  const id = input.context.options.nodeIdPrefix + ':property:' + encodeURIComponent(input.location.pointer);
-  input.context.candidateFactories.set(id, candidateFactory(input.context, id, () => makePatch({
-    element: input.element,
-    rightValue: input.rightValue,
-    status: input.status,
-    location: input.location,
-    context: input.context,
-    insertion: input.insertion,
-  })));
-  return {
-    id,
-    label: input.element.name,
-    kind: 'xmlProperty',
-    status: input.status,
-    leftValue: input.leftValue,
-    rightValue: input.rightValue,
-    mergeable: true,
-    destructive: input.status === 'leftOnly' ? true : undefined,
-    payloadRef: 'xmlPatch:' + input.location.pointer,
-    mergeState: { state: 'ready', targetFilePath: input.context.options.targetFilePath },
-    children: [],
-  };
-}
-
-function readOnlyPropertyNode(
-  element: XmlElementNode,
-  status: CompareTreeStatus,
-  location: Location,
-  context: CompareContext,
-  reason: string
-): CompareTreeNode {
-  return {
-    id: context.options.nodeIdPrefix + ':property:' + encodeURIComponent(location.pointer),
-    label: element.name,
-    kind: 'xmlProperty',
-    status,
-    leftValue: status === 'leftOnly' ? element.text ?? '' : '',
-    rightValue: status === 'rightOnly' || status === 'changed' ? element.text ?? '' : '',
-    mergeable: false,
-    payloadRef: 'xmlPatch:' + location.pointer,
-    mergeState: { state: 'readOnly', reason, targetFilePath: context.options.targetFilePath },
-    children: [],
-  };
-}
-
-function subtreeNode(
-  element: XmlElementNode,
-  status: 'leftOnly' | 'rightOnly',
   location: Location,
   context: CompareContext,
   depth: number,
-  insertion?: InsertionPosition,
-  parent?: XmlElementNode
 ): CompareTreeNode {
-  const id = context.options.nodeIdPrefix + ':element:' + encodeURIComponent(location.pointer);
-  context.candidateFactories.set(id, candidateFactory(context, id, () => makePatch({
-    element,
-    rightValue: status === 'rightOnly' ? element.text ?? '' : '',
-    status,
+  return readOnlyContainerGroup({
+    element: left,
     location,
-    context,
-    insertion,
-  })));
-  return {
-    id,
-    label: elementDisplayName(element),
-    kind: elementKind(context.options, element, parent, depth),
-    status,
-    mergeable: true,
-    destructive: status === 'leftOnly' ? true : undefined,
-    payloadRef: 'xmlPatch:' + location.pointer,
-    mergeState: { state: 'ready', targetFilePath: context.options.targetFilePath },
-    children: [],
-  };
+    kind: context.kind,
+    status: 'leftOnly',
+    depth,
+    options: context.options,
+    isSelectableChild: (child) => (context.kind === 'metadataXml' && isFileBackedMetadataRegistration(context.kind, child, left)) ||
+      (context.kind === 'formXml' && isFormEventElement(child)),
+    projectChild: (child, childLocationValue, selectable) => selectable
+      ? compareElement({
+          left: child,
+          parent: left,
+          location: childLocationValue,
+          status: 'leftOnly',
+          context,
+          depth: depth + 1,
+        })!
+      : readOnlyNode(
+          child,
+          undefined,
+          'leftOnly',
+          childLocationValue,
+          context,
+          depth + 1,
+          'Вложенный раздел не подтверждён для отдельного удаления; остальные элементы сохранены.'
+        ),
+  });
 }
 
-function readOnlyNode(
-  right: XmlElementNode,
-  left: XmlElementNode | undefined,
-  status: CompareTreeStatus,
-  location: Location,
+function missingFormEventsGroup(
+  sourceEvents: XmlElementNode,
+  eventsLocation: Location,
   context: CompareContext,
   depth: number,
-  reason: string
 ): CompareTreeNode {
-  return {
-    id: context.options.nodeIdPrefix + ':element:' + encodeURIComponent(location.pointer),
-    label: elementDisplayName(right),
-    kind: elementKind(context.options, right, right.parent, depth),
-    status,
-    leftValue: left ? captureXmlSubtree(left.dom) : '',
-    rightValue: status === 'leftOnly' ? '' : captureXmlSubtree(right.dom),
-    mergeable: false,
-    payloadRef: 'xmlPatch:' + location.pointer,
-    mergeState: { state: 'readOnly', reason, targetFilePath: context.options.targetFilePath },
-    children: [],
-  };
-}
-
-function readOnlyOrderNode(location: Location, context: CompareContext): CompareTreeNode {
-  return {
-    id: context.options.nodeIdPrefix + ':order:' + encodeURIComponent(location.pointer),
-    label: 'Порядок XML-элементов',
-    kind: 'xmlOrder',
-    status: 'changed',
-    mergeable: false,
-    mergeState: {
-      state: 'readOnly',
-      reason: 'Переупорядочивание существующих XML-элементов не поддерживается.',
-      targetFilePath: context.options.targetFilePath,
-    },
-    children: [],
-  };
-}
-
-function candidateFactory(
-  context: CompareContext,
-  nodeId: string,
-  buildPatch: () => XmlPatchPayload
-): ExecutableCandidateFactory {
-  return async () => {
-    const xmlPatch = buildPatch();
-    const candidate: PlannedXmlMergeCandidate = {
-      kind: xmlPatch.kind === 'replaceNode' ? 'xmlNodeReplace' : xmlPatch.kind === 'insertNode' ? 'xmlNodeInsert' : 'xmlNodeDelete',
-      sourceId: context.sourceId,
-      snapshotId: context.snapshotId,
-      nodeId,
-      targetUri: targetUri(context.options.targetFilePath),
-      expectedOldHash: xmlPatch.expectedOldHash,
-      newHash: xmlPatch.newHash,
-      xmlPatch,
-    };
-    return { ok: true, candidate };
-  };
-}
-
-interface PlannedXmlMergeCandidate extends MergeCandidate {
-  xmlPatch: XmlPatchPayload;
-}
-
-function makePatch(input: {
-  element: XmlElementNode;
-  rightValue: string;
-  status: CompareTreeStatus;
-  location: Location;
-  context: CompareContext;
-  insertion?: InsertionPosition;
-}): XmlPatchPayload {
-  const kind = input.status === 'rightOnly' ? 'insertNode' : input.status === 'leftOnly' ? 'deleteNode' : 'replaceNode';
-  const isAttribute = input.location.pointer.split('/').pop()?.startsWith('@') ?? false;
-  const replacementXml = kind === 'deleteNode'
-    ? undefined
-    : isAttribute
-      ? input.rightValue
-      : captureXmlSubtree(input.element.dom);
-  const payload: XmlPatchPayload = {
-    kind,
-    target: {
-      filePath: targetUri(input.context.options.targetFilePath),
-      pointer: input.location.pointer,
-      displayPath: input.location.displayPath,
-      identityKey: input.location.identityKey,
-    },
-    expectedOldHash: input.context.expectedOldHash,
-    newHash: '',
-    replacementXml,
-    insertBefore: input.insertion?.insertBefore,
-    insertPosition: input.insertion?.insertPosition,
-    insertOrder: input.insertion?.insertOrder,
-    semanticKind: input.context.kind,
-    sourceWitnesses: input.context.sourceWitnesses,
-    semanticContext: input.context.semanticContext,
-  };
-  const result = applyXmlPatch(input.context.input.snapshots.left, payload);
-  return { ...payload, newHash: hashXmlText(result) };
-}
-
-function insertionPosition(
-  rightParent: XmlElementNode,
-  inserted: XmlElementNode,
-  context: CompareContext
-): InsertionPosition {
-  const rightIndex = indexChildren(rightParent.children, rightParent, context.kind);
-  const item = rightIndex.ordered.find((candidate) => candidate.element === inserted);
-  if (!item) {
-    return { insertPosition: 'append' };
-  }
-  const leftParent = findCorrespondingLeft(rightParent, context);
-  if (!leftParent) {
-    return { insertPosition: 'append', insertOrder: item.position };
-  }
-  const leftIndex = indexChildren(leftParent.children, leftParent, context.kind);
-  const position = rightIndex.ordered.indexOf(item);
-  for (let index = position + 1; index < rightIndex.ordered.length; index += 1) {
-    const candidate = rightIndex.ordered[index]!;
-    const targetAnchor = leftIndex.map.get(candidate.key);
-    if (targetAnchor) {
-      const anchorLocation = locationForElement(targetAnchor.element);
-      return {
-        insertBefore: {
-          filePath: targetUri(context.options.targetFilePath),
-          pointer: anchorLocation.pointer,
-          displayPath: anchorLocation.displayPath,
-          identityKey: anchorLocation.identityKey,
-        },
-        insertOrder: item.position,
-      };
-    }
-  }
-  return { insertPosition: 'append', insertOrder: item.position };
-}
-
-function findCorrespondingLeft(source: XmlElementNode, context: CompareContext): XmlElementNode | undefined {
-  const sourcePath = ancestors(source);
-  let current = context.leftRoot;
-  for (let index = 1; index < sourcePath.length; index += 1) {
-    const part = sourcePath[index]!;
-    const sourceIdentity = semanticXmlIdentityKey(part.dom, part.parent?.dom, context.kind);
-    const sameName = current.children.filter((child) => localName(child.name) === localName(part.name));
-    const match = sourceIdentity
-      ? sameName.find((child) => semanticXmlIdentityKey(child.dom, current.dom, context.kind) === sourceIdentity)
-      : sameName[ordinal(part)];
-    if (!match) {
-      return undefined;
-    }
-    current = match;
-  }
-  return current;
+  return readOnlyContainerGroup({
+    element: sourceEvents,
+    location: eventsLocation,
+    kind: context.kind,
+    status: 'rightOnly',
+    depth,
+    options: context.options,
+    isSelectableChild: (child) => isFormEventElement(child) &&
+      namespaceUriForName(child.dom) === namespaceUriForName(context.leftRoot.dom),
+    projectChild: (child, location, selectable) => selectable
+      ? compareElement({
+          right: child,
+          parent: sourceEvents,
+          location,
+          status: 'rightOnly',
+          insertion: {
+            destinationParent: {
+              filePath: targetUri(context.options.targetFilePath),
+              pointer: eventsLocation.pointer,
+              displayPath: eventsLocation.displayPath,
+            },
+            createDestinationEvents: true,
+            insertPosition: 'append',
+            insertOrder: child.parent?.dom.children.indexOf(child.dom) ?? 0,
+          },
+          context,
+          depth: depth + 1,
+        }) ?? readOnlyNode(child, undefined, 'rightOnly', location, context, depth + 1, 'Событие недоступно для отдельного переноса.')
+      : readOnlyNode(
+          child,
+          undefined,
+          'rightOnly',
+          location,
+          context,
+          depth + 1,
+          'Вложенный раздел Events не подтверждён для отдельного переноса; остальные элементы сохранены.'
+        ),
+  });
 }
 
 function isFileBackedMetadataRegistration(
@@ -814,7 +770,7 @@ function isDefaultObjectFormReference(
 ): boolean {
   return kind === 'metadataXml' &&
     localName(parent.name) === 'Properties' &&
-    localName(element.name) === 'DefaultObjectForm';
+    LINKED_FORM_REFERENCE_PROPERTIES.includes(localName(element.name) as typeof LINKED_FORM_REFERENCE_PROPERTIES[number]);
 }
 
 function knownComplex(
@@ -833,164 +789,4 @@ function elementKind(
   depth: number
 ): string {
   return options.elementKind?.({ element, parent, depth }) ?? 'xmlElement';
-}
-
-function metadataReferencesInXml(...roots: readonly XmlElementNode[]): string[] {
-  const references = new Set<string>();
-  for (const root of roots) {
-    for (const reference of metadataReferencesInSubsystemContent(root.dom)) {
-      references.add(reference);
-    }
-    for (const reference of knownRootPropertyReferencesInXml(root.dom).references) {
-      references.add(reference.qualifiedName);
-    }
-    walk(root, (subsystem) => {
-      const metadataReference = metadataReferenceFromType(subsystem.dom);
-      if (metadataReference?.qualifiedName) {
-        references.add(metadataReference.qualifiedName);
-      }
-    });
-  }
-  return [...references];
-}
-
-function hasReorder(left: readonly IndexedChild[], right: readonly IndexedChild[]): boolean {
-  const leftCommon = left.map((item) => item.key).filter((key) => right.some((candidate) => candidate.key === key));
-  const rightCommon = right.map((item) => item.key).filter((key) => left.some((candidate) => candidate.key === key));
-  return leftCommon.length > 1 && leftCommon.some((key, index) => key !== rightCommon[index]);
-}
-
-function selector(element: XmlElementNode): string {
-  return getXmlElementIdentityKey(element.dom) ?? String(ordinal(element));
-}
-
-function ordinal(element: XmlElementNode): number {
-  return element.parent
-    ? element.parent.children.filter((child) => localName(child.name) === localName(element.name)).indexOf(element)
-    : 0;
-}
-
-function indexChildren(children: readonly XmlElementNode[], parent: XmlElementNode, kind: SemanticXmlKind): {
-  map: Map<string, IndexedChild>;
-  ordered: IndexedChild[];
-} {
-  const ordinals = new Map<string, number>();
-  const map = new Map<string, IndexedChild>();
-  const ordered: IndexedChild[] = [];
-  for (const element of children) {
-    const name = localName(element.name);
-    const position = ordinals.get(name) ?? 0;
-    ordinals.set(name, position + 1);
-    const identity = semanticXmlIdentityKey(element.dom, parent.dom, kind);
-    const addressIdentity = getXmlElementIdentityKey(element.dom);
-    const childSelector = addressIdentity ?? String(position);
-    const key = name + ':' + (identity ?? '#' + position);
-    const item = {
-      element,
-      selector: childSelector,
-      key,
-      position: element.parent?.dom.children.indexOf(element.dom) ?? position,
-    };
-    map.set(key, item);
-    ordered.push(item);
-  }
-  return { map, ordered };
-}
-
-function locationForRoot(element: XmlElementNode): Location {
-  return {
-    pointer: '/' + encodeXmlAddressComponent(localName(element.name)) + '[0]',
-    displayPath: element.name,
-    identityKey: getXmlElementIdentityKey(element.dom),
-  };
-}
-
-function locationForElement(element: XmlElementNode): Location {
-  const path = ancestors(element);
-  let location = locationForRoot(path[0]!);
-  for (let index = 1; index < path.length; index += 1) {
-    const child = path[index]!;
-    location = childLocation(location, child, selector(child));
-  }
-  return location;
-}
-
-function childLocation(parent: Location, element: XmlElementNode, selectorValue: string): Location {
-  return {
-    pointer: parent.pointer + '/' + encodeXmlAddressComponent(localName(element.name)) + '[' + encodeXmlAddressComponent(selectorValue) + ']',
-    displayPath: parent.displayPath + '/' + element.name + '[' + selectorValue + ']',
-    identityKey: selectorValue,
-  };
-}
-
-function ancestors(element: XmlElementNode): XmlElementNode[] {
-  const result: XmlElementNode[] = [];
-  let current: XmlElementNode | undefined = element;
-  while (current) {
-    result.unshift(current);
-    current = current.parent;
-  }
-  return result;
-}
-
-function isPropertyLeaf(left?: XmlElementNode, right?: XmlElementNode): boolean {
-  return Boolean(
-    (!left || left.children.length === 0) &&
-    (!right || right.children.length === 0) &&
-    (left?.text ?? '') !== (right?.text ?? '')
-  );
-}
-
-function shouldShowStatus(status: CompareTreeStatus, strategy: AdapterCompareInput['strategy']): boolean {
-  if (status === 'changed') {
-    return true;
-  }
-  if (strategy === 'full') {
-    return status === 'rightOnly' || status === 'leftOnly';
-  }
-  return strategy === 'left' ? status === 'leftOnly' : status === 'rightOnly';
-}
-
-function sourceId(input: AdapterCompareInput, side: 'left' | 'right'): string {
-  return input.session.state.sources.find((source) => source.side === side)?.sourceId ??
-    (side === 'left' ? 'left-source' : FALLBACK_RIGHT_SOURCE_ID);
-}
-
-function rightSourceId(input: AdapterCompareInput): string {
-  return sourceId(input, 'right');
-}
-
-function rightSnapshotId(input: AdapterCompareInput): string {
-  const source = input.session.state.sources.find((entry) => entry.side === 'right');
-  return source?.snapshotId ??
-    input.session.state.snapshots.find((snapshot) => snapshot.readOnly)?.snapshotId ??
-    'snapshot-right';
-}
-
-function targetDescriptorPath(left: MetadataObjectUnit | undefined, right: MetadataObjectUnit | undefined): string {
-  return left?.descriptorPath ?? right?.descriptorPath ?? 'unknown.xml';
-}
-
-function stableNodePrefix(prefix: string, filePath: string): string {
-  return prefix + ':' + encodeURIComponent(path.resolve(localFilePath(filePath)).replace(/\\/g, '/'));
-}
-
-function targetUri(filePath: string): string {
-  const normalized = localFilePath(filePath);
-  return path.isAbsolute(normalized) ? pathToFileURL(normalized).toString() : normalized;
-}
-
-function localFilePath(value: string): string {
-  return value.startsWith('file:') ? fileURLToPath(value) : value;
-}
-
-function semanticKind(adapterKind: string): SemanticXmlKind {
-  return adapterKind === 'formXml' || adapterKind === 'predefinedXml' ? adapterKind : 'metadataXml';
-}
-
-function walk(root: XmlElementNode, visit: (element: XmlElementNode) => void): void {
-  visit(root);
-  for (const child of root.children) {
-    walk(child, visit);
-  }
 }

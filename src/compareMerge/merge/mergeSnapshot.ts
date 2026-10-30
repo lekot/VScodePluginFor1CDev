@@ -6,6 +6,7 @@ import {
   calculateDirectoryFingerprintFromEntries,
   type DirectoryFingerprintEntry,
 } from '../../services/configurationSession/mutationPlan';
+import { probeXmlRootExpandedName } from '../xml/xmlRootProbe';
 
 export interface MergeSnapshotFile {
   readonly state: 'file';
@@ -13,6 +14,7 @@ export interface MergeSnapshotFile {
   readonly type: 'file';
   readonly contentBase64?: string;
   readonly hash: string;
+  readonly rootExpandedName?: string;
 }
 
 export interface MergeSnapshotDirectory {
@@ -34,7 +36,7 @@ export type MergePathSnapshot =
 /** Captures regular files and directories without following links or special entries. */
 export async function captureMergePath(
   filePath: string,
-  options: { readonly retainContent?: boolean } = {},
+  options: { readonly retainContent?: boolean; readonly probeXmlRootNames?: boolean } = {},
 ): Promise<MergePathSnapshot> {
   let stat: Awaited<ReturnType<typeof fs.lstat>>;
   try {
@@ -51,19 +53,23 @@ export async function captureMergePath(
   }
   if (stat.isFile()) {
     const content = await fs.readFile(filePath);
+    const rootExpandedName = options.probeXmlRootNames && shouldProbeXmlRoot(filePath)
+      ? probeXmlRootExpandedName(content.subarray(0, 64 * 1024).toString('utf8'))
+      : undefined;
     return {
       state: 'file',
       relativePath: '',
       type: 'file',
       contentBase64: options.retainContent === false ? undefined : content.toString('base64'),
       hash: hashBuffer(content),
+      ...(rootExpandedName ? { rootExpandedName } : {}),
     };
   }
   if (!stat.isDirectory()) {
     throw new Error(`Merge snapshot refuses special filesystem entries: ${filePath}`);
   }
 
-  return captureDirectory(filePath, '', options.retainContent !== false);
+  return captureDirectory(filePath, '', options.retainContent !== false, options.probeXmlRootNames === true);
 }
 
 /** Hash format matches the established compare/merge folder-preview algorithm. */
@@ -98,6 +104,7 @@ async function captureDirectory(
   directoryPath: string,
   relativePath: string,
   retainContent: boolean,
+  probeXmlRootNames: boolean,
 ): Promise<MergeSnapshotDirectory> {
   const entries = await fs.readdir(directoryPath, { withFileTypes: true });
   const captured: MergeSnapshotEntry[] = [];
@@ -108,17 +115,21 @@ async function captureDirectory(
       throw new Error(`Merge snapshot refuses symbolic links: ${entryPath}`);
     }
     if (entry.isDirectory()) {
-      captured.push(await captureDirectory(entryPath, childRelativePath, retainContent));
+      captured.push(await captureDirectory(entryPath, childRelativePath, retainContent, probeXmlRootNames));
       continue;
     }
     if (entry.isFile()) {
       const content = await fs.readFile(entryPath);
+      const rootExpandedName = probeXmlRootNames && shouldProbeXmlRoot(entryPath)
+        ? probeXmlRootExpandedName(content.subarray(0, 64 * 1024).toString('utf8'))
+        : undefined;
       captured.push({
         state: 'file',
         relativePath: childRelativePath,
         type: 'file',
         contentBase64: retainContent ? content.toString('base64') : undefined,
         hash: hashBuffer(content),
+        ...(rootExpandedName ? { rootExpandedName } : {}),
       });
       continue;
     }
@@ -138,6 +149,11 @@ async function captureDirectory(
       });
   const mutationFingerprint = calculateDirectoryFingerprintFromEntries(fingerprintEntries);
   return { state: 'directory', relativePath, type: 'directory', children: captured, mergeHash, mutationFingerprint };
+}
+
+function shouldProbeXmlRoot(filePath: string): boolean {
+  const name = path.basename(filePath).toLocaleLowerCase('en-US');
+  return name === 'rights.xml' || name === 'template.xml';
 }
 
 function hashBuffer(content: Buffer): string {

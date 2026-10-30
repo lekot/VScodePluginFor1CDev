@@ -9,12 +9,14 @@ import {
   type ConfigurationCompareResult,
 } from '../../../src/compareMerge/configurationCompareService';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
+import { elementChildren, parseXmlDocument, serializeXmlDocument, textContent, type XmlElement } from '../../../src/compareMerge/xml/xmlDom';
 import { createExtensionCompareTempRoot, pathExists } from '../../helpers/extensionCompareFixtures';
 import { createMergeMutationTestRuntime } from './mergeMutationTestSupport';
 
 const FIXTURE_ROOT = path.resolve(__dirname, '../../../../test/fixtures/compareMerge/extensions/native-2.20');
 const FIXTURES = {
   base: path.join(FIXTURE_ROOT, 'base'),
+  managedFormBase: path.join(FIXTURE_ROOT, 'managed-form-base'),
   extensionA: path.join(FIXTURE_ROOT, 'extension-a'),
   extensionB: path.join(FIXTURE_ROOT, 'extension-b'),
 } as const;
@@ -168,6 +170,73 @@ suite('Native extension compare fixtures 2.20', () => {
       }
     });
   });
+
+  test('public preview and execution apply mixed metadata and Form section ordering in native-shaped XML', async () => {
+    await withNativeSandbox(async (tempRoot) => {
+      const target = await copyFixture(tempRoot, 'managedFormBase', 'order-target');
+      const source = await copyFixture(tempRoot, 'managedFormBase', 'order-source');
+      const catalogRelativePath = path.join('Catalogs', 'Справочник55.xml');
+      const catalogTargetPath = path.join(target, catalogRelativePath);
+      const catalogSourcePath = path.join(source, catalogRelativePath);
+      const formName = 'Matrix_858451263b1b_a1_mo2z8b69_1b';
+      const formRelativePath = path.join('Catalogs', 'Справочник55', 'Forms', formName, 'Ext', 'Form.xml');
+      const formTargetPath = path.join(target, formRelativePath);
+      const formSourcePath = path.join(source, formRelativePath);
+
+      let incomingMetadata = await fs.readFile(catalogSourcePath, 'utf8');
+      incomingMetadata = swapFirstTwoDirectChildren(incomingMetadata, ['Catalog', 'ChildObjects'], 'Attribute');
+      incomingMetadata = swapFirstTwoDirectChildren(incomingMetadata, ['Catalog', 'ChildObjects'], 'TabularSection');
+      await fs.writeFile(catalogSourcePath, incomingMetadata, 'utf8');
+
+      const targetFormXml = addOrderTestSections(await fs.readFile(formTargetPath, 'utf8'));
+      let incomingFormXml = addOrderTestSections(await fs.readFile(formSourcePath, 'utf8'));
+      for (const section of ['Attributes', 'Commands', 'Parameters']) {
+        const childKind = section === 'Attributes' ? 'Attribute' : section === 'Commands' ? 'Command' : 'Parameter';
+        incomingFormXml = swapFirstTwoDirectChildren(incomingFormXml, [section], childKind);
+      }
+      await fs.writeFile(formTargetPath, targetFormXml, 'utf8');
+      await fs.writeFile(formSourcePath, incomingFormXml, 'utf8');
+      const moduleContent = ['Procedure OrderCommandA(Command)', 'EndProcedure', '', 'Procedure OrderCommandB(Command)', 'EndProcedure', ''].join('\n');
+      const formModuleRelativePath = path.join('Catalogs', 'Справочник55', 'Forms', formName, 'Ext', 'FormModule.bsl');
+      await fs.writeFile(path.join(target, formModuleRelativePath), moduleContent, 'utf8');
+      await fs.writeFile(path.join(source, formModuleRelativePath), moduleContent, 'utf8');
+
+      const expectedMetadataAttributeOrder = directMetadataNames(incomingMetadata, ['Catalog', 'ChildObjects'], 'Attribute');
+      const expectedMetadataTabularSectionOrder = directMetadataNames(incomingMetadata, ['Catalog', 'ChildObjects'], 'TabularSection');
+      const expectedFormOrders = Object.fromEntries(['Attributes', 'Commands', 'Parameters'].map((section) => {
+        const childKind = section === 'Attributes' ? 'Attribute' : section === 'Commands' ? 'Command' : 'Parameter';
+        return [section, directFormNames(incomingFormXml, section, childKind)];
+      })) as Record<string, string[]>;
+
+      const comparison = await openNativeCompare(tempRoot, target, source, {});
+      try {
+        const strategy = await comparison.result.workspace.setStrategy('full');
+        assert.strictEqual(strategy.ok, true, JSON.stringify(strategy));
+        const orderNodes = collectNodes(comparison.result.workspace.payload.root)
+          .filter((node) => node.kind === 'metadataOrderMove' && node.mergeable);
+        const metadataNodes = orderNodes.filter((node) => path.normalize(node.mergeState?.targetFilePath ?? '') === path.normalize(catalogTargetPath));
+        const formNodes = orderNodes.filter((node) => path.normalize(node.mergeState?.targetFilePath ?? '') === path.normalize(formTargetPath));
+        assert.ok(metadataNodes.length >= 2, `Expected Attribute and TabularSection order candidates; found ${metadataNodes.length}`);
+        assert.ok(formNodes.length >= 3, `Expected all three direct Form section candidates; found ${formNodes.length}`);
+
+        const preview = await createPreview(comparison.result, [...metadataNodes, ...formNodes].map((node) => node.id));
+        assert.strictEqual(preview.operationCount, 5,
+          `Expected five individually selectable order moves across the metadata descriptor and Form.xml; items=${JSON.stringify(preview.items)}`);
+        await approveAndExecute(comparison.result, preview.previewId);
+
+        const mergedMetadata = await fs.readFile(catalogTargetPath, 'utf8');
+        const mergedForm = await fs.readFile(formTargetPath, 'utf8');
+        assert.deepStrictEqual(directMetadataNames(mergedMetadata, ['Catalog', 'ChildObjects'], 'Attribute'), expectedMetadataAttributeOrder);
+        assert.deepStrictEqual(directMetadataNames(mergedMetadata, ['Catalog', 'ChildObjects'], 'TabularSection'), expectedMetadataTabularSectionOrder);
+        for (const [section, names] of Object.entries(expectedFormOrders)) {
+          const childKind = section === 'Attributes' ? 'Attribute' : section === 'Commands' ? 'Command' : 'Parameter';
+          assert.deepStrictEqual(directFormNames(mergedForm, section, childKind), names);
+        }
+      } finally {
+        await comparison.dispose();
+      }
+    });
+  });
 });
 
 async function openNativeCompare(
@@ -288,6 +357,64 @@ async function readFile(rootPath: string, relativePath: string): Promise<string>
 
 async function readMetadataObject(rootPath: string, folder: string, name: string): Promise<string> {
   return readFile(rootPath, path.join(folder, `${name}.xml`));
+}
+
+function addOrderTestSections(xml: string): string {
+  const commands = [
+    '<Commands>',
+    '<Command name="OrderCommandA" id="100"><Title><v8:item><v8:lang>ru</v8:lang><v8:content>Команда A</v8:content></v8:item></Title><Action>OrderCommandA</Action><CurrentRowUse>DontUse</CurrentRowUse></Command>',
+    '<Command name="OrderCommandB" id="101"><Title><v8:item><v8:lang>ru</v8:lang><v8:content>Команда B</v8:content></v8:item></Title><Action>OrderCommandB</Action><CurrentRowUse>DontUse</CurrentRowUse></Command>',
+    '</Commands>',
+    '<Parameters>',
+    '<Parameter name="OrderParameterA"><Type><v8:Type>xs:string</v8:Type></Type></Parameter>',
+    '<Parameter name="OrderParameterB"><Type><v8:Type>xs:string</v8:Type></Type></Parameter>',
+    '</Parameters>',
+  ].join('');
+  if (!xml.includes('</Attributes>')) {throw new Error('Native Form fixture has no Attributes section');}
+  return xml.replace('</Attributes>', `</Attributes>${commands}`);
+}
+
+function swapFirstTwoDirectChildren(xml: string, parentPath: readonly string[], childKind: string): string {
+  const document = parseXmlDocument(xml);
+  const parent = directElementPath(document.root, parentPath);
+  const indexes = parent.children.flatMap((child, index) =>
+    child.kind === 'element' && child.localName === childKind ? [index] : []);
+  if (indexes.length < 2) {throw new Error(`Expected two ${childKind} children under ${parentPath.join('/')}`);}
+  const first = parent.children[indexes[0]!];
+  const second = parent.children[indexes[1]!];
+  if (!first || !second) {throw new Error(`Could not resolve direct ${childKind} child positions`);}
+  parent.children[indexes[0]!] = second;
+  parent.children[indexes[1]!] = first;
+  return serializeXmlDocument(document);
+}
+
+function directMetadataNames(xml: string, parentPath: readonly string[], childKind: string): string[] {
+  const parent = directElementPath(parseXmlDocument(xml).root, parentPath);
+  return elementChildren(parent).filter((child) => child.localName === childKind).map((child) => {
+    const properties = elementChildren(child).find((item) => item.localName === 'Properties');
+    const name = properties && elementChildren(properties).find((item) => item.localName === 'Name');
+    if (!name) {throw new Error(`${childKind} child has no Properties/Name`);}
+    return textContent(name).trim();
+  });
+}
+
+function directFormNames(xml: string, section: string, childKind: string): string[] {
+  const parent = directElementPath(parseXmlDocument(xml).root, [section]);
+  return elementChildren(parent).filter((child) => child.localName === childKind).map((child) => {
+    const name = child.attributes.find((attribute) => attribute.name === 'name')?.value;
+    if (!name) {throw new Error(`${childKind} child under ${section} has no name`);}
+    return name;
+  });
+}
+
+function directElementPath(root: XmlElement, pathParts: readonly string[]): XmlElement {
+  let current = root;
+  for (const part of pathParts) {
+    const next = elementChildren(current).find((child) => child.localName === part);
+    if (!next) {throw new Error(`Missing direct XML element ${part} under ${current.localName}`);}
+    current = next;
+  }
+  return current;
 }
 
 function configurationUuid(xml: string): string {

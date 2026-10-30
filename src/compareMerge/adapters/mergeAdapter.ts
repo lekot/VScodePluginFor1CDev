@@ -6,6 +6,7 @@ import type {
 } from '../domain/compareContracts';
 import type { CompareSession } from '../domain/compareSession';
 import type { MergeCandidate, MergeFileWitness } from '../merge/mergePreview';
+import type { XmlOrderScope } from '../xml/xmlPatchTypes';
 
 export type CompareJoinStrategy = 'left' | 'right' | 'full';
 
@@ -13,6 +14,8 @@ export type ArtifactKind =
   | 'metadataXml'
   | 'formXml'
   | 'predefinedXml'
+  | 'roleRightsXml'
+  | 'dcsXml'
   | 'bslModule'
   | 'objectFolder'
   | 'binaryOrOpaqueFile';
@@ -58,12 +61,17 @@ export interface XmlAddress {
 }
 
 export interface XmlPatchPayload {
-  kind: 'replaceNode' | 'insertNode' | 'deleteNode';
+  kind: 'replaceNode' | 'insertNode' | 'deleteNode' | 'moveNode';
   target: XmlAddress;
+  destinationParent?: XmlAddress;
+  createDestinationChildItems?: true;
+  createDestinationChildObjects?: true;
+  createDestinationEvents?: true;
+  orderScope?: XmlOrderScope;
   insertBefore?: XmlAddress;
   insertPosition?: 'append';
   insertOrder?: number;
-  semanticKind?: 'metadataXml' | 'formXml' | 'predefinedXml';
+  semanticKind?: 'metadataXml' | 'formXml' | 'predefinedXml' | 'roleRightsXml' | 'dcsXml';
   expectedOldHash: string;
   newHash: string;
   replacementXml?: string;
@@ -75,6 +83,8 @@ export interface XmlPatchPayload {
       elements?: readonly string[];
     };
     availableMetadataReferences?: readonly string[];
+    configurationName?: string;
+    ownerDescriptorVersions?: { target: string; incoming: string };
   };
 }
 
@@ -110,6 +120,9 @@ export interface AdapterCompareInput {
   rightInventory: ConfigurationInventory;
   match: MetadataObjectMatch;
   session: CompareSession;
+  /** Explicit host ownership decisions for raw/projected Designer order profiles. */
+  allowMetadataChildOrder?: boolean;
+  allowFormSectionOrder?: boolean;
   artifactPaths?: { left: string; right: string };
   /** Captured root-registered metadata references for semantic XML validation. */
   semanticValidationContext?: {
@@ -119,6 +132,8 @@ export interface AdapterCompareInput {
       elements?: readonly string[];
     };
     availableMetadataReferences?: readonly string[];
+    configurationName?: string;
+    ownerDescriptorVersions?: { target: string; incoming: string };
   };
   /** Captured descriptor dependencies for metadata references outside the left inventory. */
   semanticMetadataReferenceWitnesses?: readonly {
@@ -127,6 +142,27 @@ export interface AdapterCompareInput {
   }[];
   /** Captured dependencies for semanticValidationContext, including Configuration.xml. */
   semanticContextWitnesses?: readonly MergeFileWitness[];
+  /** Validated package links for Designer form registrations, defaults, and event handlers. */
+  linkedDesignerContext?: {
+    registrations: readonly {
+      kind: 'Form' | 'Template' | 'Command';
+      name: string;
+      packageId: string;
+    }[];
+    defaultObjectForms: readonly {
+      propertyName: string;
+      value: string;
+      targetFormComplete: boolean;
+      packageId?: string;
+      targetWitnesses?: readonly MergeFileWitness[];
+    }[];
+    formEventHandlers: readonly {
+      name: string;
+      targetHasHandler: boolean;
+      incomingRoutineNodeId?: string;
+      targetWitnesses?: readonly MergeFileWitness[];
+    }[];
+  };
   snapshots: { left: string; right: string };
 }
 

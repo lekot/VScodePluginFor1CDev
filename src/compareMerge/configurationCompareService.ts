@@ -30,22 +30,14 @@ import {
   type ConfigurationCompareWorkspaceState,
   type ExecutableCandidateFactory,
 } from './configurationCompareWorkspace';
-import { metadataXmlAdapter } from './adapters/xmlMetadataAdapter';
-import { formXmlAdapter } from './adapters/formXmlAdapter';
-import { predefinedXmlAdapter } from './adapters/predefinedXmlAdapter';
 import { fileObjectAdapter } from './adapters/fileObjectAdapter';
-import type {
-  AdapterCompareInput,
-  AdapterCompareResult,
-  CompareJoinStrategy,
-  MetadataObjectMatch,
-} from './adapters/mergeAdapter';
+import type { AdapterCompareResult, CompareJoinStrategy, MetadataObjectMatch } from './adapters/mergeAdapter';
 import { ambiguousArtifactPairResult, findArtifactPairs } from './adapters/artifactPairing';
-import { attachMetadataReferenceContext, buildMetadataReferenceContext } from './adapters/metadataReferenceContext';
+import { buildMetadataReferenceContext } from './adapters/metadataReferenceContext';
 import { CompareSession } from './domain/compareSession';
 import type { CompareMessage, CompareSide, MetadataIdentity } from './domain/compareContracts';
 import { buildConfigurationInventory } from './inventory/configurationInventory';
-import type { ArtifactUnit, ConfigurationInventory, MetadataObjectUnit } from './inventory/configurationInventory';
+import type { ConfigurationInventory } from './inventory/configurationInventory';
 import { indexMetadataFile, indexMetadataFolder } from './metadata/metadataIndexer';
 import { matchMetadataIdentities } from './metadata/metadataMatcher';
 import {
@@ -54,8 +46,26 @@ import {
   type BslRoutineDiffProjectionInput,
 } from './projection/compareTreeProjection';
 import { type CompareCancellationToken, throwIfCompareCancelled } from './compareCancellation';
+import {
+  buildFormXmlModulePathMap,
+  linkedDesignerDescriptorScope,
+  mapLinkedModulesByTargetPath,
+} from './linkedDesignerContext';
+import { captureLinkedFormXmlSnapshots } from './linkedDesignerCapture';
+import { captureBslRoutineSpan } from './linkedDesignerRoutineSpan';
+import { compareLinkedDesignerXmlArtifact } from './linkedDesignerAdapterCompare';
+import { prepareLinkedDesignerBslContext } from './linkedDesignerBslContext';
 import { tryBuildExtensionCompareState } from './extensions/extensionCompare';
 import { tryBuildEdtUnsupportedState } from './edtUnsupportedCompare';
+import { findInventoryObjectByDescriptor, metadataIdentityToObjectUnit } from './metadataObjectLookup';
+import {
+  bindLinkedDesignerPackageNodes,
+  buildLinkedDesignerCompareIndex,
+  materializeLinkedDesignerSelection,
+  type LinkedDesignerMaterializerContext,
+  type LinkedFormModuleSnapshot,
+} from './linkedDesignerMaterializer';
+import { bindLinkedTemplateTypeTransitionNodes, captureLinkedTemplateTypeTransitions } from './linkedDesignerTemplateTransitions';
 
 const LEFT_SOURCE_ID = 'left-source';
 const RIGHT_SOURCE_ID = 'right-source';
@@ -564,7 +574,7 @@ async function buildConfigurationCompareState(
       limits,
     });
     const metadata = matchMetadataIdentities({ left: leftMetadata, right: rightMetadata });
-    const descriptorScope = descriptorScopeForStrategy(metadata, strategy);
+    const descriptorScope = linkedDesignerDescriptorScope(metadata, strategy);
     const [leftInventory, rightInventory] = await Promise.all([
       buildConfigurationInventory(leftRootPath, {
         identities: leftMetadata,
@@ -579,6 +589,23 @@ async function buildConfigurationCompareState(
         artifactConcurrency: limits.inventoryReadConcurrency,
       }),
     ]);
+    const linkedFormXmlCapture = await captureLinkedFormXmlSnapshots(leftInventory);
+    const linkedDesignerIndex = await buildLinkedDesignerCompareIndex({
+      metadata,
+      leftInventory,
+      rightInventory,
+      leftRootPath,
+      rightRootPath,
+      strategy,
+    });
+    const linkedTemplateTransitions = await captureLinkedTemplateTypeTransitions({
+      metadata,
+      leftInventory,
+      rightInventory,
+      leftRootPath,
+      rightRootPath,
+    });
+    for (const diagnostic of linkedDesignerIndex.diagnostics) {session.addMessage(diagnostic);}
     throwIfCompareCancelled(input.cancellation);
     const leftCollection = await collectBslFileSourcesFromInventory(
       leftInventory,
@@ -653,6 +680,25 @@ async function buildConfigurationCompareState(
       session,
       rightSnapshotId,
     });
+    const linkedBslContext = await prepareLinkedDesignerBslContext({
+      metadata,
+      leftInventory,
+      rightInventory,
+      leftModules: leftBsl.modules,
+      rightModules: rightBsl.modules,
+      leftSources,
+      leftRootPath,
+      rightRootPath,
+      rightSources,
+      rightSnapshotId,
+      targetSourceId: LEFT_SOURCE_ID,
+      rootConfiguration: linkedDesignerIndex.rootConfiguration,
+      formXmlSnapshots: linkedFormXmlCapture.snapshots,
+      bslItems: bsl.items,
+      candidateFactories: bsl.candidateFactories,
+    });
+    const linkedModules = linkedBslContext.modules;
+    const { eventRoutineDependencies, defaultFormDependencies } = linkedBslContext;
     // Candidate factories retain only sources for matched/mergeable modules.
     // Release the full workspace maps before XML adapter processing.
     leftSources.clear();
@@ -669,9 +715,24 @@ async function buildConfigurationCompareState(
       cancellation: input.cancellation,
       concurrency: limits.adapterReadConcurrency,
       readTextFile: input.io?.readTextFile,
+      linkedDesignerPackages: linkedDesignerIndex.packages,
+      linkedModules,
+      eventRoutineDependencies,
+      defaultFormDependencies,
     });
+    const bound = bindLinkedDesignerPackageNodes({
+      results: adapterResults,
+      packages: linkedDesignerIndex.packages,
+      blockedPresenceNodeIds: linkedDesignerIndex.blockedPresenceNodeIds,
+    });
+    const transitionBound = bindLinkedTemplateTypeTransitionNodes({
+      results: bound.results,
+      candidates: linkedTemplateTransitions,
+      targetRootPath: leftRootPath,
+    });
+    const projectedAdapterResults = [...transitionBound.results];
     const candidateFactories = new Map<string, ExecutableCandidateFactory>(bsl.candidateFactories);
-    for (const result of adapterResults) {
+    for (const result of projectedAdapterResults) {
       result.candidateFactories.forEach((factory, nodeId) => candidateFactories.set(nodeId, factory));
     }
     throwIfCompareCancelled(input.cancellation);
@@ -682,10 +743,39 @@ async function buildConfigurationCompareState(
         { diagnostics: leftBsl.diagnostics.filter((item) => !bsl.matchedDiagnostics.has(item)) },
         { diagnostics: rightBsl.diagnostics.filter((item) => !bsl.matchedDiagnostics.has(item)) },
       ],
-      adapterResults,
+      adapterResults: projectedAdapterResults,
       messages: session.state.messages,
     });
-    return { session, projection, candidateFactories };
+    const modulesByTargetPath = mapLinkedModulesByTargetPath(leftRootPath, linkedModules);
+    const materializerContext: LinkedDesignerMaterializerContext = {
+      targetRootPath: leftRootPath,
+      sourceRootPath: rightRootPath,
+      targetSourceId: LEFT_SOURCE_ID,
+      sourceId: RIGHT_SOURCE_ID,
+      rightSnapshotId,
+      session,
+      candidateFactories,
+      packagesByNodeId: bound.packagesByNodeId,
+      rootConfiguration: linkedDesignerIndex.rootConfiguration,
+      formModules: linkedModules.filter((module) => module.moduleId.includes('.Form.') || module.moduleId.startsWith('CommonForm.')),
+      modulesByTargetPath,
+      formXmlSnapshots: linkedFormXmlCapture.snapshots,
+      formXmlSnapshotIssues: linkedFormXmlCapture.issues,
+      formReferenceOwnerSnapshots: linkedFormXmlCapture.referenceOwners,
+      formReferenceOwnerSnapshotIssues: linkedFormXmlCapture.referenceOwnerIssues,
+      eventRoutineDependencies,
+      defaultFormDependencies,
+      formXmlModuleByTargetPath: buildFormXmlModulePathMap(metadata, linkedModules, leftInventory),
+      expectedFormModuleHashes: new Map(linkedModules.filter((module) => module.targetHash && module.targetMissing !== true).map((module) => [module.moduleId, module.targetHash!])),
+      templateTypeTransitionsByNodeId: transitionBound.transitionsByNodeId,
+    };
+    return {
+      session,
+      projection,
+      candidateFactories,
+      mergeableNodeIds: [...candidateFactories.keys()],
+      materializeSelection: (nodeIds) => materializeLinkedDesignerSelection(materializerContext, nodeIds),
+    };
   } catch (error) {
     leftSources?.clear();
     rightSources?.clear();
@@ -703,6 +793,15 @@ async function buildAdapterCompareResults(input: {
   cancellation?: CompareCancellationToken;
   concurrency: number;
   readTextFile?: (filePath: string) => Promise<string>;
+  linkedDesignerPackages: readonly import('./linkedDesignerMaterializer').LinkedDesignerPackageRecipe[];
+  linkedModules: readonly LinkedFormModuleSnapshot[];
+  eventRoutineDependencies: Map<string, {
+    moduleId: string;
+    handlerName: string;
+    targetHasHandler: boolean;
+    incomingRoutineNodeId?: string;
+  }>;
+  defaultFormDependencies: Map<string, import('./linkedDesignerMaterializer').LinkedDefaultFormDependency>;
 }): Promise<AdapterCompareResult[]> {
   throwIfCompareCancelled(input.cancellation);
   const metadataReferenceContext = await buildMetadataReferenceContext({
@@ -729,7 +828,7 @@ async function buildAdapterCompareResults(input: {
       return matchResults;
     }
 
-    for (const artifactKind of ['metadataXml', 'formXml', 'predefinedXml'] as const) {
+    for (const artifactKind of ['metadataXml', 'formXml', 'predefinedXml', 'roleRightsXml', 'dcsXml'] as const) {
       throwIfCompareCancelled(input.cancellation);
       const pairing = findArtifactPairs(
         input.leftInventory,
@@ -745,7 +844,7 @@ async function buildAdapterCompareResults(input: {
         if (artifactPair.left.contentHash === artifactPair.right.contentHash) {
           continue;
         }
-        matchResults.push(await compareXmlArtifact(input, match, artifactPair, artifactKind, metadataReferenceContext));
+        matchResults.push(await compareLinkedDesignerXmlArtifact(input, match, artifactPair, artifactKind, metadataReferenceContext));
       }
     }
     return matchResults;
@@ -785,113 +884,6 @@ function buildMetadataObjectMatches(input: {
   ];
 
   return matches.filter((match) => match.left || match.right);
-}
-
-function metadataIdentityToObjectUnit(identity: MetadataIdentity): MetadataObjectUnit {
-  const descriptorPath = path.normalize(identity.filePath);
-  const objectId = identity.uuid ? `uuid:${identity.uuid}` : `name:${identity.qualifiedName}`;
-
-  return {
-    objectId,
-    qualifiedName: identity.qualifiedName,
-    metadataType: identity.metadataType,
-    uuid: identity.uuid,
-    descriptorPath,
-    containerPath: resolveObjectContainerPath(descriptorPath),
-  };
-}
-
-function resolveObjectContainerPath(descriptorPath: string): string {
-  const descriptorDirectory = path.dirname(descriptorPath);
-  const descriptorBaseName = path.basename(descriptorPath, path.extname(descriptorPath));
-  if (path.basename(descriptorDirectory).toLowerCase() === descriptorBaseName.toLowerCase()) {
-    return path.normalize(descriptorDirectory);
-  }
-
-  return path.normalize(path.join(descriptorDirectory, descriptorBaseName));
-}
-
-async function compareXmlArtifact(
-  input: {
-    strategy: CompareJoinStrategy;
-    leftInventory: ConfigurationInventory;
-    rightInventory: ConfigurationInventory;
-    session: CompareSession;
-    cancellation?: CompareCancellationToken;
-    readTextFile?: (filePath: string) => Promise<string>;
-  },
-  match: MetadataObjectMatch,
-  artifactPair: { left: ArtifactUnit; right: ArtifactUnit },
-  artifactKind: 'metadataXml' | 'formXml' | 'predefinedXml',
-  metadataReferenceContext: Awaited<ReturnType<typeof buildMetadataReferenceContext>>
-): Promise<AdapterCompareResult> {
-  throwIfCompareCancelled(input.cancellation);
-  const readTextFile = input.readTextFile ?? ((filePath: string) => fs.readFile(filePath, 'utf-8'));
-  const [leftSnapshot, rightSnapshot] = await Promise.all([
-    readTextFile(artifactPair.left.filePath),
-    readTextFile(artifactPair.right.filePath),
-  ]);
-  throwIfCompareCancelled(input.cancellation);
-  const adapterInput: AdapterCompareInput = {
-    strategy: input.strategy,
-    leftInventory: input.leftInventory,
-    rightInventory: input.rightInventory,
-    match,
-    session: input.session,
-    artifactPaths: {
-      left: artifactPair.left.filePath,
-      right: artifactPair.right.filePath,
-    },
-    snapshots: {
-      left: leftSnapshot,
-      right: rightSnapshot,
-    },
-  };
-  attachMetadataReferenceContext(adapterInput, metadataReferenceContext);
-
-  switch (artifactKind) {
-    case 'metadataXml':
-      return metadataXmlAdapter.compare(adapterInput);
-    case 'formXml':
-      return formXmlAdapter.compare(adapterInput);
-    case 'predefinedXml':
-      return predefinedXmlAdapter.compare(adapterInput);
-  }
-}
-
-function findInventoryObjectByDescriptor(
-  inventory: ConfigurationInventory,
-  descriptorPath: string
-): MetadataObjectUnit | undefined {
-  const normalizedDescriptorPath = path.normalize(descriptorPath).toLowerCase();
-  return inventory.objectsByDescriptorPath.get(normalizedDescriptorPath);
-}
-
-function descriptorScopeForStrategy(
-  metadata: ReturnType<typeof matchMetadataIdentities>,
-  strategy: CompareJoinStrategy
-): { left?: ReadonlySet<string>; right?: ReadonlySet<string> } {
-  const matchedLeft = new Set(metadata.matches.map((match) => path.normalize(match.left.filePath)));
-  const matchedRight = new Set(
-    metadata.matches.map((match) => path.normalize(match.right.filePath))
-  );
-
-  if (strategy === 'full') {
-    return {
-      left: matchedLeft,
-      right: matchedRight,
-    };
-  }
-
-  if (strategy === 'right') {
-    return {
-      left: matchedLeft,
-    };
-  }
-
-  return {
-    right: matchedRight,
-  };
 }
 
 interface BslSourceCollection {
@@ -1007,7 +999,7 @@ function registerExecutableRoutineCandidates(input: {
     ...diff.diagnostics,
   ].filter((diagnostic) => diagnostic.blocking);
 
-  if (blockingDiagnostics.length > 0 || !input.leftSource || !input.rightSource) {
+  if (blockingDiagnostics.length > 0 || input.leftSource === undefined || input.rightSource === undefined) {
     return;
   }
 
@@ -1141,10 +1133,11 @@ function registerAddedRoutineCandidate(input: {
   nodeId: string;
   routine: BslRoutineInfo;
 }): void {
-  const sourceText = sourceTextForRange(input.rightSource, input.routine.range);
-  if (!sourceText) {
+  const sourceSpan = captureBslRoutineSpan(input.rightSource, input.routine);
+  if (!sourceSpan) {
     return;
   }
+  const sourceText = sourceSpan.sourceText;
 
   input.candidateFactories.set(input.nodeId, async () => {
     const currentTargetSource = await fs.readFile(input.left.identity.filePath, 'utf-8');
@@ -1189,6 +1182,7 @@ function registerAddedRoutineCandidate(input: {
           routine: routineIdentity(input.routine),
           sourceText,
           sourceRange: input.routine.range,
+          sourceTextRange: sourceSpan.sourceTextRange,
         },
       },
     };
@@ -1219,11 +1213,10 @@ function registerDeletedRoutineCandidate(input: {
     const currentRoutine = current.routines.find((routine) =>
       sameRoutineIdentity(routine, input.routine)
     );
-    const sourceText = currentRoutine
-      ? sourceTextForRange(currentTargetSource, currentRoutine.range)
-      : undefined;
+    const sourceSpan = currentRoutine ? captureBslRoutineSpan(currentTargetSource, currentRoutine) : undefined;
+    const sourceText = sourceSpan?.sourceText;
     const plannedNextSource = currentRoutine
-      ? applyRoutineDeletePreview(currentTargetSource, currentRoutine.range)
+      ? applyRoutineDeletePreview(currentTargetSource, sourceSpan?.sourceTextRange ?? currentRoutine.range)
       : undefined;
     if (!currentRoutine || !sourceText || plannedNextSource === undefined) {
       return routineGuardDiagnostic(
@@ -1254,6 +1247,7 @@ function registerDeletedRoutineCandidate(input: {
           routine: routineIdentity(currentRoutine),
           sourceText,
           targetRange: currentRoutine.range,
+          targetTextRange: sourceSpan!.sourceTextRange,
         },
       },
     };
@@ -1379,11 +1373,6 @@ function offsetAfterLine(source: string, lineNumber: number): number | undefined
   return lines
     .slice(0, lineNumber)
     .reduce((offset, line) => offset + line.text.length + line.eol.length, 0);
-}
-
-function sourceTextForRange(source: string, range: BslTextRange): string | undefined {
-  const offsetRange = offsetRangeFor(source, range);
-  return offsetRange ? source.slice(offsetRange.start, offsetRange.end) : undefined;
 }
 
 function applyRoutineInsertPreview(source: string, routineSourceText: string): string {

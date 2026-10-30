@@ -18,11 +18,16 @@ import {
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 import { createBslRoutineLogicalMergePlan } from '../../../src/compareMerge/bsl/bslRoutineLogicalMerge';
 import { hashText } from '../../../src/compareMerge/bsl/bslRoutineLogicalScanner';
+import { parseBslRoutines } from '../../../src/bsl/routineRangeProvider';
+import { captureBslRoutineSpan } from '../../../src/compareMerge/linkedDesignerRoutineSpan';
+import { composeBslCandidates } from '../../../src/compareMerge/linkedDesignerBslMaterializer';
+import type { LinkedDesignerMaterializerContext } from '../../../src/compareMerge/linkedDesignerTypes';
 import type {
   BslRoutineLogicalMergePlan,
   BslRoutineLogicalSnapshot,
 } from '../../../src/compareMerge/bsl/bslRoutineMergePlanTypes';
 import { CompareSession } from '../../../src/compareMerge/domain/compareSession';
+import { formXmlAdapter } from '../../../src/compareMerge/adapters/formXmlAdapter';
 import { metadataXmlAdapter } from '../../../src/compareMerge/adapters/xmlMetadataAdapter';
 import type { AdapterCompareInput } from '../../../src/compareMerge/adapters/mergeAdapter';
 import type { MergeExecutorInput } from '../../../src/compareMerge/merge/mergeExecutor';
@@ -33,6 +38,7 @@ import {
   validateMergePreflight,
   type BackupPlan,
   type MergeCandidate,
+  type MergeOperation,
   type PreflightResult,
   type RollbackPlan,
 } from '../../../src/compareMerge/merge/mergePlanner';
@@ -281,6 +287,64 @@ suite('MergeExecutor XML and file operations', () => {
     assert.strictEqual(await readText(firstBackupPath), leftXml);
   });
 
+  test('previews, approves, and executes a Designer placement together with a selected descendant property', async () => {
+    const context = await createFormMoveContext(tempDirs, 'preview-designer-placement-e2e');
+    const { preflight, backupPaths } = createApprovedFormMovePreflight(context);
+
+    const result = await executeBslMergePreview({ session: context.session, preflight });
+
+    assert.strictEqual(result.failed.length, 0, JSON.stringify(result.failed));
+    assert.deepStrictEqual(
+      result.applied.map((operation) => operation.kind),
+      ['xmlNodeMove', 'xmlNodeReplace'],
+    );
+    const mergedXml = await readText(context.xmlPath);
+    assert.ok(mergedXml.indexOf('UsualGroup name="Destination" id="200"') <
+      mergedXml.indexOf('InputField name="Field" id="101"'));
+    assert.ok(mergedXml.indexOf('InputField name="Field" id="101"') <
+      mergedXml.indexOf('Button name="Stay" id="201"'));
+    assert.match(mergedXml, /<Title(?:\s[^>]*)?>Incoming title<\/Title>/u);
+    assert.match(mergedXml, /<FutureSetting>target-only<\/FutureSetting>/u);
+    assert.deepStrictEqual(await Promise.all(backupPaths.map((backupPath) => readText(backupPath))), [
+      context.leftXml,
+      context.leftXml,
+    ]);
+  });
+
+  test('rejects a stale incoming Form.xml witness during leased execution before writing the target', async () => {
+    const context = await createFormMoveContext(tempDirs, 'preview-designer-placement-stale-witness');
+    const { preflight, backupPaths } = createApprovedFormMovePreflight(context);
+    await fs.writeFile(context.sourcePath, context.rightXml.replace('Incoming title', 'Changed after preview'), 'utf8');
+
+    const result = await executeBslMergePreview({ session: context.session, preflight });
+
+    assert.strictEqual(result.applied.length, 0);
+    assert.ok(result.failed.length >= 1);
+    assert.ok(result.failed.every((operation) => operation.code === 'MERGE_WITNESS_MISMATCH'));
+    assert.strictEqual(await readText(context.xmlPath), context.leftXml);
+    assert.deepStrictEqual(await Promise.all(backupPaths.map(exists)), backupPaths.map(() => false));
+  });
+
+  test('rejects a changed target-side dependency witness under lease before any XML write', async () => {
+    const context = await createFormMoveContext(tempDirs, 'preview-designer-placement-stale-target-dependency', true);
+    const { preflight, backupPaths } = createApprovedFormMovePreflight(context);
+    const changedOwnerDescriptor = '<MetaDataObject version="2.20"><Configuration><Comment>changed</Comment></Configuration></MetaDataObject>';
+    assert.notStrictEqual(
+      hashText(await readText(context.ownerDescriptorPath)),
+      hashText(changedOwnerDescriptor),
+      'the fixture mutation must change the raw dependency bytes',
+    );
+    await fs.writeFile(context.ownerDescriptorPath, changedOwnerDescriptor, 'utf8');
+
+    const result = await executeBslMergePreview({ session: context.session, preflight });
+
+    assert.strictEqual(result.applied.length, 0);
+    assert.ok(result.failed.length >= 1, JSON.stringify(result.failed));
+    assert.ok(result.failed.every((operation) => operation.code === 'MERGE_WITNESS_MISMATCH'), JSON.stringify(result.failed));
+    assert.strictEqual(await readText(context.xmlPath), context.leftXml);
+    assert.deepStrictEqual(await Promise.all(backupPaths.map(exists)), backupPaths.map(() => false));
+  });
+
   test('rejects semantically invalid final XML before writing the target', async () => {
     const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-semantic-xml-invalid-'));
     tempDirs.push(rootDir);
@@ -396,6 +460,219 @@ suite('MergeExecutor XML and file operations', () => {
     assert.strictEqual(await readText(context.bslBackupPath), context.oldBsl);
   });
 
+  test('allows deleting the last procedure or function with English or Russian module directive', async () => {
+    for (const routineCase of [
+      { kind: 'procedure' as const, directive: '&AtClient', text: deletedRoutine() },
+      { kind: 'procedure' as const, directive: '&НаКлиенте', text: ['Процедура Removed()', '  Value = 0;', 'КонецПроцедуры'].join('\n') },
+      { kind: 'function' as const, directive: '&AtClient', text: ['Function Removed()', '  Return 0;', 'EndFunction'].join('\n') },
+      { kind: 'function' as const, directive: '&НаКлиенте', text: ['Функция Removed()', '  Возврат 0;', 'КонецФункции'].join('\n') },
+    ]) {
+      const context = await createRoutineChangeContext(tempDirs, 'bslRoutineDelete', true, {
+        leaveEmptyAfterDelete: true,
+        routineKind: routineCase.kind,
+        routineText: routineCase.text,
+      });
+      const preflight = createApprovedRoutinePreflight(context);
+      const result = await executeBslMergePreview({ session: context.session, preflight });
+
+      assert.strictEqual(result.failed.length, 0, `${routineCase.kind} ${routineCase.directive}: ${JSON.stringify(result.failed)}`);
+      assert.deepStrictEqual(result.applied.map((item) => item.kind), ['bslRoutineDelete']);
+      assert.strictEqual(await readText(context.bslPath), '');
+    }
+  });
+
+  test('deletes an annotated BSL routine together with its target directive envelope', async () => {
+    const context = await createRoutineChangeContext(tempDirs, 'bslRoutineDelete', true);
+    const preflight = createApprovedRoutinePreflight(context);
+
+    const result = await executeBslMergePreview({
+      session: context.session,
+      preflight,
+    });
+
+    assert.strictEqual(result.failed.length, 0, JSON.stringify(result.failed));
+    assert.strictEqual(await readText(context.bslPath), context.nextBsl);
+    assert.strictEqual((await readText(context.bslPath)).includes('&AtClient'), false);
+  });
+
+  test('inserts an annotated BSL routine with its source directive', async () => {
+    const context = await createRoutineChangeContext(tempDirs, 'bslRoutineInsert', true);
+    const preflight = createApprovedRoutinePreflight(context);
+    assert.ok(preflight.operations[0]?.bslRoutine?.sourceTextRange);
+
+    const result = await executeBslMergePreview({
+      session: context.session,
+      preflight,
+    });
+
+    assert.strictEqual(result.failed.length, 0, JSON.stringify(result.failed));
+    assert.strictEqual(await readText(context.bslPath), context.nextBsl);
+  });
+
+  test('rejects a decorated BSL routine delete without a target text envelope', async () => {
+    const context = await createRoutineChangeContext(tempDirs, 'bslRoutineDelete', true);
+    const candidate = routineChangeCandidate('bslRoutineDelete', context.targetUri, context.oldBsl, context.nextBsl, true);
+    candidate.bslRoutine!.targetTextRange = undefined;
+    const preview = createMergePreview({
+      session: context.session,
+      previewId: 'preview-bsl-delete-without-envelope',
+      targetSourceId: 'left-source',
+      snapshotIds: { left: 'snapshot-left-1', right: 'snapshot-right-1' },
+      createdAt: '2026-05-30T10:10:01.000Z',
+      candidates: [candidate],
+      currentTargetHashes: { [context.targetUri]: hashText(context.oldBsl) },
+    });
+
+    assert.strictEqual(preview.ok, false);
+    assert.ok(preview.diagnostics.some((diagnostic) => diagnostic.code === 'MERGE_BSL_ROUTINE_TARGET_TEXT_RANGE_MISSING'));
+  });
+
+  test('fails closed for nested English and Russian conditional compilation around a routine', () => {
+    const source = [
+      '#If Client Then',
+      '#Если Сервер Тогда',
+      'Procedure NestedConditionals()',
+      'EndProcedure',
+      '#КонецЕсли',
+      '#EndIf',
+      '// #Если НеУчитывать Тогда',
+      '// #КонецЕсли',
+      'Procedure OutsideConditionals()',
+      'EndProcedure',
+    ].join('\n');
+    const routines = parseBslRoutines(source).routines;
+    const nested = routines.find((routine) => routine.normalizedName === 'nestedconditionals');
+    const outside = routines.find((routine) => routine.normalizedName === 'outsideconditionals');
+    assert.ok(nested);
+    assert.ok(outside);
+    assert.strictEqual(captureBslRoutineSpan(source, nested!), undefined);
+    assert.ok(captureBslRoutineSpan(source, outside!), 'comment text that resembles directives must not open a conditional block');
+  });
+
+  test('captures Russian and English routine directives across blank and comment-only lines', () => {
+    const source = [
+      '&НаКлиенте',
+      '// attached annotation comment',
+      '',
+      '&Before("Open")',
+      '// comment between annotations and routine',
+      'Procedure Decorated() AtClient',
+      'EndProcedure',
+    ].join('\n');
+    const routine = parseBslRoutines(source).routines.find((item) => item.normalizedName === 'decorated');
+    assert.ok(routine);
+    const captured = captureBslRoutineSpan(source, routine!);
+    assert.ok(captured);
+    assert.strictEqual(captured!.sourceTextRange.startLine, 1);
+    assert.strictEqual(captured!.sourceText, source);
+  });
+
+  test('keeps a single leading BOM while composing multiple annotated routines from a BOM source module', async () => {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-bsl-bom-batch-'));
+    tempDirs.push(rootDir);
+    const snapshotDir = path.join(rootDir, 'snapshot');
+    const relativePath = path.join('Catalogs', 'Products', 'Forms', 'Edit', 'Ext', 'Module.bsl');
+    const targetPath = path.join(rootDir, relativePath);
+    const sourcePath = path.join(snapshotDir, relativePath);
+    const targetContent = '\uFEFFProcedure Existing()\r\nEndProcedure\r\n';
+    const sourceContent = [
+      '\uFEFF&НаКлиенте',
+      'Procedure AddedOnClient()',
+      'EndProcedure',
+      '&НаСервере',
+      'Function AddedOnServer()',
+      '    Return True;',
+      'EndFunction',
+    ].join('\r\n') + '\r\n';
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+    await fs.writeFile(targetPath, targetContent, 'utf8');
+    await fs.writeFile(sourcePath, sourceContent, 'utf8');
+    const session = await makeSession(rootDir, snapshotDir);
+    const sourceRoutines = parseBslRoutines(sourceContent).routines;
+    assert.strictEqual(sourceRoutines.length, 2);
+    const spans = sourceRoutines.map((routine) => captureBslRoutineSpan(sourceContent, routine));
+    assert.ok(spans.every((span) => span), 'each source routine must have an exact envelope');
+    assert.strictEqual(spans[0]!.sourceText, [
+      '&НаКлиенте',
+      'Procedure AddedOnClient()',
+      'EndProcedure',
+    ].join('\r\n'));
+    assert.strictEqual(spans[0]!.sourceTextRange.startColumn, 2, 'the source BOM stays outside the first routine envelope');
+
+    const targetUri = pathToFileURL(targetPath).toString();
+    const targetHash = hashTestBuffer(Buffer.from(targetContent, 'utf8'));
+    const sourceHash = hashTestBuffer(Buffer.from(sourceContent, 'utf8'));
+    const candidates: MergeCandidate[] = sourceRoutines.map((routine, index) => ({
+      kind: 'bslRoutineInsert',
+      sourceId: 'right-source',
+      snapshotId: 'snapshot-right-1',
+      nodeId: `bsl-routine:${routine.normalizedName}`,
+      targetUri,
+      expectedOldHash: targetHash,
+      newHash: sourceHash,
+      bslRoutine: {
+        kind: 'insertRoutine',
+        targetPath: targetUri,
+        expectedOldHash: targetHash,
+        newHash: sourceHash,
+        routine: {
+          name: routine.name,
+          normalizedName: routine.normalizedName,
+          kind: routine.kind,
+          exported: routine.exported,
+        },
+        sourceText: spans[index]!.sourceText,
+        sourceRange: routine.range,
+        sourceTextRange: spans[index]!.sourceTextRange,
+      },
+    }));
+    const context: LinkedDesignerMaterializerContext = {
+      targetRootPath: rootDir,
+      sourceRootPath: snapshotDir,
+      targetSourceId: 'left-source',
+      sourceId: 'right-source',
+      rightSnapshotId: 'snapshot-right-1',
+      session,
+      candidateFactories: new Map(),
+      packagesByNodeId: new Map(),
+      formModules: [{
+        moduleId: 'Catalog.Products.Form.Edit.Module',
+        targetRelativePath: relativePath,
+        sourceRelativePath: relativePath,
+        targetHash,
+        sourceHash,
+        targetContent,
+        sourceContent,
+        routineCandidateIds: new Map(),
+      }],
+    };
+    const composed = await composeBslCandidates(context, candidates);
+    assert.ok('outputs' in composed, JSON.stringify('diagnostics' in composed ? composed.diagnostics : []));
+    const result = [...composed.outputs.values()][0]!;
+    assert.ok(result.startsWith('\uFEFF'), 'the target BOM remains at offset zero');
+    assert.strictEqual(result.indexOf('\uFEFF', 1), -1, 'the source BOM must not be copied into the target body');
+    assert.ok(result.includes('&НаКлиенте\r\nProcedure AddedOnClient()'));
+    assert.ok(result.includes('&НаСервере\r\nFunction AddedOnServer()'));
+    assert.ok(result.includes('Procedure Existing()'), 'unselected target routines remain intact');
+  });
+
+  test('ignores conditional-looking lines inside a multiline BSL string', () => {
+    const source = [
+      'Procedure BuildText()',
+      '    Text = "Start of text',
+      '#Если Fake Тогда',
+      '#КонецЕсли',
+      'End of text";',
+      'EndProcedure',
+      'Procedure AfterText()',
+      'EndProcedure',
+    ].join('\n');
+    const routine = parseBslRoutines(source).routines.find((item) => item.normalizedName === 'aftertext');
+    assert.ok(routine);
+    assert.ok(captureBslRoutineSpan(source, routine!), 'directive-like string lines must not block an unrelated routine');
+  });
+
   test('rejects fileCopy source outside the right source root', async () => {
     const context = await createFileCopyOnlyContext(tempDirs, { sourceOutsideRightRoot: true });
     const preflight = createApprovedFileCopyOnlyPreflight(context);
@@ -500,6 +777,136 @@ interface FolderCopyOnlyContext {
   targetUri: string;
 }
 
+interface FormMoveContext {
+  backupDir: string;
+  leftXml: string;
+  operations: readonly MergeOperation[];
+  ownerDescriptorPath: string;
+  previewId: string;
+  rightXml: string;
+  session: CompareSession;
+  sourcePath: string;
+  targetUri: string;
+  xmlPath: string;
+}
+
+async function createFormMoveContext(tempDirs: string[], previewId: string, includeTargetDependencyWitness = false): Promise<FormMoveContext> {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-form-placement-'));
+  tempDirs.push(rootDir);
+  const snapshotDir = path.join(rootDir, 'snapshot');
+  const backupDir = path.join(path.dirname(rootDir), path.basename(rootDir) + '-backups');
+  tempDirs.push(backupDir);
+  const relativePath = path.join('Catalogs', 'Products', 'Forms', 'Edit', 'Ext', 'Form.xml');
+  const xmlPath = path.join(rootDir, relativePath);
+  const sourcePath = path.join(snapshotDir, relativePath);
+  const ownerDescriptorPath = path.join(rootDir, 'Catalogs', 'Products.xml');
+  const ownerDescriptor = '<MetaDataObject version="2.20"><Configuration/></MetaDataObject>';
+  const leftXml = '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Attributes/><Commands/><ChildItems><UsualGroup name="Source" id="100"><ChildItems><InputField name="Field" id="101"><Title>Local title</Title><FutureSetting>target-only</FutureSetting></InputField></ChildItems></UsualGroup><UsualGroup name="Destination" id="200"><ChildItems><Button name="Stay" id="201"/></ChildItems></UsualGroup></ChildItems></Form>';
+  const rightXml = '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Attributes/><Commands/><ChildItems><UsualGroup name="Source" id="100"><ChildItems/></UsualGroup><UsualGroup name="Destination" id="200"><ChildItems><InputField name="Field" id="101"><Title>Incoming title</Title></InputField><Button name="Stay" id="201"/></ChildItems></UsualGroup></ChildItems></Form>';
+
+  await fs.mkdir(path.dirname(xmlPath), { recursive: true });
+  await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+  await fs.writeFile(xmlPath, leftXml, 'utf8');
+  await fs.writeFile(sourcePath, rightXml, 'utf8');
+  await fs.writeFile(ownerDescriptorPath, ownerDescriptor, 'utf8');
+
+  const session = await makeSession(rootDir, snapshotDir);
+  const adapterInput = makeXmlAdapterInput(session, rootDir, snapshotDir, xmlPath, leftXml, rightXml);
+  const adapterResult = await formXmlAdapter.compare({
+    ...adapterInput,
+    artifactPaths: { left: xmlPath, right: sourcePath },
+    match: {
+      ...adapterInput.match,
+      left: adapterInput.match.left && { ...adapterInput.match.left, descriptorPath: pathToFileURL(xmlPath).toString() },
+      right: adapterInput.match.right && { ...adapterInput.match.right, descriptorPath: pathToFileURL(sourcePath).toString() },
+    },
+  });
+  const placement = requireTreeNodeByLabel(adapterResult.nodes, 'Размещение: Field');
+  const title = requireTreeNodeByLabel(adapterResult.nodes, 'Title');
+  const placementResult = await adapterResult.candidateFactories.get(placement.id)!();
+  const titleResult = await adapterResult.candidateFactories.get(title.id)!();
+  if (!placementResult.ok || !titleResult.ok) {
+    throw new Error('Form placement adapter did not produce both selected candidates.');
+  }
+
+  const targetDependencyWitness = includeTargetDependencyWitness ? [{
+    sourceId: 'left-source',
+    relativePath: 'Catalogs/Products.xml',
+    expectedHash: createHash('sha256').update(Buffer.from(ownerDescriptor, 'utf8')).digest('hex'),
+    kind: 'file' as const,
+  }] : undefined;
+  const candidates: MergeCandidate[] = [placementResult.candidate, titleResult.candidate].map((candidate) => ({
+    ...candidate,
+    sourceWitnesses: targetDependencyWitness,
+  }));
+  const previewResult = createMergePreview({
+    session,
+    previewId,
+    targetSourceId: 'left-source',
+    snapshotIds: { left: 'snapshot-left-1', right: 'snapshot-right-1' },
+    createdAt: '2026-05-30T10:10:00.000Z',
+    candidates,
+    currentTargetHashes: {
+      [placementResult.candidate.targetUri!]: hashXmlText(leftXml),
+    },
+  });
+  if (!previewResult.ok) {
+    throw new Error('Form placement preview failed: ' + JSON.stringify(previewResult.diagnostics));
+  }
+  assert.deepStrictEqual(previewResult.preview.operations.map((operation) => operation.kind), [
+    'xmlNodeMove',
+    'xmlNodeReplace',
+  ]);
+
+  return {
+    backupDir,
+    leftXml,
+    operations: previewResult.preview.operations,
+    ownerDescriptorPath,
+    previewId,
+    rightXml,
+    session,
+    sourcePath,
+    targetUri: placementResult.candidate.targetUri!,
+    xmlPath,
+  };
+}
+
+function createApprovedFormMovePreflight(context: FormMoveContext): {
+  preflight: PreflightResult;
+  backupPaths: string[];
+} {
+  context.session.approvePreview(context.previewId);
+  const backupPaths = context.operations.map((_, index) =>
+    path.join(context.backupDir, 'Form-' + index + '.xml.bak'));
+  const backupItems = context.operations.map((operation, index) => ({
+    operationId: operation.operationId,
+    targetUri: operation.targetUri!,
+    backupUri: pathToFileURL(backupPaths[index]!).toString(),
+    expectedOldHash: hashText(context.leftXml),
+  }));
+  const result = validateMergePreflight({
+    session: context.session,
+    previewId: context.previewId,
+    approvedPreviewId: context.previewId,
+    currentTargetHashes: { [context.targetUri]: hashText(context.leftXml) },
+    backupPlan: {
+      previewId: context.previewId,
+      strategy: 'copyBeforeWrite',
+      items: backupItems,
+    },
+    rollbackPlan: {
+      previewId: context.previewId,
+      strategy: 'restoreBackups',
+      items: backupItems.map((item) => ({ ...item, restoreHash: item.expectedOldHash })),
+    },
+  });
+  if (!result.ok) {
+    throw new Error('Form placement preflight failed: ' + JSON.stringify(result.diagnostics));
+  }
+  return { preflight: result, backupPaths };
+}
+
 async function createContext(tempDirs: string[]): Promise<ExecutionContext> {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-xml-file-bsl-'));
   tempDirs.push(rootDir);
@@ -591,7 +998,9 @@ function createApprovedPreflight(context: ExecutionContext): PreflightResult {
 
 async function createRoutineChangeContext(
   tempDirs: string[],
-  kind: 'bslRoutineInsert' | 'bslRoutineDelete'
+  kind: 'bslRoutineInsert' | 'bslRoutineDelete',
+  withAtClient = false,
+  options: { leaveEmptyAfterDelete?: boolean; routineKind?: 'procedure' | 'function'; routineText?: string } = {},
 ): Promise<RoutineChangeContext> {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-bsl-routine-'));
   tempDirs.push(rootDir);
@@ -601,14 +1010,15 @@ async function createRoutineChangeContext(
   const bslPath = path.join(rootDir, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
   const bslBackupPath = path.join(backupDir, `${kind}.bsl.bak`);
   const targetUri = pathToFileURL(bslPath).toString();
-  const oldBsl =
-    kind === 'bslRoutineInsert'
-      ? existingRoutine()
-      : [existingRoutine(), deletedRoutine()].join('\n');
-  const nextBsl =
-    kind === 'bslRoutineInsert'
-      ? [existingRoutine(), insertedRoutine()].join('\n')
-      : existingRoutine();
+  const incomingRoutine = kind === 'bslRoutineInsert' ? insertedRoutine() : options.routineText ?? deletedRoutine();
+  const oldBsl = kind === 'bslRoutineInsert'
+    ? existingRoutine()
+    : options.leaveEmptyAfterDelete
+      ? [...(withAtClient ? ['&AtClient'] : []), incomingRoutine].join('\n')
+      : [existingRoutine(), ...(withAtClient ? ['&AtClient'] : []), incomingRoutine].join('\n');
+  const nextBsl = kind === 'bslRoutineInsert'
+    ? [existingRoutine(), ...(withAtClient ? ['&AtClient'] : []), incomingRoutine].join('\n')
+    : options.leaveEmptyAfterDelete ? '' : existingRoutine();
 
   await fs.mkdir(path.dirname(bslPath), { recursive: true });
   await fs.writeFile(bslPath, oldBsl, 'utf8');
@@ -621,7 +1031,7 @@ async function createRoutineChangeContext(
     targetSourceId: 'left-source',
     snapshotIds: { left: 'snapshot-left-1', right: 'snapshot-right-1' },
     createdAt: '2026-05-30T10:10:00.000Z',
-    candidates: [routineChangeCandidate(kind, targetUri, oldBsl, nextBsl)],
+    candidates: [routineChangeCandidate(kind, targetUri, oldBsl, nextBsl, withAtClient, options)],
     currentTargetHashes: {
       [targetUri]: hashText(oldBsl),
     },
@@ -1031,9 +1441,36 @@ function routineChangeCandidate(
   kind: 'bslRoutineInsert' | 'bslRoutineDelete',
   targetUri: string,
   oldBsl: string,
-  nextBsl: string
+  nextBsl: string,
+  withAtClient = false,
+  options: { routineKind?: 'procedure' | 'function'; routineText?: string } = {},
 ): MergeCandidate {
-  const routineText = kind === 'bslRoutineInsert' ? insertedRoutine() : deletedRoutine();
+  const routineBody = kind === 'bslRoutineInsert' ? insertedRoutine() : options.routineText ?? deletedRoutine();
+  const routineText = withAtClient ? `&AtClient\n${routineBody}` : routineBody;
+  const targetRoutine = parseBslRoutines(oldBsl).routines.find((routine) => routine.name === 'Removed');
+  const incomingModule = kind === 'bslRoutineInsert'
+    ? [existingRoutine(), ...(withAtClient ? ['&AtClient'] : []), routineBody].join('\n')
+    : routineText;
+  const sourceRoutine = parseBslRoutines(incomingModule).routines.find((routine) =>
+    routine.name === (kind === 'bslRoutineInsert' ? 'Added' : 'Removed')
+  );
+  const targetTextRange = withAtClient && kind === 'bslRoutineDelete'
+    ? {
+      startLine: targetRoutine!.range.startLine - 1,
+      startColumn: 1,
+      endLine: targetRoutine!.range.endLine,
+      endColumn: targetRoutine!.range.endColumn,
+    }
+    : undefined;
+  const sourceRange = kind === 'bslRoutineInsert' ? sourceRoutine?.range : undefined;
+  const sourceTextRange = withAtClient && kind === 'bslRoutineInsert'
+    ? {
+      startLine: sourceRoutine!.range.startLine - 1,
+      startColumn: 1,
+      endLine: sourceRoutine!.range.endLine,
+      endColumn: sourceRoutine!.range.endColumn,
+    }
+    : undefined;
   return {
     kind,
     sourceId: 'right-source',
@@ -1050,20 +1487,19 @@ function routineChangeCandidate(
       routine: {
         name: kind === 'bslRoutineInsert' ? 'Added' : 'Removed',
         normalizedName: kind === 'bslRoutineInsert' ? 'added' : 'removed',
-        kind: kind === 'bslRoutineInsert' ? 'function' : 'procedure',
+        kind: kind === 'bslRoutineInsert' ? 'function' : options.routineKind ?? 'procedure',
         exported: false,
       },
       sourceText: routineText,
-      sourceRange:
-        kind === 'bslRoutineInsert'
-          ? { startLine: 4, startColumn: 1, endLine: 6, endColumn: 12 }
-          : undefined,
+      sourceRange,
       targetRange:
         kind === 'bslRoutineDelete'
-          ? { startLine: 4, startColumn: 1, endLine: 6, endColumn: 13 }
+          ? targetRoutine?.range
           : undefined,
+      ...(sourceTextRange ? { sourceTextRange } : {}),
+      ...(targetTextRange ? { targetTextRange } : {}),
     },
-  } as MergeCandidate;
+  } as unknown as MergeCandidate;
 }
 
 function xmlCandidate(xmlPath: string, oldXml: string, nextXml: string): MergeCandidate {

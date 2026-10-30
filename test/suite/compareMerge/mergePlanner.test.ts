@@ -127,6 +127,30 @@ suite('MergePlanner preview/preflight', () => {
     assert.deepStrictEqual(session.state.previews, []);
   });
 
+  test('rejects malformed top-level source witnesses before preview admission', () => {
+    const malformed: unknown[] = [
+      null,
+      {},
+      'not-an-array',
+      [{ sourceId: 'right-source', relativePath: '../escape.xml', expectedHash: 'a'.repeat(64), kind: 'file' }],
+      [{ sourceId: 'unknown-source', relativePath: 'Forms/Main.xml', expectedHash: 'a'.repeat(64), kind: 'file' }],
+      [{ sourceId: 'right-source', relativePath: 'Forms/Main.xml', expectedHash: 'not-a-hash', kind: 'file' }],
+    ];
+    for (const [index, sourceWitnesses] of malformed.entries()) {
+      const result = createMergePreview({
+        session: makeSession(),
+        previewId: `preview-invalid-source-witness-${index}`,
+        targetSourceId: 'left-source',
+        snapshotIds: { left: 'snapshot-left-1', right: 'snapshot-right-1' },
+        createdAt: '2026-05-30T10:10:00.000Z',
+        candidates: [leafCandidate({ sourceWitnesses: sourceWitnesses as MergeCandidate['sourceWitnesses'] })],
+        currentTargetHashes: { 'file:///repo/Catalogs/Products/Ext/ObjectModule.bsl': 'sha256:old' },
+      });
+      assert.strictEqual(result.ok, false, `malformed case ${index} should be rejected`);
+      assert.ok(result.diagnostics.some((item) => item.code === 'MERGE_SOURCE_WITNESS_INVALID'), JSON.stringify(result.diagnostics));
+    }
+  });
+
   test('logical routine operation with guard diagnostics blocks preview', () => {
     const session = makeSession();
     const manualPlan: BslRoutineLogicalMergePlan = {

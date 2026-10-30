@@ -42,7 +42,9 @@ export function parseBslRoutines(source: string): BslRoutineParseResult {
     return { routines: [], diagnostics: [] };
   }
 
-  const strippedLines = lines.map(stripStringsAndComments);
+  const strippedLines = lines.map((line, index) => stripStringsAndComments(
+    index === 0 ? line.replace(/^\uFEFF/u, '') : line,
+  ));
   const routines: BslRoutineInfo[] = [];
   const diagnostics: BslRoutineDiagnostic[] = [];
   const routinesByName = new Map<string, BslRoutineInfo>();
@@ -55,7 +57,7 @@ export function parseBslRoutines(source: string): BslRoutineParseResult {
     const trimmed = line.trim();
 
     if (trimmed.startsWith('&')) {
-      pendingDirectives.push(lines[index].trim());
+      pendingDirectives.push(lines[index].trim().replace(/^\uFEFF/u, ''));
       continue;
     }
 
@@ -284,6 +286,9 @@ function zeroWidthRange(lineNo: number): BslTextRange {
 }
 
 function firstNonWhitespaceColumn(line: string): number {
+  if (line.startsWith('\uFEFF')) {
+    return firstNonWhitespaceColumn(line.slice(1)) + 1;
+  }
   const match = /\S/.exec(line);
   return match ? match.index + 1 : 1;
 }

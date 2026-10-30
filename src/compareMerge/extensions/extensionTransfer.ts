@@ -2,7 +2,7 @@ import * as path from 'path';
 import { validateElementName } from '../../utils/elementNameValidator';
 import type { CompareMessage } from '../domain/compareContracts';
 import type { CompareTreeNode, CompareTreeStatus } from '../compareTreeTypes';
-import type { ExtensionIndexedObject, ExtensionMetadataIndex } from './extensionMetadataIndex';
+import { SUPPORTED_EXTENSION_FORMATS, type ExtensionIndexedObject, type ExtensionMetadataIndex } from './extensionMetadataIndex';
 import { validateBorrowedObjectSource } from '../../extensionSupport/cfeProject/borrowObjectBuilder';
 import { captureMergePath } from '../merge/mergeSnapshot';
 import type { MergeCandidate } from '../merge/mergePreview';
@@ -28,6 +28,8 @@ export interface ExtensionTransferRow {
   readonly targetRoot: ExtensionMetadataIndex;
   readonly incomingRoot: ExtensionMetadataIndex;
   readonly action?: ExtensionTransferAction;
+  /** Granular CF↔CFE semantic path; never authorizes a whole-row transfer. */
+  readonly semanticAction?: Extract<ExtensionTransferAction, 'overlay-adopted' | 'adopted-to-cf-overlay'>;
   readonly mergeable: boolean;
   readonly reason?: string;
   readonly targetBase?: ExtensionMetadataIndex;
@@ -50,8 +52,14 @@ export interface ExtensionMaterializerInput {
   readonly rows: readonly ExtensionTransferRow[];
   readonly leftSnapshotId: string;
   readonly rightSnapshotId: string;
+  readonly session: import('../domain/compareSession').CompareSession;
   /** Host-created adapter candidates keyed by projected semantic child id; never populated from webview data. */
   readonly semanticSelections?: ReadonlyMap<string, ExtensionSemanticSelection>;
+  /** Nested Form/Template/Command packages linked to their owner registration candidates. */
+  readonly linkedDesignerPackages?: ReadonlyMap<string, import('./extensionLinkedDesignerPackages').ExtensionLinkedDesignerPackage>;
+  readonly linkedRoutineSelections?: ReadonlyMap<string, import('./extensionLinkedDesignerBsl').ExtensionLinkedRoutineSelection>;
+  readonly linkedFormModules?: readonly import('../linkedDesignerTypes').LinkedFormModuleSnapshot[];
+  readonly linkedEventDependencies?: ReadonlyMap<string, import('../linkedDesignerTypes').LinkedEventDependency>;
   readonly rootPurposeSelection?: ExtensionRootPurposeSelection;
   readonly cancellation?: import('../compareCancellation').CompareCancellationToken;
 }
@@ -59,12 +67,20 @@ export interface ExtensionMaterializerInput {
 export interface ExtensionSemanticSelection {
   readonly nodeId: string;
   readonly rowId: string;
-  readonly kind: 'metadataXml' | 'formXml' | 'predefinedXml';
+  readonly kind: 'metadataXml' | 'formXml' | 'predefinedXml' | 'roleRightsXml' | 'dcsXml';
   readonly targetRelativePath: string;
   readonly sourceRelativePath: string;
   readonly targetHash: string;
   readonly sourceHash: string;
   readonly candidateFactory: ExecutableCandidateFactory;
+  readonly linkedPackageId?: string;
+  readonly requiredPackageId?: string;
+  readonly targetFormComplete?: boolean;
+  readonly dependencyWitnesses?: readonly import('../merge/mergePreview').MergeFileWitness[];
+  /** Captured ownership-normalized CF↔CFE artifact; absent for ordinary same-owner semantic XML. */
+  readonly adoptedArtifact?: import('./extensionAdoptedSemanticHost').ExtensionAdoptedPreparedArtifact;
+  /** Captured CFE↔CFE TemplateType/body transition; separate from adopted descriptor translation. */
+  readonly linkedTemplateTypeTransition?: import('../linkedDesignerTypes').LinkedTemplateTypeTransition;
 }
 
 export interface ExtensionRootPurposeSelection {
@@ -104,6 +120,14 @@ export async function analyzeExtensionTransfers(input: {
       matchedTarget.add(targetMatch.object);
     }
     let reason = input.globalBlockReason ?? incomingDuplicate ?? targetMatch.reason;
+    const semanticAction = !reason
+      && incoming.valid
+      && incoming.supportedRootType
+      && !incoming.unsupportedReason
+      && (!targetMatch.object || !targetDuplicates.has(targetMatch.object))
+      && !targetMatch.object?.unsupportedReason
+      ? proveSemanticAdoptedAction(input, incoming, targetMatch.object)
+      : undefined;
     let action: ExtensionTransferAction | undefined;
     if (!reason) {
       const decision = decideTransfer(input, incoming, targetMatch.object, targetMatch.sameProvenBase);
@@ -160,6 +184,7 @@ export async function analyzeExtensionTransfers(input: {
       targetRoot: input.target,
       incomingRoot: input.incoming,
       action,
+      ...(semanticAction ? { semanticAction } : {}),
       mergeable,
       reason,
       targetBase: input.targetBase,
@@ -198,6 +223,107 @@ export async function analyzeExtensionTransfers(input: {
     mergeableNodeIds: rows.filter((row) => row.mergeable).map((row) => row.id),
     diagnostics,
   };
+}
+
+function proveSemanticAdoptedAction(
+  input: Parameters<typeof analyzeExtensionTransfers>[0],
+  incoming: ExtensionIndexedObject,
+  targetObject?: ExtensionIndexedObject,
+): Extract<ExtensionTransferAction, 'overlay-adopted' | 'adopted-to-cf-overlay'> | undefined {
+  if (!targetObject?.valid || !targetObject.supportedRootType || targetObject.unsupportedReason || !targetObject.identity
+      || !targetObject.descriptorContent || !targetObject.descriptorHash || !targetObject.descriptorRelativePath
+      || incoming.unsupportedReason || !incoming.identity || !incoming.descriptorContent || !incoming.descriptorHash || !incoming.descriptorRelativePath) {
+    return undefined;
+  }
+
+  if (input.target.rootKind === 'cfe' && input.incoming.rootKind === 'cf') {
+    const base = input.targetBase;
+    const baseObject = base ? uniqueSemanticBaseObject(base, incoming.metadataType, incoming.identity.uuid) : undefined;
+    const currentObject = uniqueSemanticBaseObject(input.incoming, incoming.metadataType, incoming.identity.uuid);
+    if (!base || !sameCapturedCfConfiguration(base, input.incoming)
+        || !sameSupportedFormat(base, input.target)
+        || incoming.identity.ownership !== 'own'
+        || !baseObject || !currentObject
+        || !sameSemanticOwnObject(baseObject, incoming)
+        || !sameSemanticOwnObject(currentObject, incoming)
+        || targetObject.identity.ownership !== 'adopted'
+        || targetObject.identity.type !== baseObject.identity!.type
+        || targetObject.identity.name !== baseObject.identity!.name
+        || targetObject.qualifiedName !== baseObject.qualifiedName
+        || !sameUuid(targetObject.identity.sourceUuid, baseObject.identity!.uuid)) {
+      return undefined;
+    }
+    return 'overlay-adopted';
+  }
+
+  if (input.target.rootKind === 'cf' && input.incoming.rootKind === 'cfe') {
+    const base = input.incomingBase;
+    const baseObject = base && incoming.identity.ownership === 'adopted'
+      ? uniqueSemanticBaseObject(base, incoming.metadataType, incoming.identity.sourceUuid ?? '')
+      : undefined;
+    const currentObject = baseObject
+      ? uniqueSemanticBaseObject(input.target, incoming.metadataType, baseObject.identity!.uuid)
+      : undefined;
+    if (!base || !sameCapturedCfConfiguration(base, input.target)
+        || !sameSupportedFormat(base, input.incoming)
+        || !baseObject || !currentObject
+        || !sameSemanticOwnObject(baseObject, currentObject)
+        || !sameSemanticOwnObject(currentObject, targetObject)
+        || incoming.identity.ownership !== 'adopted'
+        || incoming.identity.type !== baseObject.identity!.type
+        || incoming.identity.name !== baseObject.identity!.name
+        || incoming.qualifiedName !== baseObject.qualifiedName
+        || !sameUuid(incoming.identity.sourceUuid, baseObject.identity!.uuid)) {
+      return undefined;
+    }
+    return 'adopted-to-cf-overlay';
+  }
+
+  return undefined;
+}
+
+function sameCapturedCfConfiguration(left: ExtensionMetadataIndex, right: ExtensionMetadataIndex): boolean {
+  return left.rootKind === 'cf' && right.rootKind === 'cf'
+    && left.hasConfigurationXml && right.hasConfigurationXml
+    && Boolean(left.configurationHash && right.configurationHash)
+    && Boolean(left.configurationUuid && right.configurationUuid
+      && left.configurationUuid.toLocaleLowerCase('en-US') === right.configurationUuid.toLocaleLowerCase('en-US'))
+    && Boolean(left.configurationName && right.configurationName && left.configurationName === right.configurationName)
+    && sameSupportedFormat(left, right);
+}
+
+function sameSupportedFormat(left: ExtensionMetadataIndex, right: ExtensionMetadataIndex): boolean {
+  return Boolean(left.formatVersion && right.formatVersion
+    && left.formatVersion === right.formatVersion
+    && SUPPORTED_EXTENSION_FORMATS.has(left.formatVersion));
+}
+
+function uniqueSemanticBaseObject(
+  root: ExtensionMetadataIndex,
+  type: string,
+  uuid: string,
+): ExtensionIndexedObject | undefined {
+  if (root.rootKind !== 'cf' || !uuid) {return undefined;}
+  const matches = root.objects.filter((object) => object.identity?.ownership === 'own'
+    && object.identity.type === type
+    && object.metadataType === type
+    && sameUuid(object.identity.uuid, uuid));
+  if (matches.length !== 1) {return undefined;}
+  const object = matches[0]!;
+  return object.valid && object.supportedRootType && !object.unsupportedReason && object.identity
+    && object.descriptorContent && object.descriptorHash && object.descriptorRelativePath
+    && !duplicateReasons(root.objects).has(object)
+    ? object
+    : undefined;
+}
+
+function sameSemanticOwnObject(left: ExtensionIndexedObject, right: ExtensionIndexedObject): boolean {
+  return Boolean(left.valid && right.valid && !left.unsupportedReason && !right.unsupportedReason
+    && left.identity?.ownership === 'own' && right.identity?.ownership === 'own'
+    && left.identity.type === right.identity.type
+    && left.metadataType === right.metadataType
+    && left.name === right.name && left.qualifiedName === right.qualifiedName
+    && sameUuid(left.identity.uuid, right.identity.uuid));
 }
 
 function decideTransfer(

@@ -1,4 +1,4 @@
-import { applyXmlPatch, hashXmlText } from '../xml/xmlPatch';
+import { applyXmlPatchBatch, hashXmlText } from '../xml/xmlPatch';
 import {
   validateSemanticXmlMerge,
   type SemanticXmlKind,
@@ -41,20 +41,24 @@ export function applySelectedXmlPatches(
     return conflict;
   }
 
-  let nextSource = source;
-  for (const patch of orderXmlPatches(patches)) {
-    try {
-      nextSource = applyXmlPatch(nextSource, {
-        ...patch,
-        expectedOldHash: hashXmlText(nextSource),
-      });
-    } catch (error) {
-      return {
-        ok: false,
-        code: 'MERGE_XML_PATCH_FAILED',
-        message: `Не удалось применить выбранное изменение XML: ${errorMessage(error)}`,
-      };
-    }
+  const sourceHash = hashXmlText(source);
+  if (patches.some((patch) => patch.expectedOldHash !== sourceHash)) {
+    return {
+      ok: false,
+      code: 'MERGE_STALE_TARGET_HASH',
+      message: 'Целевой XML-файл изменился после сравнения. Обновите сравнение перед построением preview.',
+    };
+  }
+
+  let nextSource: string;
+  try {
+    nextSource = applyXmlPatchBatch(source, orderXmlPatches(patches));
+  } catch (error) {
+    return {
+      ok: false,
+      code: 'MERGE_XML_PATCH_FAILED',
+      message: `Не удалось применить выбранное изменение XML: ${errorMessage(error)}`,
+    };
   }
 
   const semanticKind = [...semanticKinds][0];
@@ -109,6 +113,9 @@ export function findXmlPatchConflict(
       }
       if (isXmlPointerAncestor(current.target.pointer, other.target.pointer) ||
           isXmlPointerAncestor(other.target.pointer, current.target.pointer)) {
+        if (isMoveWithDescendantScalarEdit(current, other) || isMoveWithDescendantScalarEdit(other, current)) {
+          continue;
+        }
         return {
           ok: false,
           code: 'MERGE_XML_OVERLAPPING_PATCH_TARGETS',
@@ -119,6 +126,14 @@ export function findXmlPatchConflict(
   }
 
   return undefined;
+}
+
+function isMoveWithDescendantScalarEdit(
+  move: XmlPatchPayload,
+  descendant: XmlPatchPayload,
+): boolean {
+  return move.kind === 'moveNode' && descendant.kind === 'replaceNode' &&
+    isXmlPointerAncestor(move.target.pointer, descendant.target.pointer);
 }
 
 function orderXmlPatches(patches: readonly XmlPatchPayload[]): XmlPatchPayload[] {
@@ -206,7 +221,8 @@ function isXmlPointerAncestor(parent: string, child: string): boolean {
 }
 
 function isSemanticXmlKind(value: string | undefined): value is SemanticXmlKind {
-  return value === 'metadataXml' || value === 'formXml' || value === 'predefinedXml';
+  return value === 'metadataXml' || value === 'formXml' || value === 'predefinedXml' ||
+    value === 'roleRightsXml' || value === 'dcsXml';
 }
 
 function errorMessage(error: unknown): string {

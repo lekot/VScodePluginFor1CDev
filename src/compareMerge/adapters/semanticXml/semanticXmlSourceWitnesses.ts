@@ -33,7 +33,7 @@ export function buildXmlSourceWitnesses(
       add(dependency.witness);
     }
   }
-  if (kind === 'metadataXml' || kind === 'formXml') {
+  if (kind === 'metadataXml' || kind === 'formXml' || kind === 'roleRightsXml') {
     const availableMetadataReferences = input.semanticValidationContext?.availableMetadataReferences;
     const registered = availableMetadataReferences && new Set(availableMetadataReferences.map((name) =>
       name.trim().normalize('NFC').toLocaleLowerCase('en-US')

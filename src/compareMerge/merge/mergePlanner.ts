@@ -1,8 +1,9 @@
 import { validateBslRoutineLogicalMergePlan } from '../bsl/bslRoutineMergeExecutorGuard';
+import { parseBslRoutines } from '../../bsl/routineRangeProvider';
 import type { BslRoutineLogicalManualDiagnostic } from '../bsl/bslRoutineMergePlanTypes';
 import { CompareSession } from '../domain/compareSession';
 import type { CompareMessage, IdentityConflict } from '../domain/compareContracts';
-import { validateCapturedFileWriteOperation } from './capturedFileWrite';
+import { validateCapturedFileWriteOperation, validateMergeFileWitnesses } from './capturedFileWrite';
 import { findXmlPatchConflict } from './semanticXmlMerge';
 import { validateXmlPatchCandidate } from './xmlPatchCandidateGuard';
 import {
@@ -258,6 +259,15 @@ function candidateToOperation(
   if (candidate.kind === 'fileWrite') {
     diagnostics.push(...validateCapturedFileWriteOperation(candidate, input.session));
   }
+  if (candidate.sourceWitnesses !== undefined) {
+    const sourceIds = new Set(input.session.state.sources.map((source) => source.sourceId));
+    diagnostics.push(...validateMergeFileWitnesses(candidate.sourceWitnesses, sourceIds).map((message) =>
+      compareMessage({
+        severity: 'error', code: 'MERGE_SOURCE_WITNESS_INVALID', sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId, path: candidate.targetUri, suggestedAction: message,
+      })
+    ));
+  }
 
   if (diagnostics.length > 0) {
     return undefined;
@@ -275,12 +285,27 @@ function candidateToOperation(
     expectedOldHash: candidate.expectedOldHash,
     newHash: candidate.newHash,
     conflictId: candidate.conflictId,
+    sourceWitnesses: candidate.sourceWitnesses
+      ? dedupeMergeFileWitnesses(candidate.sourceWitnesses).map((witness) => ({ ...witness }))
+      : undefined,
     logicalRoutine: candidate.logicalRoutine,
     xmlPatch: candidate.xmlPatch,
     fileOperation: candidate.fileOperation,
     fileWrite: candidate.fileWrite,
     bslRoutine: candidate.bslRoutine,
   };
+}
+
+function dedupeMergeFileWitnesses<T extends { sourceId: string; relativePath: string }>(witnesses: readonly T[]): T[] {
+  const bySourcePath = new Map<string, T>();
+  for (const witness of witnesses) {
+    const normalizedPath = witness.relativePath.replace(/[\\/]+/gu, process.platform === 'win32' ? '\\' : '/');
+    const key = `${witness.sourceId}\0${process.platform === 'win32' ? normalizedPath.toLocaleLowerCase() : normalizedPath}`;
+    if (!bySourcePath.has(key)) {
+      bySourcePath.set(key, witness);
+    }
+  }
+  return [...bySourcePath.values()];
 }
 
 function validateLogicalRoutineCandidate(
@@ -448,6 +473,35 @@ function validateBslRoutineOperationCandidate(
   if (payload.kind === 'deleteRoutine' && !payload.targetRange) {
     diagnostics.push(bslRoutineRangeDiagnostic(candidate, 'MERGE_BSL_ROUTINE_TARGET_RANGE_MISSING'));
   }
+  const payloadRoutines = parseBslRoutines(payload.sourceText).routines;
+  if (payloadRoutines.length === 1 && payloadRoutines[0]!.directives.length > 0) {
+    if (payload.kind === 'insertRoutine' && !payload.sourceTextRange) {
+      diagnostics.push(bslRoutineRangeDiagnostic(candidate, 'MERGE_BSL_ROUTINE_SOURCE_TEXT_RANGE_MISSING'));
+    }
+    if (payload.kind === 'deleteRoutine' && !payload.targetTextRange) {
+      diagnostics.push(bslRoutineRangeDiagnostic(candidate, 'MERGE_BSL_ROUTINE_TARGET_TEXT_RANGE_MISSING'));
+    }
+  }
+  if (payload.sourceTextRange && !isRoutineTextEnvelope(payload.sourceTextRange, payload.sourceRange)) {
+    diagnostics.push(bslRoutineRangeDiagnostic(candidate, 'MERGE_BSL_ROUTINE_SOURCE_TEXT_RANGE_INVALID'));
+  }
+  if (payload.targetTextRange && !isRoutineTextEnvelope(payload.targetTextRange, payload.targetRange)) {
+    diagnostics.push(bslRoutineRangeDiagnostic(candidate, 'MERGE_BSL_ROUTINE_TARGET_TEXT_RANGE_INVALID'));
+  }
+}
+
+function isRoutineTextEnvelope(
+  envelope: NonNullable<BslRoutineOperationPayload['sourceTextRange']>,
+  routine: NonNullable<BslRoutineOperationPayload['sourceRange']> | undefined
+): boolean {
+  return Boolean(
+    routine &&
+    envelope.startLine >= 1 &&
+    envelope.startColumn >= 1 &&
+    envelope.endLine === routine.endLine &&
+    envelope.endColumn === routine.endColumn &&
+    (envelope.startLine < routine.startLine || envelope.startLine === routine.startLine && envelope.startColumn <= routine.startColumn)
+  );
 }
 
 function bslRoutineRangeDiagnostic(candidate: MergeCandidate, code: string): CompareMessage {
@@ -835,6 +889,7 @@ function isSupportedOperationKind(kind: unknown): kind is MergeSupportedOperatio
     kind === 'xmlNodeReplace' ||
     kind === 'xmlNodeInsert' ||
     kind === 'xmlNodeDelete' ||
+    kind === 'xmlNodeMove' ||
     kind === 'fileCopy' ||
     kind === 'fileWrite' ||
     kind === 'fileDelete' ||
@@ -844,7 +899,7 @@ function isSupportedOperationKind(kind: unknown): kind is MergeSupportedOperatio
 }
 
 function isXmlOperationKind(kind: MergeCandidate['kind']): boolean {
-  return kind === 'xmlNodeReplace' || kind === 'xmlNodeInsert' || kind === 'xmlNodeDelete';
+  return kind === 'xmlNodeReplace' || kind === 'xmlNodeInsert' || kind === 'xmlNodeDelete' || kind === 'xmlNodeMove';
 }
 
 function isFileOperationKind(kind: MergeCandidate['kind']): boolean {

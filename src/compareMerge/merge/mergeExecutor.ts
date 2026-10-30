@@ -3,6 +3,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 
 import { parseBslRoutines } from '../../bsl/routineRangeProvider';
 import type { BslRoutineInfo, BslTextRange } from '../../bsl/bslRoutineTypes';
+import { captureBslRoutineSpan } from '../linkedDesignerRoutineSpan';
 import { validateBslRoutineLogicalMergePlan } from '../bsl/bslRoutineMergeExecutorGuard';
 import {
   hashText,
@@ -398,6 +399,7 @@ export async function executeBslMergePreview(
       buildUnderLease: trustedOperations.some(
         (operation) =>
           operation.kind === 'fileWrite' ||
+          Boolean(operation.sourceWitnesses?.length) ||
           (isXmlOperationKind(operation.kind) && Boolean(operation.xmlPatch?.sourceWitnesses?.length))
       ),
     }
@@ -603,7 +605,7 @@ async function resolveOperation(
   if (operation.kind === 'bslRoutineInsert' || operation.kind === 'bslRoutineDelete') {
     return resolveBslRoutineOperation(operation, backupPlan, rootUri, canonicalTargetPath);
   }
-  if (operation.kind === 'xmlNodeReplace' || operation.kind === 'xmlNodeInsert' || operation.kind === 'xmlNodeDelete') {
+  if (operation.kind === 'xmlNodeReplace' || operation.kind === 'xmlNodeInsert' || operation.kind === 'xmlNodeDelete' || operation.kind === 'xmlNodeMove') {
     return resolveXmlOperation(operation, backupPlan, rootUri, canonicalTargetPath);
   }
   if (operation.kind === 'fileCopy') {
@@ -880,7 +882,7 @@ async function resolveBslRoutineOperation(
     operation.kind === 'bslRoutineInsert'
       ? applyBslRoutineInsert(currentSource, operation)
       : applyBslRoutineDelete(currentSource, operation);
-  if (!nextSource) {
+  if (nextSource === undefined) {
     return {
       failure: failure(
         operation,
@@ -1139,7 +1141,7 @@ function isXmlTextWrite(resolved: ResolvedOperation): resolved is ResolvedTextWr
 }
 
 function isXmlOperationKind(kind: MergeOperation['kind']): boolean {
-  return kind === 'xmlNodeReplace' || kind === 'xmlNodeInsert' || kind === 'xmlNodeDelete';
+  return kind === 'xmlNodeReplace' || kind === 'xmlNodeInsert' || kind === 'xmlNodeDelete' || kind === 'xmlNodeMove';
 }
 
 function firstOperationOf(resolved: ResolvedExecutionUnit): MergeOperation {
@@ -1236,6 +1238,7 @@ function isExecutorSupportedOperation(kind: MergeOperation['kind']): boolean {
     kind === 'xmlNodeReplace' ||
     kind === 'xmlNodeInsert' ||
     kind === 'xmlNodeDelete' ||
+    kind === 'xmlNodeMove' ||
     kind === 'fileCopy' ||
     kind === 'fileWrite' ||
     kind === 'fileDelete' ||
@@ -1291,6 +1294,15 @@ function applyBslRoutineInsert(source: string, operation: MergeOperation): strin
   if (!incomingRoutine || incoming.routines.length !== 1) {
     return undefined;
   }
+  if (payload.sourceTextRange && !isRoutineTextEnvelope(payload.sourceTextRange, payload.sourceRange)) {
+    return undefined;
+  }
+  if (payload.sourceTextRange) {
+    const captured = captureBslRoutineSpan(payload.sourceText, incomingRoutine);
+    if (!captured || normalizeEol(trimTrailingLineBreaks(captured.sourceText), '\n') !== normalizeEol(trimTrailingLineBreaks(payload.sourceText), '\n')) {
+      return undefined;
+    }
+  }
 
   const eol = detectEol(source) ?? detectEol(payload.sourceText) ?? '\n';
   const currentText = trimTrailingLineBreaks(source);
@@ -1321,7 +1333,25 @@ function applyBslRoutineDelete(source: string, operation: MergeOperation): strin
     return undefined;
   }
 
-  const range = offsetRangeFor(source, routine.range);
+  if (routine.directives.length > 0 && !payload.targetTextRange) {
+    return undefined;
+  }
+  if (payload.targetTextRange && !isRoutineTextEnvelope(payload.targetTextRange, routine.range)) {
+    return undefined;
+  }
+  const expectedRange = payload.targetTextRange ?? routine.range;
+  if (payload.targetTextRange) {
+    const captured = captureBslRoutineSpan(source, routine);
+    if (
+      !captured ||
+      !sameRange(captured.sourceTextRange, payload.targetTextRange) ||
+      normalizeEol(trimTrailingLineBreaks(captured.sourceText), '\n') !== normalizeEol(trimTrailingLineBreaks(payload.sourceText), '\n')
+    ) {
+      return undefined;
+    }
+  }
+
+  const range = offsetRangeFor(source, expectedRange);
   if (!range) {
     return undefined;
   }
@@ -1334,6 +1364,17 @@ function applyBslRoutineDelete(source: string, operation: MergeOperation): strin
 
   const adjustedStart = range.end === source.length ? removePrecedingEolStart(source, range.start) : range.start;
   return source.slice(0, adjustedStart) + source.slice(range.end);
+}
+
+function isRoutineTextEnvelope(envelope: BslTextRange, routine: BslTextRange | undefined): boolean {
+  return Boolean(
+    routine &&
+    envelope.startLine >= 1 &&
+    envelope.startColumn >= 1 &&
+    envelope.endLine === routine.endLine &&
+    envelope.endColumn === routine.endColumn &&
+    (envelope.startLine < routine.startLine || envelope.startLine === routine.startLine && envelope.startColumn <= routine.startColumn)
+  );
 }
 
 function bslPayloadKindForOperation(

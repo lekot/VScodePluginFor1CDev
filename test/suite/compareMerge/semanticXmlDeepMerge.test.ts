@@ -11,10 +11,200 @@ import { predefinedXmlAdapter } from '../../../src/compareMerge/adapters/predefi
 import type { AdapterCompareInput } from '../../../src/compareMerge/adapters/mergeAdapter';
 import { validateSemanticXmlMerge } from '../../../src/compareMerge/adapters/semanticXml/semanticXmlValidator';
 import { buildXmlSourceWitnesses } from '../../../src/compareMerge/adapters/semanticXml/semanticXmlSourceWitnesses';
-import { applyXmlPatch } from '../../../src/compareMerge/xml/xmlPatch';
-import { elementChildren, parseXmlDocument, type XmlElement } from '../../../src/compareMerge/xml/xmlDom';
+import { applySelectedXmlPatches } from '../../../src/compareMerge/merge/semanticXmlMerge';
+import { applyXmlPatch, applyXmlPatchBatch } from '../../../src/compareMerge/xml/xmlPatch';
+import { buildXmlAddress, elementChildren, getXmlElementIdentityKey, parseXmlDocument, type XmlElement } from '../../../src/compareMerge/xml/xmlDom';
 
 suite('Semantic XML deep merge (#335)', () => {
+  test('uses scoped stable selectors for role rights and DCS structured members', () => {
+    const rights = parseXmlDocument('<Rights xmlns="http://v8.1c.ru/8.2/roles"><object><name>Catalog.Products</name><right><name>Read</name></right></object><restrictionTemplate><name>Default</name></restrictionTemplate></Rights>').root;
+    const rightsObject = elementChildren(rights)[0]!;
+    const rightsRight = elementChildren(rightsObject).find((child) => child.localName === 'right')!;
+    const restriction = elementChildren(rights).find((child) => child.localName === 'restrictionTemplate')!;
+    assert.strictEqual(getXmlElementIdentityKey(rightsObject), 'rights-object=catalog.products');
+    assert.strictEqual(getXmlElementIdentityKey(rightsRight), 'rights-right=read');
+    assert.strictEqual(getXmlElementIdentityKey(restriction), 'rights-restrictiontemplate=default');
+
+    const dcs = parseXmlDocument('<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"><dataSet><name>Query</name><field><dataPath>Amount</dataPath></field></dataSet><dataSetLink><sourceDataSet>Query</sourceDataSet><destinationDataSet>Query2</destinationDataSet><sourceExpression>A</sourceExpression><destinationExpression>B</destinationExpression></dataSetLink></DataCompositionSchema>').root;
+    const dataSet = elementChildren(dcs).find((child) => child.localName === 'dataSet')!;
+    const dataSetField = elementChildren(dataSet).find((child) => child.localName === 'field')!;
+    const link = elementChildren(dcs).find((child) => child.localName === 'dataSetLink')!;
+    assert.strictEqual(getXmlElementIdentityKey(dataSet), 'dcs-dataset=query');
+    assert.strictEqual(getXmlElementIdentityKey(dataSetField), 'dcs-field=amount');
+    assert.strictEqual(getXmlElementIdentityKey(link), 'dcs-link=["Query","Query2","A","B",""]');
+    assert.match(buildXmlAddress('Schema.xml', dataSetField).pointer, /dcs-dataset%3Dquery/u);
+  });
+
+  test('keys union members and their fields by exact DCS xsi:type and parent scope', () => {
+    const schema = 'http://v8.1c.ru/8.1/data-composition-system/schema';
+    const union = parseXmlDocument(`<d:DataCompositionSchema xmlns="${schema}" xmlns:d="${schema}" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:alternate="${schema}">
+      <d:dataSet xsi:type="alternate:DataSetUnion"><d:name>Outer</d:name><d:field><d:dataPath>Amount</d:dataPath></d:field>
+        <d:item xsi:type="alternate:DataSetQuery"><d:name>QueryPart</d:name><d:field><d:dataPath>Amount</d:dataPath></d:field></d:item>
+        <d:item xsi:type="d:DataSetObject"><d:name>ObjectPart</d:name><d:field><d:dataPath>Amount</d:dataPath></d:field></d:item>
+        <d:item xsi:type="alternate:DataSetUnion"><d:name>Nested</d:name><d:item xsi:type="DataSetQuery"><d:name>QueryPart</d:name><d:field><d:dataPath>Amount</d:dataPath></d:field></d:item></d:item>
+      </d:dataSet></d:DataCompositionSchema>`).root;
+    const dataSet = elementChildren(union).find((element) => element.localName === 'dataSet')!;
+    const outerField = elementChildren(dataSet).find((element) => element.localName === 'field')!;
+    const items = elementChildren(dataSet).filter((element) => element.localName === 'item');
+    const queryItem = items[0]!;
+    const objectItem = items[1]!;
+    const nestedUnion = items[2]!;
+    const nestedQuery = elementChildren(nestedUnion).find((element) => element.localName === 'item')!;
+    const queryField = elementChildren(queryItem).find((element) => element.localName === 'field')!;
+    const objectField = elementChildren(objectItem).find((element) => element.localName === 'field')!;
+    const nestedField = elementChildren(nestedQuery).find((element) => element.localName === 'field')!;
+
+    assert.strictEqual(getXmlElementIdentityKey(queryItem), 'dcs-union-item=querypart');
+    assert.strictEqual(getXmlElementIdentityKey(objectItem), 'dcs-union-item=objectpart');
+    assert.strictEqual(getXmlElementIdentityKey(nestedQuery), 'dcs-union-item=querypart');
+    assert.strictEqual(getXmlElementIdentityKey(outerField), 'dcs-field=amount');
+    assert.strictEqual(getXmlElementIdentityKey(queryField), 'dcs-field=amount');
+    assert.strictEqual(getXmlElementIdentityKey(objectField), 'dcs-field=amount');
+    assert.strictEqual(getXmlElementIdentityKey(nestedField), 'dcs-field=amount');
+  });
+
+  test('validates nested role rights by their proven path scope', () => {
+    const rootBooleans = '<setForNewObjects>false</setForNewObjects><setForAttributesByDefault>false</setForAttributesByDefault><independentRightsOfChildObjects>false</independentRightsOfChildObjects>';
+    const object = (name: string, rights: string) => `<object><name>${name}</name>${rights}</object>`;
+    const right = (name: string) => `<right><name>${name}</name><value>true</value></right>`;
+    const source = `<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20">${rootBooleans}` +
+      object('DataProcessor.Load.Attribute.Code', right('Edit')) +
+      object('Catalog.Products.TabularSection.Lines.Attribute.Amount', right('View') + right('Edit')) +
+      object('Document.Invoice.Command.OpenCard', right('View')) +
+      object('Catalog.Products.StandardAttribute.Ref', right('View') + right('Edit')) +
+      object('CalculationRegister.Depreciation.Recalculation.Method', right('Read') + right('Update')) +
+      object('WebService.Exchange.Operation.GetParameters', right('Use')) +
+      object('ExternalDataSource.Sales.Table.Invoices', right('Read') + right('Edit')) +
+      object('ExternalDataSource.Sales.Table.Invoices.Field.Total', right('View') + right('Edit')) +
+      object('ExternalDataSource.Sales.Cube.Turnovers.Dimension.Period', right('View')) +
+      '</Rights>';
+    const valid = validateSemanticXmlMerge(source, 'roleRightsXml', {
+      availableMetadataReferences: [
+        'DataProcessor.Load', 'Catalog.Products', 'Document.Invoice', 'ExternalDataSource.Sales',
+        'CalculationRegister.Depreciation', 'WebService.Exchange',
+      ],
+    });
+    assert.strictEqual(valid.valid, true, JSON.stringify(valid.diagnostics));
+
+    const invalid = validateSemanticXmlMerge(source.replace('DataProcessor.Load.Attribute.Code', 'DataProcessor.Load.Unknown.Code'), 'roleRightsXml', {
+      availableMetadataReferences: ['DataProcessor.Load'],
+    });
+    assert.strictEqual(invalid.valid, false);
+    assert.ok(invalid.diagnostics.some((item) => item.code === 'XML_RIGHTS_INAPPLICABLE_RIGHT'));
+  });
+
+  test('validates Configuration rights by the captured configuration name rather than object inventory membership', () => {
+    const rootBooleans = '<setForNewObjects>false</setForNewObjects><setForAttributesByDefault>false</setForAttributesByDefault><independentRightsOfChildObjects>false</independentRightsOfChildObjects>';
+    const source = `<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20">${rootBooleans}<object><name>Configuration.Sales</name><right><name>DataAdministration</name><value>true</value></right></object></Rights>`;
+    const accepted = validateSemanticXmlMerge(source, 'roleRightsXml', {
+      availableMetadataReferences: ['Catalog.Products'],
+      configurationName: 'Sales',
+    });
+    assert.strictEqual(accepted.valid, true, JSON.stringify(accepted.diagnostics));
+
+    const wrongName = validateSemanticXmlMerge(source, 'roleRightsXml', {
+      availableMetadataReferences: ['Catalog.Products'],
+      configurationName: 'Accounting',
+    });
+    assert.ok(wrongName.diagnostics.some((item) => item.code === 'XML_TYPE_REFERENCE'));
+  });
+
+  test('resolves DCS dataset xsi:type by expanded QName, not local attribute spelling', () => {
+    const schema = 'http://v8.1c.ru/8.1/data-composition-system/schema';
+    const settings = 'http://v8.1c.ru/8.1/data-composition-system/settings';
+    const document = (datasetType: string, declarations = '') =>
+      `<d:DataCompositionSchema xmlns:d="${schema}" xmlns:set="${settings}" ${declarations}>` +
+      '<d:dataSource><d:name>Source</d:name><d:dataSourceType>Local</d:dataSourceType></d:dataSource>' +
+      `<d:dataSet ${datasetType}><d:name>Query</d:name><d:dataSource>Source</d:dataSource><d:query/></d:dataSet>` +
+      '<d:settingsVariant><set:name>Default</set:name></d:settingsVariant></d:DataCompositionSchema>';
+    const context = { ownerDescriptorVersions: { target: '2.20', incoming: '2.20' } };
+    const accepted = validateSemanticXmlMerge(document('xsiAlias:type="schemaAlias:DataSetQuery"',
+      `xmlns:xsiAlias="http://www.w3.org/2001/XMLSchema-instance" xmlns:schemaAlias="${schema}"`), 'dcsXml', context);
+    assert.strictEqual(accepted.valid, true, JSON.stringify(accepted.diagnostics));
+
+    for (const invalidType of [
+      'foreign:type="schemaAlias:DataSetQuery"',
+      'xsi:type="foreign:DataSetQuery"',
+      'xsi:type="unbound:DataSetQuery"',
+    ]) {
+      const invalid = validateSemanticXmlMerge(document(invalidType,
+        `xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:foreign="urn:other"`), 'dcsXml', context);
+      assert.strictEqual(invalid.valid, false, invalidType);
+      assert.ok(invalid.diagnostics.some((item) => item.code === 'XML_DCS_DATASET_TYPE_MISSING'), invalidType + ': ' + JSON.stringify(invalid.diagnostics));
+    }
+  });
+
+  test('projects selected registrations separately when metadata ChildObjects is missing', async () => {
+    const left = '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog uuid="catalog-1"><InternalInfo/><Properties><Name>Products</Name></Properties><!--keep--><FutureTarget>preserve</FutureTarget></Catalog></MetaDataObject>';
+    const right = '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog uuid="catalog-1"><InternalInfo/><Properties><Name>Products</Name></Properties><ChildObjects><Form>Main</Form><Template>Print</Template><Command>Unlinked</Command></ChildObjects></Catalog></MetaDataObject>';
+    const input = makeInput(left, right);
+    input.linkedDesignerContext = {
+      registrations: [
+        { kind: 'Form', name: 'Main', packageId: 'form-main' },
+        { kind: 'Template', name: 'Print', packageId: 'template-print' },
+      ],
+      defaultObjectForms: [],
+      formEventHandlers: [],
+    };
+
+    const result = await metadataXmlAdapter.compare(input);
+    const wrapper = requireNode(result.nodes, 'Контейнер объектов');
+    assert.strictEqual(wrapper.mergeable, false);
+    const registrations = wrapper.children.filter((node) => node.mergeable);
+    assert.deepStrictEqual(registrations.map((node) => node.rightValue?.includes('<Form') ? 'Form' : 'Template'), ['Form', 'Template']);
+    assert.ok(wrapper.children.some((node) => node.label === 'Команда: Unlinked' && node.status === 'rightOnly' && !node.mergeable));
+    assert.ok(!result.candidateFactories.has(wrapper.id), 'the wrapper must never bypass package selection');
+
+    const candidates = await Promise.all(registrations.map((node) => result.candidateFactories.get(node.id)!()));
+    assert.ok(candidates.every((candidate) => candidate.ok));
+    const patches = candidates.map((candidate) => candidate.ok ? candidate.candidate.xmlPatch! : undefined);
+    assert.ok(patches.every((patch) => patch?.createDestinationChildObjects === true));
+    assert.strictEqual(patches[0]!.destinationParent?.pointer, patches[1]!.destinationParent?.pointer);
+    const applied = applyXmlPatchBatch(left, [patches[1]!, patches[0]!]);
+    const owner = elementChildren(parseXmlDocument(applied).root)[0]!;
+    const container = findElement(owner, 'ChildObjects');
+    assert.deepStrictEqual(elementChildren(container).map((element) => element.localName), ['Form', 'Template']);
+    assert.match(applied, /<!--keep-->/u);
+    assert.match(applied, /<FutureTarget>preserve<\/FutureTarget>/u);
+    assert.doesNotMatch(applied, /Unlinked/u);
+  });
+
+  test('keeps missing-container registrations read-only without a linked package capability', async () => {
+    const left = '<MetaDataObject><Catalog uuid="catalog-1"><Properties><Name>Products</Name></Properties></Catalog></MetaDataObject>';
+    const right = '<MetaDataObject><Catalog uuid="catalog-1"><Properties><Name>Products</Name></Properties><ChildObjects><Form>Main</Form></ChildObjects></Catalog></MetaDataObject>';
+    const result = await metadataXmlAdapter.compare(makeInput(left, right));
+    const wrapper = requireNode(result.nodes, 'Контейнер объектов');
+    assert.strictEqual(wrapper.mergeable, false);
+    assert.strictEqual(wrapper.children.length, 1);
+    assert.strictEqual(wrapper.children[0]!.mergeable, false);
+    assert.strictEqual(result.candidateFactories.size, 0);
+  });
+
+  test('allows a linked registration deletion as an individual package candidate', async () => {
+    const left = '<MetaDataObject><Catalog uuid="catalog-1"><Properties><Name>Products</Name></Properties><ChildObjects><Form>Main</Form></ChildObjects></Catalog></MetaDataObject>';
+    const right = '<MetaDataObject><Catalog uuid="catalog-1"><Properties><Name>Products</Name></Properties></Catalog></MetaDataObject>';
+    const input = makeInput(left, right);
+    input.linkedDesignerContext = {
+      registrations: [{ kind: 'Form', name: 'Main', packageId: 'form-main' }],
+      defaultObjectForms: [],
+      formEventHandlers: [],
+    };
+
+    const result = await metadataXmlAdapter.compare(input);
+    const registration = collectNodes(result.nodes).find((node) =>
+      node.payloadRef?.includes('/ChildObjects[0]/Form[0]') && node.label === 'Форма: Main',
+    );
+    assert.ok(registration, 'the existing Form registration should have its own selectable node');
+    const selectedRegistration = registration!;
+    assert.strictEqual(selectedRegistration.status, 'leftOnly');
+    assert.strictEqual(selectedRegistration.mergeable, true);
+    const candidate = await result.candidateFactories.get(selectedRegistration.id)!();
+    assert.strictEqual(candidate.ok, true);
+    if (!candidate.ok) {return;}
+    assert.strictEqual(candidate.candidate.xmlPatch?.kind, 'deleteNode');
+    assert.match(selectedRegistration.leftValue ?? '', /<Form(?:\s[^>]*)?>Main<\/Form>/u);
+  });
+
   test('keeps mixed XML and inherited namespaces while patching one localized value', async () => {
     const left = [
       '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">',
@@ -486,21 +676,117 @@ suite('Semantic XML deep merge (#335)', () => {
     const left = '<Form version="2.20"><Attributes/><Commands/><ChildItems><InputField name="Field" id="1"><Events><Event name="OnChange">OldHandler</Event></Events></InputField></ChildItems></Form>';
     const right = left.replace('OldHandler', 'NewHandler');
     const result = await formXmlAdapter.compare(makeInput(left, right));
-    const event = requireNode(result.nodes, 'OnChange');
+    const event = requireNode(result.nodes, 'Событие: OnChange');
     assert.strictEqual(event.mergeState?.state, 'readOnly');
     assert.match(event.mergeState?.reason ?? '', /BSL/iu);
+  });
+
+  test('allows deleting a form event reference without proving its BSL handler', async () => {
+    const left = '<Form version="2.20"><Attributes/><Commands/><ChildItems><InputField name="Field" id="1"><Events><Event name="OnOpen">MissingHandler</Event></Events></InputField></ChildItems></Form>';
+    const right = '<Form version="2.20"><Attributes/><Commands/><ChildItems><InputField name="Field" id="1"><Events/></InputField></ChildItems></Form>';
+    const result = await formXmlAdapter.compare(makeInput(left, right));
+    const event = requireNode(result.nodes, 'Событие: OnOpen', (node) => node.leftValue === 'MissingHandler');
+
+    assert.strictEqual(event.mergeState?.state, 'ready');
+    const candidate = await result.candidateFactories.get(event.id)!();
+    assert.strictEqual(candidate.ok, true);
+    if (candidate.ok) {
+      assert.strictEqual(candidate.candidate.xmlPatch?.kind, 'deleteNode');
+    }
+  });
+
+  test('keeps a deleted Events wrapper read-only while exposing its Event deletion without BSL proof', async () => {
+    const left = '<Form version="2.20"><Attributes/><Commands/><ChildItems><InputField name="Field" id="1"><Events><Event name="OnOpen">UnusedHandler</Event></Events></InputField></ChildItems></Form>';
+    const right = '<Form version="2.20"><Attributes/><Commands/><ChildItems><InputField name="Field" id="1"/></ChildItems></Form>';
+    const result = await formXmlAdapter.compare(makeInput(left, right));
+    const events = requireNode(result.nodes, 'Events');
+
+    assert.strictEqual(events.mergeState?.state, 'readOnly');
+    assert.strictEqual(events.mergeable, false);
+    const event = collectNodes(events.children).find((node) => node.label === 'Событие: OnOpen');
+    assert.ok(event, 'the Event itself must remain separately selectable');
+    assert.strictEqual(event!.mergeState?.state, 'ready');
+    const candidate = await result.candidateFactories.get(event!.id)!();
+    assert.strictEqual(candidate.ok, true);
+    if (candidate.ok) {
+      assert.strictEqual(candidate.candidate.xmlPatch?.kind, 'deleteNode');
+    }
+  });
+
+  test('labels distinct form event references by their event name', async () => {
+    const left = '<Form version="2.20"><Attributes/><Commands/><ChildItems><InputField name="Field" id="1"><Events><Event name="OnOpen">OpenHandler</Event><Event name="BeforeClose">CloseHandler</Event></Events></InputField></ChildItems></Form>';
+    const right = '<Form version="2.20"><Attributes/><Commands/><ChildItems><InputField name="Field" id="1"><Events><Event name="OnOpen">IncomingOpen</Event><Event name="BeforeClose">IncomingClose</Event></Events></InputField></ChildItems></Form>';
+    const result = await formXmlAdapter.compare(makeInput(left, right));
+
+    assert.strictEqual(requireNode(result.nodes, 'Событие: OnOpen').mergeState?.state, 'readOnly');
+    assert.strictEqual(requireNode(result.nodes, 'Событие: BeforeClose').mergeState?.state, 'readOnly');
+  });
+
+  test('allows deleting a visual subtree that contains event references without proving their BSL handlers', async () => {
+    const left = '<Form version="2.20"><Attributes/><Commands/><ChildItems><UsualGroup name="Group" id="10"><ChildItems><InputField name="Field" id="11"><Events><Event name="OnOpen">UnusedHandler</Event></Events></InputField></ChildItems></UsualGroup></ChildItems></Form>';
+    const right = '<Form version="2.20"><Attributes/><Commands/><ChildItems/></Form>';
+    const result = await formXmlAdapter.compare(makeInput(left, right));
+    const group = requireNode(result.nodes, 'Group');
+
+    assert.strictEqual(group.mergeState?.state, 'ready');
+    const candidate = await result.candidateFactories.get(group.id)!();
+    assert.strictEqual(candidate.ok, true);
+    if (candidate.ok) {
+      assert.strictEqual(candidate.candidate.xmlPatch?.kind, 'deleteNode');
+    }
   });
 
   test('blocks form registrations and default-form references without their file-backed artifacts', async () => {
     const left = '<MetaDataObject><Catalog uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Products</Name><DefaultObjectForm>Catalog.Products.Form.Old</DefaultObjectForm></Properties><ChildObjects><Form>Old</Form></ChildObjects></Catalog></MetaDataObject>';
     const right = left.replace('Catalog.Products.Form.Old', 'Catalog.Products.Form.New').replace('<Form>Old</Form>', '<Form>New</Form>');
     const result = await metadataXmlAdapter.compare(makeInput(left, right));
-    const registration = requireNode(result.nodes, 'Form');
+    const registration = requireNode(result.nodes, 'Форма: New');
     const defaultForm = requireNode(result.nodes, 'DefaultObjectForm');
     assert.strictEqual(registration.mergeState?.state, 'readOnly');
     assert.match(registration.mergeState?.reason ?? '', /вместе с дескриптором и файлами/iu);
     assert.strictEqual(defaultForm.mergeState?.state, 'readOnly');
     assert.strictEqual(result.candidateFactories.size, 0);
+  });
+
+  test('requires the exact MDClasses namespace before a default-form capability can select a reference', async () => {
+    const md = 'http://v8.1c.ru/8.3/MDClasses';
+    const core = 'http://v8.1c.ru/8.2/managed-application/core';
+    const left = `<MetaDataObject xmlns="${md}" xmlns:core="${core}"><Catalog uuid="catalog-1"><Properties><Name>Products</Name><DefaultListForm>Catalog.Products.Form.Old</DefaultListForm><core:DefaultListForm>foreign-old</core:DefaultListForm></Properties></Catalog></MetaDataObject>`;
+    const right = left.replace('Catalog.Products.Form.Old', 'Catalog.Products.Form.Main').replace('foreign-old', 'foreign-new');
+    const input = makeInput(left, right);
+    input.linkedDesignerContext = {
+      registrations: [],
+      defaultObjectForms: [{
+        propertyName: 'DefaultListForm',
+        value: 'Catalog.Products.Form.Main',
+        targetFormComplete: true,
+        packageId: 'form-main',
+      }],
+      formEventHandlers: [],
+    };
+
+    const result = await metadataXmlAdapter.compare(input);
+    const selectedReferences = collectNodes(result.nodes).filter((node) => node.mergeable &&
+      node.rightValue === 'Catalog.Products.Form.Main');
+    assert.strictEqual(selectedReferences.length, 1);
+    const selected = await result.candidateFactories.get(selectedReferences[0]!.id)!();
+    assert.strictEqual(selected.ok, true);
+    assert.strictEqual(collectNodes(result.nodes).some((node) => node.mergeable && node.rightValue === 'foreign-new'), false);
+  });
+
+  test('allows clearing a default form reference without transferring another form', async () => {
+    const left = '<MetaDataObject><Catalog uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Products</Name><DefaultObjectForm>Catalog.Products.Form.Old</DefaultObjectForm></Properties></Catalog></MetaDataObject>';
+    const right = left.replace('<DefaultObjectForm>Catalog.Products.Form.Old</DefaultObjectForm>', '<DefaultObjectForm/>');
+    const result = await metadataXmlAdapter.compare(makeInput(left, right));
+    const defaultForm = requireNode(result.nodes, 'DefaultObjectForm');
+
+    assert.strictEqual(defaultForm.mergeState?.state, 'ready');
+    const candidate = await result.candidateFactories.get(defaultForm.id)!();
+    assert.strictEqual(candidate.ok, true);
+    if (candidate.ok) {
+      assert.strictEqual(candidate.candidate.xmlPatch?.kind, 'replaceNode');
+      assert.strictEqual(candidate.candidate.xmlPatch?.replacementXml, '<DefaultObjectForm/>');
+    }
   });
 
   test('merges a scalar on same-name CF roots without replacing the target UUID and keeps CFE roots strict', async () => {
@@ -519,6 +805,192 @@ suite('Semantic XML deep merge (#335)', () => {
     const cfe = await metadataXmlAdapter.compare(makeInput(cfeLeft, cfeRight));
     assert.strictEqual(cfe.candidateFactories.size, 0);
     assert.ok(cfe.diagnostics.some((item) => item.code === 'XML_METADATA_IDENTITY_MISMATCH'));
+  });
+
+  test('projects EnumValue display order as selectable target-side moves and preserves target-only siblings', async () => {
+    const targetA = enumValue('A', 'Target A', 'Target comment')
+      .replace('</EnumValue>', '<x:FutureChild marker="target">opaque</x:FutureChild></EnumValue>');
+    const target = enumDescriptor([
+      targetA,
+      enumValue('TargetOnly', 'TargetOnly', 'Keep this value'),
+      enumValue('B', 'Target B'),
+    ]);
+    const source = enumDescriptor([
+      enumValue('B', 'Target B'),
+      enumValue('A', 'Target A', 'Target comment'),
+    ]);
+    const result = await metadataXmlAdapter.compare(makeEnumInput(target, source));
+    const moves = collectNodes(result.nodes).filter((node) => node.kind === 'metadataOrderMove');
+
+    assert.deepStrictEqual(moves.map((node) => node.label), ['Порядок значения: Target A']);
+    const move = moves[0]!;
+    assert.strictEqual(move.mergeable, true);
+    assert.strictEqual(move.leftValue, 'Statuses → позиция 1');
+    assert.strictEqual(move.rightValue, 'Statuses → в конец');
+    const generated = await result.candidateFactories.get(move.id)!();
+    assert.strictEqual(generated.ok, true);
+    if (!generated.ok) {return;}
+    assert.strictEqual(generated.candidate.kind, 'xmlNodeMove');
+    assert.strictEqual(generated.candidate.xmlPatch?.semanticKind, 'metadataXml');
+    assert.strictEqual(generated.candidate.xmlPatch?.insertPosition, 'append');
+    assert.match(generated.candidate.xmlPatch?.target.pointer ?? '', /EnumValue\[uuid%3D/u);
+
+    const applied = applyXmlPatchBatch(target, [generated.candidate.xmlPatch!]);
+    const parsed = parseXmlDocument(applied).root;
+    const enumNode = elementChildren(parsed).find((element) => element.localName === 'Enum')!;
+    const container = elementChildren(enumNode).find((element) => element.localName === 'ChildObjects')!;
+    assert.deepStrictEqual(elementChildren(container).map((element) => element.attributes.find((attribute) => attribute.localName === 'uuid')?.value ?? element.localName), [
+      'c0000000-0000-4000-8000-000000000003',
+      'b0000000-0000-4000-8000-000000000002',
+      'a0000000-0000-4000-8000-000000000001',
+    ]);
+    assert.match(applied, /<Comment>Keep this value<\/Comment>/u);
+    const movedA = elementChildren(container).find((element) => element.attributes.some((attribute) => attribute.value === 'a0000000-0000-4000-8000-000000000001'))!;
+    assert.ok(elementChildren(movedA).some((element) => element.localName === 'FutureChild'), 'the moved target subtree keeps its unknown descendant');
+    assert.match(applied, /<Comment>Target comment<\/Comment>/u);
+    assert.doesNotMatch(applied, /Source A/u, 'moving an EnumValue must retain its target subtree');
+  });
+
+  test('keeps EnumValue ordering read-only when the host denies metadata order capability', async () => {
+    const target = enumDescriptor([enumValue('A', 'A'), enumValue('B', 'B')]);
+    const source = enumDescriptor([enumValue('B', 'B'), enumValue('A', 'A')]);
+    const input = makeEnumInput(target, source);
+    input.allowMetadataChildOrder = false;
+    const result = await metadataXmlAdapter.compare(input);
+    const order = collectNodes(result.nodes).find((node) => node.kind === 'xmlOrder');
+
+    assert.ok(order, 'the inherited owner order remains visible as a read-only order row');
+    assert.strictEqual(order.mergeable, false);
+    assert.strictEqual(order.mergeState?.state, 'readOnly');
+    assert.strictEqual(result.candidateFactories.size, 0);
+  });
+
+  test('applies multiple EnumValue moves independently of selected-node order and composes a value edit', async () => {
+    const target = enumDescriptor([
+      enumValue('A', 'A', 'Old A'),
+      enumValue('B', 'B'),
+      enumValue('C', 'C'),
+      enumValue('D', 'D'),
+    ]);
+    const source = enumDescriptor([
+      enumValue('C', 'C'),
+      enumValue('B', 'B'),
+      enumValue('A', 'A', 'New A'),
+      enumValue('D', 'D'),
+    ]);
+    const result = await metadataXmlAdapter.compare(makeEnumInput(target, source));
+    const moves = collectNodes(result.nodes).filter((node) => node.kind === 'metadataOrderMove');
+    assert.deepStrictEqual(moves.map((node) => node.label), ['Порядок значения: B', 'Порядок значения: A']);
+    const generated = await Promise.all(moves.map((node) => result.candidateFactories.get(node.id)!()));
+    assert.ok(generated.every((candidate) => candidate.ok));
+    if (generated.some((candidate) => !candidate.ok)) {return;}
+    const scalar = requireNode(result.nodes, 'Comment', (node) => node.rightValue === 'New A');
+    const scalarCandidate = await result.candidateFactories.get(scalar.id)!();
+    assert.strictEqual(scalarCandidate.ok, true);
+    if (!scalarCandidate.ok) {return;}
+    const patches = [
+      ...generated.map((candidate) => candidate.candidate.xmlPatch!),
+      scalarCandidate.candidate.xmlPatch!,
+    ];
+    const applied = applyXmlPatchBatch(target, patches.reverse());
+    const enumNode = elementChildren(parseXmlDocument(applied).root).find((element) => element.localName === 'Enum')!;
+    const container = elementChildren(enumNode).find((element) => element.localName === 'ChildObjects')!;
+    assert.deepStrictEqual(elementChildren(container).map((element) => element.attributes.find((attribute) => attribute.localName === 'uuid')?.value), [
+      'c0000000-0000-4000-8000-000000000003',
+      'b0000000-0000-4000-8000-000000000002',
+      'a0000000-0000-4000-8000-000000000001',
+      'd0000000-0000-4000-8000-000000000004',
+    ]);
+    assert.match(applied, /<Comment(?:\s[^>]*)?>New A<\/Comment>/u);
+  });
+
+  test('composes a selected EnumValue insertion around a moved anchor without order-sensitive placement', async () => {
+    const target = enumDescriptor([enumValue('A', 'A'), enumValue('B', 'B')]);
+    const source = enumDescriptor([enumValue('B', 'B'), enumValue('N', 'New'), enumValue('A', 'A')]);
+    const result = await metadataXmlAdapter.compare(makeEnumInput(target, source));
+    const moveNode = requireNode(result.nodes, 'Порядок значения: A');
+    const insertNode = requireNode(result.nodes, 'New');
+    const moveResult = await result.candidateFactories.get(moveNode.id)!();
+    const insertResult = await result.candidateFactories.get(insertNode.id)!();
+    assert.strictEqual(moveResult.ok, true);
+    assert.strictEqual(insertResult.ok, true);
+    if (!moveResult.ok || !insertResult.ok) {return;}
+
+    const selected = [moveResult.candidate.xmlPatch!, insertResult.candidate.xmlPatch!];
+    for (const patches of [selected, [...selected].reverse()]) {
+      const merged = applySelectedXmlPatches(target, patches);
+      assert.strictEqual(merged.ok, true, merged.ok ? '' : merged.message);
+      if (!merged.ok) {return;}
+      const container = findElement(findElement(parseXmlDocument(merged.source).root, 'Enum'), 'ChildObjects');
+      assert.deepStrictEqual(elementChildren(container).map((element) => element.attributes.find((attribute) => attribute.localName === 'uuid')?.value), [
+        'b0000000-0000-4000-8000-000000000002',
+        'e0000000-0000-4000-8000-000000000005',
+        'a0000000-0000-4000-8000-000000000001',
+      ]);
+    }
+
+    const onlyMove = applySelectedXmlPatches(target, [moveResult.candidate.xmlPatch!]);
+    assert.strictEqual(onlyMove.ok, true, onlyMove.ok ? '' : onlyMove.message);
+    if (!onlyMove.ok) {return;}
+    const moveOnlyContainer = findElement(findElement(parseXmlDocument(onlyMove.source).root, 'Enum'), 'ChildObjects');
+    assert.deepStrictEqual(elementChildren(moveOnlyContainer).map((element) => element.attributes.find((attribute) => attribute.localName === 'uuid')?.value), [
+      'b0000000-0000-4000-8000-000000000002',
+      'a0000000-0000-4000-8000-000000000001',
+    ]);
+    assert.doesNotMatch(onlyMove.source, /<Name>New<\/Name>/u);
+
+    const onlyInsert = applySelectedXmlPatches(target, [insertResult.candidate.xmlPatch!]);
+    assert.strictEqual(onlyInsert.ok, true, onlyInsert.ok ? '' : onlyInsert.message);
+    if (!onlyInsert.ok) {return;}
+    const insertOnlyContainer = findElement(findElement(parseXmlDocument(onlyInsert.source).root, 'Enum'), 'ChildObjects');
+    assert.deepStrictEqual(elementChildren(insertOnlyContainer).map((element) => element.attributes.find((attribute) => attribute.localName === 'uuid')?.value), [
+      'e0000000-0000-4000-8000-000000000005',
+      'a0000000-0000-4000-8000-000000000001',
+      'b0000000-0000-4000-8000-000000000002',
+    ]);
+
+    const targetWithUnselectedSibling = enumDescriptor([
+      enumValue('A', 'A'), enumValue('TargetOnly', 'Target only'), enumValue('B', 'B'),
+    ]);
+    const preservedResult = await metadataXmlAdapter.compare(makeEnumInput(targetWithUnselectedSibling, source));
+    const preservedMoveNode = requireNode(preservedResult.nodes, 'Порядок значения: A');
+    const preservedInsertNode = requireNode(preservedResult.nodes, 'New');
+    const preservedMove = await preservedResult.candidateFactories.get(preservedMoveNode.id)!();
+    const preservedInsert = await preservedResult.candidateFactories.get(preservedInsertNode.id)!();
+    assert.strictEqual(preservedMove.ok, true);
+    assert.strictEqual(preservedInsert.ok, true);
+    if (!preservedMove.ok || !preservedInsert.ok) {return;}
+    const preserved = applySelectedXmlPatches(targetWithUnselectedSibling, [
+      preservedInsert.candidate.xmlPatch!, preservedMove.candidate.xmlPatch!,
+    ]);
+    assert.strictEqual(preserved.ok, true, preserved.ok ? '' : preserved.message);
+    if (!preserved.ok) {return;}
+    const preservedContainer = findElement(findElement(parseXmlDocument(preserved.source).root, 'Enum'), 'ChildObjects');
+    assert.deepStrictEqual(elementChildren(preservedContainer).map((element) => element.attributes.find((attribute) => attribute.localName === 'uuid')?.value), [
+      'c0000000-0000-4000-8000-000000000003',
+      'b0000000-0000-4000-8000-000000000002',
+      'e0000000-0000-4000-8000-000000000005',
+      'a0000000-0000-4000-8000-000000000001',
+    ]);
+  });
+
+  test('keeps EnumValue order read-only for missing UUID identities and foreign namespace impostors', async () => {
+    const namespace = 'http://v8.1c.ru/8.3/MDClasses';
+    const malformedLeft = `<MetaDataObject xmlns="${namespace}" version="2.20"><Enum uuid="e0000000-0000-4000-8000-000000000000"><Properties><Name>Statuses</Name></Properties><ChildObjects><EnumValue uuid="a0000000-0000-4000-8000-000000000001"><Properties><Name>A</Name></Properties></EnumValue><EnumValue><Properties><Name>B</Name></Properties></EnumValue></ChildObjects></Enum></MetaDataObject>`;
+    const malformedRight = malformedLeft.replace('</ChildObjects>', '<EnumValue uuid="a0000000-0000-4000-8000-000000000001"><Properties><Name>A</Name></Properties></EnumValue></ChildObjects>');
+    const malformed = await metadataXmlAdapter.compare(makeEnumInput(malformedLeft, malformedRight));
+    assert.strictEqual(collectNodes(malformed.nodes).some((node) => node.kind === 'metadataOrderMove' && node.mergeable), false);
+
+    const target = enumDescriptor([
+      enumValue('A', 'A'),
+      enumValue('B', 'B'),
+      enumValue('Foreign', 'Foreign'),
+    ], '<x:EnumValue uuid="f0000000-0000-4000-8000-000000000005"><x:Properties><x:Name>Foreign</x:Name></x:Properties></x:EnumValue>');
+    const source = enumDescriptor([enumValue('B', 'B'), enumValue('A', 'A')]);
+    const foreign = await metadataXmlAdapter.compare(makeEnumInput(target, source));
+    const moveNodes = collectNodes(foreign.nodes).filter((node) => node.kind === 'metadataOrderMove');
+    assert.ok(moveNodes.every((node) => !node.payloadRef?.includes('uuid%3Df0000000')));
+    assert.ok(collectNodes(foreign.nodes).some((node) => node.mergeState?.state === 'readOnly' && /namespace|пространств/u.test(node.mergeState.reason ?? '')));
   });
 
   test('blocks same-name nested metadata objects with different UUIDs and validates native identities', async () => {
@@ -694,6 +1166,50 @@ function makeInput(left: string, right: string): AdapterCompareInput {
     session: makeSession(),
     snapshots: { left, right },
   };
+}
+
+function makeEnumInput(left: string, right: string): AdapterCompareInput {
+  const input = makeInput(left, right);
+  const leftPath = path.join('left', 'Enumerations', 'Statuses.xml');
+  const rightPath = path.join('right', 'Enumerations', 'Statuses.xml');
+  input.match.left = {
+    ...input.match.left!,
+    qualifiedName: 'Enum.Statuses',
+    metadataType: 'Enum',
+    uuid: 'e0000000-0000-4000-8000-000000000000',
+    descriptorPath: leftPath,
+    containerPath: path.join('left', 'Enumerations', 'Statuses'),
+  };
+  input.match.right = {
+    ...input.match.right!,
+    qualifiedName: 'Enum.Statuses',
+    metadataType: 'Enum',
+    uuid: 'e0000000-0000-4000-8000-000000000000',
+    descriptorPath: rightPath,
+    containerPath: path.join('right', 'Enumerations', 'Statuses'),
+  };
+  input.artifactPaths = { left: leftPath, right: rightPath };
+  return input;
+}
+
+function enumDescriptor(values: readonly string[], extraChildren = ''): string {
+  const mdClasses = 'http://v8.1c.ru/8.3/MDClasses';
+  return `<MetaDataObject xmlns="${mdClasses}" xmlns:x="urn:future" version="2.20"><Enum uuid="e0000000-0000-4000-8000-000000000000"><InternalInfo/><Properties><Name>Statuses</Name></Properties><ChildObjects>${values.join('')}${extraChildren}</ChildObjects></Enum></MetaDataObject>`;
+}
+
+function enumValue(key: string, name: string, comment?: string): string {
+  const uuids: Record<string, string> = {
+    A: 'a0000000-0000-4000-8000-000000000001',
+    B: 'b0000000-0000-4000-8000-000000000002',
+    N: 'e0000000-0000-4000-8000-000000000005',
+    C: 'c0000000-0000-4000-8000-000000000003',
+    TargetOnly: 'c0000000-0000-4000-8000-000000000003',
+    D: 'd0000000-0000-4000-8000-000000000004',
+    Foreign: 'e0000000-0000-4000-8000-000000000005',
+  };
+  const uuid = uuids[key];
+  assert.ok(uuid, `No EnumValue UUID fixture mapping for ${key}`);
+  return `<EnumValue uuid="${uuid}"><Properties><Name>${name}</Name>${comment ? `<Comment>${comment}</Comment>` : ''}</Properties></EnumValue>`;
 }
 
 function metadataObject(objectId: string, descriptorPath: string, containerPath: string) {

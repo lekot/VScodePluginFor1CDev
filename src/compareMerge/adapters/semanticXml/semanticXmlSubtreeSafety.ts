@@ -26,9 +26,10 @@ export function unsupportedSubtreeReason(
   parent: XmlElementNode | undefined,
   depth: number,
   kind: SemanticXmlKind,
-  knownComplexElement?: (input: XmlElementKindInput) => boolean
+  knownComplexElement?: (input: XmlElementKindInput) => boolean,
+  eventHandlerAllowed?: (element: XmlElementNode) => boolean,
 ): string | undefined {
-  return visit(root, parent, depth, kind, knownComplexElement);
+  return visit(root, parent, depth, kind, knownComplexElement, eventHandlerAllowed);
 }
 
 export function hasUnsupportedChangedAttributes(left: XmlElement, right: XmlElement): boolean {
@@ -59,7 +60,8 @@ function visit(
   parent: XmlElementNode | undefined,
   depth: number,
   kind: SemanticXmlKind,
-  knownComplexElement?: (input: XmlElementKindInput) => boolean
+  knownComplexElement?: (input: XmlElementKindInput) => boolean,
+  eventHandlerAllowed?: (element: XmlElementNode) => boolean,
 ): string | undefined {
   if (!isSupportedElementNamespace(element.dom)) {
     return 'XML-раздел содержит элемент из неподдерживаемого пространства имён и доступен только для чтения.';
@@ -69,14 +71,14 @@ function visit(
       return 'XML-раздел содержит атрибут из неподдерживаемого пространства имён и доступен только для чтения.';
     }
   }
-  if (kind === 'formXml' && isFormEventElement(element)) {
+  if (kind === 'formXml' && isFormEventElement(element) && !eventHandlerAllowed?.(element)) {
     return 'Обработчик события зависит от BSL-модуля формы; без проверки модуля перенос этого раздела доступен только для чтения.';
   }
   if (element.children.length > 0 && !knownComplexElement?.({ element, parent, depth })) {
     return 'Структура XML не подтверждена: содержит неподдерживаемый вложенный раздел и доступна только для чтения.';
   }
   for (const child of element.children) {
-    const reason = visit(child, element, depth + 1, kind, knownComplexElement);
+    const reason = visit(child, element, depth + 1, kind, knownComplexElement, eventHandlerAllowed);
     if (reason) {
       return reason;
     }

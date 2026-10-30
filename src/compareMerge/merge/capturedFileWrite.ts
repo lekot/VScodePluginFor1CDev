@@ -95,6 +95,7 @@ export function validateMergeFileWitnesses(
   }
 
   const failures: string[] = [];
+  const capturedByPath = new Map<string, MergeFileWitness>();
   for (const value of witnesses) {
     if (!isRecord(value)) {
       failures.push('Captured file-write witness is malformed.');
@@ -118,6 +119,14 @@ export function validateMergeFileWitnesses(
     }
     if (witness.expectedHash !== MISSING_TARGET_HASH && !isSha256(witness.expectedHash)) {
       failures.push('Captured file-write witness hash is malformed.');
+    }
+    const normalizedPath = path.normalize(witness.relativePath).replace(/\\/g, '/');
+    const key = `${witness.sourceId}\0${process.platform === 'win32' ? normalizedPath.toLocaleLowerCase() : normalizedPath}`;
+    const previous = capturedByPath.get(key);
+    if (previous && (previous.expectedHash !== witness.expectedHash || (previous.kind ?? 'file') !== (witness.kind ?? 'file'))) {
+      failures.push('Captured witnesses contain contradictory hashes or kinds for the same source path.');
+    } else if (!previous) {
+      capturedByPath.set(key, witness);
     }
   }
   return failures;
@@ -204,7 +213,19 @@ export async function verifyCapturedFileWriteWitnesses(
   const targetAssertions = new Map<string, MergeWitnessAssertion>();
 
   for (const operation of operations) {
-    let witnesses: readonly MergeFileWitness[] | undefined;
+    const witnesses: MergeFileWitness[] = [];
+    if (operation.sourceWitnesses !== undefined) {
+      const failuresForOperation = validateMergeFileWitnesses(operation.sourceWitnesses, sourceIds);
+      if (failuresForOperation.length > 0) {
+        failures.push({
+          operation,
+          code: 'MERGE_SOURCE_WITNESS_INVALID',
+          message: failuresForOperation[0]!,
+        });
+        continue;
+      }
+      witnesses.push(...operation.sourceWitnesses);
+    }
     if (operation.kind === 'fileWrite') {
       const payloadFailures = validateCapturedFileWritePayload(operation.fileWrite, sourceIds);
       if (payloadFailures.length > 0) {
@@ -215,7 +236,7 @@ export async function verifyCapturedFileWriteWitnesses(
         });
         continue;
       }
-      witnesses = operation.fileWrite!.witnesses;
+      witnesses.push(...operation.fileWrite!.witnesses);
     } else if (isXmlOperation(operation.kind) && operation.xmlPatch?.sourceWitnesses) {
       const witnessFailures = validateMergeFileWitnesses(operation.xmlPatch.sourceWitnesses, sourceIds);
       if (witnessFailures.length > 0) {
@@ -226,13 +247,25 @@ export async function verifyCapturedFileWriteWitnesses(
         });
         continue;
       }
-      witnesses = operation.xmlPatch.sourceWitnesses;
+      witnesses.push(...operation.xmlPatch.sourceWitnesses);
     }
-    if (!witnesses) {
+    if (witnesses.length === 0) {
       continue;
     }
 
+    const combinedFailures = validateMergeFileWitnesses(witnesses, sourceIds);
+    if (combinedFailures.length > 0) {
+      failures.push({ operation, code: 'MERGE_SOURCE_WITNESS_INVALID', message: combinedFailures[0]! });
+      continue;
+    }
+
+    const uniqueWitnesses = new Map<string, MergeFileWitness>();
     for (const witness of witnesses) {
+      const normalizedPath = path.normalize(witness.relativePath).replace(/\\/g, '/');
+      const key = `${witness.sourceId}\0${process.platform === 'win32' ? normalizedPath.toLocaleLowerCase() : normalizedPath}`;
+      uniqueWitnesses.set(key, witness);
+    }
+    for (const witness of uniqueWitnesses.values()) {
       const checked = await checkWitness(session, witness);
       if ('failure' in checked) {
         failures.push({ operation, ...checked.failure });
@@ -262,7 +295,7 @@ export async function verifyCapturedFileWriteWitnesses(
 }
 
 function isXmlOperation(kind: MergeOperation['kind']): boolean {
-  return kind === 'xmlNodeReplace' || kind === 'xmlNodeInsert' || kind === 'xmlNodeDelete';
+  return kind === 'xmlNodeReplace' || kind === 'xmlNodeInsert' || kind === 'xmlNodeDelete' || kind === 'xmlNodeMove';
 }
 
 export async function resolveCapturedFileWriteOperation(

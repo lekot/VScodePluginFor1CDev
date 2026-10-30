@@ -1,6 +1,7 @@
 import type { CompareSession } from '../domain/compareSession';
 import type { CompareMessage } from '../domain/compareContracts';
 import { validateMergeFileWitnesses } from './capturedFileWrite';
+import { isXmlOrderScope } from '../xml/xmlPatchOrderScope';
 import {
   compareMessage,
   MISSING_TARGET_HASH,
@@ -28,6 +29,17 @@ export function validateXmlPatchCandidate(
       nodeId: candidate.nodeId, path: candidate.targetUri, suggestedAction: 'XML merge operation kind must match patch payload kind.',
     }));
   }
+  if (patch.orderScope !== undefined && (!isXmlOrderScope(patch.orderScope) ||
+      (patch.kind !== 'moveNode' && patch.kind !== 'insertNode') ||
+      (patch.orderScope.kind === 'metadataChildObjects' && patch.semanticKind !== 'metadataXml') ||
+      (patch.orderScope.kind === 'formSection' && patch.semanticKind !== 'formXml') ||
+      (patch.kind === 'insertNode' && patch.insertBefore === undefined && patch.insertPosition !== 'append'))) {
+    diagnostics.push(compareMessage({
+      severity: 'error', code: 'MERGE_XML_ORDER_SCOPE_INVALID', sourceId: candidate.sourceId,
+      nodeId: candidate.nodeId, path: candidate.targetUri,
+      suggestedAction: 'Область порядка XML задана некорректно или не поддерживается для этой операции.',
+    }));
+  }
   if (candidate.targetUri && patch.target.filePath && patch.target.filePath !== candidate.targetUri) {
     diagnostics.push(compareMessage({
       severity: 'error', code: 'MERGE_XML_PATCH_TARGET_MISMATCH', sourceId: candidate.sourceId,
@@ -46,7 +58,7 @@ export function validateXmlPatchCandidate(
       nodeId: candidate.nodeId, path: candidate.targetUri, suggestedAction: 'XML patch new hash must match operation new hash.',
     }));
   }
-  if (patch.kind !== 'deleteNode' && !patch.replacementXml) {
+  if (patch.kind !== 'deleteNode' && patch.kind !== 'moveNode' && !patch.replacementXml) {
     diagnostics.push(compareMessage({
       severity: 'error', code: 'MERGE_XML_PATCH_REPLACEMENT_MISSING', sourceId: candidate.sourceId,
       nodeId: candidate.nodeId, path: candidate.targetUri, suggestedAction: 'XML insert/replace operation must include replacement XML.',
@@ -54,18 +66,69 @@ export function validateXmlPatchCandidate(
   }
 
   if ((patch.insertBefore && patch.insertPosition)
-      || (patch.insertBefore && patch.kind !== 'insertNode')
-      || (patch.insertPosition && patch.kind !== 'insertNode')) {
+      || (patch.insertBefore && patch.kind !== 'insertNode' && patch.kind !== 'moveNode')
+      || (patch.insertPosition && patch.kind !== 'insertNode' && patch.kind !== 'moveNode')) {
     diagnostics.push(compareMessage({
       severity: 'error', code: 'MERGE_XML_INSERT_POSITION_INVALID', sourceId: candidate.sourceId,
       nodeId: candidate.nodeId, path: candidate.targetUri, suggestedAction: 'Позиция вставки XML задана некорректно. Обновите сравнение.',
     }));
   }
   if (patch.insertOrder !== undefined &&
-      (!Number.isSafeInteger(patch.insertOrder) || patch.insertOrder < 0 || patch.kind !== 'insertNode')) {
+      (!Number.isSafeInteger(patch.insertOrder) || patch.insertOrder < 0 ||
+        (patch.kind !== 'insertNode' && patch.kind !== 'moveNode'))) {
     diagnostics.push(compareMessage({
       severity: 'error', code: 'MERGE_XML_INSERT_ORDER_INVALID', sourceId: candidate.sourceId,
       nodeId: candidate.nodeId, path: candidate.targetUri, suggestedAction: 'Порядок вставки XML задан некорректно. Обновите сравнение.',
+    }));
+  }
+
+  if (patch.kind === 'moveNode') {
+    const allowedMoveKind = patch.semanticKind === 'formXml' ||
+      (patch.semanticKind === 'metadataXml' && patch.createDestinationChildItems === undefined &&
+        patch.createDestinationChildObjects === undefined && patch.createDestinationEvents === undefined);
+    if (!patch.destinationParent || patch.replacementXml !== undefined ||
+        ((patch.insertBefore === undefined) === (patch.insertPosition === undefined)) ||
+        (patch.insertPosition !== undefined && patch.insertPosition !== 'append') ||
+        !allowedMoveKind || patch.createDestinationChildObjects !== undefined ||
+        patch.createDestinationEvents !== undefined) {
+      diagnostics.push(compareMessage({
+        severity: 'error', code: 'MERGE_XML_MOVE_PAYLOAD_INVALID', sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId, path: candidate.targetUri,
+        suggestedAction: 'Перенос XML должен содержать целевой элемент, контейнер назначения и одну допустимую позицию.',
+      }));
+    }
+  } else if (patch.createDestinationChildItems !== undefined ||
+      (patch.destinationParent && patch.createDestinationChildObjects !== true && patch.createDestinationEvents !== true)) {
+    diagnostics.push(compareMessage({
+      severity: 'error', code: 'MERGE_XML_MOVE_PAYLOAD_INVALID', sourceId: candidate.sourceId,
+      nodeId: candidate.nodeId, path: candidate.targetUri,
+      suggestedAction: 'Адрес контейнера назначения допустим только для переноса или разрешённой регистрации метаданных.',
+    }));
+  }
+
+  if (patch.createDestinationChildObjects !== undefined &&
+      (patch.createDestinationChildObjects !== true || patch.kind !== 'insertNode' ||
+        !patch.destinationParent || patch.semanticKind !== 'metadataXml' ||
+        patch.insertBefore !== undefined || patch.insertPosition !== 'append' ||
+        patch.insertOrder === undefined || patch.createDestinationChildItems !== undefined ||
+        patch.createDestinationEvents !== undefined)) {
+    diagnostics.push(compareMessage({
+      severity: 'error', code: 'MERGE_XML_CHILD_OBJECTS_SYNTHESIS_INVALID', sourceId: candidate.sourceId,
+      nodeId: candidate.nodeId, path: candidate.targetUri,
+      suggestedAction: 'Создание контейнера ChildObjects допустимо только для адресной вставки регистрации метаданных.',
+    }));
+  }
+
+  if (patch.createDestinationEvents !== undefined &&
+      (patch.createDestinationEvents !== true || patch.kind !== 'insertNode' ||
+        !patch.destinationParent || patch.semanticKind !== 'formXml' ||
+        patch.insertBefore !== undefined || patch.insertPosition !== 'append' ||
+        patch.insertOrder === undefined || patch.createDestinationChildItems !== undefined ||
+        patch.createDestinationChildObjects !== undefined)) {
+    diagnostics.push(compareMessage({
+      severity: 'error', code: 'MERGE_XML_EVENTS_SYNTHESIS_INVALID', sourceId: candidate.sourceId,
+      nodeId: candidate.nodeId, path: candidate.targetUri,
+      suggestedAction: 'Создание Events допустимо только для адресной вставки отдельного события формы.',
     }));
   }
 
@@ -105,9 +168,11 @@ function xmlKindForOperation(kind: MergeCandidate['kind']): XmlPatchPayload['kin
   if (kind === 'xmlNodeReplace') {return 'replaceNode';}
   if (kind === 'xmlNodeInsert') {return 'insertNode';}
   if (kind === 'xmlNodeDelete') {return 'deleteNode';}
+  if (kind === 'xmlNodeMove') {return 'moveNode';}
   return undefined;
 }
 
 function isSemanticXmlKind(value: unknown): value is NonNullable<XmlPatchPayload['semanticKind']> {
-  return value === 'metadataXml' || value === 'formXml' || value === 'predefinedXml';
+  return value === 'metadataXml' || value === 'formXml' || value === 'predefinedXml' ||
+    value === 'roleRightsXml' || value === 'dcsXml';
 }

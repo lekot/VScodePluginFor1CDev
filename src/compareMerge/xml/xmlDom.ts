@@ -167,6 +167,10 @@ export function buildXmlAddress(filePath: string, element: XmlElement): XmlAddre
 }
 
 export function getXmlElementIdentityKey(element: XmlElement): string | undefined {
+  const structuredIdentity = structuredDesignerXmlIdentity(element);
+  if (structuredIdentity) {
+    return structuredIdentity;
+  }
   const uuid = findAttributeByLocalName(element, 'uuid');
   if (uuid && element.parent?.localName === 'MetaDataObject') {
     const properties = elementChildren(element).find((child) => child.localName === 'Properties');
@@ -226,6 +230,135 @@ export function getXmlElementIdentityKey(element: XmlElement): string | undefine
   }
 
   return undefined;
+}
+
+function structuredDesignerXmlIdentity(element: XmlElement): string | undefined {
+  const namespace = elementNamespace(element);
+  const parent = element.parent;
+  const name = element.localName;
+  const rightsNamespace = 'http://v8.1c.ru/8.2/roles';
+  const dcsNamespace = 'http://v8.1c.ru/8.1/data-composition-system/schema';
+
+  if (namespace === rightsNamespace && parent && elementNamespace(parent) === rightsNamespace) {
+    const directName = directTextInNamespace(element, 'name', rightsNamespace);
+    if (name === 'object' && parent.localName === 'Rights' && directName) {
+      return `rights-object=${normalizeXmlIdentityValue(directName)}`;
+    }
+    if (name === 'right' && parent.localName === 'object' && directName) {
+      return `rights-right=${normalizeXmlIdentityValue(directName)}`;
+    }
+    if (name === 'restrictionTemplate' && parent.localName === 'Rights' && directName) {
+      return `rights-restrictiontemplate=${normalizeXmlIdentityValue(directName)}`;
+    }
+  }
+
+  if (namespace !== dcsNamespace || !parent || elementNamespace(parent) !== dcsNamespace) {
+    return undefined;
+  }
+  const parentName = parent.localName;
+  const dcsName = directTextInNamespace(element, 'name', dcsNamespace);
+  if (parentName === 'DataCompositionSchema' && dcsName) {
+    const rootKeys: Record<string, string> = {
+      dataSource: 'dcs-datasource',
+      dataSet: 'dcs-dataset',
+      parameter: 'dcs-parameter',
+      template: 'dcs-template',
+    };
+    const key = rootKeys[name];
+    if (key) {
+      return `${key}=${normalizeXmlIdentityValue(dcsName)}`;
+    }
+  }
+  if (name === 'settingsVariant' && parentName === 'DataCompositionSchema') {
+    const settingsName = directTextInNamespace(element, 'name', 'http://v8.1c.ru/8.1/data-composition-system/settings');
+    if (settingsName) {
+      return `dcs-settings-variant=${normalizeXmlIdentityValue(settingsName)}`;
+    }
+  }
+  const parentDataSetType = structuredDcsDataSetType(parent);
+  if (name === 'item' && (parentName === 'dataSet' || parentName === 'item') && parentDataSetType === 'DataSetUnion') {
+    if (dcsName) {
+      return `dcs-union-item=${normalizeXmlIdentityValue(dcsName)}`;
+    }
+  }
+  const parentContainer = parent.parent;
+  const isRootDataSet = parentName === 'dataSet' && parentContainer?.localName === 'DataCompositionSchema' &&
+    elementNamespace(parentContainer) === dcsNamespace;
+  const isTypedUnionMember = parentName === 'item' && Boolean(parentDataSetType);
+  if (name === 'field' && (isRootDataSet || isTypedUnionMember)) {
+    const dataPath = directTextInNamespace(element, 'dataPath', dcsNamespace);
+    if (dataPath) {
+      return `dcs-field=${normalizeXmlIdentityValue(dataPath)}`;
+    }
+  }
+  if (name === 'dataSetLink' && parentName === 'DataCompositionSchema') {
+    const tuple = ['sourceDataSet', 'destinationDataSet', 'sourceExpression', 'destinationExpression', 'parameter']
+      .map((member) => directTextInNamespace(element, member, dcsNamespace)?.trim().normalize('NFC') ?? '');
+    if (tuple.slice(0, 4).every(Boolean)) {
+      return `dcs-link=${JSON.stringify(tuple)}`;
+    }
+  }
+  if ((name === 'calculatedField' || name === 'totalField') && parentName === 'DataCompositionSchema') {
+    const dataPath = directTextInNamespace(element, 'dataPath', dcsNamespace);
+    if (!dataPath) {
+      return undefined;
+    }
+    const normalizedPath = normalizeXmlIdentityValue(dataPath);
+    if (name === 'calculatedField') {
+      return `dcs-calculated-field=${normalizedPath}`;
+    }
+    const groups = elementChildren(element)
+      .filter((child) => child.localName === 'group' && elementNamespace(child) === dcsNamespace)
+      .map((child) => normalizeXmlIdentityValue(textContent(child)))
+      .sort();
+    return `dcs-total-field=${JSON.stringify([normalizedPath, groups])}`;
+  }
+  if ((name === 'groupTemplate' || name === 'groupHeaderTemplate') && parentName === 'DataCompositionSchema') {
+    const memberNames = name === 'groupTemplate'
+      ? ['groupField', 'templateType', 'template']
+      : ['groupName', 'templateType', 'template'];
+    const tuple = memberNames.map((member) => directTextInNamespace(element, member, dcsNamespace)?.trim().normalize('NFC') ?? '');
+    if (tuple.every(Boolean)) {
+      return `dcs-${name}=${JSON.stringify(tuple)}`;
+    }
+  }
+  return undefined;
+}
+
+function structuredDcsDataSetType(element: XmlElement): string | undefined {
+  const schemaNamespace = 'http://v8.1c.ru/8.1/data-composition-system/schema';
+  const xsiNamespace = 'http://www.w3.org/2001/XMLSchema-instance';
+  const attributes = element.attributes.filter((attribute) => {
+    if (attribute.localName !== 'type') {return false;}
+    const separator = attribute.name.indexOf(':');
+    const namespace = separator < 0 ? '' : lookupNamespace(element, attribute.name.slice(0, separator));
+    return namespace === xsiNamespace;
+  });
+  if (attributes.length !== 1) {return undefined;}
+  const qName = attributes[0]!.value.trim();
+  const parts = qName.split(':');
+  if (parts.length > 2 || parts.some((part) => !/^[\p{L}_][\p{L}\p{N}_.-]*$/u.test(part))) {return undefined;}
+  const prefix = parts.length === 2 ? parts[0]! : '';
+  const localPart = parts[parts.length - 1]!;
+  return lookupNamespace(element, prefix) === schemaNamespace &&
+    ['DataSetQuery', 'DataSetObject', 'DataSetUnion'].includes(localPart)
+    ? localPart
+    : undefined;
+}
+
+function elementNamespace(element: XmlElement): string | undefined {
+  const separator = element.name.indexOf(':');
+  return lookupNamespace(element, separator < 0 ? '' : element.name.slice(0, separator));
+}
+
+function directTextInNamespace(element: XmlElement, localName: string, namespace: string): string | undefined {
+  const child = elementChildren(element).find((candidate) => candidate.localName === localName && elementNamespace(candidate) === namespace);
+  const value = child ? textContent(child).trim() : '';
+  return value || undefined;
+}
+
+function normalizeXmlIdentityValue(value: string): string {
+  return value.trim().normalize('NFC').toLocaleLowerCase('en-US');
 }
 
 export function elementChildren(element: XmlElement): XmlElement[] {

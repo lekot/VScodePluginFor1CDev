@@ -1,5 +1,6 @@
 import type { XmlElement } from '../../xml/xmlDom';
-import { attributeByLocalName, hasCfeMetadataMarker, semanticXmlIdentityKey } from './semanticXmlIdentity';
+import { FORM_VISUAL_ELEMENT_SET } from '../../xml/formXmlElementPolicy';
+import { attributeByLocalName, hasCfeMetadataMarker, namespaceUriForName, semanticXmlIdentityKey } from './semanticXmlIdentity';
 import { DESCRIPTOR_OBJECT_NAMES } from './semanticXmlPolicy';
 import type { SemanticXmlKind } from './semanticXmlValidator';
 
@@ -28,6 +29,44 @@ export function isProtectedLeaf(
   if (kind === 'metadataXml' && name === 'Name' && localName(parent.name) === 'Properties') {
     const object = parent.parent;
     return Boolean(object && (attributeByLocalName(object.dom, 'uuid') || DESCRIPTOR_OBJECT_NAMES.has(localName(object.name))));
+  }
+  if (isStructuredIdentityLeaf(element, parent, kind)) {
+    return true;
+  }
+  return false;
+}
+
+function isStructuredIdentityLeaf(element: SemanticIdentityNode, parent: SemanticIdentityNode, kind: SemanticXmlKind): boolean {
+  const name = localName(element.name);
+  const parentName = localName(parent.name);
+  if (kind === 'roleRightsXml') {
+    const namespace = 'http://v8.1c.ru/8.2/roles';
+    return namespaceUriForName(element.dom) === namespace && namespaceUriForName(parent.dom) === namespace &&
+      name === 'name' && ['object', 'right', 'restrictionTemplate'].includes(parentName);
+  }
+  if (kind !== 'dcsXml') {return false;}
+  const schema = 'http://v8.1c.ru/8.1/data-composition-system/schema';
+  const settings = 'http://v8.1c.ru/8.1/data-composition-system/settings';
+  if (name === 'name' && ['dataSource', 'dataSet', 'item', 'parameter', 'template'].includes(parentName)) {
+    return namespaceUriForName(element.dom) === schema && namespaceUriForName(parent.dom) === schema;
+  }
+  if (name === 'name' && parentName === 'settingsVariant') {
+    return namespaceUriForName(element.dom) === settings && namespaceUriForName(parent.dom) === schema;
+  }
+  if (name === 'dataPath' && ['field', 'calculatedField', 'totalField'].includes(parentName)) {
+    return namespaceUriForName(element.dom) === schema && namespaceUriForName(parent.dom) === schema;
+  }
+  if (parentName === 'dataSetLink' && ['sourceDataSet', 'destinationDataSet', 'sourceExpression', 'destinationExpression', 'parameter'].includes(name)) {
+    return namespaceUriForName(element.dom) === schema && namespaceUriForName(parent.dom) === schema;
+  }
+  if (parentName === 'groupTemplate' && ['groupField', 'templateType', 'template'].includes(name)) {
+    return namespaceUriForName(element.dom) === schema && namespaceUriForName(parent.dom) === schema;
+  }
+  if (parentName === 'groupHeaderTemplate' && ['groupName', 'templateType', 'template'].includes(name)) {
+    return namespaceUriForName(element.dom) === schema && namespaceUriForName(parent.dom) === schema;
+  }
+  if (parentName === 'totalField' && name === 'group') {
+    return namespaceUriForName(element.dom) === schema && namespaceUriForName(parent.dom) === schema;
   }
   return false;
 }
@@ -140,7 +179,7 @@ function isVisualFormItem(element: SemanticIdentityNode): boolean {
   const name = localName(element.name);
   return Boolean(attributeByLocalName(element.dom, 'id') && (
     attributeByLocalName(element.dom, 'name') ||
-    ['Item', 'InputField', 'Table', 'UsualGroup', 'Button', 'LabelField', 'Decoration', 'CheckBoxField', 'RadioButtonField'].includes(name)
+    FORM_VISUAL_ELEMENT_SET.has(name)
   ));
 }
 
