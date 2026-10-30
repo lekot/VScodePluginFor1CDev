@@ -10,6 +10,7 @@ import {
   prepareExtensionAdoptedSemanticRow,
 } from '../../../src/compareMerge/extensions/extensionAdoptedSemanticHost';
 import { indexExtensionMetadataRoot, type ExtensionIndexedObject, type ExtensionMetadataIndex } from '../../../src/compareMerge/extensions/extensionMetadataIndex';
+import { copiedOwnChildUuidProof } from '../../../src/compareMerge/extensions/adoptedDesignerUuidContext';
 import { analyzeExtensionTransfers, type ExtensionTransferRow } from '../../../src/compareMerge/extensions/extensionTransfer';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 import { elementChildren, parseXmlDocument, textContent, type XmlElement } from '../../../src/compareMerge/xml/xmlDom';
@@ -38,6 +39,7 @@ const SECOND_OWNER_UUID = 'acacacac-acac-4cac-8cac-acacacacacac';
 const NESTED_FORM_LOCAL_UUID = 'adadadad-adad-4dad-8dad-adadadadadad';
 const TABULAR_SECTION_UUID = 'aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeae';
 const NEW_SOURCE_CHILD_UUID = 'afafafaf-afaf-4faf-8faf-afafafafafaf';
+const TARGET_TABULAR_SECTION_LOCAL_UUID = 'bdbdbdbd-bdbd-4dbd-8dbd-bdbdbdbdbdbd';
 
 suite('Extension adopted compare-global UUID ownership (#335)', () => {
   test('does not preview CFE-to-CF child promotion when another target owner already has its UUID', async () => {
@@ -248,6 +250,135 @@ suite('Extension adopted compare-global UUID ownership (#335)', () => {
     assert.match(output, new RegExp(`<Attribute uuid="${UNIQUE_PROMOTION_UUID}"[\\s\\S]*?<Name>Promoted</Name>`, 'u'));
   }));
 
+  test('rechecks a new borrowed Attribute shell UUID when a property selection is executed', async () => withPublicCompare({
+    targetObjects: [
+      adoptedCatalog('Products', TARGET_LOCAL_UUID, TARGET_OWNER_UUID),
+      catalog('Other', TARGET_COLLISION_OWNER_UUID),
+    ],
+    incomingObjects: [catalog('Products', TARGET_OWNER_UUID, [attribute(NEW_SOURCE_CHILD_UUID, 'Inherited', '<Comment>After</Comment>')])],
+    baseObjects: [catalog('Products', TARGET_OWNER_UUID, [attribute(NEW_SOURCE_CHILD_UUID, 'Inherited', '<Comment>Before</Comment>')])],
+    baseSide: 'left',
+    incomingKind: 'cf',
+  }, async (context) => {
+    const comment = findChangedProperty(context.result.projection.root, 'Comment', 'After');
+    assert.ok(comment, `the inherited Attribute Comment remains a selectable property: ${JSON.stringify(collectNodes(context.result.projection.root).map((node) => ({ kind: node.kind, label: node.label, left: node.leftValue, right: node.rightValue, state: node.mergeState })))}`);
+    if (!comment) { return; }
+    await assertIntroducedUuidConflictRejected(context, comment, 'Attribute', 'Inherited');
+  }));
+
+  test('rechecks a new nested Attribute shell UUID when a property selection is executed', async () => {
+    const targetSection = `<TabularSection uuid="${TARGET_TABULAR_SECTION_LOCAL_UUID}"><Properties><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>${TABULAR_SECTION_UUID}</ExtendedConfigurationObject><Name>Lines</Name></Properties><ChildObjects/></TabularSection>`;
+    const sourceSection = `<TabularSection uuid="${TABULAR_SECTION_UUID}"><Properties><Name>Lines</Name></Properties><ChildObjects>${attribute(NEW_SOURCE_CHILD_UUID, 'Nested', '<Comment>After</Comment>')}</ChildObjects></TabularSection>`;
+    const baseSection = `<TabularSection uuid="${TABULAR_SECTION_UUID}"><Properties><Name>Lines</Name></Properties><ChildObjects>${attribute(NEW_SOURCE_CHILD_UUID, 'Nested', '<Comment>Before</Comment>')}</ChildObjects></TabularSection>`;
+    await withPublicCompare({
+      targetObjects: [
+        adoptedCatalog('Products', TARGET_LOCAL_UUID, TARGET_OWNER_UUID, [targetSection]),
+        catalog('Other', TARGET_COLLISION_OWNER_UUID),
+      ],
+      incomingObjects: [catalog('Products', TARGET_OWNER_UUID, [sourceSection])],
+      baseObjects: [catalog('Products', TARGET_OWNER_UUID, [baseSection])],
+      baseSide: 'left',
+      incomingKind: 'cf',
+    }, async (context) => {
+      const comment = findChangedProperty(context.result.projection.root, 'Comment', 'After');
+      assert.ok(comment, `the nested inherited Attribute Comment remains a selectable property: ${JSON.stringify(collectNodes(context.result.projection.root).map((node) => ({ kind: node.kind, label: node.label, left: node.leftValue, right: node.rightValue, state: node.mergeState })))}`);
+      if (!comment) { return; }
+      await assertIntroducedUuidConflictRejected(context, comment, 'Attribute', 'Nested');
+    });
+  });
+
+  test('keeps source proof for a new own CF child absent from the captured base', async () => withPublicCompare({
+    targetObjects: [adoptedCatalog('Products', TARGET_LOCAL_UUID, TARGET_OWNER_UUID)],
+    incomingObjects: [catalog('Products', TARGET_OWNER_UUID, [attribute(UNIQUE_PROMOTION_UUID, 'Added')])],
+    baseObjects: [catalog('Products', TARGET_OWNER_UUID)],
+    baseSide: 'left',
+    incomingKind: 'cf',
+  }, async ({ result, targetPath }) => {
+    const child = findNode(result.projection.root, 'Catalog.Products', 'Added');
+    assert.ok(child, 'the new source-own child remains an executable semantic choice');
+    if (!child) { return; }
+    const preview = await result.workspace.createPreviewForNodeIds([child.id]);
+    assert.strictEqual(preview.ok, true, `a captured source definition with target negative proof remains selectable: ${JSON.stringify(preview)}`);
+    if (!preview.ok) { return; }
+    assert.strictEqual(result.workspace.approvePreview(preview.preview.previewId).ok, true);
+    const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId, { destructiveConfirmed: true });
+    assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+    const output = await fs.readFile(path.join(targetPath, 'Catalogs', 'Products.xml'), 'utf8');
+    assert.match(output, new RegExp(`<Attribute uuid="${UNIQUE_PROMOTION_UUID}"[\\s\\S]*?<Name>Added</Name>`, 'u'));
+  }));
+
+  test('proves a new own child under an adopted CFE source root by its exact base anchor', async () => withPublicCompare({
+    targetObjects: [adoptedCatalog('Products', TARGET_LOCAL_UUID, TARGET_OWNER_UUID)],
+    incomingObjects: [adoptedCatalog('Products', 'bcbcbcbc-bcbc-4cbc-8cbc-bcbcbcbcbcbc', TARGET_OWNER_UUID, [attribute(NEW_SOURCE_CHILD_UUID, 'Added')])],
+    baseObjects: [catalog('Products', TARGET_OWNER_UUID)],
+  }, async ({ targetPath, sourcePath, basePath }) => {
+    const [targetRoot, sourceRoot, sourceXml, baseXml, targetXml] = await Promise.all([
+      indexExtensionMetadataRoot({ rootPath: targetPath, sourceId: 'target-cfe', side: 'left' }),
+      indexExtensionMetadataRoot({ rootPath: sourcePath, sourceId: 'source-cfe', side: 'right' }),
+      fs.readFile(path.join(sourcePath, 'Catalogs', 'Products.xml')),
+      fs.readFile(path.join(basePath, 'Catalogs', 'Products.xml')),
+      fs.readFile(path.join(targetPath, 'Catalogs', 'Products.xml')),
+    ]);
+    const snapshot = await createExtensionAdoptedUuidSnapshot({ targetRoot, incomingRoot: sourceRoot });
+    const proof = copiedOwnChildUuidProof(snapshot, sourceXml, baseXml, targetXml, TARGET_OWNER_UUID, 'Catalogs/Products.xml');
+    assert.deepStrictEqual(proof.issues, [], `the source CFE root is valid through its exact CF base anchor: ${JSON.stringify(proof.issues)}`);
+    const witnesses = proof.witnesses.get(NEW_SOURCE_CHILD_UUID);
+    assert.ok(witnesses, 'the copied own child receives candidate-scoped witnesses when target lacks its UUID');
+    assert.ok(witnesses?.some((witness) => witness.sourceId === 'target-cfe' && witness.relativePath === 'Configuration.xml'));
+    assert.ok(witnesses?.some((witness) => witness.sourceId === 'source-cfe' && witness.relativePath === 'Configuration.xml'));
+  }));
+
+  test('matches an existing target own child through different adopted ancestor local UUIDs', async () => {
+    const targetSection = `<TabularSection uuid="${TARGET_TABULAR_SECTION_LOCAL_UUID}"><Properties><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>${TABULAR_SECTION_UUID}</ExtendedConfigurationObject><Name>Lines</Name></Properties><ChildObjects>${attribute(NEW_SOURCE_CHILD_UUID, 'Nested')}</ChildObjects></TabularSection>`;
+    const sourceSection = '<TabularSection uuid="cfcfcfcf-cfcf-4fcf-8fcf-cfcfcfcfcfcf"><Properties><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>'
+      + `${TABULAR_SECTION_UUID}</ExtendedConfigurationObject><Name>Lines</Name></Properties><ChildObjects>${attribute(NEW_SOURCE_CHILD_UUID, 'Nested')}</ChildObjects></TabularSection>`;
+    const baseSection = `<TabularSection uuid="${TABULAR_SECTION_UUID}"><Properties><Name>Lines</Name></Properties><ChildObjects/></TabularSection>`;
+    await withPublicCompare({
+      targetObjects: [adoptedCatalog('Products', TARGET_LOCAL_UUID, TARGET_OWNER_UUID, [targetSection])],
+      incomingObjects: [adoptedCatalog('Products', 'bcbcbcbc-bcbc-4cbc-8cbc-bcbcbcbcbcbc', TARGET_OWNER_UUID, [sourceSection])],
+      baseObjects: [catalog('Products', TARGET_OWNER_UUID, [baseSection])],
+    }, async ({ targetPath, sourcePath, basePath }) => {
+      const [targetRoot, sourceRoot, sourceXml, baseXml, targetXml] = await Promise.all([
+        indexExtensionMetadataRoot({ rootPath: targetPath, sourceId: 'target-cfe', side: 'left' }),
+        indexExtensionMetadataRoot({ rootPath: sourcePath, sourceId: 'source-cfe', side: 'right' }),
+        fs.readFile(path.join(sourcePath, 'Catalogs', 'Products.xml')),
+        fs.readFile(path.join(basePath, 'Catalogs', 'Products.xml')),
+        fs.readFile(path.join(targetPath, 'Catalogs', 'Products.xml')),
+      ]);
+      const snapshot = await createExtensionAdoptedUuidSnapshot({ targetRoot, incomingRoot: sourceRoot });
+      const proof = copiedOwnChildUuidProof(snapshot, sourceXml, baseXml, targetXml, TARGET_OWNER_UUID, 'Catalogs/Products.xml');
+      assert.deepStrictEqual(proof.issues, [], `the same child under the same base-anchored ancestor is already physical in target: ${JSON.stringify(proof.issues)}`);
+      assert.strictEqual(proof.witnesses.has(NEW_SOURCE_CHILD_UUID), false, 'an existing physical definition does not require an introduction proof');
+    });
+  });
+
+  test('does not attach global UUID witnesses to an update of an existing borrowed shell', async () => withPublicCompare({
+    targetObjects: [
+      adoptedCatalog('Products', TARGET_LOCAL_UUID, TARGET_OWNER_UUID, [
+        adoptedAttribute(NESTED_FORM_LOCAL_UUID, NEW_SOURCE_CHILD_UUID, 'Inherited', '<Comment>Before</Comment>'),
+      ]),
+      catalog('Other', TARGET_COLLISION_OWNER_UUID),
+    ],
+    incomingObjects: [catalog('Products', TARGET_OWNER_UUID, [attribute(NEW_SOURCE_CHILD_UUID, 'Inherited', '<Comment>After</Comment>')])],
+    baseObjects: [catalog('Products', TARGET_OWNER_UUID, [attribute(NEW_SOURCE_CHILD_UUID, 'Inherited', '<Comment>Before</Comment>')])],
+    baseSide: 'left',
+    incomingKind: 'cf',
+  }, async ({ result, targetPath }) => {
+    const comment = findChangedProperty(result.projection.root, 'Comment', 'After');
+    assert.ok(comment);
+    if (!comment) { return; }
+    const preview = await result.workspace.createPreviewForNodeIds([comment.id]);
+    assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+    if (!preview.ok) { return; }
+    assert.strictEqual(result.workspace.approvePreview(preview.preview.previewId).ok, true);
+    await fs.appendFile(path.join(targetPath, 'Catalogs', 'Other.xml'), '\n');
+    const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId, { destructiveConfirmed: true });
+    assert.strictEqual(execution.ok, true, `an existing shell update does not lease unrelated UUID registry files: ${JSON.stringify(execution)}`);
+    const output = await fs.readFile(path.join(targetPath, 'Catalogs', 'Products.xml'));
+    assert.strictEqual(metadataUuidByName(output, 'Attribute', 'Inherited').toLowerCase(), NESTED_FORM_LOCAL_UUID.toLowerCase());
+    assert.match(output.toString('utf8'), />After<\/Comment>/u);
+  }));
+
   test('rechecks other-owner UUID proof under lease when a unique child beneath right-only ChildObjects is selected', async () => withPublicCompare({
     targetObjects: [catalogWithoutChildObjects('Products', TARGET_OWNER_UUID), catalog('Other', TARGET_COLLISION_OWNER_UUID, [attribute(COLLISION_UUID, 'ExistingElsewhere')])],
     incomingObjects: [adoptedCatalog('Products', TARGET_LOCAL_UUID, TARGET_OWNER_UUID, [attribute(UNIQUE_PROMOTION_UUID, 'Promoted')])],
@@ -373,9 +504,29 @@ suite('Extension adopted compare-global UUID ownership (#335)', () => {
       && node.label === 'Synonym' && node.rightValue === 'After');
     assert.ok(synonym);
     if (!synonym) { return; }
-    await fs.appendFile(path.join(targetPath, 'Catalogs', 'Other.xml'), '\n');
     const preview = await result.workspace.createPreviewForNodeIds([synonym.id]);
     assert.strictEqual(preview.ok, true, `unrelated owner drift must not add a global registry lease to a scalar: ${JSON.stringify(preview)}`);
+    if (!preview.ok) { return; }
+    assert.strictEqual(result.workspace.approvePreview(preview.preview.previewId).ok, true);
+    await fs.appendFile(path.join(targetPath, 'Catalogs', 'Other.xml'), '\n');
+    const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId, { destructiveConfirmed: true });
+    assert.strictEqual(execution.ok, true, `an unrelated scalar update must not lease the global UUID registry: ${JSON.stringify(execution)}`);
+    const output = await fs.readFile(path.join(targetPath, 'Catalogs', 'Products.xml'), 'utf8');
+    assert.match(output, /After<\/Synonym>/u);
+  }));
+
+  test('keeps an unrelated scalar update selectable when an untouched opaque child has a non-UUID attribute', async () => withPublicCompare({
+    targetObjects: [catalog('Products', TARGET_OWNER_UUID, [
+      '<UnknownMetadata uuid="opaque-id"><Properties><Name>Opaque</Name></Properties></UnknownMetadata>',
+    ], '<Synonym>Before</Synonym>')],
+    incomingObjects: [adoptedCatalog('Products', TARGET_LOCAL_UUID, TARGET_OWNER_UUID, [], '<Synonym>After</Synonym>')],
+  }, async ({ result }) => {
+    const synonym = collectNodes(result.projection.root).find((node) => node.kind === 'xmlProperty'
+      && node.label === 'Synonym' && node.rightValue === 'After');
+    assert.ok(synonym, 'the independent scalar remains visible beside opaque target content');
+    if (!synonym) { return; }
+    const preview = await result.workspace.createPreviewForNodeIds([synonym.id]);
+    assert.strictEqual(preview.ok, true, `unchanged opaque child content is not a newly introduced UUID definition: ${JSON.stringify(preview)}`);
   }));
 
   test('updates an existing target own child when the proven base lacks it and the adopted source uses the same UUID', async () => withPublicCompare({
@@ -612,6 +763,8 @@ async function withPublicCompare(
     readonly targetObjects: readonly ExtensionCompareObjectFixture[];
     readonly incomingObjects: readonly ExtensionCompareObjectFixture[];
     readonly baseObjects?: readonly ExtensionCompareObjectFixture[];
+    readonly baseSide?: 'left' | 'right';
+    readonly incomingKind?: 'cf' | 'cfe';
     readonly targetFiles?: readonly { readonly relativePath: string; readonly content: string | Buffer }[];
   },
   run: (context: PublicCompareContext) => Promise<void>,
@@ -620,10 +773,15 @@ async function withPublicCompare(
   const targetPath = path.join(tempRoot, 'target-cf');
   const sourcePath = path.join(tempRoot, 'incoming-cfe');
   const basePath = input.baseObjects ? path.join(tempRoot, 'captured-base-cf') : targetPath;
-  await writeDesignerConfiguration(targetPath, { name: 'UUID matrix configuration', objects: input.targetObjects.map(mdClasses) });
+  const targetIsCfe = input.targetObjects.some((object) => object.belonging === 'Adopted');
+  await writeDesignerConfiguration(targetPath, {
+    name: 'UUID matrix configuration',
+    ...(targetIsCfe ? { purpose: 'Customization' as const } : {}),
+    objects: input.targetObjects.map(mdClasses),
+  });
   await writeDesignerConfiguration(sourcePath, {
     name: 'UUID matrix configuration',
-    purpose: 'Customization',
+    ...(input.incomingKind === 'cf' ? {} : { purpose: 'Customization' as const }),
     objects: input.incomingObjects.map(mdClasses),
   });
   if (input.baseObjects) {
@@ -643,7 +801,7 @@ async function withPublicCompare(
       leftRootPath: targetPath,
       rightRootPath: sourcePath,
       backupRootPath: path.join(tempRoot, 'backups'),
-      extensionBaseRoots: { right: basePath },
+      extensionBaseRoots: input.baseSide === 'left' ? { left: basePath } : { right: basePath },
       mutationEngine: runtime.engine,
       configurationId: runtime.configurationId,
     });
@@ -656,6 +814,85 @@ async function withPublicCompare(
     await runtime.coordinator.dispose();
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
+}
+
+async function assertIntroducedUuidConflictRejected(
+  context: PublicCompareContext,
+  selectedNode: CompareTreeNode,
+  metadataType: string,
+  metadataName: string,
+): Promise<void> {
+  const productPath = path.join(context.targetPath, 'Catalogs', 'Products.xml');
+  const otherPath = path.join(context.targetPath, 'Catalogs', 'Other.xml');
+  const targetConfigurationBefore = await fs.readFile(path.join(context.targetPath, 'Configuration.xml'));
+  const productBefore = await fs.readFile(productPath);
+  const sourceBefore = await fs.readFile(path.join(context.sourcePath, 'Catalogs', 'Products.xml'));
+  const baseBefore = await fs.readFile(path.join(context.basePath, 'Catalogs', 'Products.xml'));
+
+  const preview = await context.result.workspace.createPreviewForNodeIds([selectedNode.id]);
+  assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+  if (!preview.ok) { return; }
+  const materializedDescriptor = readPreviewFileWrite(context.result, preview.preview.previewId);
+  const introducedUuid = metadataUuidByName(materializedDescriptor, metadataType, metadataName);
+  assert.notStrictEqual(introducedUuid.toLowerCase(), NEW_SOURCE_CHILD_UUID.toLowerCase(), 'the target shell keeps its allocated local UUID');
+  assert.strictEqual(context.result.workspace.approvePreview(preview.preview.previewId).ok, true);
+
+  const otherBeforeDrift = await fs.readFile(otherPath, 'utf8');
+  const otherWithCollision = otherBeforeDrift.replace(
+    '</Catalog>',
+    `<ChildObjects>${attribute(introducedUuid, 'IntroducedElsewhere')}</ChildObjects></Catalog>`,
+  );
+  assert.notStrictEqual(otherWithCollision, otherBeforeDrift, 'the registered second owner accepts the test collision');
+  await fs.writeFile(otherPath, otherWithCollision, 'utf8');
+
+  const execution = await context.result.workspace.executeApprovedPreview(preview.preview.previewId, { destructiveConfirmed: true });
+
+  assert.strictEqual(execution.ok, false, `a UUID introduced by physical materialization must be rechecked under the lease: ${JSON.stringify(execution)}`);
+  assert.deepStrictEqual(await fs.readFile(productPath), productBefore, 'a rejected execution does not write the selected descriptor');
+  assert.deepStrictEqual(await fs.readFile(otherPath), Buffer.from(otherWithCollision, 'utf8'), 'execution leaves the concurrent other-owner collision intact');
+  assert.deepStrictEqual(await fs.readFile(path.join(context.targetPath, 'Configuration.xml')), targetConfigurationBefore, 'execution does not rewrite Configuration.xml');
+  assert.deepStrictEqual(await fs.readFile(path.join(context.sourcePath, 'Catalogs', 'Products.xml')), sourceBefore, 'execution does not write the source descriptor');
+  assert.deepStrictEqual(await fs.readFile(path.join(context.basePath, 'Catalogs', 'Products.xml')), baseBefore, 'execution does not write the captured base descriptor');
+}
+
+function readPreviewFileWrite(
+  result: PublicCompareResult,
+  previewId: string,
+): Buffer {
+  const workspace = result.workspace as unknown as {
+    readonly previewRecords?: ReadonlyMap<string, {
+      readonly preview?: {
+        readonly operations?: readonly { readonly fileWrite?: { readonly contentBase64?: string } }[];
+      };
+    }>;
+  };
+  const payload = workspace.previewRecords?.get(previewId)?.preview?.operations
+    ?.find((operation) => typeof operation.fileWrite?.contentBase64 === 'string')?.fileWrite;
+  assert.ok(payload?.contentBase64, 'the public preview materializes a captured physical descriptor write');
+  return Buffer.from(payload?.contentBase64 ?? '', 'base64');
+}
+
+function metadataUuidByName(xml: Buffer, metadataType: string, metadataName: string): string {
+  const definitions = collectXmlElements(parseXmlDocument(xml.toString('utf8')).root).filter((element) => {
+    if (element.localName !== metadataType) { return false; }
+    const properties = elementChildren(element).filter((child) => child.localName === 'Properties');
+    if (properties.length !== 1) { return false; }
+    const names = elementChildren(properties[0]!).filter((child) => child.localName === 'Name');
+    return names.length === 1 && textContent(names[0]!).trim() === metadataName;
+  });
+  assert.strictEqual(definitions.length, 1, `materialized output contains one ${metadataType} ${metadataName}`);
+  const uuid = definitions[0]?.attributes.find((attribute) => attribute.localName === 'uuid')?.value;
+  assert.ok(uuid, `materialized ${metadataType} ${metadataName} has a physical UUID`);
+  return uuid ?? '';
+}
+
+function collectXmlElements(root: XmlElement): XmlElement[] {
+  return [root, ...elementChildren(root).flatMap(collectXmlElements)];
+}
+
+function findChangedProperty(root: CompareTreeNode, label: string, rightValue: string): CompareTreeNode | undefined {
+  return collectNodes(root).find((node) => node.kind === 'xmlProperty'
+    && node.label === label && node.rightValue === rightValue);
 }
 
 async function withPromotionDependency(
@@ -707,7 +944,7 @@ function attribute(uuid: string, name: string, extraProperties = ''): string {
 }
 
 function adoptedAttribute(uuid: string, anchorUuid: string, name: string, extraProperties = ''): string {
-  return `<Attribute uuid="${uuid}"><Properties><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>${anchorUuid}</ExtendedConfigurationObject><Name>${name}</Name>${extraProperties}</Properties></Attribute>`;
+  return `<Attribute uuid="${uuid}"><InternalInfo/><Properties><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>${anchorUuid}</ExtendedConfigurationObject><Name>${name}</Name>${extraProperties}</Properties></Attribute>`;
 }
 
 function dimension(uuid: string, name: string): string {

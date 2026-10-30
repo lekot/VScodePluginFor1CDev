@@ -18,9 +18,11 @@ import type { ExtensionAdoptedProjectionIssue } from './adoptedDesignerCandidate
 import {
   allocateExtensionAdoptedChildUuids,
   allocatedChildUuidProof,
+  copiedOwnChildUuidProof,
   promotedChildUuidProof,
   type ExtensionAdoptedUuidSnapshot,
 } from './adoptedDesignerUuidContext';
+import { introducedAdoptedDescriptorUuidDefinitions } from './adoptedDesignerPhysicalUuidDefinitions';
 import {
   collectExtensionAdoptedChildUuidRequirements,
   materializeExtensionAdoptedArtifact,
@@ -150,7 +152,17 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
         blockers.push({ kind: 'metadataXml', targetRelativePath: input.row.target!.descriptorRelativePath!, sourceRelativePath: input.row.incoming!.descriptorRelativePath, reason: allocation.reason });
       } else {
         const projected = projectExtensionAdoptedDescriptor({ ...descriptorInput, adoptedChildUuidByAnchor: allocation.map });
-        const uuidProof = allocatedChildUuidProof(input.uuidSnapshot, requirements.requirements, allocation.map);
+        const uuidProof = combineUuidProofs(
+          allocatedChildUuidProof(input.uuidSnapshot, requirements.requirements, allocation.map),
+          copiedOwnChildUuidProof(
+            input.uuidSnapshot,
+            sourceCapture.capture.content,
+            baseCapture.capture.content,
+            targetCapture.capture.content,
+            proof.provenOwnerRootUuid,
+            targetCapture.capture.witness.relativePath,
+          ),
+        );
         addDescriptorProjection(projected, input, allocation.map, typeIdReferenceDescriptors, configurationWitnesses.witnesses, artifacts, blockers, uuidProof);
       }
     }
@@ -199,7 +211,14 @@ export function materializeExtensionAdoptedPatchBatch(input: {
   if (artifact.targetHash !== MISSING_TARGET_HASH && hash(materialized.content) === normalizeHash(artifact.targetHash)) {
     return { ok: true, changed: false };
   }
-  const writeWitnesses = physicalWriteWitnesses(artifact, materialized.requiredWitnesses, patches, input.supplementalWitnesses ?? []);
+  const uuidWitnesses = introducedDefinitionUuidWitnesses(artifact, materialized.content);
+  if (!uuidWitnesses.ok) { return uuidWitnesses; }
+  const writeWitnesses = physicalWriteWitnesses(
+    artifact,
+    [...materialized.requiredWitnesses, ...uuidWitnesses.witnesses],
+    patches,
+    input.supplementalWitnesses ?? [],
+  );
   if (!writeWitnesses.ok) { return writeWitnesses; }
   const write: ExtensionSemanticWrite = {
     relativePath: artifact.targetRelativePath,
@@ -859,6 +878,63 @@ function matchingSidecars(owner: ExtensionIndexedObject, relativePath: string): 
 function witnessForObject(root: ExtensionMetadataIndex, object: ExtensionIndexedObject): MergeFileWitness | undefined {
   if (!object.descriptorRelativePath || !object.descriptorHash) { return undefined; }
   return { sourceId: root.sourceId, relativePath: object.descriptorRelativePath, expectedHash: normalizeHash(object.descriptorHash), kind: 'file' };
+}
+
+function combineUuidProofs(
+  left: { readonly issues: readonly ExtensionAdoptedProjectionIssue[]; readonly witnesses: ReadonlyMap<string, readonly MergeFileWitness[]> },
+  right: { readonly issues: readonly ExtensionAdoptedProjectionIssue[]; readonly witnesses: ReadonlyMap<string, readonly MergeFileWitness[]> },
+): { readonly issues: readonly ExtensionAdoptedProjectionIssue[]; readonly witnesses: ReadonlyMap<string, readonly MergeFileWitness[]> } {
+  const witnesses = new Map<string, readonly MergeFileWitness[]>();
+  try {
+    for (const proof of [left, right]) {
+      for (const [uuid, candidateWitnesses] of proof.witnesses) {
+        const key = normalizeUuid(uuid);
+        witnesses.set(key, dedupeWitnesses([...(witnesses.get(key) ?? []), ...candidateWitnesses]));
+      }
+    }
+    return { issues: [...left.issues, ...right.issues], witnesses };
+  } catch (error) {
+    return {
+      issues: [...left.issues, ...right.issues, {
+        side: 'source', identityKey: 'root=ChildObjects',
+        reason: `Proof физически вводимого metadata UUID противоречив: ${errorMessage(error)}`,
+      }],
+      witnesses: new Map(),
+    };
+  }
+}
+
+function introducedDefinitionUuidWitnesses(
+  artifact: ExtensionAdoptedPreparedArtifact,
+  materializedContent: Buffer,
+): { readonly ok: true; readonly witnesses: readonly MergeFileWitness[] } | { readonly ok: false; readonly reason: string } {
+  if (artifact.recipe.kind !== 'adopted-descriptor') { return { ok: true, witnesses: [] }; }
+  const introduced = introducedAdoptedDescriptorUuidDefinitions(artifact.recipe.target.content, materializedContent);
+  if (!introduced.ok) { return introduced; }
+  const targetSourceId = artifact.recipe.target.witness.sourceId;
+  const sourceSourceId = artifact.recipe.source.witness.sourceId;
+  const witnesses: MergeFileWitness[] = [];
+  try {
+    for (const uuid of introduced.uuids) {
+      const candidateWitnesses = artifact.uuidCandidateWitnesses.get(normalizeUuid(uuid));
+      if (!candidateWitnesses?.length) {
+        return { ok: false, reason: `Для физически вводимого metadata UUID ${uuid} отсутствует candidate-scoped target registry proof.` };
+      }
+      const captured = dedupeWitnesses(candidateWitnesses);
+      if (!captured.some((witness) => witness.sourceId === targetSourceId
+        && normalizeRelativePath(witness.relativePath).toLocaleLowerCase('en-US') === 'configuration.xml')) {
+        return { ok: false, reason: `Proof физически вводимого metadata UUID ${uuid} не содержит captured target Configuration.xml.` };
+      }
+      if (captured.some((witness) => (witness.sourceId !== targetSourceId && witness.sourceId !== sourceSourceId)
+        || witness.kind !== 'file' || !/^[\da-f]{64}$/iu.test(normalizeHash(witness.expectedHash)))) {
+        return { ok: false, reason: `Proof физически вводимого metadata UUID ${uuid} содержит отсутствующий или некорректный file witness.` };
+      }
+      witnesses.push(...captured);
+    }
+    return { ok: true, witnesses: dedupeWitnesses(witnesses) };
+  } catch (error) {
+    return { ok: false, reason: `Не удалось проверить candidate-scoped UUID proof: ${errorMessage(error)}` };
+  }
 }
 
 function dedupeWitnesses(witnesses: readonly MergeFileWitness[]): MergeFileWitness[] {
