@@ -11,6 +11,7 @@ import type { CompareTreeNode } from './compareTreeTypes';
 import { blocked, canonicalRelativePath, finalName, normalizeAbsolutePath, normalizePath, stripHash } from './linkedDesignerUtils';
 import type { LinkedDesignerCompareIndex, LinkedDesignerKind, LinkedDesignerPackageRecipe, LinkedDesignerPackageMember, IndexedPackageObject, LinkedDesignerRootConfigurationSnapshot, LinkedOwnerDescriptorSnapshot } from './linkedDesignerTypes';
 import { requiredLinkedDesignerBodyPath } from './linkedDesignerPackageRules';
+import { findInventoryObjectByDescriptor } from './metadataObjectLookup';
 
 const DESIGNER_TYPES = new Map<string, LinkedDesignerKind>([
   ['Form', 'Form'],
@@ -355,7 +356,7 @@ function findIndexedPackageObject(
 }
 
 function findInventoryObject(inventory: ConfigurationInventory, descriptorPath: string): MetadataObjectUnit | undefined {
-  return inventory.objectsByDescriptorPath.get(normalizeAbsolutePath(descriptorPath));
+  return findInventoryObjectByDescriptor(inventory, descriptorPath);
 }
 
 function counterpartIdentity(

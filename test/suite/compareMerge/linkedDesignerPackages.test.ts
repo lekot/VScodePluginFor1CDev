@@ -7,6 +7,9 @@ import { buildConfigurationCompare } from '../../../src/compareMerge/configurati
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 import { elementChildren, parseXmlDocument, textContent } from '../../../src/compareMerge/xml/xmlDom';
 import { buildConfigurationInventory } from '../../../src/compareMerge/inventory/configurationInventory';
+import { indexMetadataFolder } from '../../../src/compareMerge/metadata/metadataIndexer';
+import { matchMetadataIdentities } from '../../../src/compareMerge/metadata/metadataMatcher';
+import { buildLinkedDesignerCompareIndex } from '../../../src/compareMerge/linkedDesignerPackageIndex';
 import { createMergeMutationTestRuntime } from './mergeMutationTestSupport';
 import { writeCompareBytes, writeDesignerConfiguration, type ExtensionCompareObjectFixture } from '../../helpers/extensionCompareFixtures';
 
@@ -80,6 +83,58 @@ suite('Linked Designer packages', () => {
       assert.strictEqual(await fs.readFile(path.join(leftRoot, 'Catalogs', 'Products', 'Forms', 'Legacy.xml'), 'utf8'), '<Legacy/>');
     } finally {
       result?.workspace.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('resolves mixed-case package descriptors using the inventory canonical key on case-sensitive platforms', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'linked-designer-case-sensitive-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    try {
+      await writeFile(path.join(leftRoot, 'Configuration.xml'), configurationWithCatalogAndCommonForm(true));
+      await writeFile(path.join(rightRoot, 'Configuration.xml'), configurationWithCatalogAndCommonForm(false));
+      await writeFile(path.join(leftRoot, 'Catalogs', 'Products.xml'), catalogDescriptor('Products', false));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), catalogDescriptor('Products', true));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products', 'Forms', 'Main.xml'), formDescriptor('Main'));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml'), formXmlWithoutEvent());
+      await writeFile(path.join(leftRoot, 'CommonForms', 'Shared.xml'), commonFormDescriptor('Shared'));
+      await writeFile(path.join(leftRoot, 'CommonForms', 'Shared', 'Ext', 'Form.xml'), formXmlWithoutEvent());
+
+      const leftIdentities = await indexMetadataFolder({ sourceId: 'left-source', side: 'left', folderPath: leftRoot });
+      const rightIdentities = await indexMetadataFolder({ sourceId: 'right-source', side: 'right', folderPath: rightRoot });
+      const metadata = matchMetadataIdentities({ left: leftIdentities, right: rightIdentities });
+      const [leftInventory, rightInventory] = await Promise.all([
+        buildConfigurationInventory(leftRoot, { identities: leftIdentities }),
+        buildConfigurationInventory(rightRoot, { identities: rightIdentities }),
+      ]);
+
+      // configurationInventory intentionally lowercases descriptor map keys on every host.
+      // Simulate the case-preserving lookup branch used on Linux while retaining this host's
+      // filesystem and path implementation, so Windows CI/local runs catch the same mismatch.
+      const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+      assert.ok(originalPlatform?.configurable, 'process.platform must be restorable for this isolated lookup test');
+      Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
+      let linkedIndex: Awaited<ReturnType<typeof buildLinkedDesignerCompareIndex>>;
+      try {
+        linkedIndex = await buildLinkedDesignerCompareIndex({
+          metadata,
+          leftInventory,
+          rightInventory,
+          leftRootPath: leftRoot,
+          rightRootPath: rightRoot,
+          strategy: 'full',
+        });
+      } finally {
+        Object.defineProperty(process, 'platform', originalPlatform);
+      }
+
+      assert.deepStrictEqual(
+        linkedIndex.packages.map((item) => [item.action, item.qualifiedName]).sort(),
+        [['copy', 'Catalog.Products.Form.Main'], ['delete', 'CommonForm.Shared']].sort(),
+        JSON.stringify(linkedIndex.diagnostics),
+      );
+    } finally {
       await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
@@ -922,6 +977,10 @@ async function writeCatalogConfigurationPair(leftRoot: string, rightRoot: string
 
 function configurationWithCatalog(): string {
   return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Configuration uuid="31234567-89ab-cdef-0123-456789abcdef"><Properties><Name>Config</Name></Properties><ChildObjects><Catalog>Products</Catalog></ChildObjects></Configuration></MetaDataObject>`;
+}
+
+function configurationWithCatalogAndCommonForm(includeCommonForm: boolean): string {
+  return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Configuration uuid="31234567-89ab-cdef-0123-456789abcdef"><Properties><Name>Config</Name></Properties><ChildObjects><Catalog>Products</Catalog>${includeCommonForm ? '<CommonForm>Shared</CommonForm>' : ''}</ChildObjects></Configuration></MetaDataObject>`;
 }
 
 function formXml(handler: string): string {
