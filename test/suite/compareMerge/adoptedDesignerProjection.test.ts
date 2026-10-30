@@ -15,6 +15,7 @@ import type { AdoptedDesignerTypeIdReferenceDescriptor } from '../../../src/comp
 
 const BASE_UUID = '11111111-1111-4111-8111-111111111111';
 const CFE_UUID = '22222222-2222-4222-8222-222222222222';
+const SOURCE_CFE_UUID = '99999999-9999-4999-8999-999999999999';
 const CHILD_UUID = '33333333-3333-4333-8333-333333333333';
 const CHILD_LOCAL_UUID = '44444444-4444-4444-8444-444444444444';
 const NEW_CHILD_LOCAL_UUID = '55555555-5555-4555-8555-555555555555';
@@ -23,6 +24,108 @@ const NESTED_CHILD_LOCAL_UUID = '77777777-7777-4777-8777-777777777777';
 const NESTED_OWN_CHILD_UUID = '88888888-8888-4888-8888-888888888888';
 
 suite('Adopted Designer descriptor projection (#335)', () => {
+  test('projects both adopted descriptors independently and materializes into target ownership', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, comment: 'Base comment' });
+    const targetXml = Buffer.from(descriptor({
+      uuid: CFE_UUID,
+      adopted: true,
+      comment: 'Target overlay',
+      extraProperties: '<ExtensionOnly>Target-only change</ExtensionOnly>',
+    }).toString('utf8').replace('name="CatalogRef"', 'name="TargetCatalogRef"'));
+    const sourceXml = Buffer.from(descriptor({
+      uuid: SOURCE_CFE_UUID,
+      adopted: true,
+      comment: 'Source overlay',
+      extraProperties: '<ExtensionOnly>Source-only change</ExtensionOnly>',
+    }).toString('utf8').replace('name="CatalogRef"', 'name="SourceCatalogRef"'));
+    const input = makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml });
+
+    const projection = projectAdoptedDesignerPair(input);
+
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.match(projection.targetXml.toString('utf8'), new RegExp(`<Catalog uuid="${BASE_UUID}"`));
+    assert.match(projection.sourceXml.toString('utf8'), new RegExp(`<Catalog uuid="${BASE_UUID}"`));
+    assert.match(projection.targetXml.toString('utf8'), /<Comment(?:\s[^>]*)?>Target overlay<\/Comment>/u);
+    assert.match(projection.sourceXml.toString('utf8'), /<Comment(?:\s[^>]*)?>Source overlay<\/Comment>/u);
+
+    const mergedLogicalTarget = Buffer.from(projection.targetXml.toString('utf8').replace('Target overlay', 'Selected target value'));
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    const xml = materialized.content.toString('utf8');
+    assert.match(xml, new RegExp(`<Catalog uuid="${CFE_UUID}"`));
+    assert.match(xml, new RegExp(`<ExtendedConfigurationObject>${BASE_UUID}<\/ExtendedConfigurationObject>`));
+    assert.match(xml, /<Comment(?:\s[^>]*)?>Selected target value<\/Comment>/u);
+    assert.match(xml, /<ExtensionOnly(?:\s[^>]*)?>Target-only change<\/ExtensionOnly>/u);
+    assert.doesNotMatch(xml, /Source-only change/u);
+    assert.match(xml, /<xr:GeneratedType name="TargetCatalogRef" uuid="11111111-1111-4111-8111-111111111111"\/>/u);
+  });
+
+  test('rejects adopted-to-adopted inputs unless both sides share the exact base anchor', () => {
+    const input = makeInput({ direction: 'adopted-to-adopted' });
+    const wrongSourceAnchor = projectAdoptedDesignerPair({
+      ...input,
+      sourceIdentity: { ...input.sourceIdentity, sourceUuid: SOURCE_CFE_UUID },
+    });
+    assert.strictEqual(wrongSourceAnchor.ok, false);
+    if (!wrongSourceAnchor.ok) { assert.match(wrongSourceAnchor.reason, /base anchor|anchor/u); }
+
+    const ownSource = projectAdoptedDesignerPair({
+      ...input,
+      sourceXml: descriptor({ uuid: BASE_UUID }),
+      sourceIdentity: { ...input.baseIdentity },
+    });
+    assert.strictEqual(ownSource.ok, false);
+    if (!ownSource.ok) { assert.match(ownSource.reason, /ownership|ObjectBelonging|Направление/u); }
+  });
+
+  test('rejects an unknown runtime direction instead of treating it as adopted-to-adopted', () => {
+    const input = makeInput({ direction: 'adopted-to-adopted' });
+    const direction = 'unknown-direction' as unknown as AdoptedDesignerProjectionInput['direction'];
+
+    const result = projectAdoptedDesignerPair({ ...input, direction });
+
+    assert.strictEqual(result.ok, false);
+    if (!result.ok) { assert.match(result.reason, /направлени/iu); }
+  });
+
+  test('collects and uses target child UUID allocations for adopted-to-adopted materialization', () => {
+    const sourceOverlay = adoptedChild({ comment: 'Selected borrowed child' });
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [baseChild('Base child')] });
+    const input = makeInput({
+      direction: 'adopted-to-adopted',
+      baseXml,
+      targetXml: descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [] }),
+      sourceXml: descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, childObjects: [sourceOverlay] }),
+    });
+    const requirements = collectAdoptedDesignerChildUuidRequirements(input);
+
+    assert.strictEqual(requirements.ok, true, requirements.ok ? undefined : requirements.reason);
+    if (!requirements.ok) { return; }
+    assert.strictEqual(requirements.requirements.length, 1);
+    assert.strictEqual(requirements.requirements[0]?.anchorUuid, CHILD_UUID);
+    const allocations = new Map([[requirements.requirements[0]!.mapKey, NEW_CHILD_LOCAL_UUID]]);
+    const projection = projectAdoptedDesignerPair({ ...input, adoptedChildUuidByAnchor: allocations });
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+
+    const materialized = materializeAdoptedDesignerTarget({
+      ...input,
+      adoptedChildUuidByAnchor: allocations,
+      mergedLogicalTarget: projection.sourceXml,
+    });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    const xml = materialized.content.toString('utf8');
+    assert.match(xml, new RegExp(`<Dimension uuid="${NEW_CHILD_LOCAL_UUID}"`));
+    assert.match(xml, new RegExp(`<ExtendedConfigurationObject>${CHILD_UUID}<\/ExtendedConfigurationObject>`));
+    assert.match(xml, new RegExp(`<Catalog uuid="${CFE_UUID}"`));
+    assert.match(xml, /Selected borrowed child/u);
+  });
+
   test('compares expanded XML names and typed QName values without normalizing arbitrary text', () => {
     const rebound = parseXmlDocument('<root xmlns:p="urn:base"><p:Node p:flag="yes"><p:Type>p:Thing</p:Type><Comment>p:Thing</Comment></p:Node></root>');
     const foreign = parseXmlDocument('<root xmlns:p="urn:base"><p:Node xmlns:p="urn:evil" p:flag="yes"><p:Type>p:Thing</p:Type><Comment>p:Thing</Comment></p:Node></root>');
@@ -816,19 +919,21 @@ interface DescriptorOptions {
   readonly type?: string;
 }
 
-function makeInput(overrides: Partial<AdoptedDesignerProjectionInput> & { readonly direction?: AdoptedDesignerProjectionInput['direction']; readonly targetXml?: Buffer; readonly sourceXml?: Buffer; readonly baseXml?: Buffer } = {}): AdoptedDesignerProjectionInput {
+type TestAdoptedDirection = AdoptedDesignerProjectionInput['direction'] | 'adopted-to-adopted';
+
+function makeInput(overrides: Omit<Partial<AdoptedDesignerProjectionInput>, 'direction'> & { readonly direction?: TestAdoptedDirection } = {}): AdoptedDesignerProjectionInput {
   const direction = overrides.direction ?? 'adopted-to-cf';
   const baseIdentity: AdoptedDesignerIdentity = { ownership: 'own', type: 'Catalog', name: 'Products', uuid: BASE_UUID };
   const targetIdentity: AdoptedDesignerIdentity = direction === 'adopted-to-cf'
     ? baseIdentity
     : { ownership: 'adopted', type: 'Catalog', name: 'Products', uuid: CFE_UUID, sourceUuid: BASE_UUID };
-  const sourceIdentity: AdoptedDesignerIdentity = direction === 'adopted-to-cf'
-    ? { ownership: 'adopted', type: 'Catalog', name: 'Products', uuid: CFE_UUID, sourceUuid: BASE_UUID }
+  const sourceIdentity: AdoptedDesignerIdentity = direction !== 'cf-to-adopted'
+    ? { ownership: 'adopted', type: 'Catalog', name: 'Products', uuid: direction === 'adopted-to-adopted' ? SOURCE_CFE_UUID : CFE_UUID, sourceUuid: BASE_UUID }
     : baseIdentity;
   return {
-    direction,
-    targetXml: overrides.targetXml ?? (direction === 'cf-to-adopted' ? descriptor({ uuid: CFE_UUID, adopted: true }) : descriptor({ uuid: BASE_UUID })),
-    sourceXml: overrides.sourceXml ?? (direction === 'adopted-to-cf' ? descriptor({ uuid: CFE_UUID, adopted: true }) : descriptor({ uuid: BASE_UUID })),
+    direction: direction as AdoptedDesignerProjectionInput['direction'],
+    targetXml: overrides.targetXml ?? (direction !== 'adopted-to-cf' ? descriptor({ uuid: CFE_UUID, adopted: true }) : descriptor({ uuid: BASE_UUID })),
+    sourceXml: overrides.sourceXml ?? (direction !== 'cf-to-adopted' ? descriptor({ uuid: direction === 'adopted-to-adopted' ? SOURCE_CFE_UUID : CFE_UUID, adopted: true }) : descriptor({ uuid: BASE_UUID })),
     baseXml: overrides.baseXml ?? descriptor({ uuid: BASE_UUID }),
     targetIdentity,
     sourceIdentity,

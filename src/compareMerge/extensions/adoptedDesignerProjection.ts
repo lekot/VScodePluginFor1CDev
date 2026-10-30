@@ -70,7 +70,7 @@ export interface AdoptedDesignerIdentity {
   readonly sourceUuid?: string;
 }
 
-export type AdoptedDesignerDirection = 'adopted-to-cf' | 'cf-to-adopted';
+export type AdoptedDesignerDirection = 'adopted-to-cf' | 'cf-to-adopted' | 'adopted-to-adopted';
 
 export interface AdoptedDesignerProjectionIssue {
   readonly side: 'target' | 'source';
@@ -118,35 +118,33 @@ const LINKED_PROPERTIES = new Set(['Module', 'ObjectModule', 'ManagerModule', 'R
 const SUPPORTED_FORMATS = new Set(['2.17', '2.18', '2.19', '2.20', '2.21']);
 const MDCLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
 
-/** Creates logical own descriptors from an own/adopted pair over one exact own base. */
+export function isSupportedAdoptedDesignerDirection(value: unknown): value is AdoptedDesignerDirection {
+  return value === 'adopted-to-cf' || value === 'cf-to-adopted' || value === 'adopted-to-adopted';
+}
+
+/** Creates logical own descriptors from captured CF/CFE artifacts over one exact own base. */
 export function projectAdoptedDesignerPair(input: AdoptedDesignerProjectionInput): AdoptedDesignerProjectionResult {
   try {
     assertProjectionContract(input);
     const target = parseDescriptor(input.targetXml, input.formatVersion, input.targetIdentity);
     const source = parseDescriptor(input.sourceXml, input.formatVersion, input.sourceIdentity);
     const base = parseDescriptor(input.baseXml, input.formatVersion, input.baseIdentity);
-    const adoptedSide = input.direction === 'adopted-to-cf' ? 'source' : 'target';
-    const adoptedDocument = adoptedSide === 'target' ? target : source;
-    const baseDocument = base;
-    const adoptedIdentity = adoptedSide === 'target' ? input.targetIdentity : input.sourceIdentity;
+    const targetIsAdopted = input.direction !== 'adopted-to-cf';
+    const sourceIsAdopted = input.direction !== 'cf-to-adopted';
     const issues: AdoptedDesignerProjectionIssue[] = [];
     const typeIdResolver = createAdoptedDesignerTypeIdResolver(input.formatVersion, input.typeIdReferenceDescriptors);
     collectForeignStructureIssues(target, input.targetIdentity, 'target', issues);
     collectForeignStructureIssues(source, input.sourceIdentity, 'source', issues);
-    const logical = projectAdoptedDocument(adoptedDocument, baseDocument, adoptedIdentity, adoptedSide, input.formatVersion, issues, typeIdResolver);
-    if (adoptedSide === 'target') {
-      return {
-        ok: true,
-        targetXml: Buffer.from(serializeXmlDocument(logical), 'utf8'),
-        sourceXml: Buffer.from(serializeXmlDocument(source), 'utf8'),
-        issues,
-        usedDescriptorWitnesses: typeIdResolver.usedDescriptorWitnesses(),
-      };
-    }
+    const logicalTarget = targetIsAdopted
+      ? projectAdoptedDocument(target, base, input.targetIdentity, 'target', input.formatVersion, issues, typeIdResolver)
+      : target;
+    const logicalSource = sourceIsAdopted
+      ? projectAdoptedDocument(source, base, input.sourceIdentity, 'source', input.formatVersion, issues, typeIdResolver)
+      : source;
     return {
       ok: true,
-      targetXml: Buffer.from(serializeXmlDocument(target), 'utf8'),
-      sourceXml: Buffer.from(serializeXmlDocument(logical), 'utf8'),
+      targetXml: Buffer.from(serializeXmlDocument(logicalTarget), 'utf8'),
+      sourceXml: Buffer.from(serializeXmlDocument(logicalSource), 'utf8'),
       issues,
       usedDescriptorWitnesses: typeIdResolver.usedDescriptorWitnesses(),
     };
@@ -161,7 +159,7 @@ export function collectAdoptedDesignerChildUuidRequirements(
 ): AdoptedDesignerChildUuidRequirementsResult {
   try {
     assertProjectionContract(input);
-    if (input.direction !== 'cf-to-adopted') { return { ok: true, requirements: [] }; }
+    if (input.direction === 'adopted-to-cf') { return { ok: true, requirements: [] }; }
     const target = parseDescriptor(input.targetXml, input.formatVersion, input.targetIdentity);
     const base = parseDescriptor(input.baseXml, input.formatVersion, input.baseIdentity);
     const requirements: AdoptedDesignerChildUuidRequirement[] = [];
@@ -186,7 +184,7 @@ export function materializeAdoptedDesignerTarget(
   const projection = projectAdoptedDesignerPair(input);
   if (!projection.ok) { return projection; }
   try {
-    const targetIsAdopted = input.direction === 'cf-to-adopted';
+    const targetIsAdopted = input.direction !== 'adopted-to-cf';
     const targetIdentity = input.targetIdentity;
     const merged = parseXmlDocument(input.mergedLogicalTarget.toString('utf8'));
     const mergedRoot = metadataRoot(merged, targetIdentity.type);
@@ -245,23 +243,25 @@ export function materializeAdoptedDesignerTarget(
 }
 
 function assertProjectionContract(input: AdoptedDesignerProjectionInput): void {
+  if (!isSupportedAdoptedDesignerDirection(input.direction)) { throw new Error('Направление adopted projection не поддерживается.'); }
   if (!SUPPORTED_FORMATS.has(input.formatVersion)) {
     throw new Error(`Формат Designer ${input.formatVersion} не поддержан adopted projection.`);
   }
   if (input.baseIdentity.ownership !== 'own') {
     throw new Error('Базовая identity должна принадлежать собственному объекту CF.');
   }
-  const adopted = input.direction === 'adopted-to-cf' ? input.sourceIdentity : input.targetIdentity;
-  const own = input.direction === 'adopted-to-cf' ? input.targetIdentity : input.sourceIdentity;
-  if (adopted.ownership !== 'adopted' || own.ownership !== 'own') {
+  const targetAdopted = input.direction !== 'adopted-to-cf';
+  const sourceAdopted = input.direction !== 'cf-to-adopted';
+  if (input.targetIdentity.ownership !== (targetAdopted ? 'adopted' : 'own')
+    || input.sourceIdentity.ownership !== (sourceAdopted ? 'adopted' : 'own')) {
     throw new Error('Направление переноса не совпадает с ownership target/source.');
   }
-  if (!same(adopted.sourceUuid, input.baseIdentity.uuid)
-    || !same(own.uuid, input.baseIdentity.uuid)
-    || !same(adopted.type, input.baseIdentity.type)
-    || !same(own.type, input.baseIdentity.type)
-    || !same(adopted.name, input.baseIdentity.name)
-    || !same(own.name, input.baseIdentity.name)) {
+  const identities = [input.targetIdentity, input.sourceIdentity];
+  if (identities.some((identity) => !same(identity.type, input.baseIdentity.type) || !same(identity.name, input.baseIdentity.name))
+    || (targetAdopted && !same(input.targetIdentity.sourceUuid, input.baseIdentity.uuid))
+    || (sourceAdopted && !same(input.sourceIdentity.sourceUuid, input.baseIdentity.uuid))
+    || (!targetAdopted && !same(input.targetIdentity.uuid, input.baseIdentity.uuid))
+    || (!sourceAdopted && !same(input.sourceIdentity.uuid, input.baseIdentity.uuid))) {
     throw new Error('Identity target/source не совпадают с точным собственным base anchor.');
   }
 }
