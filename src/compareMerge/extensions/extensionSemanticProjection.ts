@@ -8,11 +8,42 @@ import type { AdapterCompareInput, ArtifactUnit, ConfigurationInventory, Executa
 import { metadataXmlAdapter } from '../adapters/xmlMetadataAdapter';
 import { formXmlAdapter } from '../adapters/formXmlAdapter';
 import { predefinedXmlAdapter } from '../adapters/predefinedXmlAdapter';
+import { roleRightsXmlAdapter } from '../adapters/roleRightsXmlAdapter';
+import { dcsXmlAdapter } from '../adapters/dcsXmlAdapter';
 import { captureMergePath } from '../merge/mergeSnapshot';
 import { replaceRootUuid } from './extensionXmlOverlay';
 import type { ExtensionIndexedObject, ExtensionMetadataIndex } from './extensionMetadataIndex';
 import type { ExtensionSemanticSelection, ExtensionTransferRow } from './extensionTransfer';
 import { projectExtensionRootPurpose } from './extensionRootPurpose';
+import { indexExtensionLinkedDesignerPackages, linkedPackageForRegistrationNode, type ExtensionLinkedDesignerPackage } from './extensionLinkedDesignerPackages';
+import { collectExtensionEventDependencies, projectExtensionFormEventHandlers, type ExtensionLinkedRoutineSelection } from './extensionLinkedDesignerBsl';
+import { bindExtensionLinkedTemplateTransition, captureExtensionLinkedTemplateTransitions } from './extensionLinkedTemplateTransitions';
+import {
+  createExtensionAdoptedUuidSnapshot,
+  prepareExtensionAdoptedSemanticRow,
+  type ExtensionAdoptedPreparedArtifact,
+} from './extensionAdoptedSemanticHost';
+import { adoptedTemplateTypeGuardReason, createAdoptedTemplateTypeGuard, type AdoptedTemplateTypeGuard } from './extensionAdoptedTemplateTypeGuard';
+import type { LinkedEventDependency, LinkedFormModuleSnapshot } from '../linkedDesignerTypes';
+import { LINKED_FORM_REFERENCE_PROPERTIES } from '../linkedDesignerUtils';
+import { parseXmlDocument, textContent } from '../xml/xmlDom';
+import { buildExtensionSemanticReferenceContext } from './extensionSemanticContext';
+import {
+  adoptedCandidateUuid,
+  mapAdoptedIssuesToNodes,
+  withRegistryCandidateWitnesses,
+  type AdoptedIssueNodeMap,
+} from './adoptedDesignerCandidatePolicy';
+import {
+  adoptedRoleRightsBlockers,
+  adoptedRoleRightsNode,
+  hasAdoptedRoleIdentity,
+  normalizeArtifactPath,
+  ownerRelativePath,
+  pairedXmlSidecars,
+} from './extensionSemanticSidecars';
+
+export { pairedXmlSidecars };
 
 export interface ExtensionSemanticProjectionInput {
   readonly target: ExtensionMetadataIndex;
@@ -32,11 +63,17 @@ export interface ExtensionSemanticProjection {
   readonly selections: ReadonlyMap<string, ExtensionSemanticSelection>;
   readonly rootPurposeSelection?: import('./extensionTransfer').ExtensionRootPurposeSelection;
   readonly diagnostics: readonly CompareMessage[];
+  readonly linkedDesignerPackages: ReadonlyMap<string, ExtensionLinkedDesignerPackage>;
+  readonly linkedRoutineSelections: ReadonlyMap<string, ExtensionLinkedRoutineSelection>;
+  readonly linkedFormModules: readonly LinkedFormModuleSnapshot[];
+  readonly linkedEventDependencies: ReadonlyMap<string, LinkedEventDependency>;
 }
 
 const XML_FILES = [
   { kind: 'formXml' as const, fileName: 'form.xml', adapter: formXmlAdapter, label: 'Форма' },
   { kind: 'predefinedXml' as const, fileName: 'predefined.xml', adapter: predefinedXmlAdapter, label: 'Предопределённые данные' },
+  { kind: 'roleRightsXml' as const, fileName: 'rights.xml', adapter: roleRightsXmlAdapter, label: 'Права роли' },
+  { kind: 'dcsXml' as const, fileName: 'template.xml', adapter: dcsXmlAdapter, label: 'Схема компоновки данных' },
 ];
 
 export async function projectExtensionSemanticNodes(
@@ -48,6 +85,11 @@ export async function projectExtensionSemanticNodes(
   const diagnostics: CompareMessage[] = [];
   const nodes: CompareTreeNode[] = [];
   const mergeableNodeIds: string[] = [];
+  const linkedDesignerPackages = new Map<string, ExtensionLinkedDesignerPackage>();
+  const linkedRoutineSelections = new Map<string, ExtensionLinkedRoutineSelection>();
+  const linkedFormModules: LinkedFormModuleSnapshot[] = [];
+  const linkedEventDependencies = new Map<string, LinkedEventDependency>();
+  const adoptedUuidSnapshot = await createExtensionAdoptedUuidSnapshot({ targetRoot: input.target, incomingRoot: input.incoming });
 
   for (const row of input.rows) {
     throwIfCompareCancelled(input.cancellation);
@@ -55,42 +97,117 @@ export async function projectExtensionSemanticNodes(
       nodes.push(rowNode(row, []));
       continue;
     }
-    const allowed = semanticSelectionReason(row) === undefined;
-    const readonlyReason = semanticSelectionReason(row);
+    const adoptedPreparation = await prepareExtensionAdoptedSemanticRow({
+      row,
+      targetRoot: input.target,
+      incomingRoot: input.incoming,
+      uuidSnapshot: adoptedUuidSnapshot,
+    });
+    const hasAdoptedProjection = adoptedPreparation.applicable;
+    const linkedTemplateTransitions = hasAdoptedProjection
+      ? []
+      : await captureExtensionLinkedTemplateTransitions({ row, targetRoot: input.target, incomingRoot: input.incoming });
+    const ordinaryReadonlyReason = hasAdoptedProjection ? undefined : semanticSelectionReason(row);
+    const adoptedReadonlyReason = hasAdoptedProjection && !row.semanticAction && (!row.mergeable || row.reason)
+      ? row.reason ?? 'Объект недоступен для семантического переноса.'
+      : undefined;
+    const allowed = hasAdoptedProjection
+      ? adoptedReadonlyReason === undefined
+      : ordinaryReadonlyReason === undefined;
+    const readonlyReason = hasAdoptedProjection ? adoptedReadonlyReason : ordinaryReadonlyReason;
     const childNodes: CompareTreeNode[] = [];
-    const descriptors = await compareArtifact({
+    const linkedIndex = await indexExtensionLinkedDesignerPackages({ row, target: input.target, incoming: input.incoming });
+    diagnostics.push(...linkedIndex.diagnostics);
+    for (const recipe of linkedIndex.packages) {linkedDesignerPackages.set(recipe.packageId, recipe);}
+    const adoptedDescriptor = hasAdoptedProjection
+      ? adoptedPreparation.artifacts.find((artifact) => artifact.kind === 'metadataXml')
+      : undefined;
+    let descriptors = await compareArtifact({
       input,
       targetInventory,
       incomingInventory,
       targetObject: row.target,
       incomingObject: row.incoming,
       kind: 'metadataXml',
-      targetRelativePath: row.target.descriptorRelativePath,
-      sourceRelativePath: row.incoming.descriptorRelativePath,
-      targetHash: row.target.descriptorHash,
-      sourceHash: row.incoming.descriptorHash,
+      targetRelativePath: adoptedDescriptor?.targetRelativePath ?? row.target.descriptorRelativePath,
+      sourceRelativePath: adoptedDescriptor?.sourceRelativePath ?? row.incoming.descriptorRelativePath,
+      targetHash: adoptedDescriptor?.targetHash ?? row.target.descriptorHash,
+      sourceHash: adoptedDescriptor?.sourceHash ?? row.incoming.descriptorHash,
       adapter: metadataXmlAdapter,
       label: 'Дескриптор',
       row,
       allowed,
       readonlyReason,
+      linkedDesignerContext: linkedIndex.capabilities,
+      linkedPackages: linkedIndex.packages,
+      ...(adoptedDescriptor ? { adoptedArtifact: adoptedDescriptor } : {}),
       selections,
       diagnostics,
     });
+    for (const candidate of linkedTemplateTransitions.filter((item) =>
+      normalizeArtifactPath(item.targetDescriptorRelativePath) === normalizeArtifactPath(row.target!.descriptorRelativePath!),
+    )) {
+      if (descriptors) {
+        descriptors = {
+          ...descriptors,
+          children: bindExtensionLinkedTemplateTransition({
+            nodes: descriptors.children,
+            selections,
+            candidate,
+            targetRootPath: input.target.canonicalRootPath ?? input.target.rootPath,
+          }),
+        };
+      } else {
+        childNodes.push(templateTransitionBlockerNode(candidate));
+      }
+    }
     throwIfCompareCancelled(input.cancellation);
     if (descriptors) {childNodes.push(descriptors);}
 
     const paired = pairedXmlSidecars(row.target, row.incoming);
-    for (const duplicatePath of paired.duplicatePaths) {
+    const adoptedRoleRights = hasAdoptedRoleIdentity(row)
+      ? adoptedRoleRightsBlockers(row)
+      : [];
+    childNodes.push(...adoptedRoleRights.map((blocker) => adoptedRoleRightsNode(row, blocker)));
+    for (const duplicatePath of hasAdoptedProjection ? [] : paired.duplicatePaths) {
       diagnostics.push({
         severity: 'error', code: 'EXTENSION_SEMANTIC_PATH_AMBIGUOUS', phase: 'compare',
         sourceId: row.incoming.sourceId, path: duplicatePath, nodeId: row.id, blocking: true,
         suggestedAction: 'Несколько XML sidecar-файлов имеют один и тот же нормализованный относительный путь; семантическое сопоставление этого пути пропущено.',
       });
     }
-    for (const pair of paired.pairs) {
+    for (const pair of paired.pairs.filter((candidate) => !(hasAdoptedProjection && candidate.kind === 'formXml')
+      && !(adoptedRoleRights.length > 0 && candidate.kind === 'roleRightsXml'))) {
       throwIfCompareCancelled(input.cancellation);
       const definition = XML_FILES.find((candidate) => candidate.kind === pair.kind)!;
+      const [targetFormXml, sourceFormXml] = pair.kind === 'formXml'
+        ? await Promise.all([
+          capturedSidecar(input.target, pair.target),
+          capturedSidecar(input.incoming, pair.source),
+        ])
+        : [undefined, undefined];
+      if (pair.kind === 'formXml' && (!targetFormXml || !sourceFormXml)) {
+        diagnostics.push(semanticReadDiagnostic(row, pair.relativePath));
+      }
+      const eventProjection = pair.kind === 'formXml' && targetFormXml && sourceFormXml
+        ? await projectExtensionFormEventHandlers({
+          row,
+          targetRoot: input.target,
+          incomingRoot: input.incoming,
+          targetOwner: row.target,
+          incomingOwner: row.incoming,
+          targetFormPath: pair.target.relativePath,
+          sourceFormPath: pair.source.relativePath,
+          targetFormXml,
+          sourceFormXml,
+          rightSnapshotId: input.rightSnapshotId,
+        })
+        : undefined;
+      if (eventProjection) {
+        diagnostics.push(...eventProjection.diagnostics);
+        eventProjection.routineSelections.forEach((selection, id) => linkedRoutineSelections.set(id, selection));
+        if (eventProjection.module) {linkedFormModules.push(eventProjection.module);}
+      }
       const node = await compareArtifact({
         input,
         targetInventory,
@@ -107,11 +224,135 @@ export async function projectExtensionSemanticNodes(
         row,
         allowed,
         readonlyReason,
+        ...(eventProjection ? { linkedDesignerContext: { registrations: [], defaultObjectForms: [], formEventHandlers: eventProjection.context } } : {}),
         selections,
         diagnostics,
       });
       throwIfCompareCancelled(input.cancellation);
       if (node) {childNodes.push(node);}
+      if (node && eventProjection?.module) {
+        collectExtensionEventDependencies({
+          nodes: node.children,
+          capabilities: eventProjection.context,
+          module: eventProjection.module,
+          output: linkedEventDependencies,
+        });
+      }
+      if (eventProjection) {childNodes.push(...eventProjection.routineNodes);}
+    }
+    for (const candidate of linkedTemplateTransitions.filter((item) =>
+      normalizeArtifactPath(item.targetDescriptorRelativePath) !== normalizeArtifactPath(row.target!.descriptorRelativePath!),
+    )) {
+      const sourceRelativePath = candidate.sourceDescriptorRelativePath;
+      const transition = candidate.transition;
+      if (!sourceRelativePath || !transition || !candidate.targetIdentity || !candidate.sourceIdentity) {
+        childNodes.push(templateTransitionBlockerNode(candidate));
+        continue;
+      }
+      let templateNode = await compareArtifact({
+        input,
+        targetInventory,
+        incomingInventory,
+        targetObject: row.target,
+        incomingObject: row.incoming,
+        kind: 'metadataXml',
+        targetRelativePath: candidate.targetDescriptorRelativePath,
+        sourceRelativePath,
+        targetHash: transition.targetDescriptorHash,
+        sourceHash: transition.sourceDescriptorHash,
+        adapter: metadataXmlAdapter,
+        label: `Макет: ${candidate.qualifiedName}`,
+        row,
+        allowed,
+        readonlyReason,
+        matchUnits: {
+          target: templateMetadataUnit(
+            targetInventory.rootPath,
+            candidate.targetDescriptorRelativePath,
+            candidate.qualifiedName,
+            candidate.targetIdentity.type,
+            candidate.targetIdentity.uuid,
+          ),
+          source: templateMetadataUnit(
+            incomingInventory.rootPath,
+            sourceRelativePath,
+            candidate.qualifiedName,
+            candidate.sourceIdentity.type,
+            candidate.sourceIdentity.uuid,
+          ),
+        },
+        selections,
+        diagnostics,
+      });
+      if (templateNode) {
+        templateNode = {
+          ...templateNode,
+          children: bindExtensionLinkedTemplateTransition({
+            nodes: templateNode.children,
+            selections,
+            candidate,
+            targetRootPath: input.target.canonicalRootPath ?? input.target.rootPath,
+          }),
+        };
+        childNodes.push(templateNode);
+      } else {
+        childNodes.push(templateTransitionBlockerNode(candidate));
+      }
+    }
+    if (hasAdoptedProjection) {
+      for (const artifact of adoptedPreparation.artifacts.filter((candidate) => candidate.kind === 'formXml')) {
+        throwIfCompareCancelled(input.cancellation);
+        const eventProjection = await projectExtensionFormEventHandlers({
+          row,
+          targetRoot: input.target,
+          incomingRoot: input.incoming,
+          targetOwner: row.target,
+          incomingOwner: row.incoming,
+          targetFormPath: artifact.targetRelativePath,
+          sourceFormPath: artifact.sourceRelativePath,
+          targetFormXml: artifact.targetXml,
+          sourceFormXml: artifact.sourceXml,
+          rightSnapshotId: input.rightSnapshotId,
+        });
+        diagnostics.push(...eventProjection.diagnostics);
+        eventProjection.routineSelections.forEach((selection, id) => linkedRoutineSelections.set(id, selection));
+        if (eventProjection.module) {linkedFormModules.push(eventProjection.module);}
+        const node = await compareArtifact({
+          input,
+          targetInventory,
+          incomingInventory,
+          targetObject: row.target,
+          incomingObject: row.incoming,
+          kind: 'formXml',
+          targetRelativePath: artifact.targetRelativePath,
+          sourceRelativePath: artifact.sourceRelativePath,
+          targetHash: artifact.targetHash,
+          sourceHash: artifact.sourceHash,
+          adapter: formXmlAdapter,
+          label: `Форма: ${path.posix.dirname(artifact.targetRelativePath)}`,
+          row,
+          allowed,
+          readonlyReason,
+          linkedDesignerContext: { registrations: [], defaultObjectForms: [], formEventHandlers: eventProjection.context },
+          adoptedArtifact: artifact,
+          selections,
+          diagnostics,
+        });
+        throwIfCompareCancelled(input.cancellation);
+        if (node) {childNodes.push(node);}
+        if (node && eventProjection.module) {
+          collectExtensionEventDependencies({
+            nodes: node.children,
+            capabilities: eventProjection.context,
+            module: eventProjection.module,
+            output: linkedEventDependencies,
+          });
+        }
+        childNodes.push(...eventProjection.routineNodes);
+      }
+      for (const blocker of adoptedPreparation.blockers) {
+        childNodes.push(adoptedBlockerNode(row, blocker));
+      }
     }
     nodes.push(rowNode(row, childNodes));
     if (row.mergeable) {mergeableNodeIds.push(row.id);}
@@ -139,7 +380,20 @@ export async function projectExtensionSemanticNodes(
     selections,
     ...(rootPurpose.selection ? { rootPurposeSelection: rootPurpose.selection } : {}),
     diagnostics,
+    linkedDesignerPackages,
+    linkedRoutineSelections,
+    linkedFormModules,
+    linkedEventDependencies,
   };
+}
+
+async function capturedSidecar(
+  root: ExtensionMetadataIndex,
+  file: ExtensionIndexedObject['sidecarFiles'][number],
+): Promise<Buffer | undefined> {
+  if (file.content) {return Buffer.from(file.content);}
+  const captured = await captureXmlArtifact(root.canonicalRootPath ?? root.rootPath, file.relativePath, file.hash);
+  return captured;
 }
 
 async function compareArtifact(input: {
@@ -158,22 +412,40 @@ async function compareArtifact(input: {
   row: ExtensionTransferRow;
   allowed: boolean;
   readonlyReason?: string;
+  matchUnits?: { readonly target: MetadataObjectUnit; readonly source: MetadataObjectUnit };
+  linkedDesignerContext?: NonNullable<AdapterCompareInput['linkedDesignerContext']>;
+  linkedPackages?: readonly ExtensionLinkedDesignerPackage[];
+  adoptedArtifact?: ExtensionAdoptedPreparedArtifact;
   selections: Map<string, ExtensionSemanticSelection>;
   diagnostics: CompareMessage[];
 }): Promise<CompareTreeNode | undefined> {
   const targetRoot = input.input.target.canonicalRootPath ?? input.input.target.rootPath;
   const sourceRoot = input.input.incoming.canonicalRootPath ?? input.input.incoming.rootPath;
-  if (!input.targetHash || !input.sourceHash) {
+  if (!input.adoptedArtifact && (!input.targetHash || !input.sourceHash)) {
     return undefined;
   }
-  if (input.targetHash === input.sourceHash) {return undefined;}
-  const [target, source] = await Promise.all([
-    captureXmlArtifact(targetRoot, input.targetRelativePath, input.targetHash),
-    captureXmlArtifact(sourceRoot, input.sourceRelativePath, input.sourceHash),
-  ]);
+  if (!input.adoptedArtifact && input.targetHash === input.sourceHash) {return undefined;}
+  if (input.adoptedArtifact
+      && (input.targetRelativePath !== input.adoptedArtifact.targetRelativePath
+        || input.sourceRelativePath !== input.adoptedArtifact.sourceRelativePath
+        || input.kind !== input.adoptedArtifact.kind)) {
+    input.diagnostics.push(semanticReadDiagnostic(input.row, input.sourceRelativePath));
+    return undefined;
+  }
+  const [target, source] = input.adoptedArtifact
+    ? [Buffer.from(input.adoptedArtifact.targetXml), Buffer.from(input.adoptedArtifact.sourceXml)]
+    : await Promise.all([
+      captureXmlArtifact(targetRoot, input.targetRelativePath, input.targetHash!),
+      captureXmlArtifact(sourceRoot, input.sourceRelativePath, input.sourceHash!),
+    ]);
   if (!target || !source) {
     input.diagnostics.push(semanticReadDiagnostic(input.row, input.sourceRelativePath));
     return undefined;
+  }
+  if (input.adoptedArtifact && target.equals(source)) {
+    return input.adoptedArtifact.issues.length === 0
+      ? undefined
+      : adoptedIssuesOnlyNode(input.row, input.kind, input.targetRelativePath, input.adoptedArtifact.issues);
   }
   let sourceText = source.toString('utf8');
   const normalizeAdoptedRoot = input.kind === 'metadataXml'
@@ -196,10 +468,15 @@ async function compareArtifact(input: {
     sourceText = rebound.toString('utf8');
   }
 
-  const targetUnit = inventoryObject(input.targetInventory, input.targetObject);
-  const sourceUnit = inventoryObject(input.incomingInventory, input.incomingObject);
+  const targetUnit = input.matchUnits?.target ?? inventoryObject(input.targetInventory, input.targetObject);
+  const sourceUnit = input.matchUnits?.source ?? inventoryObject(input.incomingInventory, input.incomingObject);
   if (!targetUnit || !sourceUnit) {return undefined;}
-  const metadataContext = extensionMetadataReferenceContext(input.row);
+  const metadataContext = await buildExtensionSemanticReferenceContext({
+    row: input.row,
+    kind: input.kind,
+    targetRelativePath: input.targetRelativePath,
+    sourceRelativePath: input.sourceRelativePath,
+  });
   const compareInput: AdapterCompareInput = {
     strategy: 'full',
     leftInventory: input.targetInventory,
@@ -212,15 +489,20 @@ async function compareArtifact(input: {
     },
     semanticValidationContext: metadataContext.validationContext,
     semanticMetadataReferenceWitnesses: metadataContext.referenceWitnesses,
-    semanticContextWitnesses: metadataContext.contextWitnesses,
+    semanticContextWitnesses: input.adoptedArtifact
+      ? [...metadataContext.contextWitnesses, ...input.adoptedArtifact.recipe.requiredWitnesses, ...input.adoptedArtifact.dependencyWitnesses]
+      : metadataContext.contextWitnesses,
+    linkedDesignerContext: input.linkedDesignerContext,
+    ...(input.adoptedArtifact ? { allowMetadataChildOrder: false, allowFormSectionOrder: false } : {}),
     snapshots: { left: target.toString('utf8'), right: sourceText },
   };
   const result = await input.adapter.compare(compareInput);
   input.diagnostics.push(...result.diagnostics);
   if (result.nodes.length === 0) {
     const blocker = result.diagnostics.find((item) => item.blocking);
-    if (!blocker) {return undefined;}
-    const reason = blocker.suggestedAction ?? 'XML-артефакт доступен только для чтения.';
+    const issues = input.adoptedArtifact?.issues ?? [];
+    if (!blocker && issues.length === 0) {return undefined;}
+    const reason = blocker?.suggestedAction ?? issues[0]?.reason ?? 'XML-артефакт доступен только для чтения.';
     return {
       id: `extension:xml:${input.row.id}:${input.kind}:${encodeURIComponent(input.targetRelativePath)}`,
       label: input.label,
@@ -229,15 +511,36 @@ async function compareArtifact(input: {
       mergeable: false,
       conflict: { kind: 'unsupported', message: reason, blocking: true },
       mergeState: { state: 'blocked', reason, targetFilePath: input.targetRelativePath },
-      children: [],
+      children: issues.map((issue) => adoptedProjectionIssueNode(input.row, input.kind, input.targetRelativePath, issue)),
     };
   }
 
+  const adoptedIssueMap = input.adoptedArtifact ? mapAdoptedIssuesToNodes(result.nodes, result.candidateFactories, input.adoptedArtifact.issues) : undefined;
+  const adoptedTemplateTypeRoute = input.kind === 'metadataXml'
+    && (input.adoptedArtifact?.kind === 'metadataXml'
+      || (input.row.action === 'adopted-cfe-copy'
+        && input.row.sameProvenBase === true
+        && input.targetObject.identity?.ownership === 'adopted'
+        && input.incomingObject.identity?.ownership === 'adopted'
+        && input.row.targetRoot.rootKind === 'cfe'
+        && input.row.incomingRoot.rootKind === 'cfe'));
+  const adoptedTemplateTypeGuard = adoptedTemplateTypeRoute
+    ? createAdoptedTemplateTypeGuard(target.toString('utf8'), sourceText)
+    : undefined;
   const contents = result.nodes.map((node) => projectAdapterNode({
     node,
     factoryMap: result.candidateFactories,
     input,
+    linkedPackages: input.linkedPackages ?? [],
+    ...(adoptedTemplateTypeGuard ? { adoptedTemplateTypeGuard } : {}),
+    ...(input.adoptedArtifact ? { adoptedArtifact: input.adoptedArtifact } : {}),
+    ...(adoptedIssueMap ? { adoptedIssueMap } : {}),
   }));
+  if (adoptedIssueMap) {
+    for (const issue of adoptedIssueMap.unmatched) {
+      contents.push(adoptedProjectionIssueNode(input.row, input.kind, input.targetRelativePath, issue));
+    }
+  }
   const status: CompareTreeStatus = contents.some((node) => node.status !== 'equal') ? 'changed' : 'equal';
   return {
     id: `extension:xml:${input.row.id}:${input.kind}:${encodeURIComponent(input.targetRelativePath)}`,
@@ -249,62 +552,34 @@ async function compareArtifact(input: {
   };
 }
 
-function extensionMetadataReferenceContext(row: ExtensionTransferRow): {
-  validationContext: AdapterCompareInput['semanticValidationContext'];
-  referenceWitnesses: NonNullable<AdapterCompareInput['semanticMetadataReferenceWitnesses']>;
-  contextWitnesses: NonNullable<AdapterCompareInput['semanticContextWitnesses']>;
-} {
-  const target = row.targetRoot;
-  const provenBase = row.sameProvenBase === true ? row.targetBase : undefined;
-  const indexes = [target, provenBase].filter((index): index is ExtensionMetadataIndex => Boolean(index));
-  const references = new Map<string, string>();
-  const referenceWitnesses: Array<NonNullable<AdapterCompareInput['semanticMetadataReferenceWitnesses']>[number]> = [];
-  const witnessed = new Set<string>();
-  for (const index of indexes) {
-    for (const object of index.objects) {
-      if (!object.descriptorRelativePath || !object.descriptorHash) {continue;}
-      const key = object.qualifiedName.normalize('NFC').toLowerCase();
-      if (!references.has(key)) {references.set(key, object.qualifiedName);}
-      const witnessKey = `${index.sourceId}\u0000${object.descriptorRelativePath}`;
-      if (witnessed.has(witnessKey)) {continue;}
-      witnessed.add(witnessKey);
-      referenceWitnesses.push({
-        qualifiedName: object.qualifiedName,
-        witness: {
-          sourceId: index.sourceId,
-          relativePath: object.descriptorRelativePath,
-          expectedHash: object.descriptorHash,
-          kind: 'file',
-        },
-      });
-    }
-  }
-  const contextWitnesses = provenBase?.configurationHash
-    ? [{
-      sourceId: provenBase.sourceId,
-      relativePath: 'Configuration.xml',
-      expectedHash: provenBase.configurationHash,
-      kind: 'file' as const,
-    }]
-    : [];
-  return {
-    validationContext: target.hasConfigurationXml && target.configurationHash
-      ? { availableMetadataReferences: [...references.values()] }
-      : undefined,
-    referenceWitnesses,
-    contextWitnesses,
-  };
-}
-
 function projectAdapterNode(input: {
   node: CompareTreeNode;
   factoryMap: ReadonlyMap<string, ExecutableCandidateFactory>;
   input: Parameters<typeof compareArtifact>[0];
+  linkedPackages: readonly ExtensionLinkedDesignerPackage[];
+  adoptedTemplateTypeGuard?: AdoptedTemplateTypeGuard;
+  adoptedArtifact?: ExtensionAdoptedPreparedArtifact;
+  adoptedIssueMap?: AdoptedIssueNodeMap;
 }): CompareTreeNode {
   const node = input.node;
   const factory = input.factoryMap.get(node.id);
-  const enabled = input.input.allowed && Boolean(factory) && node.mergeable === true;
+  const projectionIssues = input.adoptedIssueMap?.byNodeId.get(node.id);
+  const projectionIssueReason = projectionIssues?.map((issue) =>
+    `${issue.identityKey}${issue.propertyName ? `/${issue.propertyName}` : ''}: ${issue.reason}`,
+  ).join(' ');
+  const adoptedTemplateTypeReason = adoptedTemplateTypeGuardReason(node, input.adoptedTemplateTypeGuard);
+  const enabled = input.input.allowed && !projectionIssues?.length && !adoptedTemplateTypeReason && Boolean(factory) && node.mergeable === true;
   if (enabled && factory) {
+    const linkedPackage = linkedPackageForRegistrationNode(node, input.linkedPackages);
+    const dependency = selectionDependency(node, input.input.linkedDesignerContext);
+    const candidateUuid = adoptedCandidateUuid(node);
+    const registryWitnesses = candidateUuid && input.adoptedArtifact
+      ? input.adoptedArtifact.uuidCandidateWitnesses.get(candidateUuid)
+      : undefined;
+    const candidateFactory = withRegistryCandidateWitnesses(
+      withRootConfigurationWitnesses(factory, input.input.input.target, input.input.input.incoming),
+      registryWitnesses ?? [],
+    );
     input.input.selections.set(node.id, {
       nodeId: node.id,
       rowId: input.input.row.id,
@@ -313,7 +588,12 @@ function projectAdapterNode(input: {
       sourceRelativePath: input.input.sourceRelativePath,
       targetHash: input.input.targetHash!,
       sourceHash: input.input.sourceHash!,
-      candidateFactory: withRootConfigurationWitnesses(factory, input.input.input.target, input.input.input.incoming),
+      candidateFactory,
+      ...(linkedPackage ? { linkedPackageId: linkedPackage.packageId } : {}),
+      ...(dependency.requiredPackageId ? { requiredPackageId: dependency.requiredPackageId } : {}),
+      ...(dependency.targetFormComplete !== undefined ? { targetFormComplete: dependency.targetFormComplete } : {}),
+      ...(dependency.witnesses.length ? { dependencyWitnesses: dependency.witnesses } : {}),
+      ...(input.adoptedArtifact ? { adoptedArtifact: input.adoptedArtifact } : {}),
     });
   }
   const children = node.children.map((child) => projectAdapterNode({ ...input, node: child }));
@@ -326,8 +606,97 @@ function projectAdapterNode(input: {
         mergeState: { state: 'blocked' as const, reason: input.input.readonlyReason ?? 'Для этого направления переноса XML-слияние недоступно.' },
       }
       : {}),
+    ...(projectionIssueReason ? {
+      mergeable: false,
+      conflict: { kind: 'unsupported' as const, blocking: true, message: projectionIssueReason },
+      mergeState: { state: 'blocked' as const, reason: projectionIssueReason, targetFilePath: input.input.targetRelativePath },
+    } : {}),
+    ...(adoptedTemplateTypeReason ? {
+      mergeable: false,
+      conflict: { kind: 'unsupported' as const, blocking: true, message: adoptedTemplateTypeReason },
+      mergeState: {
+        state: 'blocked' as const,
+        reason: adoptedTemplateTypeReason,
+        targetFilePath: node.mergeState?.targetFilePath ?? input.input.adoptedArtifact?.targetFilePath ?? input.input.targetRelativePath,
+      },
+    } : {}),
     children,
   };
+}
+
+function adoptedProjectionIssueNode(
+  row: ExtensionTransferRow,
+  kind: ExtensionSemanticSelection['kind'],
+  relativePath: string,
+  issue: ExtensionAdoptedPreparedArtifact['issues'][number],
+): CompareTreeNode {
+  const reason = `${issue.identityKey}${issue.propertyName ? `/${issue.propertyName}` : ''}: ${issue.reason}`;
+  return {
+    id: `extension:adopted-issue:${row.id}:${kind}:${encodeURIComponent(relativePath)}:${encodeURIComponent(issue.identityKey)}:${encodeURIComponent(issue.propertyName ?? '')}`,
+    label: 'Непроецируемый элемент adopted Designer',
+    kind: 'extensionSemanticFile',
+    status: 'changed',
+    mergeable: false,
+    conflict: { kind: 'unsupported', blocking: true, message: reason },
+    mergeState: { state: 'blocked', reason, targetFilePath: relativePath },
+    children: [],
+  };
+}
+
+function adoptedIssuesOnlyNode(
+  row: ExtensionTransferRow,
+  kind: ExtensionSemanticSelection['kind'],
+  relativePath: string,
+  issues: ExtensionAdoptedPreparedArtifact['issues'],
+): CompareTreeNode {
+  const firstReason = issues[0]?.reason ?? 'Элемент adopted Designer не может быть безопасно спроецирован.';
+  return {
+    id: `extension:adopted-issues:${row.id}:${kind}:${encodeURIComponent(relativePath)}`,
+    label: `Непроецируемые изменения: ${relativePath}`,
+    kind: 'extensionSemanticFile',
+    status: 'changed',
+    mergeable: false,
+    conflict: { kind: 'unsupported', blocking: true, message: firstReason },
+    mergeState: { state: 'blocked', reason: firstReason, targetFilePath: relativePath },
+    children: issues.map((issue) => adoptedProjectionIssueNode(row, kind, relativePath, issue)),
+  };
+}
+
+function selectionDependency(
+  node: CompareTreeNode,
+  context: AdapterCompareInput['linkedDesignerContext'],
+): { requiredPackageId?: string; targetFormComplete?: boolean; witnesses: import('../merge/mergePreview').MergeFileWitness[] } {
+  const payload = node.payloadRef ?? '';
+  const decoded = payload.split('/').map((segment) => {
+    try {return decodeURIComponent(segment);} catch {return segment;}
+  });
+  const propertyName = LINKED_FORM_REFERENCE_PROPERTIES.find((name) => decoded.some((part) => part === name || part.startsWith(`${name}[`)));
+  if (propertyName) {
+    const value = node.rightValue?.trim() ?? '';
+    const capability = context?.defaultObjectForms.find((item) => item.propertyName === propertyName && item.value.trim() === value);
+    if (!capability || !value) {return { witnesses: [] };}
+    return {
+      ...(capability.packageId && !capability.targetFormComplete ? { requiredPackageId: capability.packageId } : {}),
+      targetFormComplete: capability.targetFormComplete,
+      witnesses: [...(capability.targetWitnesses ?? [])],
+    };
+  }
+  if (/(?:^|%2F|\/)Event(?:%5B|\[)/iu.test(payload)) {
+    const handler = eventHandlerName(node.rightValue?.trim() ?? '');
+    const capability = handler ? context?.formEventHandlers.find((item) => item.name.trim() === handler) : undefined;
+    return { witnesses: [...(capability?.targetWitnesses ?? [])] };
+  }
+  return { witnesses: [] };
+}
+
+function eventHandlerName(value: string): string | undefined {
+  if (!value) {return undefined;}
+  try {
+    const root = parseXmlDocument(value).root;
+    return root.localName === 'Event' ? textContent(root).trim() || undefined : undefined;
+  } catch {
+    return value.startsWith('<') ? undefined : value;
+  }
 }
 
 function withRootConfigurationWitnesses(
@@ -374,6 +743,20 @@ function rowNode(row: ExtensionTransferRow, children: readonly CompareTreeNode[]
   };
 }
 
+function adoptedBlockerNode(row: ExtensionTransferRow, blocker: import('./extensionAdoptedSemanticHost').ExtensionAdoptedScopedBlocker): CompareTreeNode {
+  const targetFilePath = blocker.targetRelativePath || row.target?.descriptorRelativePath || row.qualifiedName;
+  return {
+    id: `extension:adopted-blocker:${row.id}:${blocker.kind}:${encodeURIComponent(targetFilePath)}:${encodeURIComponent(blocker.reason)}`,
+    label: `Проверка adopted Designer: ${targetFilePath}`,
+    kind: 'extensionSemanticFile',
+    status: 'changed',
+    mergeable: false,
+    conflict: { kind: 'unsupported', message: blocker.reason, blocking: true },
+    mergeState: { state: 'blocked', reason: blocker.reason, targetFilePath },
+    children: [],
+  };
+}
+
 function semanticSelectionReason(row: ExtensionTransferRow): string | undefined {
   const targetIdentity = row.target?.identity;
   const incomingIdentity = row.incoming?.identity;
@@ -400,64 +783,39 @@ function semanticSelectionReason(row: ExtensionTransferRow): string | undefined 
   return row.reason ?? 'Семантическое XML-слияние доступно только для совпавших собственных объектов и adopted-объектов с доказанной общей базой.';
 }
 
-export function pairedXmlSidecars(
-  target: ExtensionIndexedObject,
-  incoming: ExtensionIndexedObject,
-): {
-  pairs: { kind: 'formXml' | 'predefinedXml'; relativePath: string; target: ExtensionIndexedObject['sidecarFiles'][number]; source: ExtensionIndexedObject['sidecarFiles'][number] }[];
-  duplicatePaths: string[];
-} {
-  const targetFiles = xmlSidecarsByOwnerPath(target);
-  const sourceFiles = xmlSidecarsByOwnerPath(incoming);
-  const pairs: { kind: 'formXml' | 'predefinedXml'; relativePath: string; target: ExtensionIndexedObject['sidecarFiles'][number]; source: ExtensionIndexedObject['sidecarFiles'][number] }[] = [];
-  for (const [key, targetFile] of targetFiles.files) {
-    const sourceFile = sourceFiles.files.get(key);
-    if (!sourceFile) {continue;}
-    const fileName = path.posix.basename(key).toLowerCase();
-    const definition = XML_FILES.find((item) => item.fileName === fileName);
-    if (!definition) {continue;}
-    pairs.push({ kind: definition.kind, relativePath: ownerRelativePath(target, targetFile.relativePath), target: targetFile, source: sourceFile });
-  }
+function templateMetadataUnit(
+  rootPath: string,
+  relativePath: string,
+  qualifiedName: string,
+  metadataType: 'Template' | 'CommonTemplate',
+  uuid: string,
+): MetadataObjectUnit {
+  const descriptorPath = path.join(rootPath, relativePath);
   return {
-    pairs: pairs.sort((left, right) => left.target.relativePath.toLowerCase().localeCompare(right.target.relativePath.toLowerCase())),
-    duplicatePaths: [...targetFiles.duplicatePaths, ...sourceFiles.duplicatePaths],
+    objectId: `${metadataType}:${qualifiedName.normalize('NFC').toLocaleLowerCase('en-US')}:${uuid.toLocaleLowerCase('en-US')}`,
+    qualifiedName,
+    metadataType,
+    uuid,
+    descriptorPath,
+    containerPath: path.dirname(descriptorPath),
   };
 }
 
-function xmlSidecarsByOwnerPath(object: ExtensionIndexedObject): {
-  files: Map<string, ExtensionIndexedObject['sidecarFiles'][number]>;
-  duplicatePaths: string[];
-} {
-  const result = new Map<string, ExtensionIndexedObject['sidecarFiles'][number]>();
-  const duplicates = new Set<string>();
-  for (const file of object.sidecarFiles) {
-    const relative = ownerRelativePath(object, file.relativePath).replace(/\\/gu, '/');
-    const name = path.posix.basename(relative).toLowerCase();
-    if (name !== 'form.xml' && name !== 'predefined.xml') {continue;}
-    const key = process.platform === 'win32' ? relative.toLowerCase() : relative;
-    if (result.has(key)) {
-      result.delete(key);
-      duplicates.add(key);
-    } else if (!duplicates.has(key)) {
-      result.set(key, file);
-    }
-  }
-  return { files: result, duplicatePaths: [...duplicates] };
-}
-
-function ownerRelativePath(object: ExtensionIndexedObject, relativePath: string): string {
-  const prefix = (object.sidecarRelativePath ?? '').replace(/\\/gu, '/').replace(/\/$/u, '');
-  const candidate = relativePath.replace(/\\/gu, '/');
-  const parent = process.platform === 'win32' ? candidate.toLowerCase() : candidate;
-  const expectedPrefix = process.platform === 'win32' ? prefix.toLowerCase() : prefix;
-  return expectedPrefix && parent.startsWith(`${expectedPrefix}/`)
-    ? candidate.slice(prefix.length + 1)
-    : candidate;
-}
-
-function normalizeArtifactPath(value: string): string {
-  const normalized = value.replace(/\\/gu, '/');
-  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+function templateTransitionBlockerNode(candidate: import('../linkedDesignerTypes').LinkedTemplateTypeTransitionCandidate): CompareTreeNode {
+  const reason = candidate.reason ?? 'Не удалось связать TemplateType с обязательным телом макета.';
+  return {
+    id: candidate.transitionId,
+    label: `Тип макета и содержимое: ${candidate.targetTemplateType ?? '?'} → ${candidate.incomingTemplateType ?? '?'}`,
+    kind: 'linkedTemplateTypeTransition',
+    status: 'changed',
+    leftValue: candidate.targetTemplateType,
+    rightValue: candidate.incomingTemplateType,
+    mergeable: false,
+    payloadRef: `linkedTemplateType:${candidate.transitionId}`,
+    conflict: { kind: 'unsupported', blocking: true, message: reason },
+    mergeState: { state: 'blocked', reason, targetFilePath: candidate.targetDescriptorRelativePath },
+    children: [],
+  };
 }
 
 function toInventory(index: ExtensionMetadataIndex): ConfigurationInventory {
@@ -479,7 +837,11 @@ function toInventory(index: ExtensionMetadataIndex): ConfigurationInventory {
     for (const file of object.sidecarFiles) {
       const relative = ownerRelativePath(object, file.relativePath);
       const baseName = path.posix.basename(relative.replace(/\\/gu, '/')).toLowerCase();
-      const kind = baseName === 'form.xml' ? 'formXml' : baseName === 'predefined.xml' ? 'predefinedXml' : undefined;
+      const kind = baseName === 'form.xml' ? 'formXml'
+        : baseName === 'predefined.xml' ? 'predefinedXml'
+          : baseName === 'rights.xml' && file.rootExpandedName === '{http://v8.1c.ru/8.2/roles}Rights' ? 'roleRightsXml'
+            : baseName === 'template.xml' && file.rootExpandedName === '{http://v8.1c.ru/8.1/data-composition-system/schema}DataCompositionSchema' ? 'dcsXml'
+              : undefined;
       if (!kind) {continue;}
       artifacts.push({
         artifactId: `${unit.objectId}:${normalizeArtifactPath(file.relativePath)}`, ownerObjectId: unit.objectId,

@@ -16,13 +16,15 @@ import { buildRootPurposeConfigurationOutput } from './extensionRootPurposeMater
 import { createCapturedExtensionWriteCandidate } from './extensionCapturedWriteBuilder';
 import { hydrateSelectedObjectSidecars, outputPathCollision } from './extensionMaterializerSupport';
 import { scanExtensionXmlDependencies, type ExtensionMetadataReference } from './extensionDependencyScanner';
-import {
-  preflightOwnRegisterRecorders,
-  scanDocumentRegisterRecords,
-  type RecorderDocumentVersion,
-  type RecorderRegisterRequirement,
-} from './extensionRegisterRecorderGuard';
 import { unsupportedExtensionInterceptReason } from './extensionInterceptScanner';
+import { materializeExtensionLinkedDesignerPackages } from './extensionLinkedDesignerPackageWrites';
+import { materializeExtensionLinkedTemplateTransition } from './extensionLinkedTemplateTransitions';
+import { composeBslCandidates } from '../linkedDesignerBslMaterializer';
+import { makeExtensionLinkedBslContext } from './extensionLinkedDesignerBsl';
+import { validateDeletedExtensionFormReferences } from './extensionLinkedDesignerValidation';
+import { addRecorderWitnesses, buildRecorderPreflight } from './extensionRecorderPreflight';
+import { adoptedRoleRightsWholeTransferBlocker, sameExtensionRelativePath } from './extensionRoleRightsWholeTransferPolicy';
+import type { ExtensionObjectOutput, ExtensionOutputWrite } from './extensionMaterializerTypes';
 
 const LEFT_SOURCE_ID = 'left-source';
 const RIGHT_SOURCE_ID = 'right-source';
@@ -38,6 +40,8 @@ export async function materializeExtensionSelection(
   const selectedRowIds = new Set<string>();
   const wholeTransferRowIds = new Set<string>();
   const selectedSemantic = new Map<string, ExtensionSemanticSelection[]>();
+  const selectedRoutineIds = new Set<string>();
+  const selectedRoutineSelections: import('./extensionLinkedDesignerBsl').ExtensionLinkedRoutineSelection[] = [];
   const rootPurposeSelected = input.rootPurposeSelection !== undefined && nodeIds.includes(input.rootPurposeSelection.nodeId);
   for (const nodeId of nodeIds) {
     if (rootPurposeSelected && nodeId === input.rootPurposeSelection!.nodeId) {continue;}
@@ -45,6 +49,18 @@ export async function materializeExtensionSelection(
     if (row) {
       wholeTransferRowIds.add(row.id);
       selectedRowIds.add(row.id);
+      continue;
+    }
+    const routineSelection = input.linkedRoutineSelections?.get(nodeId);
+    if (routineSelection) {
+      const parent = rowById.get(routineSelection.rowId);
+      if (!parent || routineSelection.nodeId !== nodeId) {
+        diagnostics.push(compareDiagnostic('Выбранная процедура формы отсутствует в текущем linked compare snapshot.', RIGHT_SOURCE_ID, nodeId));
+        continue;
+      }
+      selectedRoutineIds.add(nodeId);
+      selectedRoutineSelections.push(routineSelection);
+      selectedRowIds.add(parent.id);
       continue;
     }
     const selection = input.semanticSelections?.get(nodeId);
@@ -58,18 +74,72 @@ export async function materializeExtensionSelection(
     selectedSemantic.set(parent.id, parentSelections);
     selectedRowIds.add(parent.id);
   }
+  for (const rowId of wholeTransferRowIds) {
+    const row = rowById.get(rowId);
+    const blockedRights = row ? adoptedRoleRightsWholeTransferBlocker(row) : undefined;
+    if (blockedRights) {
+      const structureReason = blockedRights.rootConfirmed
+        ? `Файл Rights.xml (${blockedRights.relativePath}) нельзя переносить без преобразования прав относительно базовой роли.`
+        : `Структура файла Rights.xml (${blockedRights.relativePath}) не подтверждена; полный перенос запрещён, чтобы не скопировать права без преобразования относительно базовой роли.`;
+      diagnostics.push(compareDiagnostic(
+        `Полный перенос заимствованной роли «${blockedRights.qualifiedName}» заблокирован: ${structureReason} Выберите отдельные поддерживаемые изменения роли.`,
+        blockedRights.sourceId,
+        rowId,
+      ));
+    }
+  }
+  for (const selection of selectedRoutineSelections) {
+    if (wholeTransferRowIds.has(selection.rowId)) {
+      diagnostics.push(compareDiagnostic('Нельзя одновременно выбрать полный перенос объекта и отдельный обработчик формы.', RIGHT_SOURCE_ID, selection.nodeId));
+    }
+  }
+  const selectedLinkedPackageIds = new Set([...selectedSemantic.values()].flat().map((selection) => selection.linkedPackageId).filter((value): value is string => Boolean(value)));
+  for (const selection of [...selectedSemantic.values()].flat()) {
+    if (selection.requiredPackageId && !selectedLinkedPackageIds.has(selection.requiredPackageId)) {
+      diagnostics.push(compareDiagnostic('Изменение ссылки на форму требует выбрать linked Form-пакет регистрации.', RIGHT_SOURCE_ID, selection.nodeId));
+    }
+    const eventDependency = input.linkedEventDependencies?.get(selection.nodeId);
+    if (eventDependency && !eventDependency.targetHasHandler
+        && (!eventDependency.incomingRoutineNodeId || !selectedRoutineIds.has(eventDependency.incomingRoutineNodeId))) {
+      diagnostics.push(compareDiagnostic(`Событие ссылается на ${eventDependency.handlerName}; выберите связанный BSL-обработчик.`, RIGHT_SOURCE_ID, selection.nodeId));
+    }
+  }
   for (const [rowId] of selectedSemantic) {
     const row = rowById.get(rowId);
+    const rowSelections = selectedSemantic.get(rowId) ?? [];
+    const adoptedOverlayAction = row?.action === 'overlay-adopted' || row?.action === 'adopted-to-cf-overlay';
+    const adoptedSemanticAction = row?.semanticAction === 'overlay-adopted' || row?.semanticAction === 'adopted-to-cf-overlay';
+    const adoptedArtifactsMatch = rowSelections.length > 0 && rowSelections.every((selection) => {
+      const artifact = selection.adoptedArtifact;
+      if (selection.kind !== 'metadataXml' && selection.kind !== 'formXml') {
+        return artifact === undefined
+          && (selection.kind === 'predefinedXml' || selection.kind === 'roleRightsXml' || selection.kind === 'dcsXml');
+      }
+      return artifact !== undefined
+        && artifact.kind === selection.kind
+        && sameExtensionRelativePath(artifact.targetRelativePath, selection.targetRelativePath)
+        && sameExtensionRelativePath(artifact.sourceRelativePath, selection.sourceRelativePath)
+        && artifact.targetHash === selection.targetHash
+        && artifact.sourceHash === selection.sourceHash;
+    });
     if (wholeTransferRowIds.has(rowId)) {
       diagnostics.push(compareDiagnostic('Нельзя одновременно выбрать полный перенос объекта и отдельные XML-изменения. Снимите один из вариантов.', RIGHT_SOURCE_ID, rowId));
     }
-    if (!row?.mergeable || !row.action || !row.incoming || !row.target ||
-        (row.action !== 'full-copy' && row.action !== 'adopted-cfe-copy')) {
+    const ordinarySemanticAction = Boolean(row?.mergeable && row.action
+      && (row.action === 'full-copy' || row.action === 'adopted-cfe-copy'));
+    const adoptedSemanticAllowed = Boolean(adoptedOverlayAction || adoptedSemanticAction) && adoptedArtifactsMatch;
+    if (!row?.incoming || !row.target || !(ordinarySemanticAction || adoptedSemanticAllowed)) {
       diagnostics.push(compareDiagnostic('Семантическое XML-слияние доступно только для сопоставленных собственных объектов и adopted объектов CFE с подтверждённой базой.', RIGHT_SOURCE_ID, rowId));
     }
   }
   const requestedRows = [...selectedRowIds].map((rowId) => rowById.get(rowId));
   for (const row of requestedRows) {
+    if (row && selectedSemantic.has(row.id)) {
+      if (!row.incoming || !row.target) {
+        diagnostics.push(compareDiagnostic(row.reason ?? 'Сопоставленный объект отсутствует в semantic compare snapshot.', RIGHT_SOURCE_ID, row.id));
+      }
+      continue;
+    }
     if (!row?.mergeable || !row.action || !row.incoming) {
       diagnostics.push(compareDiagnostic(row?.reason ?? 'Объект нельзя безопасно перенести.', RIGHT_SOURCE_ID, row?.id));
     }
@@ -107,8 +177,9 @@ export async function materializeExtensionSelection(
   }
   if (diagnostics.length > 0) {return { ok: false, diagnostics };}
 
-  const outputs: ObjectOutput[] = [];
+  const outputs: ExtensionObjectOutput[] = [];
   for (const row of selected) {
+    if (!wholeTransferRowIds.has(row.id) && !selectedSemantic.has(row.id)) {continue;}
     const output = await buildObjectOutput(input, row, selectedSemantic.get(row.id), addedMetadataReferences);
     if ('diagnostic' in output) {
       diagnostics.push(output.diagnostic);
@@ -120,7 +191,7 @@ export async function materializeExtensionSelection(
     return { ok: false, diagnostics };
   }
 
-  const recorderPreflight = buildRecorderPreflight(outputs, input);
+  const recorderPreflight = buildRecorderPreflight(outputs, input, compareDiagnostic);
   diagnostics.push(...recorderPreflight.diagnostics);
   if (diagnostics.length > 0) {
     return { ok: false, diagnostics };
@@ -148,6 +219,17 @@ export async function materializeExtensionSelection(
     return { ok: false, diagnostics: [...dependencyResult.diagnostics] };
   }
   const outputsWithDependencyWitnesses = dependencyResult.outputs;
+
+  const linkedReferenceDiagnostics = validateDeletedExtensionFormReferences({
+    target: input.target,
+    rows: input.rows,
+    packages: input.linkedDesignerPackages ?? new Map(),
+    outputs: outputsWithDependencyWitnesses,
+    selectedSemantic,
+  });
+  if (linkedReferenceDiagnostics.length > 0) {
+    return { ok: false, diagnostics: linkedReferenceDiagnostics };
+  }
 
   const registrationMutations = outputsWithDependencyWitnesses.flatMap((output) => output.addRegistration ? [output.addRegistration] : []);
   const candidates: MergeCandidate[] = [];
@@ -182,6 +264,27 @@ export async function materializeExtensionSelection(
       }
     }
   }
+  if (selectedRoutineSelections.length > 0) {
+    const linkedContext = makeExtensionLinkedBslContext({
+      targetRootPath: input.target.canonicalRootPath ?? input.target.rootPath,
+      sourceRootPath: input.incoming.canonicalRootPath ?? input.incoming.rootPath,
+      targetSourceId: input.target.sourceId,
+      sourceId: input.incoming.sourceId,
+      rightSnapshotId: input.rightSnapshotId,
+      session: input.session,
+    }, input.linkedFormModules ?? []);
+    const routineCandidates: MergeCandidate[] = [];
+    for (const selection of selectedRoutineSelections) {
+      const result = await selection.candidateFactory();
+      if (!result.ok) {diagnostics.push(...result.diagnostics);}
+      else {routineCandidates.push(result.candidate);}
+    }
+    if (diagnostics.length === 0) {
+      const composed = await composeBslCandidates(linkedContext, routineCandidates);
+      if ('diagnostics' in composed) {diagnostics.push(...composed.diagnostics);}
+      else {candidates.push(...composed.candidates);}
+    }
+  }
   if (registrationMutations.length > 0 || rootPurposeSelected) {
     const built = registrationMutations.length > 0
       ? buildRegistrationOutput(input.target, registrationMutations)
@@ -207,7 +310,7 @@ export async function materializeExtensionSelection(
         }
       }
       if (diagnostics.length === 0) {
-        const output: ObjectOutput = {
+  const output: ExtensionObjectOutput = {
           row: selected[0] ?? rootPurposeRow(input),
           outputRelativePaths: [CONFIGURATION_XML],
           writes: [{ relativePath: CONFIGURATION_XML, content, sourceWitnesses: dedupeWitnesses(sourceWitnesses) }],
@@ -234,163 +337,10 @@ export async function materializeExtensionSelection(
   return { ok: true, candidates };
 }
 
-interface ObjectOutput {
-  readonly row: ExtensionTransferRow;
-  readonly outputRelativePaths: readonly string[];
-  readonly writes: readonly OutputWrite[];
-  readonly deletePaths: readonly string[];
-  readonly addRegistration?: RootObjectConfigurationMutation;
-  readonly effectiveDescriptorRelativePath?: string;
-  readonly effectiveDescriptorContent?: Buffer;
-  readonly effectiveDescriptorWitnesses?: readonly MergeFileWitness[];
-}
-
-interface OutputWrite {
-  readonly relativePath: string;
-  readonly content: Buffer;
-  readonly sourceWitnesses: readonly MergeFileWitness[];
-}
-
-function buildRecorderPreflight(
-  outputs: readonly ObjectOutput[],
-  input: ExtensionMaterializerInput,
-): {
-  readonly result: ReturnType<typeof preflightOwnRegisterRecorders>;
-  readonly diagnostics: readonly CompareMessage[];
-} {
-  const diagnostics: CompareMessage[] = [];
-  const registers: RecorderRegisterRequirement[] = [];
-  const selectedDocumentOutputs: RecorderDocumentVersion[] = [];
-  const provenTargetBases = new Map<string, ExtensionMetadataIndex>();
-  for (const output of outputs) {
-    if (output.row.targetBase) {provenTargetBases.set(output.row.targetBase.sourceId, output.row.targetBase);}
-    const incoming = output.row.incoming;
-    if (!incoming) {continue;}
-    const descriptorWrite = output.writes.find((write) => write.relativePath === output.effectiveDescriptorRelativePath);
-    const descriptorContent = descriptorWrite?.content ?? output.effectiveDescriptorContent;
-    const descriptorRelativePath = descriptorWrite?.relativePath ?? output.effectiveDescriptorRelativePath;
-    if (incoming.metadataType === 'Document') {
-      if (!descriptorContent || !descriptorRelativePath) {
-        diagnostics.push(compareDiagnostic('Выбранный Document output не содержит descriptor write для проверки RegisterRecords.', incoming.sourceId, output.row.id));
-        continue;
-      }
-      const adoptedDocument = isAdoptedDocumentOutput(output);
-      const scanned = scanDocumentRegisterRecords({
-        artifactPath: descriptorRelativePath,
-        xml: descriptorContent,
-        adoptedDocument,
-      });
-      for (const error of scanned.errors) {
-        diagnostics.push(compareDiagnostic(
-          `Не удалось безопасно проверить RegisterRecords в ${error.artifactPath}: ${error.message}`,
-          incoming.sourceId,
-          output.row.id,
-        ));
-      }
-      selectedDocumentOutputs.push({
-        qualifiedName: incoming.qualifiedName,
-        adoptedDocument,
-        registerRecords: scanned,
-        witnesses: descriptorWrite?.sourceWitnesses ?? output.effectiveDescriptorWitnesses ?? [],
-      });
-    }
-
-    if (isRecorderRegisterType(incoming.metadataType)) {
-      registers.push({
-        qualifiedName: incoming.qualifiedName,
-        metadataType: incoming.metadataType,
-        isOwnFullCopy: output.row.action === 'full-copy' && incoming.identity?.ownership !== 'adopted',
-        descriptorXml: descriptorContent,
-      });
-    }
-  }
-
-  const targetDocuments = input.target.objects
-    .filter((object) => object.metadataType === 'Document')
-    .map((object) => recorderDocumentFromIndex(input.target, object));
-  const provenTargetBaseDocuments = [...provenTargetBases.values()].flatMap((root) => root.objects
-    .filter((object) => object.metadataType === 'Document')
-    .map((object) => recorderDocumentFromIndex(root, object)));
-
-  return {
-    result: preflightOwnRegisterRecorders({ registers, targetDocuments, provenTargetBaseDocuments, selectedDocumentOutputs }),
-    diagnostics,
-  };
-}
-
-function recorderDocumentFromIndex(root: ExtensionMetadataIndex, object: ExtensionIndexedObject): RecorderDocumentVersion {
-  const artifactPath = object.descriptorRelativePath ?? `Documents/${object.name}.xml`;
-  const adoptedDocument = object.identity?.ownership === 'adopted';
-  const registerRecords = object.descriptorContent
-    ? scanDocumentRegisterRecords({ artifactPath, xml: object.descriptorContent, adoptedDocument })
-    : {
-      references: [],
-      inheritsRegisterRecords: false,
-      errors: [{ artifactPath, message: 'Captured descriptor bytes отсутствуют.' }],
-    };
-  if (!object.valid) {
-    return {
-      qualifiedName: object.qualifiedName,
-      adoptedDocument,
-      registerRecords: { references: [], inheritsRegisterRecords: false, errors: [{ artifactPath, message: 'Document descriptor не прошёл проверку identity.' }] },
-      witnesses: recorderDocumentWitnesses(root, object),
-    };
-  }
-  return {
-    qualifiedName: object.qualifiedName,
-    adoptedDocument,
-    registerRecords,
-    witnesses: recorderDocumentWitnesses(root, object),
-  };
-}
-
-function recorderDocumentWitnesses(root: ExtensionMetadataIndex, object: ExtensionIndexedObject): MergeFileWitness[] {
-  const witnesses: MergeFileWitness[] = [];
-  if (root.configurationHash) {
-    witnesses.push({ sourceId: root.sourceId, relativePath: CONFIGURATION_XML, expectedHash: root.configurationHash, kind: 'file' });
-  }
-  if (object.descriptorRelativePath && object.descriptorHash) {
-    witnesses.push({ sourceId: object.sourceId, relativePath: object.descriptorRelativePath, expectedHash: object.descriptorHash, kind: 'file' });
-  }
-  return dedupeWitnesses(witnesses);
-}
-
-function isAdoptedDocumentOutput(output: ObjectOutput): boolean {
-  return output.row.action === 'borrow-shell'
-    || output.row.action === 'overlay-adopted'
-    || output.row.action === 'adopted-cfe-copy'
-    || (output.row.action !== 'adopted-to-cf-overlay' && output.row.incoming?.identity?.ownership === 'adopted');
-}
-
-function isRecorderRegisterType(metadataType: string): boolean {
-  return metadataType === 'AccumulationRegister'
-    || metadataType === 'AccountingRegister'
-    || metadataType === 'CalculationRegister'
-    || metadataType === 'InformationRegister';
-}
-
-function addRecorderWitnesses(
-  outputs: readonly ObjectOutput[],
-  witnessesByRegister: ReadonlyMap<string, readonly MergeFileWitness[]>,
-): ObjectOutput[] {
-  return outputs.map((output) => {
-    const qualifiedName = output.row.incoming?.qualifiedName;
-    const descriptorPath = output.row.incoming?.descriptorRelativePath;
-    const witnesses = qualifiedName ? witnessesByRegister.get(qualifiedName) : undefined;
-    if (!descriptorPath || !witnesses || witnesses.length === 0) {return output;}
-    return {
-      ...output,
-      writes: output.writes.map((write) => write.relativePath === descriptorPath
-        ? { ...write, sourceWitnesses: dedupeWitnesses([...write.sourceWitnesses, ...witnesses]) }
-        : write),
-    };
-  });
-}
-
 function validateSelectedOutputDependencies(
-  outputs: readonly ObjectOutput[],
+  outputs: readonly ExtensionObjectOutput[],
   input: ExtensionMaterializerInput,
-): { readonly outputs: readonly ObjectOutput[]; readonly diagnostics: readonly CompareMessage[] } {
+): { readonly outputs: readonly ExtensionObjectOutput[]; readonly diagnostics: readonly CompareMessage[] } {
   const artifacts = outputs.flatMap((output) => output.writes
     .filter((write) => path.extname(write.relativePath).toLowerCase() === '.xml')
     .map((write) => ({ relativePath: write.relativePath, content: write.content })));
@@ -413,7 +363,7 @@ function validateSelectedOutputDependencies(
     return { outputs, diagnostics };
   }
 
-  const selectedOutputsByName = new Map<string, ObjectOutput[]>();
+  const selectedOutputsByName = new Map<string, ExtensionObjectOutput[]>();
   for (const output of outputs) {
     const qualifiedName = output.row.incoming?.qualifiedName;
     if (!qualifiedName) {continue;}
@@ -575,7 +525,7 @@ function resolveConfigurationDependencyInIndex(
 
 function addConfigurationDependencyWitness(
   witnessesByWrite: Map<string, MergeFileWitness[]>,
-  output: ObjectOutput,
+  output: ExtensionObjectOutput,
   reference: ExtensionMetadataReference,
   root: ExtensionMetadataIndex,
   diagnostics: CompareMessage[],
@@ -610,7 +560,7 @@ function resolveDependencyInIndex(index: ExtensionMetadataIndex, reference: Exte
 
 function addDependencyDescriptorWitness(
   witnessesByWrite: Map<string, MergeFileWitness[]>,
-  output: ObjectOutput,
+  output: ExtensionObjectOutput,
   reference: ExtensionMetadataReference,
   dependency: ExtensionIndexedObject,
   diagnostics: CompareMessage[],
@@ -630,7 +580,7 @@ function addDependencyDescriptorWitness(
   witnessesByWrite.set(key, witnesses);
 }
 
-function dependencyWriteKey(output: ObjectOutput, relativePath: string): string {
+function dependencyWriteKey(output: ExtensionObjectOutput, relativePath: string): string {
   return `${output.row.id}\0${relativePath}`;
 }
 
@@ -643,7 +593,7 @@ async function buildObjectOutput(
   row: ExtensionTransferRow,
   semanticSelections: readonly ExtensionSemanticSelection[] = [],
   addedMetadataReferences: readonly string[] = [],
-): Promise<ObjectOutput | { diagnostic: CompareMessage }> {
+): Promise<ExtensionObjectOutput | { diagnostic: CompareMessage }> {
   const incoming = row.incoming!;
   const action = row.action!;
   const identity = incoming.identity!;
@@ -667,7 +617,27 @@ async function buildObjectOutput(
       addedMetadataReferences,
     });
     if ('diagnostic' in result) {return result;}
-    return { row, ...result, deletePaths: [], addRegistration: undefined };
+    const linkedPackages = materializeExtensionLinkedDesignerPackages(input, row, semanticSelections, witnesses);
+    if ('diagnostic' in linkedPackages) {return linkedPackages;}
+    const templateWrites: ExtensionOutputWrite[] = [];
+    const templateDeletePaths: string[] = [];
+    for (const selection of semanticSelections) {
+      if (!selection.linkedTemplateTypeTransition) {continue;}
+      const transition = materializeExtensionLinkedTemplateTransition(selection.linkedTemplateTypeTransition);
+      if ('reason' in transition) {
+        return { diagnostic: compareDiagnostic(transition.reason, incoming.sourceId, row.id) };
+      }
+      templateWrites.push(transition.write);
+      if (transition.deletePath) {templateDeletePaths.push(transition.deletePath);}
+    }
+    return {
+      row,
+      ...result,
+      outputRelativePaths: [...result.outputRelativePaths, ...linkedPackages.writes.map((write) => write.relativePath), ...linkedPackages.deletePaths, ...templateWrites.map((write) => write.relativePath), ...templateDeletePaths],
+      writes: [...result.writes, ...linkedPackages.writes, ...templateWrites],
+      deletePaths: [...(result.deletePaths ?? []), ...linkedPackages.deletePaths, ...templateDeletePaths],
+      addRegistration: undefined,
+    };
   }
   let descriptorContent: Buffer;
   let sidecarFiles: readonly ExtensionCapturedFile[];
@@ -728,7 +698,7 @@ async function buildObjectOutput(
     }
   }
 
-  const writes: OutputWrite[] = [{
+  const writes: ExtensionOutputWrite[] = [{
     relativePath: targetDescriptorRel,
     content: descriptorContent,
     sourceWitnesses: dedupeWitnesses(witnesses),
@@ -830,7 +800,7 @@ function buildRegistrationOutput(
 
 async function createFileDeleteCandidate(
   input: ExtensionMaterializerInput,
-  output: ObjectOutput,
+  output: ExtensionObjectOutput,
   relativePath: string,
   roots: ReadonlyMap<string, ExtensionMetadataIndex>,
 ): Promise<MergeCandidate | { diagnostic: CompareMessage }> {

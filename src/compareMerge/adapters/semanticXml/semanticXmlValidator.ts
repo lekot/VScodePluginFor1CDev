@@ -19,8 +19,10 @@ import {
   metadataReferenceFromType,
 } from './semanticXmlMetadataReferences';
 import { DESCRIPTOR_OBJECT_NAMES, isSupportedOneCXmlNamespace, metadataChildNameScope } from './semanticXmlPolicy';
+import { roleRightsDiagnostics } from './semanticXmlRights';
+import { dcsDiagnostics } from './semanticXmlDcs';
 
-export type SemanticXmlKind = 'metadataXml' | 'formXml' | 'predefinedXml';
+export type SemanticXmlKind = 'metadataXml' | 'formXml' | 'predefinedXml' | 'roleRightsXml' | 'dcsXml';
 
 export interface SemanticXmlValidationContext {
   baselineSource?: string;
@@ -30,6 +32,8 @@ export interface SemanticXmlValidationContext {
     elements?: readonly string[];
   };
   availableMetadataReferences?: readonly string[];
+  configurationName?: string;
+  ownerDescriptorVersions?: { target: string; incoming: string };
 }
 
 export interface SemanticXmlDiagnostic {
@@ -97,7 +101,10 @@ function formatVersionMismatchDiagnostics(
 }
 
 function expectedRootName(kind: SemanticXmlKind): string {
-  return kind === 'metadataXml' ? 'MetaDataObject' : kind === 'formXml' ? 'Form' : 'PredefinedData';
+  if (kind === 'metadataXml') {return 'MetaDataObject';}
+  if (kind === 'formXml') {return 'Form';}
+  if (kind === 'predefinedXml') {return 'PredefinedData';}
+  return kind === 'roleRightsXml' ? 'Rights' : 'DataCompositionSchema';
 }
 
 function collectDiagnostics(
@@ -113,14 +120,14 @@ function collectDiagnostics(
   }
 
   const diagnostics: SemanticXmlDiagnostic[] = [];
-  const expectedRoot = kind === 'metadataXml' ? 'MetaDataObject' : kind === 'formXml' ? 'Form' : 'PredefinedData';
+  const expectedRoot = expectedRootName(kind);
   if (root.localName !== expectedRoot) {
     diagnostics.push(diagnostic('XML_ROOT_KIND_MISMATCH', `Ожидался корневой элемент ${expectedRoot}, получен ${root.name}.`, root));
     return diagnostics;
   }
   const expectedNamespace = ROOT_NAMESPACE_BY_KIND[kind];
   const rootNamespace = namespaceUriForName(root);
-  if (rootNamespace && rootNamespace !== expectedNamespace) {
+  if ((kind === 'roleRightsXml' || kind === 'dcsXml') ? rootNamespace !== expectedNamespace : Boolean(rootNamespace && rootNamespace !== expectedNamespace)) {
     diagnostics.push(diagnostic('XML_ROOT_NAMESPACE_UNSUPPORTED', `Корневой элемент ${root.name} использует неподдерживаемое пространство имён «${rootNamespace}».`, root));
   }
 
@@ -158,6 +165,12 @@ function collectDiagnostics(
   }
   if (kind === 'metadataXml') {
     diagnostics.push(...knownRootPropertyReferenceDiagnostics(root, context?.availableMetadataReferences));
+  }
+  if (kind === 'roleRightsXml') {
+    diagnostics.push(...roleRightsDiagnostics(root, context));
+  }
+  if (kind === 'dcsXml') {
+    diagnostics.push(...dcsDiagnostics(root, context));
   }
   return diagnostics;
 }
@@ -329,7 +342,11 @@ function duplicateIdentityDiagnostics(root: XmlElement, kind: SemanticXmlKind): 
 }
 
 function duplicateCode(kind: SemanticXmlKind): string {
-  return kind === 'formXml' ? 'XML_FORM_DUPLICATE_ID' : kind === 'predefinedXml' ? 'XML_PREDEFINED_DUPLICATE_ID' : 'XML_METADATA_DUPLICATE_ID';
+  if (kind === 'formXml') {return 'XML_FORM_DUPLICATE_ID';}
+  if (kind === 'predefinedXml') {return 'XML_PREDEFINED_DUPLICATE_ID';}
+  if (kind === 'roleRightsXml') {return 'XML_RIGHTS_DUPLICATE_IDENTITY';}
+  if (kind === 'dcsXml') {return 'XML_DCS_DUPLICATE_IDENTITY';}
+  return 'XML_METADATA_DUPLICATE_ID';
 }
 
 function predefinedIdentityDiagnostics(root: XmlElement): SemanticXmlDiagnostic[] {
@@ -589,6 +606,8 @@ const ROOT_NAMESPACE_BY_KIND: Record<SemanticXmlKind, string> = {
   metadataXml: 'http://v8.1c.ru/8.3/MDClasses',
   formXml: 'http://v8.1c.ru/8.3/xcf/logform',
   predefinedXml: 'http://v8.1c.ru/8.3/xcf/predef',
+  roleRightsXml: 'http://v8.1c.ru/8.2/roles',
+  dcsXml: 'http://v8.1c.ru/8.1/data-composition-system/schema',
 };
 const REFERENCE_DIAGNOSTIC_CODES = new Set([
   'XML_FORM_ATTRIBUTE_REFERENCE', 'XML_FORM_COMMAND_REFERENCE', 'XML_FORM_ELEMENT_REFERENCE',

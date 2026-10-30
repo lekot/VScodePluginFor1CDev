@@ -62,8 +62,11 @@ export function expandedXmlName(element: XmlElement): string {
 export function semanticXmlIdentityKey(
   element: XmlElement,
   parent: XmlElement | undefined,
-  kind: 'metadataXml' | 'formXml' | 'predefinedXml'
+  kind: 'metadataXml' | 'formXml' | 'predefinedXml' | 'roleRightsXml' | 'dcsXml'
 ): string | undefined {
+  if (kind === 'roleRightsXml' || kind === 'dcsXml') {
+    return getXmlElementIdentityKey(element);
+  }
   if (kind === 'metadataXml' && parent?.localName === 'MetaDataObject' && attributeByLocalName(element, 'uuid') && !hasCfeMetadataMarker(parent)) {
     const name = directChildText(elementChildren(element).find((child) => child.localName === 'Properties'), 'Name');
     if (name) {

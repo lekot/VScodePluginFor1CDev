@@ -27,6 +27,7 @@ export interface ExtensionCapturedFile {
   readonly relativePath: string;
   readonly content?: Buffer;
   readonly hash: string;
+  readonly rootExpandedName?: string;
 }
 
 export interface ExtensionIndexedObject {
@@ -338,7 +339,7 @@ async function indexRegisteredObject(input: {
     const sidecarAbsolutePath = path.join(input.rootPath, descriptor.designerFolder, registration.name);
     let sidecarSnapshot: MergePathSnapshot;
     try {
-      sidecarSnapshot = await captureMergePath(sidecarAbsolutePath, { retainContent: false });
+      sidecarSnapshot = await captureMergePath(sidecarAbsolutePath, { retainContent: false, probeXmlRootNames: true });
     } catch (error) {
       return invalidObject(input, 'EXTENSION_SIDECAR_UNSAFE', `Дерево sidecar содержит недопустимый файловый объект: ${errorMessage(error)}`, relativeDescriptorPath, supportedRootType, descriptorContent, identity);
     }
@@ -534,13 +535,18 @@ function flattenDirectory(snapshot: MergeSnapshotDirectory, baseRelativePath: st
     const relativePath = `${baseRelativePath}/${child.relativePath.replace(/\\/g, '/')}`;
     if (child.type === 'file') {
       if (child.contentBase64 === undefined) {
-        files.push({ relativePath, hash: child.hash });
+        files.push({
+          relativePath,
+          hash: child.hash,
+          ...(child.rootExpandedName ? { rootExpandedName: child.rootExpandedName } : {}),
+        });
         continue;
       }
       files.push({
         relativePath,
         content: Buffer.from(child.contentBase64, 'base64'),
         hash: child.hash,
+        ...(child.rootExpandedName ? { rootExpandedName: child.rootExpandedName } : {}),
       });
     } else {
       files.push(...flattenDirectory(child, baseRelativePath));

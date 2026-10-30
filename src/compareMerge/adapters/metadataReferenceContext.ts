@@ -4,7 +4,10 @@ import * as path from 'path';
 
 import type { MergeFileWitness } from '../merge/mergePreview';
 import { elementChildren, parseXmlDocument, textContent } from '../xml/xmlDom';
+import { namespaceUriForName } from './semanticXml/semanticXmlIdentity';
 import type { AdapterCompareInput, ConfigurationInventory } from './mergeAdapter';
+
+const MDCLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
 
 export interface MetadataReferenceContextInput {
   inventory: ConfigurationInventory;
@@ -14,6 +17,8 @@ export interface MetadataReferenceContextInput {
 
 export interface MetadataReferenceContext {
   availableMetadataReferences?: readonly string[];
+  configurationName?: string;
+  ownerDescriptorVersions?: { target: string; incoming: string };
   witnesses: readonly MergeFileWitness[];
 }
 
@@ -21,9 +26,13 @@ export function attachMetadataReferenceContext(
   input: AdapterCompareInput,
   context: MetadataReferenceContext
 ): void {
-  input.semanticValidationContext = context.availableMetadataReferences === undefined
+  input.semanticValidationContext = context.availableMetadataReferences === undefined && !context.configurationName && !context.ownerDescriptorVersions
     ? undefined
-    : { availableMetadataReferences: context.availableMetadataReferences };
+    : {
+        ...(context.availableMetadataReferences === undefined ? {} : { availableMetadataReferences: context.availableMetadataReferences }),
+        ...(context.configurationName ? { configurationName: context.configurationName } : {}),
+        ...(context.ownerDescriptorVersions ? { ownerDescriptorVersions: { ...context.ownerDescriptorVersions } } : {}),
+      };
   input.semanticContextWitnesses = context.witnesses;
 }
 
@@ -39,9 +48,9 @@ export async function buildMetadataReferenceContext(
     return { witnesses: [] };
   }
 
-  let registrations: string[];
+  let snapshot: RootConfigurationSnapshot;
   try {
-    registrations = readRootRegistrations(source);
+    snapshot = readRootRegistrations(source);
   } catch {
     return { witnesses: [] };
   }
@@ -57,12 +66,13 @@ export async function buildMetadataReferenceContext(
     indexedObjects.set(key, [...(indexedObjects.get(key) ?? []), { qualifiedName: object.qualifiedName, hasDescriptorWitness: true }]);
   }
 
-  const availableMetadataReferences = [...new Set(registrations.flatMap((qualifiedName) => {
+  const availableMetadataReferences = [...new Set(snapshot.registrations.flatMap((qualifiedName) => {
     const indexed = indexedObjects.get(normalizedName(qualifiedName));
     return indexed?.length === 1 && indexed[0].hasDescriptorWitness ? [indexed[0].qualifiedName] : [];
   }))].sort((left, right) => left.localeCompare(right));
 
   return {
+    ...(snapshot.configurationName ? { configurationName: snapshot.configurationName } : {}),
     availableMetadataReferences,
     witnesses: [{
       sourceId: input.sourceId,
@@ -73,31 +83,49 @@ export async function buildMetadataReferenceContext(
   };
 }
 
-function readRootRegistrations(source: string): string[] {
+interface RootConfigurationSnapshot {
+  configurationName?: string;
+  registrations: string[];
+}
+
+function readRootRegistrations(source: string): RootConfigurationSnapshot {
   const document = parseXmlDocument(source);
-  if (document.root.localName !== 'MetaDataObject') {
+  if (document.root.localName !== 'MetaDataObject' || namespaceUriForName(document.root) !== MDCLASSES_NAMESPACE) {
     throw new Error('Unsupported root');
   }
-  const configurations = elementChildren(document.root).filter((element) => element.localName === 'Configuration');
+  const configurations = directMetadataChildren(document.root, 'Configuration');
   if (configurations.length !== 1) {
     throw new Error('Missing or ambiguous Configuration');
   }
-  const childObjects = elementChildren(configurations[0]!).filter((element) => element.localName === 'ChildObjects');
+  const properties = directMetadataChildren(configurations[0]!, 'Properties');
+  const names = properties.length === 1
+    ? directMetadataChildren(properties[0]!, 'Name')
+    : [];
+  const configurationName = properties.length === 1 && names.length === 1
+    ? textContent(names[0]!).trim() || undefined
+    : undefined;
+  const childObjects = directMetadataChildren(configurations[0]!, 'ChildObjects');
   if (childObjects.length > 1) {
     throw new Error('Ambiguous ChildObjects');
   }
   if (childObjects.length === 0) {
-    return [];
+    return { ...(configurationName ? { configurationName } : {}), registrations: [] };
   }
   const registrations: string[] = [];
   for (const child of elementChildren(childObjects[0]!)) {
+    if (namespaceUriForName(child) !== MDCLASSES_NAMESPACE) {continue;}
     const name = textContent(child).trim();
     if (!name) {
       continue;
     }
     registrations.push(`${child.localName}.${name}`);
   }
-  return registrations;
+  return { ...(configurationName ? { configurationName } : {}), registrations };
+}
+
+function directMetadataChildren(parent: import('../xml/xmlDom').XmlElement, name: string): import('../xml/xmlDom').XmlElement[] {
+  return elementChildren(parent).filter((element) =>
+    element.localName === name && namespaceUriForName(element) === MDCLASSES_NAMESPACE);
 }
 
 function normalizedName(value: string): string {

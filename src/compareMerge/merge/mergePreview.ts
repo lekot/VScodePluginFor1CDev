@@ -5,6 +5,7 @@ import type {
 import type { BslRoutineKind, BslTextRange } from '../../bsl/bslRoutineTypes';
 import type { CompareMessage, ComparePreview, CompareSide, IdentityConflict } from '../domain/compareContracts';
 import type { CompareSession } from '../domain/compareSession';
+import type { XmlOrderScope } from '../xml/xmlPatchTypes';
 
 export type MergeSupportedOperationKind =
   | 'bslLogicalAutoInsert'
@@ -16,6 +17,7 @@ export type MergeSupportedOperationKind =
   | 'xmlNodeReplace'
   | 'xmlNodeInsert'
   | 'xmlNodeDelete'
+  | 'xmlNodeMove'
   | 'fileCopy'
   | 'fileWrite'
   | 'fileDelete'
@@ -48,12 +50,17 @@ export interface XmlAddress {
 }
 
 export interface XmlPatchPayload {
-  kind: 'replaceNode' | 'insertNode' | 'deleteNode';
+  kind: 'replaceNode' | 'insertNode' | 'deleteNode' | 'moveNode';
   target: XmlAddress;
+  destinationParent?: XmlAddress;
+  createDestinationChildItems?: true;
+  createDestinationChildObjects?: true;
+  createDestinationEvents?: true;
+  orderScope?: XmlOrderScope;
   insertBefore?: XmlAddress;
   insertPosition?: 'append';
   insertOrder?: number;
-  semanticKind?: 'metadataXml' | 'formXml' | 'predefinedXml';
+  semanticKind?: 'metadataXml' | 'formXml' | 'predefinedXml' | 'roleRightsXml' | 'dcsXml';
   expectedOldHash: string;
   newHash: string;
   replacementXml?: string;
@@ -65,6 +72,8 @@ export interface XmlPatchPayload {
       elements?: readonly string[];
     };
     availableMetadataReferences?: readonly string[];
+    configurationName?: string;
+    ownerDescriptorVersions?: { target: string; incoming: string };
   };
 }
 
@@ -105,6 +114,10 @@ export interface BslRoutineOperationPayload {
   sourceText: string;
   sourceRange?: BslTextRange;
   targetRange?: BslTextRange;
+  /** Exact source-module range for sourceText when it includes attached directives. */
+  sourceTextRange?: BslTextRange;
+  /** Exact target-module range for sourceText when deleting attached directives. */
+  targetTextRange?: BslTextRange;
 }
 
 export interface MergeCandidate {
@@ -118,6 +131,8 @@ export interface MergeCandidate {
   expectedOldHash?: string;
   newHash?: string;
   conflictId?: string;
+  /** Captured files whose raw bytes were used to validate this operation. */
+  sourceWitnesses?: readonly MergeFileWitness[];
   logicalRoutine?: LogicalRoutineMergePayload;
   xmlPatch?: XmlPatchPayload;
   fileOperation?: FileOperationPayload;
@@ -137,6 +152,8 @@ export interface MergeOperation {
   expectedOldHash?: string;
   newHash?: string;
   conflictId?: string;
+  /** Captured files whose raw bytes were used to validate this operation. */
+  sourceWitnesses?: readonly MergeFileWitness[];
   logicalRoutine?: LogicalRoutineMergePayload;
   xmlPatch?: XmlPatchPayload;
   fileOperation?: FileOperationPayload;
@@ -227,6 +244,9 @@ export interface PreflightResult {
 export function cloneMergeOperation(operation: MergeOperation): MergeOperation {
   return {
     ...operation,
+    sourceWitnesses: Array.isArray(operation.sourceWitnesses)
+      ? operation.sourceWitnesses.map((witness) => ({ ...witness }))
+      : operation.sourceWitnesses,
     logicalRoutine: operation.logicalRoutine
       ? {
           moduleId: operation.logicalRoutine.moduleId,
@@ -238,6 +258,13 @@ export function cloneMergeOperation(operation: MergeOperation): MergeOperation {
       ? {
           kind: operation.xmlPatch.kind,
           target: { ...operation.xmlPatch.target },
+          destinationParent: operation.xmlPatch.destinationParent
+            ? { ...operation.xmlPatch.destinationParent }
+            : undefined,
+          createDestinationChildItems: operation.xmlPatch.createDestinationChildItems,
+          createDestinationChildObjects: operation.xmlPatch.createDestinationChildObjects,
+          createDestinationEvents: operation.xmlPatch.createDestinationEvents,
+          orderScope: operation.xmlPatch.orderScope ? { ...operation.xmlPatch.orderScope } : undefined,
           insertBefore: operation.xmlPatch.insertBefore
             ? { ...operation.xmlPatch.insertBefore }
             : undefined,
@@ -247,7 +274,9 @@ export function cloneMergeOperation(operation: MergeOperation): MergeOperation {
           expectedOldHash: operation.xmlPatch.expectedOldHash,
           newHash: operation.xmlPatch.newHash,
           replacementXml: operation.xmlPatch.replacementXml,
-          sourceWitnesses: operation.xmlPatch.sourceWitnesses?.map((witness) => ({ ...witness })),
+          sourceWitnesses: Array.isArray(operation.xmlPatch.sourceWitnesses)
+            ? operation.xmlPatch.sourceWitnesses.map((witness) => ({ ...witness }))
+            : operation.xmlPatch.sourceWitnesses,
           semanticContext: operation.xmlPatch.semanticContext
             ? {
                 availableFormReferences: operation.xmlPatch.semanticContext.availableFormReferences
@@ -265,6 +294,10 @@ export function cloneMergeOperation(operation: MergeOperation): MergeOperation {
                   : undefined,
                 availableMetadataReferences: operation.xmlPatch.semanticContext.availableMetadataReferences
                   ? [...operation.xmlPatch.semanticContext.availableMetadataReferences]
+                  : undefined,
+                configurationName: operation.xmlPatch.semanticContext.configurationName,
+                ownerDescriptorVersions: operation.xmlPatch.semanticContext.ownerDescriptorVersions
+                  ? { ...operation.xmlPatch.semanticContext.ownerDescriptorVersions }
                   : undefined,
               }
             : undefined,
@@ -304,6 +337,12 @@ export function cloneMergeOperation(operation: MergeOperation): MergeOperation {
             : undefined,
           targetRange: operation.bslRoutine.targetRange
             ? { ...operation.bslRoutine.targetRange }
+            : undefined,
+          sourceTextRange: operation.bslRoutine.sourceTextRange
+            ? { ...operation.bslRoutine.sourceTextRange }
+            : undefined,
+          targetTextRange: operation.bslRoutine.targetTextRange
+            ? { ...operation.bslRoutine.targetTextRange }
             : undefined,
         }
       : undefined,

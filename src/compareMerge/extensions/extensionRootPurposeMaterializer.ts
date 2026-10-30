@@ -55,7 +55,12 @@ export async function buildRootPurposeConfigurationOutput(input: {
     ...patch.semanticContext,
     availableMetadataReferences: [...new Set([...availableMetadataReferences, ...input.selectedAdditions])],
   };
-  const patches: XmlPatchPayload[] = [{ ...patch, semanticContext }];
+  const rebasedPurposePatch: XmlPatchPayload = {
+    ...patch,
+    expectedOldHash: hashXmlText(input.targetContent.toString('utf8')),
+    semanticContext,
+  };
+  const patches: XmlPatchPayload[] = [rebasedPurposePatch];
   const applied = applySelectedXmlPatches(input.targetContent.toString('utf8'), patches);
   if (!applied.ok) {
     return { diagnostic: diagnostic(applied.message, input.target.sourceId, input.selection.nodeId) };

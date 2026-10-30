@@ -14,6 +14,9 @@ src/**
 test/**
 out/**
 tmp/**
+.tmp*
+.tmp*/**
+out*-temp/**
 build/**
 dist/**/test/**
 dist/**/*.test.*

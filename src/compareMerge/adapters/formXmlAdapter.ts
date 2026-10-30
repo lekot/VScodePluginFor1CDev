@@ -8,12 +8,14 @@ const FORM_GROUPS = new Set(['Attributes', 'Commands', 'Parameters', 'ChildItems
 const FORM_ITEMS = new Set([
   'Item', 'Attribute', 'Command', 'Parameter', 'InputField', 'Table', 'UsualGroup', 'Button',
   'LabelField', 'Decoration', 'CheckBoxField', 'RadioButtonField', 'LabelDecoration', 'PictureField',
+  'PictureDecoration', 'CalendarField', 'CommandBar', 'ButtonGroup', 'Popup',
   'Pages', 'Page', 'PageItem', 'Column', 'SearchStringAddition', 'SearchControlAddition', 'AutoCommandBar',
 ]);
 const FORM_COMPLEX_ELEMENTS = new Set([
   'Form', 'ChildItems', 'Attributes', 'Commands', 'Parameters', 'Item', 'UsualGroup', 'Table', 'InputField',
   'Button', 'LabelField', 'Decoration', 'CheckBoxField', 'RadioButtonField', 'Pages', 'Page', 'Columns',
-  'AutoCommandBar', 'ContextMenu', 'ExtendedTooltip', 'Properties', 'Events', 'Attribute', 'Command', 'Parameter',
+  'AutoCommandBar', 'CommandBar', 'ButtonGroup', 'Popup', 'PictureDecoration', 'CalendarField',
+  'ContextMenu', 'ExtendedTooltip', 'Properties', 'Events', 'Attribute', 'Command', 'Parameter',
   'Title', 'Presentation', 'Picture', 'Representation',
 ]);
 
