@@ -1,4 +1,5 @@
 import { elementChildren, textContent, type XmlDocument, type XmlElement } from '../xml/xmlDom';
+import { compareOrdinalStrings } from '../ordinalStringOrder';
 import {
   attribute,
   cloneWithNamespaces,
@@ -85,7 +86,7 @@ export function identityXmlEqual(left: XmlElement, right: XmlElement): boolean {
 export function sameGeneratedTypes(left: XmlElement, right: XmlElement): boolean {
   const generated = (node: XmlElement) => direct(node, 'InternalInfo')
     .flatMap((internalInfo) => xmlDirect(internalInfo, 'GeneratedType').filter(inReadableNamespace))
-    .map((item) => stableElement(item)).sort().join('\n');
+    .map((item) => stableElement(item)).sort(compareOrdinalStrings).join('\n');
   return generated(left) === generated(right);
 }
 

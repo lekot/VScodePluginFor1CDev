@@ -91,7 +91,7 @@ function stripStringsAndComments(line: string, inString: boolean): { code: strin
 
 function splitLines(source: string): Array<{ text: string; start: number; end: number; eolEnd: number }> {
   const result: Array<{ text: string; start: number; end: number; eolEnd: number }> = [];
-  const pattern = /[^\r\n]*(?:\r\n|\r|\n|$)/gyu;
+  const pattern = /[^\r\n]*(?:\r\n|\r|\n|$)/yu;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(source)) !== null) {
     if (match[0] === '' && pattern.lastIndex >= source.length) {break;}

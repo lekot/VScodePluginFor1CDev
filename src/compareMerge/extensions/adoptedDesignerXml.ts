@@ -1,4 +1,5 @@
 import { cloneXmlElement, elementChildren, textContent, type XmlElement } from '../xml/xmlDom';
+import { compareOrdinalStrings } from '../ordinalStringOrder';
 
 export function direct(parent: XmlElement, name: string): XmlElement[] {
   return elementChildren(parent).filter((child) => child.localName === name);
@@ -106,7 +107,7 @@ function stableElementWithNamespaces(element: XmlElement, inherited: ReadonlyMap
         ? canonicalQNameValue(attribute.value, namespaces)
         : attribute.value;
       return `${name}=${JSON.stringify(value)}`;
-    }).sort().join('|');
+    }).sort(compareOrdinalStrings).join('|');
   const childElements = elementChildren(element);
   const isLeaf = childElements.length === 0;
   const typedQName = expandedNameWithNamespaces(element, namespaces) === `{${CORE_NAMESPACE}}Type`

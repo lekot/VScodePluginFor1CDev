@@ -1,5 +1,6 @@
 import { XMLValidator } from 'fast-xml-parser';
 import { encodeXmlAddressComponent, type XmlAddress } from './xmlAddress';
+import { compareOrdinalStrings } from '../ordinalStringOrder';
 
 export interface XmlDocument {
   declaration?: string;
@@ -310,7 +311,7 @@ function structuredDesignerXmlIdentity(element: XmlElement): string | undefined 
     const groups = elementChildren(element)
       .filter((child) => child.localName === 'group' && elementNamespace(child) === dcsNamespace)
       .map((child) => normalizeXmlIdentityValue(textContent(child)))
-      .sort();
+      .sort(compareOrdinalStrings);
     return `dcs-total-field=${JSON.stringify([normalizedPath, groups])}`;
   }
   if ((name === 'groupTemplate' || name === 'groupHeaderTemplate') && parentName === 'DataCompositionSchema') {

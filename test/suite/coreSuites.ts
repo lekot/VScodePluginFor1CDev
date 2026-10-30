@@ -305,6 +305,7 @@ export const coreSuiteFiles: string[] = [
   'suite/compareMerge/adoptedDesignerFormProjection.test.js',
   'suite/compareMerge/extensionAdoptedSemanticBridge.test.js',
   'suite/compareMerge/extensionAdoptedSemanticHost.test.js',
+  'suite/compareMerge/ordinalStringOrder.test.js',
   'suite/compareMerge/extensionAdoptedUuidOwnership.test.js',
   'suite/compareMerge/extensionAdoptedFormVisibility.test.js',
   'suite/bslSourceLocals.test.js',

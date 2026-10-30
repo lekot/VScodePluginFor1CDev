@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import * as path from 'path';
+import { compareOrdinalStrings } from '../ordinalStringOrder';
 
 import { parseCfeObjectIdentity, type CfeObjectIdentity } from '../../extensionSupport/cfeProject/ownership';
 import { requiredLinkedDesignerBodyPath } from '../linkedDesignerPackageRules';
@@ -581,7 +582,7 @@ function typeIdMappingSignature(input: AdoptedDesignerTypeIdReferenceDescriptor)
       const resolved = singleResolver.resolve(id);
       if (resolved.reason || resolved.qualifiedName !== `cfg:${entry.slice(entry.indexOf('=') + 1)}`) { return undefined; }
     }
-    return entries.sort().join('\n');
+    return entries.sort(compareOrdinalStrings).join('\n');
   } catch {
     return undefined;
   }
