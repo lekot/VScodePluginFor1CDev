@@ -5,6 +5,8 @@ import type { MergeFileWitness } from '../merge/mergePreview';
 import { captureMergePath } from '../merge/mergeSnapshot';
 import type { AdoptedDesignerChildUuidRequirement } from './adoptedDesignerChildIdentity';
 import type { ExtensionAdoptedProjectionIssue } from './adoptedDesignerCandidatePolicy';
+import { elementChildren, parseXmlDocument, textContent } from '../xml/xmlDom';
+import { namespaceUriForName } from '../adapters/semanticXml/semanticXmlIdentity';
 import {
   buildAdoptedDesignerGlobalUuidRegistry,
   collectNewOwnMetadataChildUuids,
@@ -20,6 +22,7 @@ import type { ExtensionMetadataIndex } from './extensionMetadataIndex';
 
 const UUID_PATTERN = /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/iu;
 const ZERO_UUID = '00000000-0000-0000-0000-000000000000';
+const MDCLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
 
 /** One instance is created per compare and shared by every row in that snapshot. */
 export interface ExtensionAdoptedUuidSnapshot {
@@ -31,6 +34,10 @@ export interface ExtensionAdoptedUuidProof {
   readonly issues: readonly ExtensionAdoptedProjectionIssue[];
   readonly witnesses: ReadonlyMap<string, readonly MergeFileWitness[]>;
 }
+
+export type RegisteredOwnFormDescriptorUuidProof =
+  | { readonly ok: true; readonly uuid: string; readonly witnesses: readonly MergeFileWitness[] }
+  | { readonly ok: false; readonly reason: string };
 
 interface UuidSnapshotState {
   readonly allocateUuid: () => string;
@@ -67,6 +74,61 @@ export async function createExtensionAdoptedUuidSnapshot(input: {
     ...(registryFailure ? { registryFailure } : {}),
   });
   return snapshot;
+}
+
+/** Proves one captured registered own Form descriptor introduces a UUID absent from target. */
+export function proveRegisteredOwnFormDescriptorUuid(
+  snapshot: ExtensionAdoptedUuidSnapshot,
+  input: {
+    readonly sourceId: string;
+    readonly relativePath: string;
+    readonly name: string;
+    readonly uuid: string;
+    readonly descriptorContent: Buffer;
+    readonly formatVersion: string;
+  },
+): RegisteredOwnFormDescriptorUuidProof {
+  const state = uuidSnapshotState.get(snapshot);
+  if (!state) { return { ok: false, reason: 'UUID proof context не принадлежит текущему compare snapshot.' }; }
+  const source = state.registry.source;
+  const target = state.registry.target;
+  if (!target.complete) { return { ok: false, reason: target.reasons[0] ?? 'Captured target UUID registry неполон.' }; }
+  if (!source.complete) { return { ok: false, reason: source.reasons[0] ?? 'Captured source UUID registry неполон.' }; }
+  const identity = readRegisteredOwnFormIdentity(input.descriptorContent, input.name, input.formatVersion);
+  if (!identity || normalizeUuid(identity.uuid) !== normalizeUuid(input.uuid)) {
+    return { ok: false, reason: `Captured descriptor ${input.relativePath} не является exact own Form ${input.name} с ожидаемым UUID/version.` };
+  }
+  const uuid = normalizeUuid(identity.uuid);
+  const sourceDefinitions = source.definitionsByUuid.get(uuid) ?? [];
+  if (sourceDefinitions.length !== 1) {
+    return { ok: false, reason: sourceDefinitions.length === 0
+      ? `UUID ${uuid} отсутствует в registered source UUID registry.`
+      : `UUID ${uuid} неоднозначен: в source обнаружено ${sourceDefinitions.length} metadata definitions.` };
+  }
+  const definition = sourceDefinitions[0]!;
+  if (definition.sourceId !== input.sourceId
+    || normalizeRelativePath(definition.relativePath) !== normalizeRelativePath(input.relativePath)
+    || definition.kind !== 'root'
+    || definition.metadataType !== 'Form'
+    || definition.name !== identity.name) {
+    return { ok: false, reason: `UUID ${uuid} source registry определяет другую registration/path/type/name.` };
+  }
+  const sourceFileWitness = source.witnesses.find((witness) => witness.sourceId === input.sourceId
+    && normalizeRelativePath(witness.relativePath) === normalizeRelativePath(input.relativePath));
+  const contentHash = hash(input.descriptorContent);
+  if (!sourceFileWitness || normalizeHash(sourceFileWitness.expectedHash) !== contentHash) {
+    return { ok: false, reason: `Captured own Form descriptor ${input.relativePath} не совпадает с registered source UUID snapshot.` };
+  }
+  const targetDefinitions = target.definitionsByUuid.get(uuid) ?? [];
+  if (targetDefinitions.length > 0) {
+    const existing = targetDefinitions[0]!;
+    return { ok: false, reason: `UUID ${uuid} уже определён в target как ${existing.metadataType}${existing.name ? ` ${existing.name}` : ''}: ${existing.relativePath}.` };
+  }
+  return {
+    ok: true,
+    uuid,
+    witnesses: dedupeUuidWitnesses([...target.witnesses, ...source.witnesses]),
+  };
 }
 
 export function allocateExtensionAdoptedChildUuids(
@@ -436,6 +498,45 @@ function samePhysicalChildAtTargetPath(
 
 function normalizeSelector(value: string): string { return value.toLocaleLowerCase('en-US'); }
 function normalizeName(value: string): string { return value.trim().normalize('NFC').toLocaleLowerCase('en-US'); }
+
+function readRegisteredOwnFormIdentity(
+  content: Buffer,
+  expectedName: string,
+  expectedVersion: string,
+): { readonly name: string; readonly uuid: string } | undefined {
+  try {
+    const root = parseXmlDocument(content.toString('utf8')).root;
+    if (root.localName !== 'MetaDataObject' || namespaceUriForName(root) !== MDCLASSES_NAMESPACE
+      || !expectedVersion || attributeValue(root, 'version') !== expectedVersion) { return undefined; }
+    const descriptors = elementChildren(root);
+    if (descriptors.length !== 1 || descriptors[0]!.localName !== 'Form'
+      || namespaceUriForName(descriptors[0]!) !== MDCLASSES_NAMESPACE) { return undefined; }
+    const descriptor = descriptors[0]!;
+    const uuid = attributeValue(descriptor, 'uuid')?.trim() ?? '';
+    if (!UUID_PATTERN.test(uuid) || normalizeUuid(uuid) === ZERO_UUID) { return undefined; }
+    const properties = elementChildren(descriptor).filter((element) => element.localName === 'Properties'
+      && namespaceUriForName(element) === MDCLASSES_NAMESPACE);
+    if (properties.length !== 1) { return undefined; }
+    const fields = elementChildren(properties[0]!);
+    const names = fields.filter((element) => element.localName === 'Name' && namespaceUriForName(element) === MDCLASSES_NAMESPACE);
+    if (names.length !== 1) { return undefined; }
+    const name = textContent(names[0]!).trim().normalize('NFC');
+    if (!name || name !== expectedName.trim().normalize('NFC')
+      || fields.some((element) => element.localName === 'ObjectBelonging' || element.localName === 'ExtendedConfigurationObject')) {
+      return undefined;
+    }
+    const childObjects = elementChildren(descriptor).filter((element) => element.localName === 'ChildObjects');
+    if (childObjects.length > 1 || childObjects.some((element) => namespaceUriForName(element) !== MDCLASSES_NAMESPACE
+      || elementChildren(element).length > 0)) { return undefined; }
+    return { name, uuid: normalizeUuid(uuid) };
+  } catch {
+    return undefined;
+  }
+}
+
+function attributeValue(element: ReturnType<typeof parseXmlDocument>['root'], name: string): string | undefined {
+  return element.attributes.find((attribute) => attribute.name === name)?.value;
+}
 
 function dedupeUuidWitnesses(witnesses: readonly MergeFileWitness[]): MergeFileWitness[] {
   const byKey = new Map<string, MergeFileWitness>();

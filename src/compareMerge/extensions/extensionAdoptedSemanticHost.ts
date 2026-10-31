@@ -14,6 +14,11 @@ import { getExplicitGeneratedTypeSpecs } from '../../utils/xml/metadataGenerated
 import type { ExtensionSemanticWrite } from './extensionSemanticMaterializer';
 import { type ExtensionIndexedObject, type ExtensionMetadataIndex } from './extensionMetadataIndex';
 import type { ExtensionTransferRow } from './extensionTransfer';
+import type { ExtensionLinkedDesignerPackage } from './extensionLinkedDesignerPackages';
+import {
+  prepareExtensionAdoptedOwnForms,
+  type ExtensionAdoptedOwnFormPreparation,
+} from './extensionAdoptedOwnFormHost';
 import type { ExtensionAdoptedProjectionIssue } from './adoptedDesignerCandidatePolicy';
 import {
   allocateExtensionAdoptedChildUuids,
@@ -84,6 +89,7 @@ export type ExtensionAdoptedRowPreparation =
     readonly direction: ExtensionAdoptedDirection;
     readonly artifacts: readonly ExtensionAdoptedPreparedArtifact[];
     readonly blockers: readonly ExtensionAdoptedScopedBlocker[];
+    readonly ownForms?: ExtensionAdoptedOwnFormPreparation;
   };
 
 export type ExtensionAdoptedBatchMaterialization =
@@ -102,6 +108,7 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
   readonly targetRoot: ExtensionMetadataIndex;
   readonly incomingRoot: ExtensionMetadataIndex;
   readonly uuidSnapshot: ExtensionAdoptedUuidSnapshot;
+  readonly linkedPackages?: readonly ExtensionLinkedDesignerPackage[];
 }): Promise<ExtensionAdoptedRowPreparation> {
   const direction = directionForExtensionAdoptedRow(input.row);
   if (!direction) { return { applicable: false }; }
@@ -131,6 +138,19 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
     };
   }
 
+  const ownForms = await prepareExtensionAdoptedOwnForms({
+    row: input.row,
+    targetRoot: input.targetRoot,
+    incomingRoot: input.incomingRoot,
+    proof,
+    uuidSnapshot: input.uuidSnapshot,
+    linkedPackages: input.linkedPackages ?? [],
+    configurationWitnesses: configurationWitnesses.witnesses,
+  });
+  for (const ownFormBlocker of ownForms.blockers) {
+    blockers.push({ kind: 'formXml', targetRelativePath: ownFormBlocker.relativePath, reason: ownFormBlocker.reason });
+  }
+
   const targetCapture = await captureObjectDescriptor(input.targetRoot, input.row.target!);
   const sourceCapture = await captureObjectDescriptor(input.incomingRoot, input.row.incoming!);
   const baseCapture = await captureObjectDescriptor(proof.baseRoot, proof.baseObject);
@@ -153,6 +173,7 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
   const descriptorDependencyWitnesses = dedupeWitnesses([
     ...configurationWitnesses.witnesses,
     ...(otherBaseCapture?.ok ? [otherBaseCapture.capture.witness] : []),
+    ...ownForms.descriptorWitnesses,
   ]);
   const descriptorInput = {
     direction,
@@ -161,6 +182,7 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
     base: baseCapture.capture,
     formatVersion: input.targetRoot.formatVersion ?? '',
     typeIdReferenceDescriptors,
+    ownFormRegistrations: ownForms.ownFormRegistrations,
   } as const;
   if (direction === 'cf-to-adopted') {
     const requirements = collectExtensionAdoptedChildUuidRequirements(descriptorInput);
@@ -214,8 +236,8 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
     }
   }
 
-  await prepareFormArtifacts(input, proof, direction, descriptorDependencyWitnesses, artifacts, blockers);
-  return { applicable: true, direction, artifacts, blockers };
+  await prepareFormArtifacts(input, proof, direction, descriptorDependencyWitnesses, artifacts, blockers, ownForms);
+  return { applicable: true, direction, artifacts, blockers, ownForms };
 }
 
 /** Applies one artifact's selected patch batch to its logical target and re-encodes physical XML. */
@@ -272,6 +294,7 @@ async function prepareFormArtifacts(
   configurationWitnesses: readonly MergeFileWitness[],
   artifacts: ExtensionAdoptedPreparedArtifact[],
   blockers: ExtensionAdoptedScopedBlocker[],
+  ownForms: ExtensionAdoptedOwnFormPreparation,
 ): Promise<void> {
   const targetOwner = input.row.target!;
   const sourceOwner = input.row.incoming!;
@@ -295,7 +318,9 @@ async function prepareFormArtifacts(
   const baseByName = mapForms(baseForms.forms);
   const otherBaseByName = otherBaseForms?.ok ? mapForms(otherBaseForms.forms) : undefined;
   const targetByName = mapForms(targetForms.forms);
+  const authorizedOwnSourceForms = new Set(ownForms.ownFormRegistrations.source.map(normalizeName));
   for (const [key, sourceForm] of sourceByName) {
+    if (authorizedOwnSourceForms.has(key)) { continue; }
     const baseForm = baseByName.get(key);
     const otherBaseForm = otherBaseByName?.get(key);
     if (!baseForm || sourceForm.identity.type !== baseForm.identity.type) {

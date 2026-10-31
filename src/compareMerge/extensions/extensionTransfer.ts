@@ -81,6 +81,10 @@ export interface ExtensionSemanticSelection {
   readonly dependencyWitnesses?: readonly import('../merge/mergePreview').MergeFileWitness[];
   /** Captured ownership-normalized CF↔CFE artifact; absent for ordinary same-owner semantic XML. */
   readonly adoptedArtifact?: import('./extensionAdoptedSemanticHost').ExtensionAdoptedPreparedArtifact;
+  /** Host-captured identity and dependency proof for an ordinary matched own Form under an adopted owner. */
+  readonly adoptedOwnForm?: import('./extensionAdoptedOwnFormHost').CapturedAdoptedOwnFormSelection;
+  /** Captured rights transition proof; the Rights bridge owns its producer/materializer. */
+  readonly adoptedRights?: import('./extensionAdoptedRightsBridge').CapturedAdoptedRightsRecipe;
   /** Captured CFE↔CFE TemplateType/body transition; separate from adopted descriptor translation. */
   readonly linkedTemplateTypeTransition?: import('../linkedDesignerTypes').LinkedTemplateTypeTransition;
 }

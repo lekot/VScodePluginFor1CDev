@@ -24,6 +24,7 @@ import { makeExtensionLinkedBslContext } from './extensionLinkedDesignerBsl';
 import { validateDeletedExtensionFormReferences } from './extensionLinkedDesignerValidation';
 import { addRecorderWitnesses, buildRecorderPreflight } from './extensionRecorderPreflight';
 import { adoptedRoleRightsWholeTransferBlocker, sameExtensionRelativePath } from './extensionRoleRightsWholeTransferPolicy';
+import { matchesCapturedAdoptedOwnFormSelection } from './extensionAdoptedOwnFormHost';
 import type { ExtensionObjectOutput, ExtensionOutputWrite } from './extensionMaterializerTypes';
 
 const LEFT_SOURCE_ID = 'left-source';
@@ -114,6 +115,9 @@ export async function materializeExtensionSelection(
       if (selection.kind !== 'metadataXml' && selection.kind !== 'formXml') {
         return artifact === undefined
           && (selection.kind === 'predefinedXml' || selection.kind === 'roleRightsXml' || selection.kind === 'dcsXml');
+      }
+      if (selection.kind === 'formXml' && matchesCapturedAdoptedOwnFormSelection(row!, selection)) {
+        return artifact === undefined;
       }
       return artifact !== undefined
         && artifact.kind === selection.kind

@@ -17,12 +17,14 @@ import type { ExtensionSemanticSelection, ExtensionTransferRow } from './extensi
 import { projectExtensionRootPurpose } from './extensionRootPurpose';
 import { indexExtensionLinkedDesignerPackages, linkedPackageForRegistrationNode, type ExtensionLinkedDesignerPackage } from './extensionLinkedDesignerPackages';
 import { collectExtensionEventDependencies, projectExtensionFormEventHandlers, type ExtensionLinkedRoutineSelection } from './extensionLinkedDesignerBsl';
+import { appendExtensionFormProjectionNodes } from './extensionAdoptedFormProjection';
 import { bindExtensionLinkedTemplateTransition, captureExtensionLinkedTemplateTransitions } from './extensionLinkedTemplateTransitions';
 import {
   createExtensionAdoptedUuidSnapshot,
   prepareExtensionAdoptedSemanticRow,
   type ExtensionAdoptedPreparedArtifact,
 } from './extensionAdoptedSemanticHost';
+import { directionForExtensionAdoptedRow } from './extensionAdoptedSemanticContext';
 import { adoptedTemplateTypeGuardReason, createAdoptedTemplateTypeGuard, type AdoptedTemplateTypeGuard } from './extensionAdoptedTemplateTypeGuard';
 import type { LinkedEventDependency, LinkedFormModuleSnapshot } from '../linkedDesignerTypes';
 import { LINKED_FORM_REFERENCE_PROPERTIES } from '../linkedDesignerUtils';
@@ -97,13 +99,46 @@ export async function projectExtensionSemanticNodes(
       nodes.push(rowNode(row, []));
       continue;
     }
+    const linkedIndex = await indexExtensionLinkedDesignerPackages({
+      row,
+      target: input.target,
+      incoming: input.incoming,
+      preserveTargetFormPackages: directionForExtensionAdoptedRow(row) !== undefined,
+    });
     const adoptedPreparation = await prepareExtensionAdoptedSemanticRow({
       row,
       targetRoot: input.target,
       incomingRoot: input.incoming,
       uuidSnapshot: adoptedUuidSnapshot,
+      linkedPackages: linkedIndex.packages,
     });
     const hasAdoptedProjection = adoptedPreparation.applicable;
+    const ownFormPackageProofs = new Map(adoptedPreparation.applicable
+      ? adoptedPreparation.ownForms?.packageProofs.map((proof) => [proof.packageId, proof]) ?? []
+      : []);
+    const linkedPackagesForRow = linkedIndex.packages
+      .filter((recipe) => !hasAdoptedProjection || recipe.kind !== 'Form' || recipe.action !== 'copy' || ownFormPackageProofs.has(recipe.packageId))
+      .map((recipe) => {
+        const proof = ownFormPackageProofs.get(recipe.packageId);
+        if (!proof) { return recipe; }
+        return {
+          ...recipe,
+          dependencyWitnesses: proof.dependencyWitnesses,
+          members: recipe.members.map((member) => member.sourceRelativePath
+            && normalizeArtifactPath(member.sourceRelativePath) === normalizeArtifactPath(proof.descriptorSourceRelativePath)
+            ? { ...member, descriptorUuidWitnesses: proof.descriptorUuidWitnesses }
+            : member),
+        };
+      });
+    const linkedPackageIds = new Set(linkedPackagesForRow.map((recipe) => recipe.packageId));
+    const linkedCapabilities = {
+      ...linkedIndex.capabilities,
+      registrations: linkedIndex.capabilities.registrations.filter((registration) => linkedPackageIds.has(registration.packageId)),
+      defaultObjectForms: linkedIndex.capabilities.defaultObjectForms.map((item) => {
+        if (!item.packageId || linkedPackageIds.has(item.packageId)) { return item; }
+        return { ...item, packageId: undefined };
+      }),
+    };
     const linkedTemplateTransitions = hasAdoptedProjection
       ? []
       : await captureExtensionLinkedTemplateTransitions({ row, targetRoot: input.target, incomingRoot: input.incoming });
@@ -122,9 +157,8 @@ export async function projectExtensionSemanticNodes(
       : ordinaryReadonlyReason === undefined;
     const readonlyReason = hasAdoptedProjection ? adoptedReadonlyReason : ordinaryReadonlyReason;
     const childNodes: CompareTreeNode[] = [];
-    const linkedIndex = await indexExtensionLinkedDesignerPackages({ row, target: input.target, incoming: input.incoming });
     diagnostics.push(...linkedIndex.diagnostics);
-    for (const recipe of linkedIndex.packages) {linkedDesignerPackages.set(recipe.packageId, recipe);}
+    for (const recipe of linkedPackagesForRow) {linkedDesignerPackages.set(recipe.packageId, recipe);}
     const adoptedDescriptor = hasAdoptedProjection
       ? adoptedPreparation.artifacts.find((artifact) => artifact.kind === 'metadataXml')
       : undefined;
@@ -144,8 +178,9 @@ export async function projectExtensionSemanticNodes(
       row,
       allowed,
       readonlyReason,
-      linkedDesignerContext: linkedIndex.capabilities,
-      linkedPackages: linkedIndex.packages,
+      linkedDesignerContext: linkedCapabilities,
+      linkedPackages: linkedPackagesForRow,
+      preserveAdoptedFormDeletes: hasAdoptedProjection,
       ...(adoptedDescriptor ? { adoptedArtifact: adoptedDescriptor } : {}),
       selections,
       diagnostics,
@@ -306,59 +341,61 @@ export async function projectExtensionSemanticNodes(
       }
     }
     if (hasAdoptedProjection) {
-      for (const artifact of adoptedPreparation.artifacts.filter((candidate) => candidate.kind === 'formXml')) {
-        throwIfCompareCancelled(input.cancellation);
-        const eventProjection = await projectExtensionFormEventHandlers({
-          row,
-          targetRoot: input.target,
-          incomingRoot: input.incoming,
-          targetOwner: row.target,
-          incomingOwner: row.incoming,
-          targetFormPath: artifact.targetRelativePath,
-          sourceFormPath: artifact.sourceRelativePath,
-          targetFormXml: artifact.targetXml,
-          sourceFormXml: artifact.sourceXml,
-          rightSnapshotId: input.rightSnapshotId,
-        });
-        diagnostics.push(...eventProjection.diagnostics);
-        eventProjection.routineSelections.forEach((selection, id) => linkedRoutineSelections.set(id, selection));
-        if (eventProjection.module) {linkedFormModules.push(eventProjection.module);}
-        const node = await compareArtifact({
-          input,
-          targetInventory,
-          incomingInventory,
-          targetObject: row.target,
-          incomingObject: row.incoming,
-          kind: 'formXml',
+      await appendExtensionFormProjectionNodes({
+        row,
+        targetRoot: input.target,
+        incomingRoot: input.incoming,
+        rightSnapshotId: input.rightSnapshotId,
+        cancellation: input.cancellation,
+        forms: adoptedPreparation.artifacts.filter((artifact) => artifact.kind === 'formXml').map((artifact) => ({
+          payload: artifact,
           targetRelativePath: artifact.targetRelativePath,
           sourceRelativePath: artifact.sourceRelativePath,
           targetHash: artifact.targetHash,
           sourceHash: artifact.sourceHash,
-          adapter: formXmlAdapter,
-          label: `Форма: ${path.posix.dirname(artifact.targetRelativePath)}`,
-          row,
-          allowed,
-          readonlyReason,
-          linkedDesignerContext: { registrations: [], defaultObjectForms: [], formEventHandlers: eventProjection.context },
-          adoptedArtifact: artifact,
-          selections,
-          diagnostics,
-        });
-        throwIfCompareCancelled(input.cancellation);
-        if (node) {childNodes.push(node);}
-        if (node && eventProjection.module) {
-          collectExtensionEventDependencies({
-            nodes: node.children,
-            capabilities: eventProjection.context,
-            module: eventProjection.module,
-            output: linkedEventDependencies,
-          });
-        }
-        childNodes.push(...eventProjection.routineNodes);
-      }
+          targetXml: artifact.targetXml,
+          sourceXml: artifact.sourceXml,
+        })),
+        compare: ({ payload: artifact }, events) => compareArtifact({
+          input, targetInventory, incomingInventory, targetObject: row.target!, incomingObject: row.incoming!,
+          kind: 'formXml', targetRelativePath: artifact.targetRelativePath, sourceRelativePath: artifact.sourceRelativePath,
+          targetHash: artifact.targetHash, sourceHash: artifact.sourceHash, adapter: formXmlAdapter,
+          label: `Форма: ${path.posix.dirname(artifact.targetRelativePath)}`, row, allowed, readonlyReason,
+          linkedDesignerContext: { registrations: [], defaultObjectForms: [], formEventHandlers: events.context },
+          adoptedArtifact: artifact, selections, diagnostics,
+        }),
+        childNodes, diagnostics, linkedRoutineSelections, linkedFormModules, linkedEventDependencies,
+      });
       for (const blocker of adoptedPreparation.blockers) {
         childNodes.push(adoptedBlockerNode(row, blocker));
       }
+      await appendExtensionFormProjectionNodes({
+        row,
+        targetRoot: input.target,
+        incomingRoot: input.incoming,
+        rightSnapshotId: input.rightSnapshotId,
+        cancellation: input.cancellation,
+        forms: (adoptedPreparation.ownForms?.matchedForms ?? []).map((ownForm) => ({
+          payload: ownForm,
+          targetRelativePath: ownForm.recipe.targetRelativePath,
+          sourceRelativePath: ownForm.recipe.sourceRelativePath,
+          targetHash: ownForm.recipe.targetHash,
+          sourceHash: ownForm.recipe.sourceHash,
+          targetXml: ownForm.targetXml,
+          sourceXml: ownForm.sourceXml,
+        })),
+        compare: ({ payload: ownForm }, events) => compareArtifact({
+          input, targetInventory, incomingInventory, targetObject: row.target!, incomingObject: row.incoming!,
+          kind: 'formXml', targetRelativePath: ownForm.recipe.targetRelativePath,
+          sourceRelativePath: ownForm.recipe.sourceRelativePath, targetHash: ownForm.recipe.targetHash,
+          sourceHash: ownForm.recipe.sourceHash, adapter: formXmlAdapter,
+          label: `Форма: ${ownForm.recipe.targetIdentity.name}`, row, allowed, readonlyReason,
+          linkedDesignerContext: { registrations: [], defaultObjectForms: [], formEventHandlers: events.context },
+          dependencyWitnesses: ownForm.recipe.requiredWitnesses, adoptedOwnForm: ownForm.recipe,
+          selections, diagnostics,
+        }),
+        childNodes, diagnostics, linkedRoutineSelections, linkedFormModules, linkedEventDependencies,
+      });
     }
     nodes.push(rowNode(row, childNodes));
     if (row.mergeable) {mergeableNodeIds.push(row.id);}
@@ -421,7 +458,10 @@ async function compareArtifact(input: {
   matchUnits?: { readonly target: MetadataObjectUnit; readonly source: MetadataObjectUnit };
   linkedDesignerContext?: NonNullable<AdapterCompareInput['linkedDesignerContext']>;
   linkedPackages?: readonly ExtensionLinkedDesignerPackage[];
+  preserveAdoptedFormDeletes?: boolean;
   adoptedArtifact?: ExtensionAdoptedPreparedArtifact;
+  adoptedOwnForm?: import('./extensionAdoptedOwnFormHost').CapturedAdoptedOwnFormSelection;
+  dependencyWitnesses?: readonly import('../merge/mergePreview').MergeFileWitness[];
   selections: Map<string, ExtensionSemanticSelection>;
   diagnostics: CompareMessage[];
 }): Promise<CompareTreeNode | undefined> {
@@ -455,6 +495,7 @@ async function compareArtifact(input: {
   }
   let sourceText = source.toString('utf8');
   const normalizeAdoptedRoot = input.kind === 'metadataXml'
+    && !input.adoptedArtifact
     && (input.row.semanticAction === 'adopted-cfe-semantic' || input.row.action === 'adopted-cfe-copy')
     && input.row.sameProvenBase === true
     && input.targetObject.identity?.ownership === 'adopted'
@@ -497,9 +538,9 @@ async function compareArtifact(input: {
     semanticMetadataReferenceWitnesses: metadataContext.referenceWitnesses,
     semanticContextWitnesses: input.adoptedArtifact
       ? [...metadataContext.contextWitnesses, ...input.adoptedArtifact.recipe.requiredWitnesses, ...input.adoptedArtifact.dependencyWitnesses]
-      : metadataContext.contextWitnesses,
+      : [...metadataContext.contextWitnesses, ...(input.dependencyWitnesses ?? [])],
     linkedDesignerContext: input.linkedDesignerContext,
-    ...(input.adoptedArtifact ? { allowMetadataChildOrder: false, allowFormSectionOrder: false } : {}),
+    ...(input.adoptedArtifact ? { allowMetadataChildOrder: true, allowFormSectionOrder: true } : {}),
     snapshots: { left: target.toString('utf8'), right: sourceText },
   };
   const result = await input.adapter.compare(compareInput);
@@ -538,8 +579,11 @@ async function compareArtifact(input: {
     factoryMap: result.candidateFactories,
     input,
     linkedPackages: input.linkedPackages ?? [],
+    preserveAdoptedFormDeletes: input.preserveAdoptedFormDeletes,
     ...(adoptedTemplateTypeGuard ? { adoptedTemplateTypeGuard } : {}),
     ...(input.adoptedArtifact ? { adoptedArtifact: input.adoptedArtifact } : {}),
+    ...(input.adoptedOwnForm ? { adoptedOwnForm: input.adoptedOwnForm } : {}),
+    ...(input.dependencyWitnesses ? { dependencyWitnesses: input.dependencyWitnesses } : {}),
     ...(adoptedIssueMap ? { adoptedIssueMap } : {}),
   }));
   if (adoptedIssueMap) {
@@ -563,8 +607,11 @@ function projectAdapterNode(input: {
   factoryMap: ReadonlyMap<string, ExecutableCandidateFactory>;
   input: Parameters<typeof compareArtifact>[0];
   linkedPackages: readonly ExtensionLinkedDesignerPackage[];
+  preserveAdoptedFormDeletes?: boolean;
   adoptedTemplateTypeGuard?: AdoptedTemplateTypeGuard;
   adoptedArtifact?: ExtensionAdoptedPreparedArtifact;
+  adoptedOwnForm?: import('./extensionAdoptedOwnFormHost').CapturedAdoptedOwnFormSelection;
+  dependencyWitnesses?: readonly import('../merge/mergePreview').MergeFileWitness[];
   adoptedIssueMap?: AdoptedIssueNodeMap;
 }): CompareTreeNode {
   const node = input.node;
@@ -574,9 +621,14 @@ function projectAdapterNode(input: {
     `${issue.identityKey}${issue.propertyName ? `/${issue.propertyName}` : ''}: ${issue.reason}`,
   ).join(' ');
   const adoptedTemplateTypeReason = adoptedTemplateTypeGuardReason(node, input.adoptedTemplateTypeGuard);
-  const enabled = input.input.allowed && !projectionIssues?.length && !adoptedTemplateTypeReason && Boolean(factory) && node.mergeable === true;
+  const linkedPackage = linkedPackageForRegistrationNode(node, input.linkedPackages);
+  const protectedFormRegistrationReason = input.preserveAdoptedFormDeletes && isAdoptedFormRegistration(node)
+    && (node.status === 'leftOnly' || node.status === 'rightOnly' && !linkedPackage)
+    ? 'Новая Form требует доказанного полного own package; target-side Form registration и package автоматически не удаляются.'
+    : undefined;
+  const enabled = input.input.allowed && !projectionIssues?.length && !adoptedTemplateTypeReason
+    && !protectedFormRegistrationReason && Boolean(factory) && node.mergeable === true;
   if (enabled && factory) {
-    const linkedPackage = linkedPackageForRegistrationNode(node, input.linkedPackages);
     const dependency = selectionDependency(node, input.input.linkedDesignerContext);
     const candidateUuid = adoptedCandidateUuid(node);
     const registryWitnesses = candidateUuid && input.adoptedArtifact
@@ -586,6 +638,10 @@ function projectAdapterNode(input: {
       withRootConfigurationWitnesses(factory, input.input.input.target, input.input.input.incoming),
       registryWitnesses ?? [],
     );
+    const dependencyWitnesses = dedupeSemanticWitnesses([
+      ...dependency.witnesses,
+      ...(input.dependencyWitnesses ?? []),
+    ]);
     input.input.selections.set(node.id, {
       nodeId: node.id,
       rowId: input.input.row.id,
@@ -598,8 +654,9 @@ function projectAdapterNode(input: {
       ...(linkedPackage ? { linkedPackageId: linkedPackage.packageId } : {}),
       ...(dependency.requiredPackageId ? { requiredPackageId: dependency.requiredPackageId } : {}),
       ...(dependency.targetFormComplete !== undefined ? { targetFormComplete: dependency.targetFormComplete } : {}),
-      ...(dependency.witnesses.length ? { dependencyWitnesses: dependency.witnesses } : {}),
+      ...(dependencyWitnesses.length ? { dependencyWitnesses } : {}),
       ...(input.adoptedArtifact ? { adoptedArtifact: input.adoptedArtifact } : {}),
+      ...(input.adoptedOwnForm ? { adoptedOwnForm: input.adoptedOwnForm } : {}),
     });
   }
   const children = node.children.map((child) => projectAdapterNode({ ...input, node: child }));
@@ -626,8 +683,25 @@ function projectAdapterNode(input: {
         targetFilePath: node.mergeState?.targetFilePath ?? input.input.adoptedArtifact?.targetFilePath ?? input.input.targetRelativePath,
       },
     } : {}),
+    ...(protectedFormRegistrationReason ? {
+      mergeable: false,
+      conflict: { kind: 'unsupported' as const, blocking: true, message: protectedFormRegistrationReason },
+      mergeState: { state: 'blocked' as const, reason: protectedFormRegistrationReason },
+    } : {}),
     children,
   };
+}
+
+function isAdoptedFormRegistration(node: CompareTreeNode): boolean {
+  return node.kind === 'xmlElement' && node.label.startsWith('Форма:');
+}
+
+function dedupeSemanticWitnesses(witnesses: readonly import('../merge/mergePreview').MergeFileWitness[]): import('../merge/mergePreview').MergeFileWitness[] {
+  const byKey = new Map<string, import('../merge/mergePreview').MergeFileWitness>();
+  for (const witness of witnesses) {
+    byKey.set(`${witness.sourceId}\0${normalizeArtifactPath(witness.relativePath)}\0${witness.kind ?? 'file'}`, witness);
+  }
+  return [...byKey.values()];
 }
 
 function adoptedProjectionIssueNode(
