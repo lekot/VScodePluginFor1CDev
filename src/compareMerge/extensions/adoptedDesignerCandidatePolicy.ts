@@ -81,6 +81,7 @@ export function withRegistryCandidateWitnesses(
 function adoptedIssueAffectsNode(issue: ExtensionAdoptedProjectionIssue, node: CompareTreeNode): boolean {
   const payload = node.payloadRef;
   if (!payload?.startsWith('xmlPatch:')) { return false; }
+  if (issue.orderOnly) { return adoptedOrderIssueAffectsNode(issue, node, payload); }
   let parsedSegments: ReturnType<typeof parseXmlAddressPointer>;
   try { parsedSegments = parseXmlAddressPointer(payload.slice('xmlPatch:'.length)); } catch { return false; }
   const segments = parsedSegments.map((segment) => `${segment.localName}[${segment.selector}]`);
@@ -110,6 +111,23 @@ function adoptedIssueAffectsNode(issue: ExtensionAdoptedProjectionIssue, node: C
     const normalized = segment.toLocaleLowerCase('en-US');
     return normalized.startsWith(`${property}[`) || normalized === `@${property}`;
   });
+}
+
+function adoptedOrderIssueAffectsNode(
+  issue: ExtensionAdoptedProjectionIssue,
+  node: CompareTreeNode,
+  payload: string,
+): boolean {
+  if (node.kind !== 'metadataOrderMove' || !issue.orderScopePointer || !issue.orderElementKind) { return false; }
+  const pointer = payload.slice('xmlPatch:'.length);
+  const separator = pointer.lastIndexOf('/');
+  if (separator < 0 || pointer.slice(0, separator) !== issue.orderScopePointer) { return false; }
+  try {
+    const segments = parseXmlAddressPointer(pointer);
+    return segments[segments.length - 1]?.localName === issue.orderElementKind;
+  } catch {
+    return false;
+  }
 }
 
 function collectCandidateNodes(

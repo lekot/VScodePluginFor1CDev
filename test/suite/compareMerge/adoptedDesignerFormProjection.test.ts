@@ -52,6 +52,57 @@ suite('Adopted Designer Form.xml projection (#335)', () => {
     assert.deepStrictEqual(materialized.baseFormWitness, projection.baseFormWitness);
   });
 
+  test('preserves selected Attributes, Commands, and Parameters order and target BaseForm across all directions', () => {
+    const collections = '<Attributes><Attribute id="attribute-a" name="AttributeA"/><Attribute id="attribute-b" name="AttributeB"/></Attributes>'
+      + '<Commands><Command id="command-a" name="CommandA"/><Command id="command-b" name="CommandB"/></Commands>'
+      + '<Parameters><Parameter id="parameter-a" name="ParameterA"/><Parameter id="parameter-b" name="ParameterB"/></Parameters>';
+    const reordered = '<Attributes><Attribute id="attribute-b" name="AttributeB"/><Attribute id="attribute-a" name="AttributeA"/></Attributes>'
+      + '<Commands><Command id="command-b" name="CommandB"/><Command id="command-a" name="CommandA"/></Commands>'
+      + '<Parameters><Parameter id="parameter-b" name="ParameterB"/><Parameter id="parameter-a" name="ParameterA"/></Parameters>';
+    const targetSnapshot = '<Button id="target-snapshot" title="Exact target snapshot"/>';
+    const sourceSnapshot = '<Button id="source-snapshot" title="Source snapshot"/>';
+
+    for (const direction of ['adopted-to-cf', 'cf-to-adopted', 'adopted-to-adopted'] as const) {
+      const targetAdopted = direction !== 'adopted-to-cf';
+      const sourceAdopted = direction !== 'cf-to-adopted';
+      const input = makeInput({
+        direction,
+        baseXml: form(collections),
+        targetXml: form(collections, targetAdopted ? targetSnapshot : undefined),
+        sourceXml: form(collections, sourceAdopted ? sourceSnapshot : undefined),
+      });
+      const projection = projectAdoptedDesignerFormPair(input);
+      assert.strictEqual(projection.ok, true, `${direction}: ${projection.ok ? '' : projection.reason}`);
+      if (!projection.ok) { continue; }
+      assert.doesNotMatch(projection.targetXml.toString('utf8'), /<BaseForm/u);
+      assert.doesNotMatch(projection.sourceXml.toString('utf8'), /<BaseForm/u);
+      const mergedLogicalTarget = Buffer.from(projection.targetXml.toString('utf8').replace(collections, reordered));
+
+      const materialized = materializeAdoptedDesignerFormTarget({ ...input, mergedLogicalTarget });
+
+      assert.strictEqual(materialized.ok, true, `${direction}: ${materialized.ok ? '' : materialized.reason}`);
+      if (!materialized.ok) { continue; }
+      const xml = materialized.content.toString('utf8');
+      for (const [first, second] of [
+        ['attribute-b', 'attribute-a'],
+        ['command-b', 'command-a'],
+        ['parameter-b', 'parameter-a'],
+      ] as const) {
+        assert.ok(xml.indexOf(`id="${first}"`) < xml.indexOf(`id="${second}"`), `${direction}: ${first} precedes ${second}`);
+      }
+      if (targetAdopted) {
+        assert.strictEqual(
+          xml.match(/<BaseForm[^>]*>[\s\S]*?<\/BaseForm>/u)?.[0],
+          `<BaseForm version="2.20"><Items>${targetSnapshot}</Items></BaseForm>`,
+          `${direction}: selected logical order must restore the exact target BaseForm last`,
+        );
+        assert.doesNotMatch(xml, /Source snapshot/u);
+      } else {
+        assert.doesNotMatch(xml, /<BaseForm/u, `${direction}: own CF target cannot receive a source BaseForm`);
+      }
+    }
+  });
+
   test('requires one valid final BaseForm on each adopted side', () => {
     const baseXml = form('<Button id="opaque-base-id" title="Current CF"/>');
     const validTarget = form('<Button id="opaque-base-id"/>', '<Button id="opaque-base-id" title="Target snapshot"/>');

@@ -21,6 +21,11 @@ import {
   type AdoptedDesignerTypeIdReferenceDescriptor,
 } from './adoptedDesignerTypeId';
 import { projectAdoptedProperties } from './adoptedDesignerLogicalProperties';
+import { projectAdoptedDesignerChildren } from './adoptedDesignerChildProjection';
+import {
+  encodeAdoptedMetadataOrder,
+  hasAdoptedMetadataOrderChange,
+} from './adoptedDesignerOrder';
 import {
   collectBaseFormRegistrations,
   encodeOwnFormRegistrations,
@@ -36,7 +41,6 @@ import {
   attach,
   attribute,
   cloneWithNamespaces,
-  direct as xmlDirect,
   makeElement,
   makeTextElement,
   prefixForNamespace,
@@ -86,6 +90,9 @@ export interface AdoptedDesignerProjectionIssue {
   readonly identityKey: string;
   readonly propertyName?: string;
   readonly reason: string;
+  readonly orderOnly?: boolean;
+  readonly orderScopePointer?: string;
+  readonly orderElementKind?: string;
 }
 
 export interface AdoptedDesignerProjectionInput {
@@ -365,7 +372,17 @@ function projectAdoptedDocument(
     issues,
   });
   if (formError) { throw new Error(formError); }
-  projectChildren(adoptedRoot, baseRoot, side, formatVersion, issues, rootKey(identity), typeIdResolver);
+  projectAdoptedDesignerChildren({
+    adoptedParent: adoptedRoot,
+    logicalParent: baseRoot,
+    baseOrderParent: metadataRoot(base, identity.type),
+    side,
+    formatVersion,
+    issues,
+    parentKey: rootKey(identity),
+    typeIdResolver,
+    stateMap,
+  });
   // The materialized logical view always carries base UUID and GeneratedType identities.
   return result;
 }
@@ -391,132 +408,6 @@ function projectOwnDocument(
   });
   if (formError) { throw new Error(formError); }
   return result;
-}
-
-function projectChildren(
-  adoptedParent: XmlElement,
-  logicalParent: XmlElement,
-  side: 'target' | 'source',
-  formatVersion: string,
-  issues: AdoptedDesignerProjectionIssue[],
-  parentKey: string,
-  typeIdResolver: ReturnType<typeof createAdoptedDesignerTypeIdResolver>,
-): void {
-  if (xmlDirect(adoptedParent, 'ChildObjects').some((node) => !inMetadataNamespace(node))) {
-    addIssue(issues, side, parentKey, 'ChildObjects', 'ChildObjects использует посторонний XML namespace и не проецируется.');
-  }
-  const adoptedContainer = direct(adoptedParent, 'ChildObjects')[0];
-  if (!adoptedContainer) { return; }
-  const logicalContainers = direct(logicalParent, 'ChildObjects');
-  if (logicalContainers.length > 1) {
-    addIssue(issues, side, parentKey, 'ChildObjects', 'В base повторяется ChildObjects; вложенные элементы не проецируются.');
-    return;
-  }
-  let logicalContainer = logicalContainers[0];
-  const seenAnchors = new Set<string>();
-  const seenLocalUuids = new Set<string>();
-  for (const overlayChild of elementChildren(adoptedContainer)) {
-    if (!inMetadataNamespace(overlayChild)) {
-      addIssue(issues, side, parentKey, 'ChildObjects', `ChildObjects содержит ${overlayChild.localName} в постороннем XML namespace; узел не сопоставлен.`);
-      continue;
-    }
-    const childType = overlayChild.localName;
-    if (overlayChild.localName === 'Form') { continue; }
-    const properties = direct(overlayChild, 'Properties')[0];
-    if (!properties) {
-      addIssue(issues, side, parentKey, childType, `ChildObjects/${childType} отсутствует Properties.`);
-      continue;
-    }
-    const localUuid = attribute(overlayChild, 'uuid') ?? '';
-    if (localUuid && seenLocalUuids.has(localUuid.toLowerCase())) {
-      addIssue(issues, side, `uuid=${localUuid.toLowerCase()}`, undefined, `Локальный UUID ${localUuid} повторяется в ChildObjects.`);
-      continue;
-    }
-    if (localUuid) { seenLocalUuids.add(localUuid.toLowerCase()); }
-    const belonging = childText(properties, 'ObjectBelonging');
-    const anchor = childText(properties, 'ExtendedConfigurationObject');
-    const name = childText(properties, 'Name');
-    if (belonging === 'Adopted' || anchor !== undefined) {
-      if (belonging !== 'Adopted' || !anchor) {
-        addIssue(issues, side, localUuid ? `uuid=${localUuid.toLowerCase()}` : parentKey, undefined, `Adopted ${childType} не содержит однозначный ExtendedConfigurationObject.`);
-        continue;
-      }
-      const anchorKey = `${childType.toLowerCase()}\0${anchor.toLowerCase()}`;
-      if (seenAnchors.has(anchorKey)) {
-        addIssue(issues, side, `uuid=${anchor.toLowerCase()}`, undefined, `Для ${childType} повторяется anchor ${anchor}.`);
-        continue;
-      }
-      seenAnchors.add(anchorKey);
-      if (!localUuid || same(localUuid, anchor)) {
-        addIssue(issues, side, `uuid=${anchor.toLowerCase()}`, undefined, 'Adopted child требует локальный UUID, отличный от CF anchor UUID.');
-        continue;
-      }
-      if (!logicalContainer) {
-        addIssue(issues, side, `uuid=${anchor.toLowerCase()}`, undefined, `В base отсутствует ChildObjects для adopted ${childType} anchor ${anchor}.`);
-        continue;
-      }
-      const matches = elementChildren(logicalContainer).filter((candidate) => candidate.localName === childType
-        && same(attribute(candidate, 'uuid'), anchor));
-      if (matches.length !== 1) {
-        addIssue(issues, side, `uuid=${anchor.toLowerCase()}`, undefined, matches.length === 0
-          ? `Для adopted ${childType} отсутствует child с точным anchor UUID ${anchor}.`
-          : `Anchor UUID ${anchor} неоднозначен среди ${childType}.`);
-        continue;
-      }
-      const baseChild = matches[0]!;
-      const baseProperties = direct(baseChild, 'Properties')[0];
-      const baseName = baseProperties ? childText(baseProperties, 'Name') : undefined;
-      if (!name || !same(name, baseName)) {
-        addIssue(issues, side, `uuid=${anchor.toLowerCase()}`, 'Name', 'Имя adopted child отличается от child точного anchor UUID.');
-        continue;
-      }
-      if (localUuid && elementChildren(logicalContainer).some((sibling) => sibling !== baseChild
-        && same(attribute(sibling, 'uuid'), localUuid))) {
-        addIssue(issues, side, `uuid=${localUuid.toLowerCase()}`, undefined, 'Локальный UUID adopted child конфликтует с другим child target.');
-        continue;
-      }
-      if (!baseProperties) {
-        addIssue(issues, side, `uuid=${anchor.toLowerCase()}`, undefined, 'В base adopted child отсутствует Properties.');
-        continue;
-      }
-      projectAdoptedProperties({
-        target: baseProperties,
-        overlay: properties,
-        states: stateMap(overlayChild, side, `uuid=${anchor.toLowerCase()}`, issues),
-        side,
-        ownerKey: `uuid=${anchor.toLowerCase()}`,
-        formatVersion,
-        issues,
-        typeIdResolver,
-      });
-      projectChildren(overlayChild, baseChild, side, formatVersion, issues, `uuid=${anchor.toLowerCase()}`, typeIdResolver);
-      continue;
-    }
-    // An own child is a complete local object. Keep its local identity and payload.
-    if (!localUuid || !name) {
-      addIssue(issues, side, parentKey, undefined, `Собственный child ${childType} не имеет UUID или Name.`);
-      continue;
-    }
-    const collision = logicalContainer && elementChildren(logicalContainer).find((candidate) => candidate.localName === childType
-      && same(attribute(candidate, 'uuid'), localUuid));
-    if (collision) {
-      addIssue(issues, side, `uuid=${localUuid.toLowerCase()}`, undefined, `Собственный child UUID ${localUuid} конфликтует с base child.`);
-      continue;
-    }
-    const sameName = logicalContainer && elementChildren(logicalContainer).find((candidate) => candidate.localName === childType
-      && same(childText(direct(candidate, 'Properties')[0] ?? candidate, 'Name'), name));
-    if (sameName) {
-      addIssue(issues, side, `uuid=${localUuid.toLowerCase()}`, undefined, `Собственный child ${childType}.${name} конфликтует по имени с base child.`);
-      continue;
-    }
-    const own = cloneWithNamespaces(overlayChild);
-    if (!logicalContainer) {
-      const prefix = prefixForNamespace(logicalParent, MDCLASSES_NAMESPACE, 'md');
-      logicalContainer = makeElement(`${prefix}:ChildObjects`);
-      attach(logicalParent, logicalContainer);
-    }
-    attach(logicalContainer, own);
-  }
 }
 
 function encodeAdoptedRoot(input: {
@@ -586,6 +477,17 @@ function encodeChildObjects(input: {
     targetOwnership: 'adopted',
   });
   if (formError) { return formError; }
+  const orderError = encodeAdoptedMetadataOrder({
+    baseParent: input.baseRoot,
+    physicalParent: input.physicalRoot,
+    initialParent: input.initialRoot,
+    selectedParent: input.selectedRoot,
+    ownerScope: input.ownerScope,
+    adoptedChildUuidByAnchor: input.adoptedChildUuidByAnchor,
+    targetChildUuids: input.targetChildUuids,
+    issues: input.issues,
+  });
+  if (orderError) { return orderError; }
   const physicalContainer = direct(input.physicalRoot, 'ChildObjects')[0];
   const baseContainer = direct(input.baseRoot, 'ChildObjects')[0];
   const initialContainer = direct(input.initialRoot, 'ChildObjects')[0];
@@ -678,6 +580,7 @@ function encodeNestedChildChanges(
   allocation: {
     adoptedChildUuidByAnchor?: ReadonlyMap<string, string>;
     targetChildUuids: Set<string>;
+    issues: AdoptedDesignerProjectionIssue[];
   },
 ): string | undefined {
   const baseContainers = direct(base, 'ChildObjects');
@@ -690,6 +593,8 @@ function encodeNestedChildChanges(
   const baseNested = baseContainers[0];
   const beforeNested = beforeContainers[0];
   const selectedNested = selectedContainers[0];
+  const orderChanged = Boolean(beforeNested && selectedNested
+    && hasAdoptedMetadataOrderChange(beforeNested, selectedNested));
   if (!baseNested && !beforeNested && !selectedNested) { return undefined; }
   if (baseNested && !selectedNested && elementChildren(baseNested).some((child) => inMetadataNamespace(child))) {
     return 'Удаление унаследованного nested ChildObjects невозможно представить в adopted overlay.';
@@ -717,13 +622,24 @@ function encodeNestedChildChanges(
   const ownChanged = [...ownKeys].some((key) => !baseByKey.has(key)
     && !sameElement(beforeByKey.get(key), selectedByKey.get(key)));
   let physicalNested = physicalContainers[0];
-  const requiresNestedWrite = inheritedChanged || ownChanged;
+  const requiresNestedWrite = inheritedChanged || ownChanged || orderChanged;
   if (!physicalNested && requiresNestedWrite) {
     const prefix = prefixForNamespace(physical, MDCLASSES_NAMESPACE, 'md');
     physicalNested = makeElement(`${prefix}:ChildObjects`);
     attach(physical, physicalNested);
   }
   if (!physicalNested) { return undefined; }
+  const orderError = encodeAdoptedMetadataOrder({
+    baseParent: base,
+    physicalParent: physical,
+    initialParent: before,
+    selectedParent: selected,
+    ownerScope,
+    adoptedChildUuidByAnchor: allocation.adoptedChildUuidByAnchor,
+    targetChildUuids: allocation.targetChildUuids,
+    issues: allocation.issues,
+  });
+  if (orderError) { return orderError; }
   for (const baseChild of baseChildren) {
     const key = childIdentity(baseChild);
     const beforeChild = beforeByKey.get(key) ?? baseChild;
