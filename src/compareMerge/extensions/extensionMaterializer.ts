@@ -25,6 +25,7 @@ import { validateDeletedExtensionFormReferences } from './extensionLinkedDesigne
 import { addRecorderWitnesses, buildRecorderPreflight } from './extensionRecorderPreflight';
 import { adoptedRoleRightsWholeTransferBlocker, sameExtensionRelativePath } from './extensionRoleRightsWholeTransferPolicy';
 import { matchesCapturedAdoptedOwnFormSelection } from './extensionAdoptedOwnFormHost';
+import { selectedAdoptedRightsReference, selectedOutputDeclaresCfeObject } from './extensionSelectedOutputDependencies';
 import type { ExtensionObjectOutput, ExtensionOutputWrite } from './extensionMaterializerTypes';
 
 const LEFT_SOURCE_ID = 'left-source';
@@ -218,7 +219,7 @@ export async function materializeExtensionSelection(
     return { ok: false, diagnostics: [compareDiagnostic(collision, RIGHT_SOURCE_ID)] };
   }
 
-  const dependencyResult = validateSelectedOutputDependencies(outputsWithRecorderWitnesses, input);
+  const dependencyResult = validateSelectedOutputDependencies(outputsWithRecorderWitnesses, input, selectedSemantic);
   if (dependencyResult.diagnostics.length > 0) {
     return { ok: false, diagnostics: [...dependencyResult.diagnostics] };
   }
@@ -344,6 +345,7 @@ export async function materializeExtensionSelection(
 function validateSelectedOutputDependencies(
   outputs: readonly ExtensionObjectOutput[],
   input: ExtensionMaterializerInput,
+  selectedSemantic: ReadonlyMap<string, readonly ExtensionSemanticSelection[]>,
 ): { readonly outputs: readonly ExtensionObjectOutput[]; readonly diagnostics: readonly CompareMessage[] } {
   const artifacts = outputs.flatMap((output) => output.writes
     .filter((write) => path.extname(write.relativePath).toLowerCase() === '.xml')
@@ -434,6 +436,29 @@ function validateSelectedOutputDependencies(
     }
 
     const selectedMatches = selectedOutputsByName.get(dependencyKey(reference.qualifiedName)) ?? [];
+    if (input.target.rootKind === 'cfe'
+        && reference.metadataType !== 'Configuration'
+        && selectedAdoptedRightsReference(owner, reference, selectedSemantic, dependencyKey)) {
+      const targetResolution = resolveDependencyInIndex(input.target, reference);
+      if (targetResolution.kind === 'ambiguous' || targetResolution.kind === 'invalid') {
+        diagnostics.push(compareDiagnostic(targetResolution.reason, owner.row.incoming?.sourceId ?? RIGHT_SOURCE_ID, owner.row.id));
+        continue;
+      }
+      if (targetResolution.kind === 'found') {
+        addDependencyDescriptorWitness(witnessesByWrite, owner, reference, targetResolution.object, diagnostics);
+        continue;
+      }
+      const declaringOutputs = selectedMatches.filter((output) => selectedOutputDeclaresCfeObject(output, reference, dependencyKey));
+      if (declaringOutputs.length === 1) {continue;}
+      diagnostics.push(compareDiagnostic(
+        declaringOutputs.length > 1
+          ? `Выбранные outputs неоднозначно объявляют физический CFE object ${reference.qualifiedName}.`
+          : `Выбранное изменение Rights ссылается на ${reference.qualifiedName}, но этот object не объявлен физически в target CFE и не добавляется выбранным проверенным output. Запись только в base недостаточна.`,
+        owner.row.incoming?.sourceId ?? RIGHT_SOURCE_ID,
+        owner.row.id,
+      ));
+      continue;
+    }
     if (selectedMatches.length === 1) {continue;}
     if (selectedMatches.length > 1) {
       diagnostics.push(compareDiagnostic(`Выбранный пакет содержит несколько outputs для ${reference.qualifiedName}.`, owner.row.incoming?.sourceId ?? RIGHT_SOURCE_ID, owner.row.id));

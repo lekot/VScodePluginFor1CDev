@@ -16,9 +16,17 @@ import { type ExtensionIndexedObject, type ExtensionMetadataIndex } from './exte
 import type { ExtensionTransferRow } from './extensionTransfer';
 import type { ExtensionLinkedDesignerPackage } from './extensionLinkedDesignerPackages';
 import {
+  prepareExtensionAdoptedRightsForRow,
+  type ExtensionAdoptedRightsPreparation,
+} from './extensionAdoptedRightsHost';
+import {
   prepareExtensionAdoptedOwnForms,
   type ExtensionAdoptedOwnFormPreparation,
 } from './extensionAdoptedOwnFormHost';
+import {
+  prepareExtensionAdoptedTemplatesForRow,
+  type ExtensionAdoptedTemplatePreparation,
+} from './extensionAdoptedTemplateHost';
 import type { ExtensionAdoptedProjectionIssue } from './adoptedDesignerCandidatePolicy';
 import {
   allocateExtensionAdoptedChildUuids,
@@ -90,6 +98,8 @@ export type ExtensionAdoptedRowPreparation =
     readonly artifacts: readonly ExtensionAdoptedPreparedArtifact[];
     readonly blockers: readonly ExtensionAdoptedScopedBlocker[];
     readonly ownForms?: ExtensionAdoptedOwnFormPreparation;
+    readonly rights?: ExtensionAdoptedRightsPreparation;
+    readonly templates?: ExtensionAdoptedTemplatePreparation;
   };
 
 export type ExtensionAdoptedBatchMaterialization =
@@ -169,6 +179,35 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
     };
   }
 
+  const rights = input.row.target?.metadataType === 'Role' && input.row.incoming?.metadataType === 'Role'
+    ? await prepareExtensionAdoptedRightsForRow({
+      row: input.row,
+      targetRoot: input.targetRoot,
+      incomingRoot: input.incomingRoot,
+      direction,
+      proof,
+      targetDescriptor: targetCapture.capture,
+      sourceDescriptor: sourceCapture.capture,
+      baseDescriptor: baseCapture.capture,
+      ...(otherBaseCapture?.ok ? { otherBaseDescriptor: otherBaseCapture.capture } : {}),
+      configurationWitnesses: configurationWitnesses.witnesses,
+    })
+    : undefined;
+  const templates = await prepareExtensionAdoptedTemplatesForRow({
+    row: input.row,
+    targetRoot: input.targetRoot,
+    incomingRoot: input.incomingRoot,
+    direction,
+    proof,
+    ownerCaptures: {
+      target: targetCapture.capture,
+      source: sourceCapture.capture,
+      targetBase: baseCapture.capture,
+      sourceBase: otherBaseCapture?.ok ? otherBaseCapture.capture : baseCapture.capture,
+    },
+    configurationWitnesses: configurationWitnesses.witnesses,
+  });
+
   const typeIdReferenceDescriptors = typeIdContext(direction, input.incomingRoot, proof.baseRoot, proof.otherBaseRoot);
   const descriptorDependencyWitnesses = dedupeWitnesses([
     ...configurationWitnesses.witnesses,
@@ -237,7 +276,7 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
   }
 
   await prepareFormArtifacts(input, proof, direction, descriptorDependencyWitnesses, artifacts, blockers, ownForms);
-  return { applicable: true, direction, artifacts, blockers, ownForms };
+  return { applicable: true, direction, artifacts, blockers, ownForms, ...(rights ? { rights } : {}), templates };
 }
 
 /** Applies one artifact's selected patch batch to its logical target and re-encodes physical XML. */

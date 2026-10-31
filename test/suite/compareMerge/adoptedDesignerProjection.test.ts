@@ -109,6 +109,125 @@ suite('Adopted Designer descriptor projection (#335)', () => {
     if (!result.ok) { assert.match(result.reason, /направлени/iu); }
   });
 
+  test('creates namespace-correct InternalInfo only when encoding a selected property on a native Template without it', () => {
+    const input = makeTemplateInput({ targetXml: templateDescriptor({ uuid: CFE_UUID, adopted: true, comment: 'Target value' }) });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const merged = Buffer.from(replaceComment(projection.targetXml.toString('utf8'), 'Target value', 'Selected value'));
+
+    const result = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: merged });
+
+    assert.strictEqual(result.ok, true, result.ok ? undefined : result.reason);
+    if (!result.ok) { return; }
+    const xml = result.content.toString('utf8');
+    assert.match(xml, /<(?:md\d*:)?InternalInfo(?:\s[^>]*)?>[\s\S]*?<xr:PropertyState>[\s\S]*?<xr:Property>Comment<\/xr:Property>[\s\S]*?<xr:State>Notify<\/xr:State>/u);
+    assert.match(xml, /<Template uuid="22222222-2222-4222-8222-222222222222"/u);
+    assert.ok(xml.indexOf('InternalInfo') < xml.indexOf('Properties'), 'new MD InternalInfo is inserted before Properties');
+    assert.doesNotMatch(xml, /GeneratedType/u, 'creating Notify state must not invent GeneratedType identity');
+  });
+
+  test('uses safe readable prefixes and preserves foreign InternalInfo under shadowed namespace bindings', () => {
+    const targetXml = templateDescriptor({
+      uuid: CFE_UUID,
+      adopted: true,
+      comment: 'Target value',
+      namespaceMode: 'prefixed-shadowed-xr',
+      foreignInternalInfo: '<vendor:InternalInfo marker="opaque"/>',
+    });
+    const input = makeTemplateInput({ targetXml });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const merged = Buffer.from(replaceComment(projection.targetXml.toString('utf8'), 'Target value', 'Selected value'));
+
+    const result = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: merged });
+
+    assert.strictEqual(result.ok, true, result.ok ? undefined : result.reason);
+    if (!result.ok) { return; }
+    const xml = result.content.toString('utf8');
+    assert.match(xml, /<vendor:InternalInfo marker="opaque"\/>/u);
+    assert.match(xml, /<m:InternalInfo(?:\s[^>]*)?>[\s\S]*?<xr\d+:PropertyState>/u);
+    assert.match(xml, /xmlns:xr="urn:vendor"/u);
+    assert.doesNotMatch(xml, /<xr:PropertyState>/u, 'shadowed vendor xr prefix must not be used for readable nodes');
+  });
+
+  test('preserves no-op and revert-to-base Templates without synthesizing InternalInfo', () => {
+    const input = makeTemplateInput({ targetXml: templateDescriptor({ uuid: CFE_UUID, adopted: true, comment: 'Target override' }) });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+
+    const unchanged = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: projection.targetXml });
+    assert.strictEqual(unchanged.ok, true, unchanged.ok ? undefined : unchanged.reason);
+    if (unchanged.ok) { assert.doesNotMatch(unchanged.content.toString('utf8'), /InternalInfo/u); }
+
+    const revertedLogical = Buffer.from(replaceComment(projection.targetXml.toString('utf8'), 'Target override', 'Base comment'));
+    const reverted = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: revertedLogical });
+    assert.strictEqual(reverted.ok, true, reverted.ok ? undefined : reverted.reason);
+    if (reverted.ok) {
+      assert.doesNotMatch(reverted.content.toString('utf8'), /InternalInfo/u);
+      assert.doesNotMatch(reverted.content.toString('utf8'), /<Comment>Target override<\/Comment>/u);
+    }
+  });
+
+  test('fails closed for ambiguous MD InternalInfo or Properties but ignores and preserves a foreign lookalike', () => {
+    const foreign = templateDescriptor({
+      uuid: CFE_UUID,
+      adopted: true,
+      comment: 'Target value',
+      foreignInternalInfo: '<vendor:InternalInfo marker="keep"/>',
+    });
+    const input = makeTemplateInput({ targetXml: foreign });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const merged = Buffer.from(replaceComment(projection.targetXml.toString('utf8'), 'Target value', 'Selected value'));
+    const encoded = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: merged });
+    assert.strictEqual(encoded.ok, true, encoded.ok ? undefined : encoded.reason);
+    if (encoded.ok) {
+      const xml = encoded.content.toString('utf8');
+      assert.match(xml, /<vendor:InternalInfo marker="keep"\/>/u);
+      assert.match(xml, /<(?:md\d*:)?InternalInfo(?:\s[^>]*)?>[\s\S]*?<xr:PropertyState>/u);
+    }
+
+    const existingInfo = templateDescriptor({
+      uuid: CFE_UUID,
+      adopted: true,
+      comment: 'Target value',
+      internalInfo: `<InternalInfo><xr:GeneratedType name="PrintTemplate" uuid="${BASE_UUID}"/></InternalInfo>`,
+    });
+    const existingInput = makeTemplateInput({ targetXml: existingInfo });
+    const existingProjection = projectAdoptedDesignerPair(existingInput);
+    assert.strictEqual(existingProjection.ok, true, existingProjection.ok ? undefined : existingProjection.reason);
+    if (existingProjection.ok) {
+      const selectedExisting = Buffer.from(replaceComment(existingProjection.targetXml.toString('utf8'), 'Target value', 'Selected value'));
+      const existingResult = materializeAdoptedDesignerTarget({ ...existingInput, mergedLogicalTarget: selectedExisting });
+      assert.strictEqual(existingResult.ok, true, existingResult.ok ? undefined : existingResult.reason);
+      if (existingResult.ok) {
+        const xml = existingResult.content.toString('utf8');
+        assert.match(xml, /<xr:GeneratedType name="PrintTemplate" uuid="11111111-1111-4111-8111-111111111111"\/>/u);
+        assert.match(xml, /<xr:PropertyState>/u);
+      }
+    }
+
+    const duplicateInfo = templateDescriptor({ uuid: CFE_UUID, adopted: true, comment: 'Target value', internalInfo: '<InternalInfo/><InternalInfo/>' });
+    const duplicateInfoInput = makeTemplateInput({ targetXml: duplicateInfo });
+    const duplicateInfoProjection = projectAdoptedDesignerPair(duplicateInfoInput);
+    assert.strictEqual(duplicateInfoProjection.ok, true, duplicateInfoProjection.ok ? undefined : duplicateInfoProjection.reason);
+    if (duplicateInfoProjection.ok) {
+      const selected = Buffer.from(replaceComment(duplicateInfoProjection.targetXml.toString('utf8'), 'Base comment', 'Selected value'));
+      const duplicateInfoResult = materializeAdoptedDesignerTarget({ ...duplicateInfoInput, mergedLogicalTarget: selected });
+      assert.strictEqual(duplicateInfoResult.ok, false);
+      if (!duplicateInfoResult.ok) { assert.match(duplicateInfoResult.reason, /PropertyState|InternalInfo|ambiguous|повтор/u); }
+    }
+
+    const duplicateProperties = templateDescriptor({ uuid: CFE_UUID, adopted: true, comment: 'Target value', duplicateProperties: true });
+    const duplicatePropertiesInput = makeTemplateInput({ targetXml: duplicateProperties });
+    const duplicatePropertiesProjection = projectAdoptedDesignerPair(duplicatePropertiesInput);
+    assert.strictEqual(duplicatePropertiesProjection.ok, false, 'ambiguous physical Properties are rejected during descriptor validation');
+  });
+
   test('collects and uses target child UUID allocations for adopted-to-adopted materialization', () => {
     const sourceOverlay = adoptedChild({ comment: 'Selected borrowed child' });
     const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [baseChild('Base child')] });
@@ -1758,6 +1877,48 @@ interface DescriptorOptions {
   readonly type?: string;
 }
 
+interface TemplateDescriptorOptions {
+  readonly uuid: string;
+  readonly adopted?: boolean;
+  readonly comment?: string;
+  readonly namespaceMode?: 'default' | 'prefixed-shadowed-xr';
+  readonly internalInfo?: string;
+  readonly foreignInternalInfo?: string;
+  readonly duplicateProperties?: boolean;
+}
+
+function makeTemplateInput(overrides: { readonly targetXml?: Buffer } = {}): AdoptedDesignerProjectionInput {
+  const baseIdentity: AdoptedDesignerIdentity = { ownership: 'own', type: 'Template', name: 'Print', uuid: BASE_UUID };
+  return {
+    direction: 'cf-to-adopted',
+    targetXml: overrides.targetXml ?? templateDescriptor({ uuid: CFE_UUID, adopted: true, comment: 'Target value' }),
+    sourceXml: templateDescriptor({ uuid: BASE_UUID, comment: 'Base comment' }),
+    baseXml: templateDescriptor({ uuid: BASE_UUID, comment: 'Base comment' }),
+    targetIdentity: { ownership: 'adopted', type: 'Template', name: 'Print', uuid: CFE_UUID, sourceUuid: BASE_UUID },
+    sourceIdentity: baseIdentity,
+    baseIdentity,
+    formatVersion: '2.20',
+  };
+}
+
+function templateDescriptor(options: TemplateDescriptorOptions): Buffer {
+  const prefixed = options.namespaceMode === 'prefixed-shadowed-xr';
+  const prefix = prefixed ? 'm:' : '';
+  const adopted = options.adopted
+    ? `<${prefix}ObjectBelonging>Adopted</${prefix}ObjectBelonging><${prefix}ExtendedConfigurationObject>${BASE_UUID}</${prefix}ExtendedConfigurationObject>`
+    : '';
+  const comment = options.comment ?? 'Base comment';
+  const properties = `<${prefix}Properties><${prefix}Name>Print</${prefix}Name><${prefix}Comment>${comment}</${prefix}Comment><${prefix}TemplateType>Text</${prefix}TemplateType>${adopted}</${prefix}Properties>`;
+  const propertyContainers = options.duplicateProperties ? `${properties}${properties}` : properties;
+  const internalInfo = options.internalInfo ?? '';
+  const foreignInternalInfo = options.foreignInternalInfo ?? '';
+  const metaOpen = prefixed
+    ? '<m:MetaDataObject xmlns:m="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="urn:vendor" xmlns:vendor="urn:vendor" version="2.20">'
+    : '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:vendor="urn:vendor" version="2.20">';
+  const metaClose = prefixed ? '</m:MetaDataObject>' : '</MetaDataObject>';
+  return Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>${metaOpen}<${prefix}Template uuid="${options.uuid}">${propertyContainers}${internalInfo}${foreignInternalInfo}</${prefix}Template>${metaClose}`, 'utf8');
+}
+
 type TestAdoptedDirection = AdoptedDesignerProjectionInput['direction'] | 'adopted-to-adopted';
 
 function makeInput(overrides: Omit<Partial<AdoptedDesignerProjectionInput>, 'direction'> & { readonly direction?: TestAdoptedDirection } = {}): AdoptedDesignerProjectionInput {
@@ -1970,7 +2131,7 @@ function descriptor(options: DescriptorOptions): Buffer {
 }
 
 function replaceComment(xml: string, before: string, after: string): string {
-  return xml.replace(new RegExp(`(<Comment(?:\\s[^>]*)?>)${before}(</Comment>)`, 'u'), `$1${after}$2`);
+  return xml.replace(new RegExp(`(<(?:[A-Za-z_][\\w.-]*:)?Comment(?:\\s[^>]*)?>)${before}(</(?:[A-Za-z_][\\w.-]*:)?Comment>)`, 'u'), `$1${after}$2`);
 }
 
 function adoptedChild(options: { readonly anchorUuid?: string; readonly comment: string }): string {

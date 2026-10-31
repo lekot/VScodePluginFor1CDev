@@ -462,7 +462,14 @@ async function buildAdoptedRightsPathWrite(
     if (!patch || patch.semanticKind !== 'roleRightsXml' || candidate.targetUri !== pathToFileURL(targetFilePath).toString()) {
       return { diagnostic: diagnostic('Adopted Rights candidate не совпадает с выбранным target Rights.xml.', incoming.sourceId, selection.nodeId) };
     }
-    candidatePatches.push(patch);
+    const context = patch.semanticContext;
+    const availableMetadataReferences = input.addedMetadataReferences?.length
+      ? [...new Set([...(context?.availableMetadataReferences ?? []), ...input.addedMetadataReferences])]
+      : context?.availableMetadataReferences;
+    candidatePatches.push({
+      ...patch,
+      ...(availableMetadataReferences ? { semanticContext: { ...context, availableMetadataReferences } } : {}),
+    });
     candidateWitnesses.push(...(selection.dependencyWitnesses ?? []), ...(patch.sourceWitnesses ?? []), ...(candidate.sourceWitnesses ?? []));
   }
 

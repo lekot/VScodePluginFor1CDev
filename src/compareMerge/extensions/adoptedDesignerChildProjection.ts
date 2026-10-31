@@ -1,4 +1,4 @@
-import { elementChildren, type XmlElement } from '../xml/xmlDom';
+import { elementChildren, textContent, type XmlElement } from '../xml/xmlDom';
 import {
   attach,
   attribute,
@@ -54,7 +54,15 @@ export function projectAdoptedDesignerChildren(input: AdoptedDesignerChildProjec
       continue;
     }
     const childType = overlayChild.localName;
+    // Form registrations retain their existing package handling. A Template is a
+    // name registration only when it exactly names one immutable base registration.
     if (childType === 'Form') { continue; }
+    if (childType === 'Template') {
+      if (isExactBaseTemplateRegistration(overlayChild, input.baseOrderParent)) { continue; }
+      addIssue(issues, side, parentKey, 'Template',
+        'Template registration не совпадает с единственной plain-name registration исходного base и остаётся scoped read-only.');
+      continue;
+    }
     const properties = direct(overlayChild, 'Properties')[0];
     if (!properties) {
       addIssue(issues, side, parentKey, childType, `ChildObjects/${childType} отсутствует Properties.`);
@@ -180,4 +188,31 @@ export function projectAdoptedDesignerChildren(input: AdoptedDesignerChildProjec
     ownerKey: parentKey,
     issues,
   });
+}
+
+function isExactBaseTemplateRegistration(overlay: XmlElement, originalBaseParent: XmlElement): boolean {
+  const overlayName = plainTemplateRegistrationName(overlay);
+  if (!overlayName) { return false; }
+  const containers = xmlDirect(originalBaseParent, 'ChildObjects');
+  if (containers.length !== 1 || !inMetadataNamespace(containers[0]!)) { return false; }
+  const templateEntries = elementChildren(containers[0]!).filter((element) => element.localName === 'Template');
+  if (templateEntries.some((element) => !inMetadataNamespace(element))) { return false; }
+  const names = templateEntries.map(plainTemplateRegistrationName);
+  if (names.some((name) => name === undefined)) { return false; }
+  const normalized = (names as string[]).map(normalizeTemplateRegistrationName);
+  if (new Set(normalized).size !== normalized.length) { return false; }
+  return normalized.filter((name) => name === normalizeTemplateRegistrationName(overlayName)).length === 1;
+}
+
+function plainTemplateRegistrationName(element: XmlElement): string | undefined {
+  if (element.localName !== 'Template' || !inMetadataNamespace(element)
+      || element.attributes.some((attribute) => attribute.name !== 'xmlns' && !attribute.name.startsWith('xmlns:'))
+      || elementChildren(element).length > 0
+      || element.children.some((child) => child.kind !== 'text')) { return undefined; }
+  const name = textContent(element).trim();
+  return name || undefined;
+}
+
+function normalizeTemplateRegistrationName(name: string): string {
+  return name.normalize('NFC').toLocaleLowerCase('en-US');
 }

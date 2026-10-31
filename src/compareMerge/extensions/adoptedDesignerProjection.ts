@@ -805,14 +805,45 @@ function stateMap(
 
 function setPropertyState(owner: XmlElement, property: string, state: string): void {
   const internalInfos = direct(owner, 'InternalInfo');
-  if (internalInfos.length !== 1) { throw new Error('Cannot encode a selected property without exactly one InternalInfo element.'); }
-  const internalInfo = internalInfos[0]!;
+  if (internalInfos.length > 1) { throw new Error('Выбранное свойство нельзя записать: в adopted-объекте несколько элементов MD InternalInfo.'); }
+  const internalInfo = internalInfos[0] ?? createInternalInfoBeforeProperties(owner);
   removePropertyState(owner, property);
-  const statePrefix = prefixForNamespace(owner, 'http://v8.1c.ru/8.3/xcf/readable', 'xr');
+  const statePrefix = safePrefixForNamespace(internalInfo, 'http://v8.1c.ru/8.3/xcf/readable', 'xr');
   const entry = makeElement(`${statePrefix}:PropertyState`);
   attach(entry, makeTextElement(`${statePrefix}:Property`, property));
   attach(entry, makeTextElement(`${statePrefix}:State`, state));
   attach(internalInfo, entry);
+}
+
+function createInternalInfoBeforeProperties(owner: XmlElement): XmlElement {
+  const properties = direct(owner, 'Properties');
+  if (properties.length !== 1) { throw new Error('Нельзя создать MD InternalInfo без единственного элемента MD Properties.'); }
+  const prefix = safePrefixForNamespace(owner, MDCLASSES_NAMESPACE, 'md');
+  const internalInfo = makeElement(`${prefix}:InternalInfo`);
+  const index = owner.children.indexOf(properties[0]!);
+  if (index < 0) { throw new Error('Не удалось вставить MD InternalInfo перед элементом Properties.'); }
+  internalInfo.parent = owner;
+  owner.children.splice(index, 0, internalInfo);
+  return internalInfo;
+}
+
+function safePrefixForNamespace(element: XmlElement, uri: string, fallback: string): string {
+  const declarations = new Map<string, string>();
+  let current: XmlElement | undefined = element;
+  while (current) {
+    for (const attribute of current.attributes) {
+      if (!attribute.name.startsWith('xmlns:')) { continue; }
+      const prefix = attribute.name.slice('xmlns:'.length);
+      if (!declarations.has(prefix)) { declarations.set(prefix, attribute.value); }
+    }
+    current = current.parent;
+  }
+  const existing = [...declarations].find(([, namespace]) => namespace === uri)?.[0];
+  if (existing) { return existing; }
+  let candidate = fallback;
+  let suffix = 1;
+  while (declarations.has(candidate)) { candidate = `${fallback}${suffix++}`; }
+  return prefixForNamespace(element, uri, candidate);
 }
 
 function removePropertyState(owner: XmlElement, property: string): void {

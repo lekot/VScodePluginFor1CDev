@@ -1392,7 +1392,7 @@ suite('Extension-aware configuration compare', () => {
     });
   });
 
-  test('cross-boundary adopted Rights remain read-only when omission changes effective access', async () => {
+  test('cross-boundary adopted Rights materialize CF omission as an explicit CFE deny', async () => {
     await withTempRoot(async (tempRoot) => {
       const base = path.join(tempRoot, 'older-base-cf');
       const target = path.join(tempRoot, 'target-cfe');
@@ -1413,6 +1413,7 @@ suite('Extension-aware configuration compare', () => {
         uuid: roleLocalUuid,
         belonging: 'Adopted',
         anchorUuid: roleUuid,
+        descriptorXml: `<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Role uuid="${roleLocalUuid}"><InternalInfo><xr:GeneratedType name="RoleRef" uuid="${roleUuid}"/><xr:PropertyState><xr:Property>Rights</xr:Property><xr:State>Extended</xr:State></xr:PropertyState></InternalInfo><Properties><Name>Ext_Role</Name><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>${roleUuid}</ExtendedConfigurationObject></Properties><ChildObjects/></Role></MetaDataObject>`,
       };
       const sourceRole: ExtensionCompareObjectFixture = {
         ...baseRole,
@@ -1429,23 +1430,35 @@ suite('Extension-aware configuration compare', () => {
       // In Rights.xml 2.20, omission resolves to setForNewObjects=false. A raw delete in the CFE overlay would instead inherit the proven base's true value.
       await writeCompareBytes(source, 'Roles/Ext_Role/Ext/Rights.xml', rightsXml());
 
-      const compare = await openCompare(tempRoot, target, source, { extensionBaseRoots: { left: base } });
+      const sourceRights = rightsXml();
+      const compare = await openCompare(tempRoot, target, source, {
+        extensionBaseRoots: { left: base },
+        withRuntime: true,
+      });
       try {
         const owner = collectNodes(compare.result.projection.root).find((node) =>
           node.kind === 'extensionMetadataObject' && node.label === 'Role.Ext_Role');
         assert.ok(owner, 'the Role row remains visible');
         assert.ok(collectNodes(owner!).some((node) => node.kind === 'xmlProperty' && node.label === 'Comment' && node.mergeable === true),
           `the valid adopted descriptor delta remains independently selectable: ${JSON.stringify(collectNodes(owner!).map((node) => ({ id: node.id, label: node.label, kind: node.kind, mergeable: node.mergeable, mergeState: node.mergeState, conflict: node.conflict })))}`);
-        const rightsNode = collectNodes(owner!).find((node) =>
-          node.kind === 'roleRightsProjectionBlocker' && node.label.startsWith('Права роли:'));
-        assert.ok(rightsNode, 'the changed Rights artifact remains visible');
-        assert.ok(collectNodes(rightsNode!).some((node) => node.status === 'changed'),
-          'the changed effective-right delta remains visible for diagnosis');
-        assert.strictEqual(rightsNode!.mergeable, false,
-          'raw CF omission must not be selectable as a CFE override deletion');
-        assert.strictEqual(collectNodes(rightsNode!).some((node) => node.mergeable === true), false,
-          'no child patch may bypass the ownership-specific Rights blocker');
-        assert.strictEqual(rightsNode!.mergeState?.state, 'blocked', 'the ownership-specific blocker should explain the read-only scope');
+        const right = collectNodes(owner!).find((node) => (node.kind === 'xmlProperty' || node.kind === 'roleRight')
+          && node.payloadRef && decodeURIComponent(node.payloadRef).toLowerCase().includes('rights-object=catalog.products')
+          && decodeURIComponent(node.payloadRef).toLowerCase().includes('rights-right=read'));
+        assert.ok(right?.mergeable, `CF omission is projected as the effective deny and remains selectable: ${JSON.stringify(collectNodes(owner!).map((node) => ({ id: node.id, label: node.label, kind: node.kind, mergeable: node.mergeable, mergeState: node.mergeState, conflict: node.conflict, payloadRef: node.payloadRef })))}`);
+        const preview = await createPreview(compare.result, [right!.id]);
+        assert.strictEqual(compare.result.workspace.approvePreview(preview.previewId).ok, true);
+        const executed = await compare.result.workspace.executeApprovedPreview(preview.previewId, { destructiveConfirmed: true });
+        assert.strictEqual(executed.ok, true, JSON.stringify({ diagnostics: executed.diagnostics, failed: executed.result?.failed }));
+        assert.match(await readUtf8(target, 'Roles/Ext_Role/Ext/Rights.xml'), /<right><name>Read<\/name><value>false<\/value><\/right>/u,
+          'the deny remains explicit in the CFE overlay instead of deleting the override');
+        const materializedRoleDescriptor = await readUtf8(target, 'Roles/Ext_Role.xml');
+        assert.doesNotMatch(materializedRoleDescriptor, /<Comment>current<\/Comment>/u,
+          'the unselected source Comment is not materialized into the CFE overlay');
+        assert.match(await readUtf8(base, 'Roles/Ext_Role.xml'), /<Comment>base<\/Comment>/u,
+          'the target continues to inherit its unchanged base Comment');
+        assert.match(await readUtf8(target, 'Roles/Ext_Role.xml'), /<xr:Property>Rights<\/xr:Property><xr:State>Extended<\/xr:State>/u);
+        assert.strictEqual(await readUtf8(source, 'Roles/Ext_Role/Ext/Rights.xml'), sourceRights,
+          'the source CF Rights file is only read and remains byte-for-byte unchanged');
       } finally {
         await compare.dispose();
       }
@@ -3474,6 +3487,7 @@ function registryDescriptor(type: ExtensionCompareRootType) {
 }
 
 function mdClassesFixture(fixture: ExtensionCompareObjectFixture): ExtensionCompareObjectFixture {
+  if (fixture.descriptorXml) {return fixture;}
   const descriptorXml = metadataObjectXml(fixture)
     .replace('<MetaDataObject', '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"');
   return { ...fixture, descriptorXml };
