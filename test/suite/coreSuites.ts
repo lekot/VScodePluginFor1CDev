@@ -303,6 +303,7 @@ export const coreSuiteFiles: string[] = [
   'suite/compareMerge/extensionRoleRightsWholeTransfer.test.js',
   'suite/compareMerge/adoptedDesignerProjection.test.js',
   'suite/compareMerge/adoptedDesignerFormProjection.test.js',
+  'suite/compareMerge/adoptedDesignerRightsProjection.test.js',
   'suite/compareMerge/extensionAdoptedSemanticBridge.test.js',
   'suite/compareMerge/extensionAdoptedSemanticHost.test.js',
   'suite/compareMerge/ordinalStringOrder.test.js',
