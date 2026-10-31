@@ -41,6 +41,8 @@ export function materializeExtensionLinkedDesignerPackages(
         content: Buffer.from(member.content),
         sourceWitnesses: dedupeWitnesses([
           ...witnesses,
+          ...(recipe.dependencyWitnesses ?? []),
+          ...(member.descriptorUuidWitnesses ?? []),
           { sourceId: row.incoming!.sourceId, relativePath: member.sourceRelativePath, expectedHash: member.sourceHash, kind: 'file' },
         ]),
       });

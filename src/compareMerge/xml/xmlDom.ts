@@ -1,6 +1,10 @@
 import { XMLValidator } from 'fast-xml-parser';
+import { getMetadataTypeDescriptorByRootTag } from '../../constants/metadataTypeDescriptors';
 import { encodeXmlAddressComponent, type XmlAddress } from './xmlAddress';
 import { compareOrdinalStrings } from '../ordinalStringOrder';
+
+const MD_CLASSES_XML_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
+const FILE_BACKED_METADATA_REGISTRATION_KINDS = new Set(['Form', 'Template', 'Command']);
 
 export interface XmlDocument {
   declaration?: string;
@@ -172,6 +176,10 @@ export function getXmlElementIdentityKey(element: XmlElement): string | undefine
   if (structuredIdentity) {
     return structuredIdentity;
   }
+  const registrationIdentity = metadataFileBackedRegistrationIdentity(element);
+  if (registrationIdentity) {
+    return registrationIdentity;
+  }
   const uuid = findAttributeByLocalName(element, 'uuid');
   if (uuid && element.parent?.localName === 'MetaDataObject') {
     const properties = elementChildren(element).find((child) => child.localName === 'Properties');
@@ -231,6 +239,46 @@ export function getXmlElementIdentityKey(element: XmlElement): string | undefine
   }
 
   return undefined;
+}
+
+function metadataFileBackedRegistrationIdentity(element: XmlElement): string | undefined {
+  if (!FILE_BACKED_METADATA_REGISTRATION_KINDS.has(element.localName) ||
+      element.parent?.localName !== 'ChildObjects' || findAttributeByLocalName(element, 'uuid')) {
+    return undefined;
+  }
+
+  const childObjects = element.parent;
+  const owner = childObjects.parent;
+  const metadataRoot = owner?.parent;
+  if (!owner || !metadataRoot || metadataRoot.localName !== 'MetaDataObject' ||
+      elementNamespace(metadataRoot) !== MD_CLASSES_XML_NAMESPACE ||
+      elementNamespace(owner) !== MD_CLASSES_XML_NAMESPACE ||
+      elementNamespace(childObjects) !== MD_CLASSES_XML_NAMESPACE ||
+      elementNamespace(element) !== MD_CLASSES_XML_NAMESPACE ||
+      !getMetadataTypeDescriptorByRootTag(owner.localName)?.structure.hasChildObjects) {
+    return undefined;
+  }
+
+  const metadataOwners = elementChildren(metadataRoot)
+    .filter((candidate) => elementNamespace(candidate) === MD_CLASSES_XML_NAMESPACE);
+  const ownerContainers = elementChildren(owner)
+    .filter((candidate) => candidate.localName === 'ChildObjects' && elementNamespace(candidate) === MD_CLASSES_XML_NAMESPACE);
+  const properties = elementChildren(owner)
+    .filter((candidate) => candidate.localName === 'Properties' && elementNamespace(candidate) === MD_CLASSES_XML_NAMESPACE);
+  if (metadataOwners.length !== 1 || metadataOwners[0] !== owner ||
+      ownerContainers.length !== 1 || ownerContainers[0] !== childObjects ||
+      !owner.attributes.some((attribute) => attribute.name === 'uuid' && attribute.value.trim()) ||
+      properties.length !== 1) {
+    return undefined;
+  }
+  const names = elementChildren(properties[0]!)
+    .filter((candidate) => candidate.localName === 'Name' && elementNamespace(candidate) === MD_CLASSES_XML_NAMESPACE);
+  if (names.length !== 1 || elementChildren(names[0]!).length > 0 || !textContent(names[0]!).trim() ||
+      elementChildren(element).length > 0) {
+    return undefined;
+  }
+  const registrationName = textContent(element).trim();
+  return registrationName ? `registration-name=${normalizeXmlIdentityValue(registrationName)}` : undefined;
 }
 
 function structuredDesignerXmlIdentity(element: XmlElement): string | undefined {

@@ -20,6 +20,8 @@ export interface ExtensionLinkedDesignerPackageMember {
   readonly sourceHash?: string;
   readonly expectedTargetHash: string;
   readonly content?: Buffer;
+  /** Candidate-scoped definition proof; used only for the registered metadata descriptor member. */
+  readonly descriptorUuidWitnesses?: readonly MergeFileWitness[];
 }
 
 export interface ExtensionLinkedDesignerPackage {
@@ -31,6 +33,8 @@ export interface ExtensionLinkedDesignerPackage {
   readonly qualifiedName: string;
   readonly members: readonly ExtensionLinkedDesignerPackageMember[];
   readonly incompatibleDeletePaths: readonly string[];
+  /** Captured owner/base dependencies leased by every member write in this atomic package. */
+  readonly dependencyWitnesses?: readonly MergeFileWitness[];
 }
 
 export interface ExtensionLinkedDesignerPackageIndex {
@@ -50,6 +54,8 @@ export async function indexExtensionLinkedDesignerPackages(input: {
   readonly row: ExtensionTransferRow;
   readonly target: ExtensionMetadataIndex;
   readonly incoming: ExtensionMetadataIndex;
+  /** Adopted owners preserve target-side Form registrations and linked files. */
+  readonly preserveTargetFormPackages?: boolean;
 }): Promise<ExtensionLinkedDesignerPackageIndex> {
   const targetObject = input.row.target;
   const incomingObject = input.row.incoming;
@@ -97,6 +103,7 @@ export async function indexExtensionLinkedDesignerPackages(input: {
   for (const [key, registrations] of targetByKey) {
     if (incomingByKey.has(key)) {continue;}
     const registration = registrations[0]!;
+    if (input.preserveTargetFormPackages && registration.kind === 'Form') {continue;}
     const recipe = await capturePackage({
       row: input.row,
       targetRoot: input.target,
@@ -136,21 +143,27 @@ export function linkedPackageForRegistrationNode(
   node: { readonly kind?: string; readonly status?: string; readonly label: string; readonly leftValue?: string; readonly rightValue?: string },
   packages: readonly ExtensionLinkedDesignerPackage[],
 ): ExtensionLinkedDesignerPackage | undefined {
-  if (node.kind !== 'xmlElement') {return undefined;}
-  const serialized = node.status === 'leftOnly' ? node.leftValue : node.rightValue;
-  if (!serialized) {return undefined;}
-  try {
-    const registration = parseXmlDocument(serialized).root;
-    const kind = registration.localName;
-    if (kind !== 'Form' && kind !== 'Template' && kind !== 'Command') {return undefined;}
-    const name = textContent(registration).trim();
-    const action = node.status === 'leftOnly' ? 'delete' : node.status === 'rightOnly' ? 'copy' : undefined;
-    if (!action || !name) {return undefined;}
-    const matches = packages.filter((item) => item.action === action && item.kind === kind && sameName(item.name, name));
-    return matches.length === 1 ? matches[0] : undefined;
-  } catch {
+  const action = node.status === 'leftOnly' ? 'delete' : node.status === 'rightOnly' ? 'copy' : undefined;
+  if (!action) {return undefined;}
+  let kind: ExtensionLinkedDesignerPackage['kind'];
+  let name: string;
+  if (node.kind === 'xmlElement') {
+    const serialized = node.status === 'leftOnly' ? node.leftValue : node.rightValue;
+    if (!serialized) {return undefined;}
+    try {
+      const registration = parseXmlDocument(serialized).root;
+      if (registration.localName !== 'Form' && registration.localName !== 'Template' && registration.localName !== 'Command') {return undefined;}
+      kind = registration.localName;
+      name = textContent(registration).trim();
+    } catch {
+      return undefined;
+    }
+  } else {
     return undefined;
   }
+  if (!name) {return undefined;}
+  const matches = packages.filter((item) => item.action === action && item.kind === kind && sameName(item.name, name));
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export async function targetHasCompleteForm(root: ExtensionMetadataIndex, owner: ExtensionIndexedObject, value: string): Promise<{
@@ -260,13 +273,14 @@ async function capturePackage(input: {
   const prefix = input.action === 'copy' ? sourcePrefix : targetPrefix;
   const descriptorPath = input.action === 'copy' ? sourceDescriptor : targetDescriptor;
   const descriptorFile = owner.sidecarFiles.filter((file) => samePath(file.relativePath, descriptorPath));
-  if (descriptorFile.length !== 1 || parseNestedDescriptor(descriptorFile[0]!.content, input.registration.kind, input.registration.name) === undefined) {
+  const descriptorContent = descriptorFile.length === 1 ? await captureFile(root, descriptorFile[0]!) : undefined;
+  if (!descriptorContent || parseNestedDescriptor(descriptorContent, input.registration.kind, input.registration.name) === undefined) {
     return { diagnostic: blocked(`Дескриптор ${input.registration.kind} ${input.registration.name} отсутствует или имеет неоднозначную identity.`, owner.sourceId, input.row.id) };
   }
   const packagePrefix = `${prefix}/`;
   const members = owner.sidecarFiles.filter((file) => normalizePath(file.relativePath).startsWith(normalizePath(packagePrefix)));
-  const memberFiles = [descriptorFile[0]!, ...members];
-  if (!requiredMembersPresent(input.registration.kind, memberFiles, prefix, descriptorFile[0]!.content)) {
+  const memberFiles = [{ ...descriptorFile[0]!, content: descriptorContent }, ...members];
+  if (!requiredMembersPresent(input.registration.kind, memberFiles, prefix, descriptorContent)) {
     return { diagnostic: blocked(`Пакет ${input.registration.kind} ${input.registration.name} не содержит обязательный descriptor или sidecar.`, owner.sourceId, input.row.id) };
   }
   if (input.action === 'copy') {

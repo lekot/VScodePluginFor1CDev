@@ -20,6 +20,7 @@ import {
   collectAdoptedDesignerChildUuidRequirements,
   materializeAdoptedDesignerTarget,
   projectAdoptedDesignerPair,
+  isSupportedAdoptedDesignerDirection,
   type AdoptedDesignerDirection,
   type AdoptedDesignerIdentity,
   type AdoptedDesignerMaterializationResult,
@@ -27,6 +28,10 @@ import {
   type AdoptedDesignerProjectionInput,
 } from './adoptedDesignerProjection';
 import type { AdoptedDesignerTypeIdReferenceDescriptor } from './adoptedDesignerTypeId';
+import {
+  snapshotOwnFormRegistrations,
+  type AdoptedDesignerOwnFormRegistrations,
+} from './adoptedDesignerFormRegistrations';
 import {
   materializeAdoptedDesignerFormTarget,
   projectAdoptedDesignerFormPair,
@@ -63,6 +68,7 @@ export interface AdoptedDescriptorArtifactRecipe {
   readonly base: AdoptedSemanticArtifactCapture;
   readonly formatVersion: string;
   readonly adoptedChildUuidByAnchor?: ReadonlyMap<string, string>;
+  readonly ownFormRegistrations?: AdoptedDesignerOwnFormRegistrations;
   readonly typeIdReferenceDescriptors: readonly AdoptedDesignerTypeIdReferenceDescriptor[];
   readonly initialLogicalTarget: Buffer;
   readonly initialLogicalSource: Buffer;
@@ -96,6 +102,7 @@ export interface AdoptedDescriptorProjectionInput {
   readonly formatVersion: string;
   readonly adoptedChildUuidByAnchor?: ReadonlyMap<string, string>;
   readonly typeIdReferenceDescriptors?: readonly AdoptedDesignerTypeIdReferenceDescriptor[];
+  readonly ownFormRegistrations?: AdoptedDesignerOwnFormRegistrations;
 }
 
 export interface AdoptedFormProjectionInput {
@@ -154,6 +161,7 @@ export function projectExtensionAdoptedDescriptor(input: AdoptedDescriptorProjec
       base: cloneCapture(input.base),
       formatVersion: input.formatVersion,
       ...(input.adoptedChildUuidByAnchor ? { adoptedChildUuidByAnchor: new Map(input.adoptedChildUuidByAnchor) } : {}),
+      ...(input.ownFormRegistrations !== undefined ? { ownFormRegistrations: snapshotOwnFormRegistrations(input.ownFormRegistrations) } : {}),
       typeIdReferenceDescriptors: cloneTypeIdDescriptors(input.typeIdReferenceDescriptors ?? []),
       initialLogicalTarget: Buffer.from(projected.targetXml),
       initialLogicalSource: Buffer.from(projected.sourceXml),
@@ -316,6 +324,7 @@ function descriptorHelperInput(input: AdoptedDescriptorArtifactRecipe | AdoptedD
     formatVersion: input.formatVersion,
     ...(input.adoptedChildUuidByAnchor ? { adoptedChildUuidByAnchor: input.adoptedChildUuidByAnchor } : {}),
     ...(input.typeIdReferenceDescriptors ? { typeIdReferenceDescriptors: input.typeIdReferenceDescriptors } : {}),
+    ...(input.ownFormRegistrations !== undefined ? { ownFormRegistrations: snapshotOwnFormRegistrations(input.ownFormRegistrations) } : {}),
   };
 }
 
@@ -341,11 +350,15 @@ function assertDescriptorDirections(
   source: AdoptedDesignerIdentity,
   base: AdoptedDesignerIdentity,
 ): void {
-  const adopted = direction === 'cf-to-adopted' ? target : source;
-  const own = direction === 'cf-to-adopted' ? source : target;
-  if (adopted.ownership !== 'adopted' || own.ownership !== 'own' || base.ownership !== 'own'
-    || adopted.type !== own.type || own.type !== base.type || adopted.name !== own.name || own.name !== base.name
-    || !same(adopted.sourceUuid, base.uuid) || !same(own.uuid, base.uuid)) {
+  if (!isSupportedAdoptedDesignerDirection(direction)) { throw new Error('Направление adopted descriptor bridge не поддерживается.'); }
+  const targetAdopted = direction !== 'adopted-to-cf';
+  const sourceAdopted = direction !== 'cf-to-adopted';
+  if (base.ownership !== 'own'
+    || target.ownership !== (targetAdopted ? 'adopted' : 'own')
+    || source.ownership !== (sourceAdopted ? 'adopted' : 'own')
+    || target.type !== base.type || source.type !== base.type || target.name !== base.name || source.name !== base.name
+    || (targetAdopted ? !same(target.sourceUuid, base.uuid) : !same(target.uuid, base.uuid))
+    || (sourceAdopted ? !same(source.sourceUuid, base.uuid) : !same(source.uuid, base.uuid))) {
     throw new Error('Bridge descriptor требует точные identity CF↔CFE поверх одной подтверждённой host базовой версии.');
   }
 }
@@ -356,12 +369,14 @@ function assertFormDirections(
   source: AdoptedDesignerIdentity,
   base: AdoptedDesignerIdentity,
 ): void {
-  const adopted = direction === 'cf-to-adopted' ? target : source;
-  const own = direction === 'cf-to-adopted' ? source : target;
-  if (!isFormMetadataKind(base.type) || target.type !== base.type || source.type !== base.type
-    || adopted.ownership !== 'adopted' || own.ownership !== 'own' || base.ownership !== 'own'
-    || adopted.name !== base.name || own.name !== base.name
-    || !same(adopted.sourceUuid, base.uuid) || !same(own.uuid, base.uuid)) {
+  if (!isSupportedAdoptedDesignerDirection(direction)) { throw new Error('Направление adopted Form bridge не поддерживается.'); }
+  const targetAdopted = direction !== 'adopted-to-cf';
+  const sourceAdopted = direction !== 'cf-to-adopted';
+  if (!isFormMetadataKind(base.type) || base.ownership !== 'own' || target.type !== base.type || source.type !== base.type
+    || target.ownership !== (targetAdopted ? 'adopted' : 'own') || source.ownership !== (sourceAdopted ? 'adopted' : 'own')
+    || target.name !== base.name || source.name !== base.name
+    || (targetAdopted ? !same(target.sourceUuid, base.uuid) : !same(target.uuid, base.uuid))
+    || (sourceAdopted ? !same(source.sourceUuid, base.uuid) : !same(source.uuid, base.uuid))) {
     throw new Error('Bridge Form.xml требует точные identity target/source поверх одной захваченной базовой Form.xml.');
   }
 }

@@ -21,13 +21,26 @@ import {
   type AdoptedDesignerTypeIdReferenceDescriptor,
 } from './adoptedDesignerTypeId';
 import { projectAdoptedProperties } from './adoptedDesignerLogicalProperties';
+import { projectAdoptedDesignerChildren } from './adoptedDesignerChildProjection';
+import {
+  encodeAdoptedMetadataOrder,
+  hasAdoptedMetadataOrderChange,
+} from './adoptedDesignerOrder';
+import {
+  collectBaseFormRegistrations,
+  encodeOwnFormRegistrations,
+  ownFormRegistrationNames,
+  projectOwnFormRegistrations,
+  selectedNewFormRegistrationNames,
+  type AdoptedDesignerOwnFormRegistrations,
+  type FormRegistrationRecord,
+} from './adoptedDesignerFormRegistrations';
 export { adoptedChildUuidMapKey } from './adoptedDesignerChildIdentity';
 export type { AdoptedDesignerChildUuidRequirement, AdoptedDesignerChildUuidRequirementsResult } from './adoptedDesignerChildIdentity';
 import {
   attach,
   attribute,
   cloneWithNamespaces,
-  direct as xmlDirect,
   makeElement,
   makeTextElement,
   prefixForNamespace,
@@ -49,7 +62,6 @@ import {
   exactlyOne,
   identityXmlEqual,
   inMetadataNamespace,
-  isFormRegistration,
   metadataChildName,
   metadataRoot,
   physicalChildMapsTo,
@@ -60,6 +72,7 @@ import {
 } from './adoptedDesignerMetadataXml';
 
 export type { AdoptedDesignerTypeIdReferenceDescriptor } from './adoptedDesignerTypeId';
+export type { AdoptedDesignerOwnFormRegistrations } from './adoptedDesignerFormRegistrations';
 
 export interface AdoptedDesignerIdentity {
   readonly ownership: 'own' | 'adopted';
@@ -70,13 +83,16 @@ export interface AdoptedDesignerIdentity {
   readonly sourceUuid?: string;
 }
 
-export type AdoptedDesignerDirection = 'adopted-to-cf' | 'cf-to-adopted';
+export type AdoptedDesignerDirection = 'adopted-to-cf' | 'cf-to-adopted' | 'adopted-to-adopted';
 
 export interface AdoptedDesignerProjectionIssue {
   readonly side: 'target' | 'source';
   readonly identityKey: string;
   readonly propertyName?: string;
   readonly reason: string;
+  readonly orderOnly?: boolean;
+  readonly orderScopePointer?: string;
+  readonly orderElementKind?: string;
 }
 
 export interface AdoptedDesignerProjectionInput {
@@ -92,6 +108,8 @@ export interface AdoptedDesignerProjectionInput {
   readonly adoptedChildUuidByAnchor?: ReadonlyMap<string, string>;
   /** Captured own/base metadata descriptors needed to normalize native ExtendedProperty TypeIds. */
   readonly typeIdReferenceDescriptors?: readonly AdoptedDesignerTypeIdReferenceDescriptor[];
+  /** Host-validated own Form package registrations outside the captured base. */
+  readonly ownFormRegistrations?: AdoptedDesignerOwnFormRegistrations;
 }
 
 export type AdoptedDesignerProjectionResult =
@@ -118,35 +136,37 @@ const LINKED_PROPERTIES = new Set(['Module', 'ObjectModule', 'ManagerModule', 'R
 const SUPPORTED_FORMATS = new Set(['2.17', '2.18', '2.19', '2.20', '2.21']);
 const MDCLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
 
-/** Creates logical own descriptors from an own/adopted pair over one exact own base. */
+export function isSupportedAdoptedDesignerDirection(value: unknown): value is AdoptedDesignerDirection {
+  return value === 'adopted-to-cf' || value === 'cf-to-adopted' || value === 'adopted-to-adopted';
+}
+
+/** Creates logical own descriptors from captured CF/CFE artifacts over one exact own base. */
 export function projectAdoptedDesignerPair(input: AdoptedDesignerProjectionInput): AdoptedDesignerProjectionResult {
   try {
     assertProjectionContract(input);
     const target = parseDescriptor(input.targetXml, input.formatVersion, input.targetIdentity);
     const source = parseDescriptor(input.sourceXml, input.formatVersion, input.sourceIdentity);
     const base = parseDescriptor(input.baseXml, input.formatVersion, input.baseIdentity);
-    const adoptedSide = input.direction === 'adopted-to-cf' ? 'source' : 'target';
-    const adoptedDocument = adoptedSide === 'target' ? target : source;
-    const baseDocument = base;
-    const adoptedIdentity = adoptedSide === 'target' ? input.targetIdentity : input.sourceIdentity;
+    const targetFormNames = ownFormRegistrationNames(input.ownFormRegistrations, 'target');
+    const sourceFormNames = ownFormRegistrationNames(input.ownFormRegistrations, 'source');
+    const baseForms = collectBaseFormRegistrations(metadataRoot(base, input.baseIdentity.type));
+    if (!baseForms.ok) { return baseForms; }
+    const targetIsAdopted = input.direction !== 'adopted-to-cf';
+    const sourceIsAdopted = input.direction !== 'cf-to-adopted';
     const issues: AdoptedDesignerProjectionIssue[] = [];
     const typeIdResolver = createAdoptedDesignerTypeIdResolver(input.formatVersion, input.typeIdReferenceDescriptors);
     collectForeignStructureIssues(target, input.targetIdentity, 'target', issues);
     collectForeignStructureIssues(source, input.sourceIdentity, 'source', issues);
-    const logical = projectAdoptedDocument(adoptedDocument, baseDocument, adoptedIdentity, adoptedSide, input.formatVersion, issues, typeIdResolver);
-    if (adoptedSide === 'target') {
-      return {
-        ok: true,
-        targetXml: Buffer.from(serializeXmlDocument(logical), 'utf8'),
-        sourceXml: Buffer.from(serializeXmlDocument(source), 'utf8'),
-        issues,
-        usedDescriptorWitnesses: typeIdResolver.usedDescriptorWitnesses(),
-      };
-    }
+    const logicalTarget = targetIsAdopted
+      ? projectAdoptedDocument(target, base, input.targetIdentity, 'target', input.formatVersion, issues, typeIdResolver, baseForms.registrations, targetFormNames)
+      : projectOwnDocument(target, input.targetIdentity, 'target', issues, baseForms.registrations, targetFormNames);
+    const logicalSource = sourceIsAdopted
+      ? projectAdoptedDocument(source, base, input.sourceIdentity, 'source', input.formatVersion, issues, typeIdResolver, baseForms.registrations, sourceFormNames)
+      : projectOwnDocument(source, input.sourceIdentity, 'source', issues, baseForms.registrations, sourceFormNames);
     return {
       ok: true,
-      targetXml: Buffer.from(serializeXmlDocument(target), 'utf8'),
-      sourceXml: Buffer.from(serializeXmlDocument(logical), 'utf8'),
+      targetXml: Buffer.from(serializeXmlDocument(logicalTarget), 'utf8'),
+      sourceXml: Buffer.from(serializeXmlDocument(logicalSource), 'utf8'),
       issues,
       usedDescriptorWitnesses: typeIdResolver.usedDescriptorWitnesses(),
     };
@@ -161,7 +181,7 @@ export function collectAdoptedDesignerChildUuidRequirements(
 ): AdoptedDesignerChildUuidRequirementsResult {
   try {
     assertProjectionContract(input);
-    if (input.direction !== 'cf-to-adopted') { return { ok: true, requirements: [] }; }
+    if (input.direction === 'adopted-to-cf') { return { ok: true, requirements: [] }; }
     const target = parseDescriptor(input.targetXml, input.formatVersion, input.targetIdentity);
     const base = parseDescriptor(input.baseXml, input.formatVersion, input.baseIdentity);
     const requirements: AdoptedDesignerChildUuidRequirement[] = [];
@@ -186,13 +206,25 @@ export function materializeAdoptedDesignerTarget(
   const projection = projectAdoptedDesignerPair(input);
   if (!projection.ok) { return projection; }
   try {
-    const targetIsAdopted = input.direction === 'cf-to-adopted';
+    const targetIsAdopted = input.direction !== 'adopted-to-cf';
     const targetIdentity = input.targetIdentity;
     const merged = parseXmlDocument(input.mergedLogicalTarget.toString('utf8'));
     const mergedRoot = metadataRoot(merged, targetIdentity.type);
     assertLogicalIdentity(mergedRoot, input.baseIdentity);
     if (!targetIsAdopted) {
       const original = parseDescriptor(input.targetXml, input.formatVersion, targetIdentity);
+      const initialLogical = parseDescriptor(projection.targetXml, input.formatVersion, targetIdentity);
+      const base = parseDescriptor(input.baseXml, input.formatVersion, input.baseIdentity);
+      const physicalFormCheck = { ...original, root: cloneXmlElement(original.root) };
+      const formError = encodeOwnFormRegistrations({
+        physicalRoot: metadataRoot(physicalFormCheck, targetIdentity.type),
+        baseRoot: metadataRoot(base, input.baseIdentity.type),
+        initialRoot: metadataRoot(initialLogical, targetIdentity.type),
+        selectedRoot: mergedRoot,
+        sourceAllowedNames: ownFormRegistrationNames(input.ownFormRegistrations, 'source'),
+        targetOwnership: targetIdentity.ownership,
+      });
+      if (formError) { return { ok: false, reason: formError }; }
       preserveMetadataIdentity(original, merged, input.targetIdentity.type);
       stripOwnershipMarkersFromPromotedNodes(mergedRoot);
       return {
@@ -226,13 +258,24 @@ export function materializeAdoptedDesignerTarget(
       side: 'target',
       issues,
       adoptedChildUuidByAnchor: input.adoptedChildUuidByAnchor,
+      sourceAllowedFormNames: ownFormRegistrationNames(input.ownFormRegistrations, 'source'),
       targetChildUuids,
       ownerScope: rootKey(targetIdentity),
     });
     if (encodeError) { return { ok: false, reason: encodeError }; }
     preserveRootIdentity(physicalRoot, targetIdentity, targetIdentity.type);
     const content = Buffer.from(serializeXmlDocument(physical), 'utf8');
-    const roundTrip = projectAdoptedDesignerPair({ ...input, targetXml: content });
+    const roundTripRegistrations = input.ownFormRegistrations === undefined
+      ? undefined
+      : {
+        target: [...ownFormRegistrationNames(input.ownFormRegistrations, 'target'), ...selectedNewFormRegistrationNames(initialRoot, selectedRoot)],
+        source: [...ownFormRegistrationNames(input.ownFormRegistrations, 'source')],
+      };
+    const roundTrip = projectAdoptedDesignerPair({
+      ...input,
+      targetXml: content,
+      ...(roundTripRegistrations ? { ownFormRegistrations: roundTripRegistrations } : {}),
+    });
     if (!roundTrip.ok) { return { ok: false, reason: `Материализованный target нельзя повторно спроецировать: ${roundTrip.reason}` }; }
     const roundTripDocument = parseXmlDocument(roundTrip.targetXml.toString('utf8'));
     if (!sameElement(metadataRoot(roundTripDocument, targetIdentity.type), mergedRoot)) {
@@ -245,23 +288,27 @@ export function materializeAdoptedDesignerTarget(
 }
 
 function assertProjectionContract(input: AdoptedDesignerProjectionInput): void {
+  if (!isSupportedAdoptedDesignerDirection(input.direction)) { throw new Error('Направление adopted projection не поддерживается.'); }
   if (!SUPPORTED_FORMATS.has(input.formatVersion)) {
     throw new Error(`Формат Designer ${input.formatVersion} не поддержан adopted projection.`);
   }
   if (input.baseIdentity.ownership !== 'own') {
     throw new Error('Базовая identity должна принадлежать собственному объекту CF.');
   }
-  const adopted = input.direction === 'adopted-to-cf' ? input.sourceIdentity : input.targetIdentity;
-  const own = input.direction === 'adopted-to-cf' ? input.targetIdentity : input.sourceIdentity;
-  if (adopted.ownership !== 'adopted' || own.ownership !== 'own') {
+  const targetAdopted = input.direction !== 'adopted-to-cf';
+  const sourceAdopted = input.direction !== 'cf-to-adopted';
+  if (input.targetIdentity.ownership !== (targetAdopted ? 'adopted' : 'own')
+    || input.sourceIdentity.ownership !== (sourceAdopted ? 'adopted' : 'own')) {
     throw new Error('Направление переноса не совпадает с ownership target/source.');
   }
-  if (!same(adopted.sourceUuid, input.baseIdentity.uuid)
-    || !same(own.uuid, input.baseIdentity.uuid)
-    || !same(adopted.type, input.baseIdentity.type)
-    || !same(own.type, input.baseIdentity.type)
-    || !same(adopted.name, input.baseIdentity.name)
-    || !same(own.name, input.baseIdentity.name)) {
+  const identities = [input.targetIdentity, input.sourceIdentity];
+  ownFormRegistrationNames(input.ownFormRegistrations, 'target');
+  ownFormRegistrationNames(input.ownFormRegistrations, 'source');
+  if (identities.some((identity) => !same(identity.type, input.baseIdentity.type) || !same(identity.name, input.baseIdentity.name))
+    || (targetAdopted && !same(input.targetIdentity.sourceUuid, input.baseIdentity.uuid))
+    || (sourceAdopted && !same(input.sourceIdentity.sourceUuid, input.baseIdentity.uuid))
+    || (!targetAdopted && !same(input.targetIdentity.uuid, input.baseIdentity.uuid))
+    || (!sourceAdopted && !same(input.sourceIdentity.uuid, input.baseIdentity.uuid))) {
     throw new Error('Identity target/source не совпадают с точным собственным base anchor.');
   }
 }
@@ -296,6 +343,8 @@ function projectAdoptedDocument(
   formatVersion: string,
   issues: AdoptedDesignerProjectionIssue[],
   typeIdResolver: ReturnType<typeof createAdoptedDesignerTypeIdResolver>,
+  baseFormRegistrations: readonly FormRegistrationRecord[],
+  allowedFormNames: readonly string[],
 ): XmlDocument {
   const result = { ...base, root: cloneXmlElement(base.root) };
   const baseRoot = metadataRoot(result, identity.type);
@@ -312,135 +361,53 @@ function projectAdoptedDocument(
     issues,
     typeIdResolver,
   });
-  projectChildren(adoptedRoot, baseRoot, side, formatVersion, issues, rootKey(identity), typeIdResolver);
+  const formError = projectOwnFormRegistrations({
+    physicalRoot: adoptedRoot,
+    logicalRoot: baseRoot,
+    baseRegistrations: baseFormRegistrations,
+    allowedNames: allowedFormNames,
+    ownership: identity.ownership,
+    side,
+    ownerKey: rootKey(identity),
+    issues,
+  });
+  if (formError) { throw new Error(formError); }
+  projectAdoptedDesignerChildren({
+    adoptedParent: adoptedRoot,
+    logicalParent: baseRoot,
+    baseOrderParent: metadataRoot(base, identity.type),
+    side,
+    formatVersion,
+    issues,
+    parentKey: rootKey(identity),
+    typeIdResolver,
+    stateMap,
+  });
   // The materialized logical view always carries base UUID and GeneratedType identities.
   return result;
 }
 
-function projectChildren(
-  adoptedParent: XmlElement,
-  logicalParent: XmlElement,
+function projectOwnDocument(
+  physical: XmlDocument,
+  identity: AdoptedDesignerIdentity,
   side: 'target' | 'source',
-  formatVersion: string,
   issues: AdoptedDesignerProjectionIssue[],
-  parentKey: string,
-  typeIdResolver: ReturnType<typeof createAdoptedDesignerTypeIdResolver>,
-): void {
-  if (xmlDirect(adoptedParent, 'ChildObjects').some((node) => !inMetadataNamespace(node))) {
-    addIssue(issues, side, parentKey, 'ChildObjects', 'ChildObjects использует посторонний XML namespace и не проецируется.');
-  }
-  const adoptedContainer = direct(adoptedParent, 'ChildObjects')[0];
-  if (!adoptedContainer) { return; }
-  const logicalContainers = direct(logicalParent, 'ChildObjects');
-  if (logicalContainers.length > 1) {
-    addIssue(issues, side, parentKey, 'ChildObjects', 'В base повторяется ChildObjects; вложенные элементы не проецируются.');
-    return;
-  }
-  let logicalContainer = logicalContainers[0];
-  const seenAnchors = new Set<string>();
-  const seenLocalUuids = new Set<string>();
-  for (const overlayChild of elementChildren(adoptedContainer)) {
-    if (!inMetadataNamespace(overlayChild)) {
-      addIssue(issues, side, parentKey, 'ChildObjects', `ChildObjects содержит ${overlayChild.localName} в постороннем XML namespace; узел не сопоставлен.`);
-      continue;
-    }
-    const childType = overlayChild.localName;
-    if (isFormRegistration(overlayChild)) { continue; }
-    const properties = direct(overlayChild, 'Properties')[0];
-    if (!properties) {
-      addIssue(issues, side, parentKey, childType, `ChildObjects/${childType} отсутствует Properties.`);
-      continue;
-    }
-    const localUuid = attribute(overlayChild, 'uuid') ?? '';
-    if (localUuid && seenLocalUuids.has(localUuid.toLowerCase())) {
-      addIssue(issues, side, `uuid=${localUuid.toLowerCase()}`, undefined, `Локальный UUID ${localUuid} повторяется в ChildObjects.`);
-      continue;
-    }
-    if (localUuid) { seenLocalUuids.add(localUuid.toLowerCase()); }
-    const belonging = childText(properties, 'ObjectBelonging');
-    const anchor = childText(properties, 'ExtendedConfigurationObject');
-    const name = childText(properties, 'Name');
-    if (belonging === 'Adopted' || anchor !== undefined) {
-      if (belonging !== 'Adopted' || !anchor) {
-        addIssue(issues, side, localUuid ? `uuid=${localUuid.toLowerCase()}` : parentKey, undefined, `Adopted ${childType} не содержит однозначный ExtendedConfigurationObject.`);
-        continue;
-      }
-      const anchorKey = `${childType.toLowerCase()}\0${anchor.toLowerCase()}`;
-      if (seenAnchors.has(anchorKey)) {
-        addIssue(issues, side, `uuid=${anchor.toLowerCase()}`, undefined, `Для ${childType} повторяется anchor ${anchor}.`);
-        continue;
-      }
-      seenAnchors.add(anchorKey);
-      if (!localUuid || same(localUuid, anchor)) {
-        addIssue(issues, side, `uuid=${anchor.toLowerCase()}`, undefined, 'Adopted child требует локальный UUID, отличный от CF anchor UUID.');
-        continue;
-      }
-      if (!logicalContainer) {
-        addIssue(issues, side, `uuid=${anchor.toLowerCase()}`, undefined, `В base отсутствует ChildObjects для adopted ${childType} anchor ${anchor}.`);
-        continue;
-      }
-      const matches = elementChildren(logicalContainer).filter((candidate) => candidate.localName === childType
-        && same(attribute(candidate, 'uuid'), anchor));
-      if (matches.length !== 1) {
-        addIssue(issues, side, `uuid=${anchor.toLowerCase()}`, undefined, matches.length === 0
-          ? `Для adopted ${childType} отсутствует child с точным anchor UUID ${anchor}.`
-          : `Anchor UUID ${anchor} неоднозначен среди ${childType}.`);
-        continue;
-      }
-      const baseChild = matches[0]!;
-      const baseProperties = direct(baseChild, 'Properties')[0];
-      const baseName = baseProperties ? childText(baseProperties, 'Name') : undefined;
-      if (!name || !same(name, baseName)) {
-        addIssue(issues, side, `uuid=${anchor.toLowerCase()}`, 'Name', 'Имя adopted child отличается от child точного anchor UUID.');
-        continue;
-      }
-      if (localUuid && elementChildren(logicalContainer).some((sibling) => sibling !== baseChild
-        && same(attribute(sibling, 'uuid'), localUuid))) {
-        addIssue(issues, side, `uuid=${localUuid.toLowerCase()}`, undefined, 'Локальный UUID adopted child конфликтует с другим child target.');
-        continue;
-      }
-      if (!baseProperties) {
-        addIssue(issues, side, `uuid=${anchor.toLowerCase()}`, undefined, 'В base adopted child отсутствует Properties.');
-        continue;
-      }
-      projectAdoptedProperties({
-        target: baseProperties,
-        overlay: properties,
-        states: stateMap(overlayChild, side, `uuid=${anchor.toLowerCase()}`, issues),
-        side,
-        ownerKey: `uuid=${anchor.toLowerCase()}`,
-        formatVersion,
-        issues,
-        typeIdResolver,
-      });
-      projectChildren(overlayChild, baseChild, side, formatVersion, issues, `uuid=${anchor.toLowerCase()}`, typeIdResolver);
-      continue;
-    }
-    // An own child is a complete local object. Keep its local identity and payload.
-    if (!localUuid || !name) {
-      addIssue(issues, side, parentKey, undefined, `Собственный child ${childType} не имеет UUID или Name.`);
-      continue;
-    }
-    const collision = logicalContainer && elementChildren(logicalContainer).find((candidate) => candidate.localName === childType
-      && same(attribute(candidate, 'uuid'), localUuid));
-    if (collision) {
-      addIssue(issues, side, `uuid=${localUuid.toLowerCase()}`, undefined, `Собственный child UUID ${localUuid} конфликтует с base child.`);
-      continue;
-    }
-    const sameName = logicalContainer && elementChildren(logicalContainer).find((candidate) => candidate.localName === childType
-      && same(childText(direct(candidate, 'Properties')[0] ?? candidate, 'Name'), name));
-    if (sameName) {
-      addIssue(issues, side, `uuid=${localUuid.toLowerCase()}`, undefined, `Собственный child ${childType}.${name} конфликтует по имени с base child.`);
-      continue;
-    }
-    const own = cloneWithNamespaces(overlayChild);
-    if (!logicalContainer) {
-      const prefix = prefixForNamespace(logicalParent, MDCLASSES_NAMESPACE, 'md');
-      logicalContainer = makeElement(`${prefix}:ChildObjects`);
-      attach(logicalParent, logicalContainer);
-    }
-    attach(logicalContainer, own);
-  }
+  baseFormRegistrations: readonly FormRegistrationRecord[],
+  allowedFormNames: readonly string[],
+): XmlDocument {
+  const result = { ...physical, root: cloneXmlElement(physical.root) };
+  const formError = projectOwnFormRegistrations({
+    physicalRoot: metadataRoot(physical, identity.type),
+    logicalRoot: metadataRoot(result, identity.type),
+    baseRegistrations: baseFormRegistrations,
+    allowedNames: allowedFormNames,
+    ownership: identity.ownership,
+    side,
+    ownerKey: rootKey(identity),
+    issues,
+  });
+  if (formError) { throw new Error(formError); }
+  return result;
 }
 
 function encodeAdoptedRoot(input: {
@@ -451,6 +418,7 @@ function encodeAdoptedRoot(input: {
   side: 'target';
   issues: AdoptedDesignerProjectionIssue[];
   adoptedChildUuidByAnchor?: ReadonlyMap<string, string>;
+  sourceAllowedFormNames: readonly string[];
   targetChildUuids: Set<string>;
   ownerScope: string;
 }): string | undefined {
@@ -496,26 +464,48 @@ function encodeChildObjects(input: {
   side: 'target';
   issues: AdoptedDesignerProjectionIssue[];
   adoptedChildUuidByAnchor?: ReadonlyMap<string, string>;
+  sourceAllowedFormNames: readonly string[];
   targetChildUuids: Set<string>;
   ownerScope: string;
 }): string | undefined {
+  const formError = encodeOwnFormRegistrations({
+    physicalRoot: input.physicalRoot,
+    baseRoot: input.baseRoot,
+    initialRoot: input.initialRoot,
+    selectedRoot: input.selectedRoot,
+    sourceAllowedNames: input.sourceAllowedFormNames,
+    targetOwnership: 'adopted',
+  });
+  if (formError) { return formError; }
+  const orderError = encodeAdoptedMetadataOrder({
+    baseParent: input.baseRoot,
+    physicalParent: input.physicalRoot,
+    initialParent: input.initialRoot,
+    selectedParent: input.selectedRoot,
+    ownerScope: input.ownerScope,
+    adoptedChildUuidByAnchor: input.adoptedChildUuidByAnchor,
+    targetChildUuids: input.targetChildUuids,
+    issues: input.issues,
+  });
+  if (orderError) { return orderError; }
   const physicalContainer = direct(input.physicalRoot, 'ChildObjects')[0];
   const baseContainer = direct(input.baseRoot, 'ChildObjects')[0];
   const initialContainer = direct(input.initialRoot, 'ChildObjects')[0];
   const selectedContainer = direct(input.selectedRoot, 'ChildObjects')[0];
-  if (!baseContainer && selectedContainer && elementChildren(selectedContainer).length > 0) {
+  const isInlineChild = (child: XmlElement) => child.localName !== 'Form';
+  if (!baseContainer && selectedContainer && elementChildren(selectedContainer).some(isInlineChild)) {
     return 'Target base descriptor lacks ChildObjects required to encode selected child edits.';
   }
   if (!physicalContainer) {
-    if (selectedContainer && elementChildren(selectedContainer).length > 0) {
+    if (selectedContainer && elementChildren(selectedContainer).some(isInlineChild)) {
       return 'Target adopted descriptor lacks ChildObjects required to encode selected child edits.';
     }
     return undefined;
   }
-  const baseChildren = elementChildren(baseContainer ?? input.baseRoot);
-  const beforeChildren = elementChildren(initialContainer ?? input.initialRoot);
-  const selectedChildren = elementChildren(selectedContainer ?? input.selectedRoot);
-  const physicalChildren = elementChildren(physicalContainer);
+  const baseChildren = (baseContainer ? elementChildren(baseContainer) : []).filter(isInlineChild);
+  const beforeChildren = (initialContainer ? elementChildren(initialContainer) : []).filter(isInlineChild);
+  const selectedChildren = (selectedContainer ? elementChildren(selectedContainer) : []).filter(isInlineChild);
+  const physicalChildren = elementChildren(physicalContainer).filter(isInlineChild);
   const ids = new Set<string>();
   for (const child of baseChildren) {
     const uuid = attribute(child, 'uuid');
@@ -590,6 +580,7 @@ function encodeNestedChildChanges(
   allocation: {
     adoptedChildUuidByAnchor?: ReadonlyMap<string, string>;
     targetChildUuids: Set<string>;
+    issues: AdoptedDesignerProjectionIssue[];
   },
 ): string | undefined {
   const baseContainers = direct(base, 'ChildObjects');
@@ -602,6 +593,8 @@ function encodeNestedChildChanges(
   const baseNested = baseContainers[0];
   const beforeNested = beforeContainers[0];
   const selectedNested = selectedContainers[0];
+  const orderChanged = Boolean(beforeNested && selectedNested
+    && hasAdoptedMetadataOrderChange(beforeNested, selectedNested));
   if (!baseNested && !beforeNested && !selectedNested) { return undefined; }
   if (baseNested && !selectedNested && elementChildren(baseNested).some((child) => inMetadataNamespace(child))) {
     return 'Удаление унаследованного nested ChildObjects невозможно представить в adopted overlay.';
@@ -629,13 +622,24 @@ function encodeNestedChildChanges(
   const ownChanged = [...ownKeys].some((key) => !baseByKey.has(key)
     && !sameElement(beforeByKey.get(key), selectedByKey.get(key)));
   let physicalNested = physicalContainers[0];
-  const requiresNestedWrite = inheritedChanged || ownChanged;
+  const requiresNestedWrite = inheritedChanged || ownChanged || orderChanged;
   if (!physicalNested && requiresNestedWrite) {
     const prefix = prefixForNamespace(physical, MDCLASSES_NAMESPACE, 'md');
     physicalNested = makeElement(`${prefix}:ChildObjects`);
     attach(physical, physicalNested);
   }
   if (!physicalNested) { return undefined; }
+  const orderError = encodeAdoptedMetadataOrder({
+    baseParent: base,
+    physicalParent: physical,
+    initialParent: before,
+    selectedParent: selected,
+    ownerScope,
+    adoptedChildUuidByAnchor: allocation.adoptedChildUuidByAnchor,
+    targetChildUuids: allocation.targetChildUuids,
+    issues: allocation.issues,
+  });
+  if (orderError) { return orderError; }
   for (const baseChild of baseChildren) {
     const key = childIdentity(baseChild);
     const beforeChild = beforeByKey.get(key) ?? baseChild;
@@ -801,14 +805,45 @@ function stateMap(
 
 function setPropertyState(owner: XmlElement, property: string, state: string): void {
   const internalInfos = direct(owner, 'InternalInfo');
-  if (internalInfos.length !== 1) { throw new Error('Cannot encode a selected property without exactly one InternalInfo element.'); }
-  const internalInfo = internalInfos[0]!;
+  if (internalInfos.length > 1) { throw new Error('Выбранное свойство нельзя записать: в adopted-объекте несколько элементов MD InternalInfo.'); }
+  const internalInfo = internalInfos[0] ?? createInternalInfoBeforeProperties(owner);
   removePropertyState(owner, property);
-  const statePrefix = prefixForNamespace(owner, 'http://v8.1c.ru/8.3/xcf/readable', 'xr');
+  const statePrefix = safePrefixForNamespace(internalInfo, 'http://v8.1c.ru/8.3/xcf/readable', 'xr');
   const entry = makeElement(`${statePrefix}:PropertyState`);
   attach(entry, makeTextElement(`${statePrefix}:Property`, property));
   attach(entry, makeTextElement(`${statePrefix}:State`, state));
   attach(internalInfo, entry);
+}
+
+function createInternalInfoBeforeProperties(owner: XmlElement): XmlElement {
+  const properties = direct(owner, 'Properties');
+  if (properties.length !== 1) { throw new Error('Нельзя создать MD InternalInfo без единственного элемента MD Properties.'); }
+  const prefix = safePrefixForNamespace(owner, MDCLASSES_NAMESPACE, 'md');
+  const internalInfo = makeElement(`${prefix}:InternalInfo`);
+  const index = owner.children.indexOf(properties[0]!);
+  if (index < 0) { throw new Error('Не удалось вставить MD InternalInfo перед элементом Properties.'); }
+  internalInfo.parent = owner;
+  owner.children.splice(index, 0, internalInfo);
+  return internalInfo;
+}
+
+function safePrefixForNamespace(element: XmlElement, uri: string, fallback: string): string {
+  const declarations = new Map<string, string>();
+  let current: XmlElement | undefined = element;
+  while (current) {
+    for (const attribute of current.attributes) {
+      if (!attribute.name.startsWith('xmlns:')) { continue; }
+      const prefix = attribute.name.slice('xmlns:'.length);
+      if (!declarations.has(prefix)) { declarations.set(prefix, attribute.value); }
+    }
+    current = current.parent;
+  }
+  const existing = [...declarations].find(([, namespace]) => namespace === uri)?.[0];
+  if (existing) { return existing; }
+  let candidate = fallback;
+  let suffix = 1;
+  while (declarations.has(candidate)) { candidate = `${fallback}${suffix++}`; }
+  return prefixForNamespace(element, uri, candidate);
 }
 
 function removePropertyState(owner: XmlElement, property: string): void {

@@ -1,7 +1,10 @@
 import * as assert from 'assert';
 import { createHash } from 'crypto';
-import { elementChildren, parseXmlDocument } from '../../../src/compareMerge/xml/xmlDom';
+import { elementChildren, parseXmlDocument, serializeXmlDocument, textContent } from '../../../src/compareMerge/xml/xmlDom';
 import { direct, stableElement } from '../../../src/compareMerge/extensions/adoptedDesignerXml';
+import { mapAdoptedIssuesToNodes } from '../../../src/compareMerge/extensions/adoptedDesignerCandidatePolicy';
+import type { ExecutableCandidateFactory } from '../../../src/compareMerge/adapters/mergeAdapter';
+import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 
 import {
   adoptedChildUuidMapKey,
@@ -15,14 +18,251 @@ import type { AdoptedDesignerTypeIdReferenceDescriptor } from '../../../src/comp
 
 const BASE_UUID = '11111111-1111-4111-8111-111111111111';
 const CFE_UUID = '22222222-2222-4222-8222-222222222222';
+const SOURCE_CFE_UUID = '99999999-9999-4999-8999-999999999999';
 const CHILD_UUID = '33333333-3333-4333-8333-333333333333';
 const CHILD_LOCAL_UUID = '44444444-4444-4444-8444-444444444444';
 const NEW_CHILD_LOCAL_UUID = '55555555-5555-4555-8555-555555555555';
 const NESTED_CHILD_UUID = '66666666-6666-4666-8666-666666666666';
 const NESTED_CHILD_LOCAL_UUID = '77777777-7777-4777-8777-777777777777';
 const NESTED_OWN_CHILD_UUID = '88888888-8888-4888-8888-888888888888';
+const ORDER_A_UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+const ORDER_B_UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
+const ORDER_C_UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3';
+const ORDER_D_UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4';
+const ORDER_LOCAL_A_UUID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
+const ORDER_LOCAL_B_UUID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2';
+const ORDER_LOCAL_C_UUID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3';
+const ORDER_TABULAR_UUID = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1';
+const ORDER_LOCAL_TABULAR_UUID = 'dddddddd-dddd-4ddd-8ddd-ddddddddddd1';
+const ORDER_NESTED_X_UUID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1';
+const ORDER_NESTED_Y_UUID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2';
+const ORDER_NESTED_Z_UUID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee3';
+const ORDER_LOCAL_NESTED_X_UUID = 'ffffffff-ffff-4fff-8fff-fffffffffff1';
+const ORDER_LOCAL_NESTED_Y_UUID = 'ffffffff-ffff-4fff-8fff-fffffffffff2';
+const ORDER_LOCAL_NESTED_Z_UUID = 'ffffffff-ffff-4fff-8fff-fffffffffff3';
 
 suite('Adopted Designer descriptor projection (#335)', () => {
+  test('projects both adopted descriptors independently and materializes into target ownership', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, comment: 'Base comment' });
+    const targetXml = Buffer.from(descriptor({
+      uuid: CFE_UUID,
+      adopted: true,
+      comment: 'Target overlay',
+      extraProperties: '<ExtensionOnly>Target-only change</ExtensionOnly>',
+    }).toString('utf8').replace('name="CatalogRef"', 'name="TargetCatalogRef"'));
+    const sourceXml = Buffer.from(descriptor({
+      uuid: SOURCE_CFE_UUID,
+      adopted: true,
+      comment: 'Source overlay',
+      extraProperties: '<ExtensionOnly>Source-only change</ExtensionOnly>',
+    }).toString('utf8').replace('name="CatalogRef"', 'name="SourceCatalogRef"'));
+    const input = makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml });
+
+    const projection = projectAdoptedDesignerPair(input);
+
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.match(projection.targetXml.toString('utf8'), new RegExp(`<Catalog uuid="${BASE_UUID}"`));
+    assert.match(projection.sourceXml.toString('utf8'), new RegExp(`<Catalog uuid="${BASE_UUID}"`));
+    assert.match(projection.targetXml.toString('utf8'), /<Comment(?:\s[^>]*)?>Target overlay<\/Comment>/u);
+    assert.match(projection.sourceXml.toString('utf8'), /<Comment(?:\s[^>]*)?>Source overlay<\/Comment>/u);
+
+    const mergedLogicalTarget = Buffer.from(projection.targetXml.toString('utf8').replace('Target overlay', 'Selected target value'));
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    const xml = materialized.content.toString('utf8');
+    assert.match(xml, new RegExp(`<Catalog uuid="${CFE_UUID}"`));
+    assert.match(xml, new RegExp(`<ExtendedConfigurationObject>${BASE_UUID}</ExtendedConfigurationObject>`));
+    assert.match(xml, /<Comment(?:\s[^>]*)?>Selected target value<\/Comment>/u);
+    assert.match(xml, /<ExtensionOnly(?:\s[^>]*)?>Target-only change<\/ExtensionOnly>/u);
+    assert.doesNotMatch(xml, /Source-only change/u);
+    assert.match(xml, /<xr:GeneratedType name="TargetCatalogRef" uuid="11111111-1111-4111-8111-111111111111"\/>/u);
+  });
+
+  test('rejects adopted-to-adopted inputs unless both sides share the exact base anchor', () => {
+    const input = makeInput({ direction: 'adopted-to-adopted' });
+    const wrongSourceAnchor = projectAdoptedDesignerPair({
+      ...input,
+      sourceIdentity: { ...input.sourceIdentity, sourceUuid: SOURCE_CFE_UUID },
+    });
+    assert.strictEqual(wrongSourceAnchor.ok, false);
+    if (!wrongSourceAnchor.ok) { assert.match(wrongSourceAnchor.reason, /base anchor|anchor/u); }
+
+    const ownSource = projectAdoptedDesignerPair({
+      ...input,
+      sourceXml: descriptor({ uuid: BASE_UUID }),
+      sourceIdentity: { ...input.baseIdentity },
+    });
+    assert.strictEqual(ownSource.ok, false);
+    if (!ownSource.ok) { assert.match(ownSource.reason, /ownership|ObjectBelonging|Направление/u); }
+  });
+
+  test('rejects an unknown runtime direction instead of treating it as adopted-to-adopted', () => {
+    const input = makeInput({ direction: 'adopted-to-adopted' });
+    const direction = 'unknown-direction' as unknown as AdoptedDesignerProjectionInput['direction'];
+
+    const result = projectAdoptedDesignerPair({ ...input, direction });
+
+    assert.strictEqual(result.ok, false);
+    if (!result.ok) { assert.match(result.reason, /направлени/iu); }
+  });
+
+  test('creates namespace-correct InternalInfo only when encoding a selected property on a native Template without it', () => {
+    const input = makeTemplateInput({ targetXml: templateDescriptor({ uuid: CFE_UUID, adopted: true, comment: 'Target value' }) });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const merged = Buffer.from(replaceComment(projection.targetXml.toString('utf8'), 'Target value', 'Selected value'));
+
+    const result = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: merged });
+
+    assert.strictEqual(result.ok, true, result.ok ? undefined : result.reason);
+    if (!result.ok) { return; }
+    const xml = result.content.toString('utf8');
+    assert.match(xml, /<(?:md\d*:)?InternalInfo(?:\s[^>]*)?>[\s\S]*?<xr:PropertyState>[\s\S]*?<xr:Property>Comment<\/xr:Property>[\s\S]*?<xr:State>Notify<\/xr:State>/u);
+    assert.match(xml, /<Template uuid="22222222-2222-4222-8222-222222222222"/u);
+    assert.ok(xml.indexOf('InternalInfo') < xml.indexOf('Properties'), 'new MD InternalInfo is inserted before Properties');
+    assert.doesNotMatch(xml, /GeneratedType/u, 'creating Notify state must not invent GeneratedType identity');
+  });
+
+  test('uses safe readable prefixes and preserves foreign InternalInfo under shadowed namespace bindings', () => {
+    const targetXml = templateDescriptor({
+      uuid: CFE_UUID,
+      adopted: true,
+      comment: 'Target value',
+      namespaceMode: 'prefixed-shadowed-xr',
+      foreignInternalInfo: '<vendor:InternalInfo marker="opaque"/>',
+    });
+    const input = makeTemplateInput({ targetXml });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const merged = Buffer.from(replaceComment(projection.targetXml.toString('utf8'), 'Target value', 'Selected value'));
+
+    const result = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: merged });
+
+    assert.strictEqual(result.ok, true, result.ok ? undefined : result.reason);
+    if (!result.ok) { return; }
+    const xml = result.content.toString('utf8');
+    assert.match(xml, /<vendor:InternalInfo marker="opaque"\/>/u);
+    assert.match(xml, /<m:InternalInfo(?:\s[^>]*)?>[\s\S]*?<xr\d+:PropertyState>/u);
+    assert.match(xml, /xmlns:xr="urn:vendor"/u);
+    assert.doesNotMatch(xml, /<xr:PropertyState>/u, 'shadowed vendor xr prefix must not be used for readable nodes');
+  });
+
+  test('preserves no-op and revert-to-base Templates without synthesizing InternalInfo', () => {
+    const input = makeTemplateInput({ targetXml: templateDescriptor({ uuid: CFE_UUID, adopted: true, comment: 'Target override' }) });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+
+    const unchanged = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: projection.targetXml });
+    assert.strictEqual(unchanged.ok, true, unchanged.ok ? undefined : unchanged.reason);
+    if (unchanged.ok) { assert.doesNotMatch(unchanged.content.toString('utf8'), /InternalInfo/u); }
+
+    const revertedLogical = Buffer.from(replaceComment(projection.targetXml.toString('utf8'), 'Target override', 'Base comment'));
+    const reverted = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: revertedLogical });
+    assert.strictEqual(reverted.ok, true, reverted.ok ? undefined : reverted.reason);
+    if (reverted.ok) {
+      assert.doesNotMatch(reverted.content.toString('utf8'), /InternalInfo/u);
+      assert.doesNotMatch(reverted.content.toString('utf8'), /<Comment>Target override<\/Comment>/u);
+    }
+  });
+
+  test('fails closed for ambiguous MD InternalInfo or Properties but ignores and preserves a foreign lookalike', () => {
+    const foreign = templateDescriptor({
+      uuid: CFE_UUID,
+      adopted: true,
+      comment: 'Target value',
+      foreignInternalInfo: '<vendor:InternalInfo marker="keep"/>',
+    });
+    const input = makeTemplateInput({ targetXml: foreign });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const merged = Buffer.from(replaceComment(projection.targetXml.toString('utf8'), 'Target value', 'Selected value'));
+    const encoded = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: merged });
+    assert.strictEqual(encoded.ok, true, encoded.ok ? undefined : encoded.reason);
+    if (encoded.ok) {
+      const xml = encoded.content.toString('utf8');
+      assert.match(xml, /<vendor:InternalInfo marker="keep"\/>/u);
+      assert.match(xml, /<(?:md\d*:)?InternalInfo(?:\s[^>]*)?>[\s\S]*?<xr:PropertyState>/u);
+    }
+
+    const existingInfo = templateDescriptor({
+      uuid: CFE_UUID,
+      adopted: true,
+      comment: 'Target value',
+      internalInfo: `<InternalInfo><xr:GeneratedType name="PrintTemplate" uuid="${BASE_UUID}"/></InternalInfo>`,
+    });
+    const existingInput = makeTemplateInput({ targetXml: existingInfo });
+    const existingProjection = projectAdoptedDesignerPair(existingInput);
+    assert.strictEqual(existingProjection.ok, true, existingProjection.ok ? undefined : existingProjection.reason);
+    if (existingProjection.ok) {
+      const selectedExisting = Buffer.from(replaceComment(existingProjection.targetXml.toString('utf8'), 'Target value', 'Selected value'));
+      const existingResult = materializeAdoptedDesignerTarget({ ...existingInput, mergedLogicalTarget: selectedExisting });
+      assert.strictEqual(existingResult.ok, true, existingResult.ok ? undefined : existingResult.reason);
+      if (existingResult.ok) {
+        const xml = existingResult.content.toString('utf8');
+        assert.match(xml, /<xr:GeneratedType name="PrintTemplate" uuid="11111111-1111-4111-8111-111111111111"\/>/u);
+        assert.match(xml, /<xr:PropertyState>/u);
+      }
+    }
+
+    const duplicateInfo = templateDescriptor({ uuid: CFE_UUID, adopted: true, comment: 'Target value', internalInfo: '<InternalInfo/><InternalInfo/>' });
+    const duplicateInfoInput = makeTemplateInput({ targetXml: duplicateInfo });
+    const duplicateInfoProjection = projectAdoptedDesignerPair(duplicateInfoInput);
+    assert.strictEqual(duplicateInfoProjection.ok, true, duplicateInfoProjection.ok ? undefined : duplicateInfoProjection.reason);
+    if (duplicateInfoProjection.ok) {
+      const selected = Buffer.from(replaceComment(duplicateInfoProjection.targetXml.toString('utf8'), 'Base comment', 'Selected value'));
+      const duplicateInfoResult = materializeAdoptedDesignerTarget({ ...duplicateInfoInput, mergedLogicalTarget: selected });
+      assert.strictEqual(duplicateInfoResult.ok, false);
+      if (!duplicateInfoResult.ok) { assert.match(duplicateInfoResult.reason, /PropertyState|InternalInfo|ambiguous|повтор/u); }
+    }
+
+    const duplicateProperties = templateDescriptor({ uuid: CFE_UUID, adopted: true, comment: 'Target value', duplicateProperties: true });
+    const duplicatePropertiesInput = makeTemplateInput({ targetXml: duplicateProperties });
+    const duplicatePropertiesProjection = projectAdoptedDesignerPair(duplicatePropertiesInput);
+    assert.strictEqual(duplicatePropertiesProjection.ok, false, 'ambiguous physical Properties are rejected during descriptor validation');
+  });
+
+  test('collects and uses target child UUID allocations for adopted-to-adopted materialization', () => {
+    const sourceOverlay = adoptedChild({ comment: 'Selected borrowed child' });
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [baseChild('Base child')] });
+    const input = makeInput({
+      direction: 'adopted-to-adopted',
+      baseXml,
+      targetXml: descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [] }),
+      sourceXml: descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, childObjects: [sourceOverlay] }),
+    });
+    const requirements = collectAdoptedDesignerChildUuidRequirements(input);
+
+    assert.strictEqual(requirements.ok, true, requirements.ok ? undefined : requirements.reason);
+    if (!requirements.ok) { return; }
+    assert.strictEqual(requirements.requirements.length, 1);
+    assert.strictEqual(requirements.requirements[0]?.anchorUuid, CHILD_UUID);
+    const allocations = new Map([[requirements.requirements[0]!.mapKey, NEW_CHILD_LOCAL_UUID]]);
+    const projection = projectAdoptedDesignerPair({ ...input, adoptedChildUuidByAnchor: allocations });
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+
+    const materialized = materializeAdoptedDesignerTarget({
+      ...input,
+      adoptedChildUuidByAnchor: allocations,
+      mergedLogicalTarget: projection.sourceXml,
+    });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    const xml = materialized.content.toString('utf8');
+    assert.match(xml, new RegExp(`<Dimension uuid="${NEW_CHILD_LOCAL_UUID}"`));
+    assert.match(xml, new RegExp(`<ExtendedConfigurationObject>${CHILD_UUID}</ExtendedConfigurationObject>`));
+    assert.match(xml, new RegExp(`<Catalog uuid="${CFE_UUID}"`));
+    assert.match(xml, /Selected borrowed child/u);
+  });
+
   test('compares expanded XML names and typed QName values without normalizing arbitrary text', () => {
     const rebound = parseXmlDocument('<root xmlns:p="urn:base"><p:Node p:flag="yes"><p:Type>p:Thing</p:Type><Comment>p:Thing</Comment></p:Node></root>');
     const foreign = parseXmlDocument('<root xmlns:p="urn:base"><p:Node xmlns:p="urn:evil" p:flag="yes"><p:Type>p:Thing</p:Type><Comment>p:Thing</Comment></p:Node></root>');
@@ -88,6 +328,376 @@ suite('Adopted Designer descriptor projection (#335)', () => {
     assert.deepStrictEqual(result.issues, []);
   });
 
+  test('projects complete borrowed root and nested same-kind order independently for both adopted sides', () => {
+    const baseChildren = [
+      orderMetadataChild('Attribute', ORDER_A_UUID, 'OrderA'),
+      orderMetadataChild('Attribute', ORDER_B_UUID, 'OrderB'),
+      orderMetadataChild('Attribute', ORDER_C_UUID, 'OrderC'),
+      orderMetadataChild('TabularSection', ORDER_TABULAR_UUID, 'OrderLines', [
+        orderMetadataChild('Attribute', ORDER_NESTED_X_UUID, 'NestedX'),
+        orderMetadataChild('Attribute', ORDER_NESTED_Y_UUID, 'NestedY'),
+        orderMetadataChild('Attribute', ORDER_NESTED_Z_UUID, 'NestedZ'),
+      ]),
+    ];
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: baseChildren });
+    const targetXml = descriptor({
+      uuid: CFE_UUID,
+      adopted: true,
+      childObjects: [
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_B_UUID, ORDER_B_UUID.toUpperCase(), 'OrderB'),
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_A_UUID, ORDER_A_UUID, 'OrderA'),
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_C_UUID, ORDER_C_UUID, 'OrderC'),
+        adoptedOrderMetadataChild('TabularSection', ORDER_LOCAL_TABULAR_UUID, ORDER_TABULAR_UUID, 'OrderLines', [
+          adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_Y_UUID, ORDER_NESTED_Y_UUID, 'NestedY'),
+          adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_X_UUID, ORDER_NESTED_X_UUID, 'NestedX'),
+          adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_Z_UUID, ORDER_NESTED_Z_UUID, 'NestedZ'),
+        ]),
+      ],
+    });
+    const sourceXml = descriptor({
+      uuid: SOURCE_CFE_UUID,
+      adopted: true,
+      childObjects: [
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_C_UUID.replace('bbbb', 'eeee'), ORDER_C_UUID, 'OrderC'),
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_A_UUID.replace('bbbb', 'eeee'), ORDER_A_UUID, 'OrderA'),
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_B_UUID.replace('bbbb', 'eeee'), ORDER_B_UUID, 'OrderB'),
+        adoptedOrderMetadataChild('TabularSection', ORDER_LOCAL_TABULAR_UUID.replace('dddd', '9999'), ORDER_TABULAR_UUID, 'OrderLines', [
+          adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_Z_UUID.replace('ffffffff', '99999999'), ORDER_NESTED_Z_UUID, 'NestedZ'),
+          adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_X_UUID.replace('ffffffff', '99999999'), ORDER_NESTED_X_UUID, 'NestedX'),
+          adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_Y_UUID.replace('ffffffff', '99999999'), ORDER_NESTED_Y_UUID, 'NestedY'),
+        ]),
+      ],
+    });
+    const input = makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml });
+
+    const projection = projectAdoptedDesignerPair(input);
+
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(metadataChildUuids(projection.targetXml, 'Attribute'), [ORDER_B_UUID, ORDER_A_UUID, ORDER_C_UUID]);
+    assert.deepStrictEqual(metadataChildUuids(projection.sourceXml, 'Attribute'), [ORDER_C_UUID, ORDER_A_UUID, ORDER_B_UUID]);
+    assert.deepStrictEqual(metadataChildUuids(projection.targetXml, 'Attribute', ORDER_TABULAR_UUID), [ORDER_NESTED_Y_UUID, ORDER_NESTED_X_UUID, ORDER_NESTED_Z_UUID]);
+    assert.deepStrictEqual(metadataChildUuids(projection.sourceXml, 'Attribute', ORDER_TABULAR_UUID), [ORDER_NESTED_Z_UUID, ORDER_NESTED_X_UUID, ORDER_NESTED_Y_UUID]);
+  });
+
+  test('keeps partial base order plus own tail and marks reversed or interleaved partial overlays order-only', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [
+      orderMetadataChild('Attribute', ORDER_A_UUID, 'OrderA'),
+      orderMetadataChild('Attribute', ORDER_B_UUID, 'OrderB'),
+      orderMetadataChild('Attribute', ORDER_C_UUID, 'OrderC'),
+      orderMetadataChild('Attribute', ORDER_D_UUID, 'OrderD'),
+    ] });
+    const ownTail = orderOwnMetadataChild('Attribute', '12121212-1212-4121-8121-121212121212', 'OwnTail');
+    const validPartial = makeInput({
+      direction: 'cf-to-adopted',
+      baseXml,
+      targetXml: descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_A_UUID, ORDER_A_UUID, 'OrderA'),
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_C_UUID, ORDER_C_UUID, 'OrderC'),
+        ownTail,
+      ] }),
+      sourceXml: baseXml,
+    });
+    const validProjection = projectAdoptedDesignerPair(validPartial);
+    assert.strictEqual(validProjection.ok, true, validProjection.ok ? undefined : validProjection.reason);
+    if (!validProjection.ok) { return; }
+    assert.deepStrictEqual(metadataChildUuids(validProjection.targetXml, 'Attribute'), [
+      ORDER_A_UUID, ORDER_B_UUID, ORDER_C_UUID, ORDER_D_UUID, '12121212-1212-4121-8121-121212121212',
+    ], 'partial anchors in base order retain inherited order and place own members at the same-kind tail');
+    assert.strictEqual(validProjection.issues.some((issue) => (issue as typeof issue & { orderOnly?: boolean }).orderOnly), false);
+
+    const ambiguousCases = [
+      {
+        label: 'reversed base anchors',
+        children: [
+          adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_B_UUID, ORDER_B_UUID, 'OrderB'),
+          adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_A_UUID, ORDER_A_UUID, 'OrderA'),
+        ],
+      },
+      {
+        label: 'own member interleaved between partial base anchors',
+        children: [
+          adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_A_UUID, ORDER_A_UUID, 'OrderA'),
+          ownTail,
+          adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_C_UUID, ORDER_C_UUID, 'OrderC'),
+        ],
+      },
+    ];
+    for (const scenario of ambiguousCases) {
+      const input = makeInput({
+        direction: 'cf-to-adopted',
+        baseXml,
+        targetXml: descriptor({ uuid: CFE_UUID, adopted: true, comment: 'Target before', propertyState: 'Notify', childObjects: scenario.children }),
+        sourceXml: baseXml,
+      });
+      const projection = projectAdoptedDesignerPair(input);
+      assert.strictEqual(projection.ok, true, `${scenario.label}: ${projection.ok ? '' : projection.reason}`);
+      if (!projection.ok) { continue; }
+      const expectedOrder = scenario.label.includes('interleaved')
+        ? [ORDER_A_UUID, ORDER_B_UUID, ORDER_C_UUID, ORDER_D_UUID, '12121212-1212-4121-8121-121212121212']
+        : [ORDER_A_UUID, ORDER_B_UUID, ORDER_C_UUID, ORDER_D_UUID];
+      assert.deepStrictEqual(metadataChildUuids(projection.targetXml, 'Attribute'), expectedOrder, scenario.label);
+      const issue = projection.issues.find((candidate) => candidate.side === 'target' && /Attribute/u.test(candidate.reason));
+      const orderIssue = issue as (typeof issue & { orderOnly?: boolean; orderScopePointer?: string; orderElementKind?: string });
+      assert.strictEqual(orderIssue?.orderOnly, true, scenario.label);
+      assert.strictEqual(orderIssue?.orderElementKind, 'Attribute', scenario.label);
+      assert.match(orderIssue?.orderScopePointer ?? '', /ChildObjects\[/u, scenario.label);
+
+      const merged = Buffer.from(projection.targetXml.toString('utf8').replace('Target before', 'Target selected'));
+      const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: merged });
+      assert.strictEqual(materialized.ok, true, `${scenario.label} must not block an independent scalar edit`);
+      if (materialized.ok) { assert.match(materialized.content.toString('utf8'), /Target selected/u); }
+    }
+  });
+
+  test('projects nested partial and complete orders against the unchanged base subtree on both sides', () => {
+    const nestedOwnTargetUuid = '18181818-1818-4181-8181-181818181818';
+    const nestedOwnSourceUuid = '19191919-1919-4191-8191-191919191919';
+    const baseTabular = orderMetadataChild('TabularSection', ORDER_TABULAR_UUID, 'NestedOrderLines', [
+      orderMetadataChild('Attribute', ORDER_NESTED_X_UUID, 'NestedX'),
+      orderMetadataChild('Attribute', ORDER_NESTED_Y_UUID, 'NestedY'),
+      orderMetadataChild('Attribute', ORDER_NESTED_Z_UUID, 'NestedZ'),
+    ]);
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [baseTabular] });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [
+      adoptedOrderMetadataChild('TabularSection', ORDER_LOCAL_TABULAR_UUID, ORDER_TABULAR_UUID, 'NestedOrderLines', [
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_X_UUID, ORDER_NESTED_X_UUID, 'NestedX'),
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_Z_UUID, ORDER_NESTED_Z_UUID, 'NestedZ'),
+        orderOwnMetadataChild('Attribute', nestedOwnTargetUuid, 'TargetNestedTail'),
+      ]),
+    ] });
+    const sourceXml = descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, childObjects: [
+      adoptedOrderMetadataChild('TabularSection', '20202020-2020-4202-8202-202020202020', ORDER_TABULAR_UUID, 'NestedOrderLines', [
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_Z_UUID.replace('ffffffff', 'abababab'), ORDER_NESTED_Z_UUID, 'NestedZ'),
+        orderOwnMetadataChild('Attribute', nestedOwnSourceUuid, 'SourceNestedInterleave'),
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_X_UUID.replace('ffffffff', 'abababab'), ORDER_NESTED_X_UUID, 'NestedX'),
+      ]),
+    ] });
+    const input = makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml });
+
+    const projection = projectAdoptedDesignerPair(input);
+
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(metadataChildUuids(projection.targetXml, 'Attribute', ORDER_TABULAR_UUID), [
+      ORDER_NESTED_X_UUID, ORDER_NESTED_Y_UUID, ORDER_NESTED_Z_UUID, nestedOwnTargetUuid,
+    ], 'ascending partial anchors keep the original nested base order and append own members');
+    assert.strictEqual(projection.issues.some((issue) => issue.side === 'target' && issue.orderOnly), false,
+      'a nested partial order with ascending anchors and own tail is unambiguous');
+    assert.deepStrictEqual(metadataChildUuids(projection.sourceXml, 'Attribute', ORDER_TABULAR_UUID), [
+      ORDER_NESTED_X_UUID, ORDER_NESTED_Y_UUID, ORDER_NESTED_Z_UUID, nestedOwnSourceUuid,
+    ], 'ambiguous nested anchors keep the inherited view and own tail visible');
+    const sourceOrderIssue = projection.issues.find((issue) => issue.side === 'source' && issue.orderOnly);
+    assert.strictEqual(sourceOrderIssue?.orderElementKind, 'Attribute');
+    assert.match(sourceOrderIssue?.orderScopePointer ?? '', /ChildObjects\[/u);
+
+    const fullSource = descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, childObjects: [
+      adoptedOrderMetadataChild('TabularSection', '21212121-2121-4212-8212-212121212121', ORDER_TABULAR_UUID, 'NestedOrderLines', [
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_Z_UUID.replace('ffffffff', 'cdcdcdcd'), ORDER_NESTED_Z_UUID, 'NestedZ'),
+        orderOwnMetadataChild('Attribute', nestedOwnSourceUuid, 'SourceNestedInterleave'),
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_Y_UUID.replace('ffffffff', 'cdcdcdcd'), ORDER_NESTED_Y_UUID, 'NestedY'),
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_X_UUID.replace('ffffffff', 'cdcdcdcd'), ORDER_NESTED_X_UUID, 'NestedX'),
+      ]),
+    ] });
+    const complete = projectAdoptedDesignerPair({ ...input, sourceXml: fullSource });
+    assert.strictEqual(complete.ok, true, complete.ok ? undefined : complete.reason);
+    if (!complete.ok) { return; }
+    assert.deepStrictEqual(metadataChildUuids(complete.sourceXml, 'Attribute', ORDER_TABULAR_UUID), [
+      ORDER_NESTED_Z_UUID, nestedOwnSourceUuid, ORDER_NESTED_Y_UUID, ORDER_NESTED_X_UUID,
+    ], `a complete nested overlay sequence explicitly projects reversed anchors and interleaved own members: ${JSON.stringify(complete.issues)}`);
+    assert.strictEqual(complete.issues.some((issue) => issue.side === 'source' && issue.orderOnly), false);
+  });
+
+  test('scopes order-only adopted issues to the exact metadata collection and element kind', () => {
+    const collection = '/MetaDataObject[0]/Catalog[uuid=11111111-1111-4111-8111-111111111111]/ChildObjects[0]';
+    const orderedNodes: CompareTreeNode[] = [
+      candidateNode('attribute-order', 'metadataOrderMove', `${collection}/Attribute[uuid=${ORDER_A_UUID}]`),
+      candidateNode('tabular-order', 'metadataOrderMove', `${collection}/TabularSection[uuid=${ORDER_TABULAR_UUID}]`),
+      candidateNode('comment', 'xmlElement', '/MetaDataObject[0]/Catalog[uuid=11111111-1111-4111-8111-111111111111]/Properties[0]/Comment[0]'),
+    ];
+    const factory: ExecutableCandidateFactory = async () => ({ ok: false, diagnostics: [] });
+    const factories = new Map(orderedNodes.map((node) => [node.id, factory]));
+    const issue = {
+      side: 'source',
+      identityKey: 'root=Catalog.Products',
+      reason: 'Partial Attribute order is ambiguous.',
+      orderOnly: true,
+      orderScopePointer: collection,
+      orderElementKind: 'Attribute',
+    } as unknown as Parameters<typeof mapAdoptedIssuesToNodes>[2][number];
+
+    const mapped = mapAdoptedIssuesToNodes(orderedNodes, factories, [issue]);
+
+    assert.deepStrictEqual([...mapped.byNodeId.keys()], ['attribute-order']);
+    assert.deepStrictEqual(mapped.unmatched, []);
+  });
+
+  test('materializes a selected root order by completing only its kind and preserving target-only and opaque nodes', () => {
+    const targetOnlyUuid = '12121212-1212-4121-8121-121212121212';
+    const opaque = '<vendor:Opaque marker="keep-target">Unselected payload</vendor:Opaque>';
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [
+      orderMetadataChild('Attribute', ORDER_A_UUID, 'OrderA'),
+      orderMetadataChild('Attribute', ORDER_B_UUID, 'OrderB'),
+      orderMetadataChild('Attribute', ORDER_C_UUID, 'OrderC'),
+      orderMetadataChild('TabularSection', ORDER_TABULAR_UUID, 'OrderLines'),
+    ] });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [
+      adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_A_UUID, ORDER_A_UUID, 'OrderA'),
+      orderOwnMetadataChild('Attribute', targetOnlyUuid, 'TargetOnly'),
+      opaque,
+    ] });
+    const input = makeInput({ direction: 'cf-to-adopted', baseXml, targetXml, sourceXml: baseXml });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const selected = reorderMetadataChildren(projection.targetXml, 'Attribute', [ORDER_C_UUID, ORDER_B_UUID, ORDER_A_UUID, targetOnlyUuid]);
+    const requirements = collectAdoptedDesignerChildUuidRequirements(input);
+    assert.strictEqual(requirements.ok, true, requirements.ok ? undefined : requirements.reason);
+    if (!requirements.ok) { return; }
+    const localByAnchor = new Map([
+      [ORDER_B_UUID, ORDER_LOCAL_B_UUID],
+      [ORDER_C_UUID, ORDER_LOCAL_C_UUID],
+      [ORDER_TABULAR_UUID, ORDER_LOCAL_TABULAR_UUID],
+    ]);
+    const allocations = new Map(requirements.requirements.map((requirement) => [
+      requirement.mapKey,
+      localByAnchor.get(requirement.anchorUuid) ?? '13131313-1313-4131-8131-131313131313',
+    ]));
+
+    const materialized = materializeAdoptedDesignerTarget({
+      ...input,
+      adoptedChildUuidByAnchor: allocations,
+      mergedLogicalTarget: selected,
+    });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(physicalMetadataKindOrder(materialized.content, 'Attribute'), [ORDER_C_UUID, ORDER_B_UUID, ORDER_A_UUID, targetOnlyUuid]);
+    assert.deepStrictEqual(childObjectNodesOfKind(materialized.content), ['Attribute', 'Attribute', 'Attribute', 'Attribute', 'Opaque']);
+    assert.match(materialized.content.toString('utf8'), /TargetOnly/u);
+    assert.match(materialized.content.toString('utf8'), /Unselected payload/u);
+    for (const [anchor, generatedName] of [[ORDER_B_UUID, 'OrderBRef'], [ORDER_C_UUID, 'OrderCRef']] as const) {
+      const shell = adoptedShellByAnchor(materialized.content, anchor);
+      assert.ok(shell, `borrowed ${anchor} shell exists after explicit order selection`);
+      assert.match(stableElement(shell!), new RegExp(`GeneratedType\\[name="${generatedName}"`));
+      assert.match(stableElement(shell!), /Comment\[\]T\("Base Order/u);
+      assert.match(stableElement(shell!), /ObjectBelonging\[\]T\("Adopted"\)/u);
+    }
+  });
+
+  test('inserts a newly completed metadata kind before Template and Command schema neighbors', () => {
+    const templateUuid = '15151515-1515-4151-8151-151515151515';
+    const commandUuid = '16161616-1616-4161-8161-161616161616';
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [
+      orderMetadataChild('Attribute', ORDER_A_UUID, 'BoundaryA'),
+      orderMetadataChild('Attribute', ORDER_B_UUID, 'BoundaryB'),
+      orderMetadataChild('Attribute', ORDER_C_UUID, 'BoundaryC'),
+    ] });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [
+      orderMetadataChild('Template', templateUuid, 'TargetTemplate'),
+      orderMetadataChild('Command', commandUuid, 'TargetCommand'),
+    ] });
+    const input = makeInput({ direction: 'cf-to-adopted', baseXml, targetXml, sourceXml: baseXml });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const selected = reorderMetadataChildren(projection.targetXml, 'Attribute', [ORDER_C_UUID, ORDER_B_UUID, ORDER_A_UUID]);
+    const requirements = collectAdoptedDesignerChildUuidRequirements(input);
+    assert.strictEqual(requirements.ok, true, requirements.ok ? undefined : requirements.reason);
+    if (!requirements.ok) { return; }
+    const localByAnchor = new Map([
+      [ORDER_A_UUID, ORDER_LOCAL_A_UUID],
+      [ORDER_B_UUID, ORDER_LOCAL_B_UUID],
+      [ORDER_C_UUID, ORDER_LOCAL_C_UUID],
+    ]);
+    const allocations = new Map(requirements.requirements.map((requirement) => [
+      requirement.mapKey,
+      localByAnchor.get(requirement.anchorUuid) ?? '17171717-1717-4171-8171-171717171717',
+    ]));
+
+    const materialized = materializeAdoptedDesignerTarget({
+      ...input,
+      adoptedChildUuidByAnchor: allocations,
+      mergedLogicalTarget: selected,
+    });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(physicalMetadataKindOrder(materialized.content, 'Attribute'), [ORDER_C_UUID, ORDER_B_UUID, ORDER_A_UUID]);
+    assert.deepStrictEqual(childObjectNodesOfKind(materialized.content), ['Attribute', 'Attribute', 'Attribute', 'Template', 'Command']);
+    assert.match(materialized.content.toString('utf8'), /TargetTemplate/u);
+    assert.match(materialized.content.toString('utf8'), /TargetCommand/u);
+  });
+
+  test('completes nested borrowed order while leaving another kind inherited and physical', () => {
+    const baseTabular = orderMetadataChild('TabularSection', ORDER_TABULAR_UUID, 'OrderLines', [
+      orderMetadataChild('Attribute', ORDER_NESTED_X_UUID, 'NestedX'),
+      orderMetadataChild('Attribute', ORDER_NESTED_Y_UUID, 'NestedY'),
+      orderMetadataChild('Attribute', ORDER_NESTED_Z_UUID, 'NestedZ'),
+    ]);
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [
+      orderMetadataChild('Attribute', ORDER_A_UUID, 'RootA'),
+      orderMetadataChild('Attribute', ORDER_B_UUID, 'RootB'),
+      baseTabular,
+    ] });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [
+      adoptedOrderMetadataChild('TabularSection', ORDER_LOCAL_TABULAR_UUID, ORDER_TABULAR_UUID, 'OrderLines', [
+        adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_NESTED_X_UUID, ORDER_NESTED_X_UUID, 'NestedX'),
+      ]),
+    ] });
+    const input = makeInput({ direction: 'cf-to-adopted', baseXml, targetXml, sourceXml: baseXml });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const selected = reorderMetadataChildren(projection.targetXml, 'Attribute', [ORDER_NESTED_Y_UUID, ORDER_NESTED_X_UUID, ORDER_NESTED_Z_UUID], ORDER_TABULAR_UUID);
+    const requirements = collectAdoptedDesignerChildUuidRequirements(input);
+    assert.strictEqual(requirements.ok, true, requirements.ok ? undefined : requirements.reason);
+    if (!requirements.ok) { return; }
+    const localByAnchor = new Map([
+      [ORDER_NESTED_Y_UUID, ORDER_LOCAL_NESTED_Y_UUID],
+      [ORDER_NESTED_Z_UUID, ORDER_LOCAL_NESTED_Z_UUID],
+    ]);
+    const allocations = new Map(requirements.requirements.map((requirement) => [
+      requirement.mapKey,
+      localByAnchor.get(requirement.anchorUuid) ?? '14141414-1414-4141-8141-141414141414',
+    ]));
+
+    const materialized = materializeAdoptedDesignerTarget({
+      ...input,
+      adoptedChildUuidByAnchor: allocations,
+      mergedLogicalTarget: selected,
+    });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(metadataChildUuids(materialized.content, 'Attribute'), [], 'a different root kind is not completed by nested Attribute ordering');
+    assert.deepStrictEqual(physicalMetadataKindOrder(materialized.content, 'Attribute', ORDER_LOCAL_TABULAR_UUID), [ORDER_NESTED_Y_UUID, ORDER_NESTED_X_UUID, ORDER_NESTED_Z_UUID]);
+  });
+
+  test('does not complete a same-kind sequence for a scalar-only selected edit', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [
+      orderMetadataChild('Attribute', ORDER_A_UUID, 'OrderA'),
+      orderMetadataChild('Attribute', ORDER_B_UUID, 'OrderB'),
+      orderMetadataChild('Attribute', ORDER_C_UUID, 'OrderC'),
+    ] });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, comment: 'Before scalar', propertyState: 'Notify', childObjects: [
+      adoptedOrderMetadataChild('Attribute', ORDER_LOCAL_A_UUID, ORDER_A_UUID, 'OrderA'),
+    ] });
+    const input = makeInput({ direction: 'cf-to-adopted', baseXml, targetXml, sourceXml: baseXml });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const mergedLogicalTarget = Buffer.from(projection.targetXml.toString('utf8').replace('Before scalar', 'After scalar'));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (materialized.ok) {
+      assert.deepStrictEqual(metadataChildUuids(materialized.content, 'Attribute'), [ORDER_LOCAL_A_UUID]);
+      assert.match(materialized.content.toString('utf8'), /After scalar/u);
+    }
+  });
+
   test('keeps a same-name child with the wrong anchor unchanged and reports only that child', () => {
     const input = makeInput({
       direction: 'adopted-to-cf',
@@ -106,6 +716,107 @@ suite('Adopted Designer descriptor projection (#335)', () => {
     assert.doesNotMatch(result.sourceXml.toString('utf8'), /Must not map by name/u);
     assert.strictEqual(result.issues.length, 1);
     assert.strictEqual(result.issues[0]?.identityKey, `uuid=${'99999999-9999-4999-8999-999999999999'}`);
+  });
+
+  test('rejects an adopted anchor that only exists in an earlier own overlay and keeps root Comment mergeable', () => {
+    const ownUuid = '31313131-3131-4313-8313-313131313131';
+    const adoptedLocalUuid = '32323232-3232-4323-8323-323232323232';
+    const targetXml = descriptor({
+      uuid: CFE_UUID,
+      adopted: true,
+      comment: 'Target before',
+      propertyState: 'Notify',
+      childObjects: [
+        orderOwnMetadataChild('Attribute', ownUuid, 'OwnAnchor'),
+        `<Attribute uuid="${adoptedLocalUuid}"><Properties><Name>OwnAnchor</Name><Comment>Injected through own anchor</Comment><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>${ownUuid}</ExtendedConfigurationObject></Properties><InternalInfo><xr:PropertyState><xr:Property>Comment</xr:Property><xr:State>Notify</xr:State></xr:PropertyState></InternalInfo></Attribute>`,
+      ],
+    });
+    const input = makeInput({
+      direction: 'adopted-to-adopted',
+      targetXml,
+      sourceXml: descriptor({ uuid: SOURCE_CFE_UUID, adopted: true }),
+    });
+
+    const projection = projectAdoptedDesignerPair(input);
+
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const identityIssue = projection.issues.find((issue) => issue.side === 'target' && issue.identityKey === `uuid=${ownUuid}`);
+    assert.ok(identityIssue, 'the adopted child must be scoped read-only because its anchor is not in the captured base');
+    assert.match(identityIssue.reason, /base|anchor/u);
+    assert.doesNotMatch(projection.targetXml.toString('utf8'), /Injected through own anchor/u,
+      'an own logical child must never become a synthetic base object for the next overlay');
+
+    const rootComment = candidateNode('root-comment', 'xmlElement',
+      `/MetaDataObject[0]/Catalog[uuid=${CFE_UUID}]/Properties[0]/Comment[0]`);
+    const childComment = candidateNode('own-child-comment', 'xmlElement',
+      `/MetaDataObject[0]/Catalog[uuid=${CFE_UUID}]/ChildObjects[0]/Attribute[uuid=${ownUuid}]/Properties[0]/Comment[0]`);
+    const factory: ExecutableCandidateFactory = async () => ({ ok: false, diagnostics: [] });
+    const mapped = mapAdoptedIssuesToNodes(
+      [rootComment, childComment],
+      new Map([[rootComment.id, factory], [childComment.id, factory]]),
+      [identityIssue],
+    );
+    assert.deepStrictEqual([...mapped.byNodeId.keys()], ['own-child-comment']);
+    assert.deepStrictEqual(mapped.unmatched, []);
+
+    const materialized = materializeAdoptedDesignerTarget({
+      ...input,
+      mergedLogicalTarget: Buffer.from(replaceComment(projection.targetXml.toString('utf8'), 'Target before', 'Selected root')),
+    });
+    assert.strictEqual(materialized.ok, true,
+      materialized.ok ? 'the malformed child identity must not block an unrelated root Comment edit' : materialized.reason);
+    if (materialized.ok) {
+      const physical = materialized.content.toString('utf8');
+      assert.match(physical, /Selected root/u);
+      assert.ok(physical.includes(`<Attribute uuid="${ownUuid}"><Properties><Name>OwnAnchor</Name><Comment>Own OwnAnchor</Comment>`),
+        'the malformed adopted overlay cannot rewrite the target-owned child');
+    }
+  });
+
+  test('fails closed when the original base anchor is duplicated or only foreign-namespace', () => {
+    const duplicateUuid = '41414141-4141-4414-8414-414141414141';
+    const foreignUuid = '42424242-4242-4424-8424-424242424242';
+    const cases = [
+      {
+        label: 'duplicate MD anchor',
+        anchor: duplicateUuid,
+        baseChildren: [
+          orderMetadataChild('Attribute', duplicateUuid, 'DuplicateAnchor'),
+          orderMetadataChild('Attribute', duplicateUuid, 'DuplicateAnchor'),
+        ],
+      },
+      {
+        label: 'foreign namespace lookalike',
+        anchor: foreignUuid,
+        baseChildren: [
+          `<vendor:Attribute uuid="${foreignUuid}"><vendor:Properties><vendor:Name>ForeignAnchor</vendor:Name></vendor:Properties></vendor:Attribute>`,
+        ],
+      },
+    ];
+
+    for (const scenario of cases) {
+      const input = makeInput({
+        direction: 'adopted-to-adopted',
+        baseXml: descriptor({ uuid: BASE_UUID, childObjects: scenario.baseChildren }),
+        targetXml: descriptor({
+          uuid: CFE_UUID,
+          adopted: true,
+          childObjects: [
+            `<Attribute uuid="${scenario.anchor === duplicateUuid ? '43434343-4343-4434-8434-434343434343' : '44444444-4444-4444-8444-444444444444'}"><Properties><Name>${scenario.anchor === duplicateUuid ? 'DuplicateAnchor' : 'ForeignAnchor'}</Name><Comment>Injected ambiguous anchor</Comment><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>${scenario.anchor}</ExtendedConfigurationObject></Properties><InternalInfo><xr:PropertyState><xr:Property>Comment</xr:Property><xr:State>Notify</xr:State></xr:PropertyState></InternalInfo></Attribute>`,
+          ],
+        }),
+        sourceXml: descriptor({ uuid: SOURCE_CFE_UUID, adopted: true }),
+      });
+
+      const projection = projectAdoptedDesignerPair(input);
+
+      assert.strictEqual(projection.ok, true, `${scenario.label}: ${projection.ok ? '' : projection.reason}`);
+      if (!projection.ok) { continue; }
+      assert.ok(projection.issues.some((issue) => issue.side === 'target'
+        && issue.identityKey === `uuid=${scenario.anchor}`), `${scenario.label} must produce an identity-scoped issue`);
+      assert.doesNotMatch(projection.targetXml.toString('utf8'), /Injected ambiguous anchor/u, scenario.label);
+    }
   });
 
   test('does not consume foreign-namespace Properties, markers, or ChildObjects lookalikes', () => {
@@ -141,12 +852,362 @@ suite('Adopted Designer descriptor projection (#335)', () => {
     assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
     if (!projection.ok) { return; }
     assert.deepStrictEqual(projection.issues, []);
-    assert.match(projection.targetXml.toString('utf8'), /<Form>ManagedForm<\/Form>/u);
+    assert.deepStrictEqual(formRegistrationNames(projection.targetXml), ['ManagedForm']);
 
     const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: projection.targetXml });
     assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
     if (!materialized.ok) { return; }
-    assert.match(materialized.content.toString('utf8'), /<Form>ManagedForm<\/Form>/u);
+    assert.deepStrictEqual(formRegistrationNames(materialized.content), ['ManagedForm']);
+  });
+
+  test('projects allowlisted Form registrations independently on both sides in every direction', () => {
+    const inherited = ['BaseMain', 'BaseArchive'];
+    for (const direction of ['adopted-to-cf', 'cf-to-adopted', 'adopted-to-adopted'] as const) {
+      const targetAdopted = direction !== 'adopted-to-cf';
+      const sourceAdopted = direction !== 'cf-to-adopted';
+      const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(inherited) });
+      const targetXml = descriptor({
+        uuid: targetAdopted ? CFE_UUID : BASE_UUID,
+        adopted: targetAdopted,
+        comment: 'Target-only comment',
+        childObjects: [...(targetAdopted ? [] : formRegistrations(inherited)), ...formRegistrations(['TargetOnly', 'TargetUnapproved'])],
+      });
+      const sourceXml = descriptor({
+        uuid: sourceAdopted ? (direction === 'adopted-to-adopted' ? SOURCE_CFE_UUID : CFE_UUID) : BASE_UUID,
+        adopted: sourceAdopted,
+        childObjects: [...(sourceAdopted ? [] : formRegistrations(inherited)), ...formRegistrations(['SourceOnly', 'SourceUnapproved'])],
+      });
+      const input = withOwnFormRegistrations(
+        makeInput({ direction, baseXml, targetXml, sourceXml }),
+        { target: ['TargetOnly'], source: ['SourceOnly'] },
+      );
+
+      const projection = projectAdoptedDesignerPair(input);
+
+      assert.strictEqual(projection.ok, true, `${direction}: ${projection.ok ? '' : projection.reason}`);
+      if (!projection.ok) { continue; }
+      assert.deepStrictEqual(formRegistrationNames(projection.targetXml), [...inherited, 'TargetOnly', 'TargetUnapproved'], `${direction} target`);
+      assert.deepStrictEqual(formRegistrationNames(projection.sourceXml), [...inherited, 'SourceOnly', 'SourceUnapproved'], `${direction} source`);
+      assert.ok(projection.issues.some((issue) => /TargetUnapproved/u.test(issue.reason)), `${direction} target unapproved registration is scoped read-only`);
+      assert.ok(projection.issues.some((issue) => /SourceUnapproved/u.test(issue.reason)), `${direction} source unapproved registration is scoped read-only`);
+      assert.match(projection.targetXml.toString('utf8'), /Target-only comment/u, `${direction} keeps unrelated target scalar changes`);
+    }
+  });
+
+  test('keeps an old-base Form absent from the current own CF source as scoped read-only', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['RemovedFromCurrentCF']) });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [] });
+    const sourceXml = descriptor({ uuid: BASE_UUID, childObjects: [] });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'cf-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: [], source: [],
+    });
+
+    const projection = projectAdoptedDesignerPair(input);
+
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(projection.sourceXml), [],
+      'an own CF source uses its captured registrations and must not inherit an absent base Form');
+    assert.ok(projection.issues.some((issue) => /RemovedFromCurrentCF|base Form.*absent|absent.*base Form/iu.test(issue.reason)),
+      'the missing own registration is reported as scoped read-only');
+    assert.deepStrictEqual(formRegistrationNames(projection.targetXml), ['RemovedFromCurrentCF'],
+      'the adopted target still inherits the captured base Form');
+  });
+
+  test('keeps an unapproved source-only Form visible but blocks copying it without a package allowlist', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain']) });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [] });
+    const sourceXml = descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, childObjects: formRegistrations(['UnapprovedSourceForm']) });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: [], source: [],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(projection.sourceXml), ['BaseMain', 'UnapprovedSourceForm']);
+    assert.ok(projection.issues.some((issue) => /UnapprovedSourceForm/u.test(issue.reason)));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: projection.sourceXml });
+
+    assert.strictEqual(materialized.ok, false, 'visibility of a scoped read-only source registration does not authorize copying it');
+    if (!materialized.ok) { assert.match(materialized.reason, /allowlist|registration|Form/iu); }
+  });
+
+  test('keeps a target-only unapproved Form through an unrelated adopted-to-adopted scalar merge', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain']) });
+    const targetXml = descriptor({
+      uuid: CFE_UUID, adopted: true, comment: 'Old target comment', childObjects: formRegistrations(['TargetOnly']),
+    });
+    const sourceXml = descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, comment: 'Source comment', childObjects: [] });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: [], source: [],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(projection.targetXml), ['BaseMain', 'TargetOnly']);
+    assert.ok(projection.issues.some((issue) => /TargetOnly/u.test(issue.reason)));
+    const mergedLogicalTarget = Buffer.from(projection.targetXml.toString('utf8').replace('Old target comment', 'Selected comment'));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(materialized.content), ['TargetOnly']);
+    assert.match(materialized.content.toString('utf8'), /Selected comment/u);
+  });
+
+  test('preserves an unapproved target-only CF Form during unrelated adopted-to-CF scalar materialization', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain']) });
+    const targetXml = descriptor({
+      uuid: BASE_UUID, comment: 'Old target comment', childObjects: formRegistrations(['BaseMain', 'CfNewerForm']),
+    });
+    const sourceXml = descriptor({ uuid: CFE_UUID, adopted: true, comment: 'Source comment', childObjects: [] });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-cf', baseXml, targetXml, sourceXml }), {
+      target: [], source: [],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(projection.targetXml), ['BaseMain', 'CfNewerForm']);
+    assert.ok(projection.issues.some((issue) => /CfNewerForm/u.test(issue.reason)));
+    const selected = Buffer.from(projection.targetXml.toString('utf8').replace('Old target comment', 'Selected target comment'));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: selected });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(materialized.content), ['BaseMain', 'CfNewerForm']);
+    assert.match(materialized.content.toString('utf8'), /Selected target comment/u);
+  });
+
+  test('preserves duplicate, malformed, and foreign inherited-name Forms in the own CF target', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['LegacyForm']) });
+    const targetXml = descriptor({
+      uuid: BASE_UUID,
+      comment: 'Old target comment',
+      childObjects: [
+        '<Template>BeforeForms</Template>',
+        '<Form>LegacyForm</Form>',
+        '<Command>BetweenForms</Command>',
+        '<Form>LegacyForm</Form>',
+        '<Form title="malformed">LegacyForm</Form>',
+        '<vendor:Form>LegacyForm</vendor:Form>',
+        '<Template>AfterOpaqueForms</Template>',
+        '<Command>LastChild</Command>',
+      ],
+    });
+    const sourceXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [] });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-cf', baseXml, targetXml, sourceXml }), {
+      target: [], source: [],
+    });
+    const beforeChildren = childObjectNodes(targetXml);
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(childObjectNodes(projection.targetXml), beforeChildren,
+      'the own CF logical target must preserve every captured ChildObjects node and relative position');
+    const selected = Buffer.from(projection.targetXml.toString('utf8').replace('Old target comment', 'Selected target comment'));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: selected });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(childObjectNodes(materialized.content), beforeChildren,
+      'an unrelated scalar merge must preserve opaque Form nodes in their original positions');
+    assert.match(materialized.content.toString('utf8'), /Selected target comment/u);
+  });
+
+  test('materializes allowlisted own Form registration additions in all three directions', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain']) });
+    for (const direction of ['adopted-to-cf', 'cf-to-adopted', 'adopted-to-adopted'] as const) {
+      const targetAdopted = direction !== 'adopted-to-cf';
+      const sourceAdopted = direction !== 'cf-to-adopted';
+      const targetXml = descriptor({
+        uuid: targetAdopted ? CFE_UUID : BASE_UUID,
+        adopted: targetAdopted,
+        childObjects: formRegistrations(['BaseMain']),
+      });
+      const sourceXml = descriptor({
+        uuid: sourceAdopted ? (direction === 'adopted-to-adopted' ? SOURCE_CFE_UUID : CFE_UUID) : BASE_UUID,
+        adopted: sourceAdopted,
+        childObjects: formRegistrations(['BaseMain', 'SelectedOwnForm']),
+      });
+      const input = withOwnFormRegistrations(makeInput({ direction, baseXml, targetXml, sourceXml }), {
+        target: [], source: ['SelectedOwnForm'],
+      });
+      const projection = projectAdoptedDesignerPair(input);
+      assert.strictEqual(projection.ok, true, `${direction}: ${projection.ok ? '' : projection.reason}`);
+      if (!projection.ok) { continue; }
+      assert.deepStrictEqual(formRegistrationNames(projection.sourceXml), ['BaseMain', 'SelectedOwnForm'], `${direction} source`);
+      const selected = Buffer.from(projection.targetXml.toString('utf8').replace(
+        '</ChildObjects>', '<Form>SelectedOwnForm</Form></ChildObjects>',
+      ));
+
+      const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: selected });
+
+      assert.strictEqual(materialized.ok, true, `${direction}: ${materialized.ok ? '' : materialized.reason}`);
+      if (!materialized.ok) { continue; }
+      assert.deepStrictEqual(formRegistrationNames(materialized.content), ['BaseMain', 'SelectedOwnForm'], `${direction} output`);
+      if (targetAdopted) {
+        assert.match(materialized.content.toString('utf8'), new RegExp(`uuid="${CFE_UUID}"`, 'u'), `${direction} preserves target ownership UUID`);
+      } else {
+        assert.match(materialized.content.toString('utf8'), new RegExp(`uuid="${BASE_UUID}"`, 'u'), `${direction} keeps own target UUID`);
+      }
+      assert.match(materialized.content.toString('utf8'), new RegExp(`<xr:GeneratedType name="CatalogRef" uuid="${BASE_UUID}"`, 'u'),
+        `${direction} preserves target GeneratedType identity`);
+    }
+  });
+
+  test('places a selected Form registration before unknown ChildObjects neighbors', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [] });
+    const targetXml = descriptor({
+      uuid: BASE_UUID, childObjects: ['<vendor:Opaque marker="first"/>', '<vendor:Opaque marker="second"/>'],
+    });
+    const sourceXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: formRegistrations(['SelectedOwnForm']) });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-cf', baseXml, targetXml, sourceXml }), {
+      target: [], source: ['SelectedOwnForm'],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const selected = Buffer.from(projection.targetXml.toString('utf8').replace(
+      '</ChildObjects>', '<Form>SelectedOwnForm</Form></ChildObjects>',
+    ));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: selected });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    const xml = materialized.content.toString('utf8');
+    assert.ok(xml.indexOf('<Form>SelectedOwnForm</Form>') < xml.indexOf('<vendor:Opaque marker="first"/>'));
+    assert.ok(xml.indexOf('<vendor:Opaque marker="first"/>') < xml.indexOf('<vendor:Opaque marker="second"/>'));
+  });
+
+  test('places a selected Form registration before existing Template and Command registrations', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: ['<Template>PrintLayout</Template>', '<Command>RunReport</Command>'] });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: ['<Template>PrintLayout</Template>', '<Command>RunReport</Command>'] });
+    const sourceXml = descriptor({
+      uuid: SOURCE_CFE_UUID, adopted: true,
+      childObjects: ['<Template>PrintLayout</Template>', '<Command>RunReport</Command>', '<Form>SelectedOwnForm</Form>'],
+    });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: [], source: ['SelectedOwnForm'],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const selected = Buffer.from(projection.targetXml.toString('utf8').replace(
+      '</ChildObjects>', '<Form>SelectedOwnForm</Form></ChildObjects>',
+    ));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: selected });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(childObjectElementNames(materialized.content), ['Form', 'Template', 'Command']);
+  });
+
+  test('uses normalized Form names as distinct identities and encodes only source-allowlisted additions', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain', 'BaseArchive']) });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: formRegistrations(['BaseMain', 'BaseArchive', 'TargetOnly']) });
+    const sourceXml = descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, childObjects: formRegistrations(['BaseMain', 'BaseArchive', 'SourceOnly']) });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: ['TargetOnly'], source: ['SourceOnly'],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const mergedLogicalTarget = Buffer.from(projection.targetXml.toString('utf8').replace(
+      '</ChildObjects>', '<Form>SourceOnly</Form></ChildObjects>',
+    ));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(materialized.content), ['BaseMain', 'BaseArchive', 'TargetOnly', 'SourceOnly']);
+    assert.deepStrictEqual(formRegistrationNames(materialized.content), formRegistrationNames(mergedLogicalTarget));
+
+    const unapproved = materializeAdoptedDesignerTarget({
+      ...input,
+      mergedLogicalTarget: Buffer.from(mergedLogicalTarget.toString('utf8').replace('SourceOnly', 'NotAllowlisted')),
+    });
+    assert.strictEqual(unapproved.ok, false, 'an arbitrary new Form registration is not a UUID-keyed child addition');
+    if (!unapproved.ok) { assert.match(unapproved.reason, /allowlist|разреш|registration|Form/iu); }
+  });
+
+  test('retains the target inherited Form registrations and rejects their removal or rename', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain', 'BaseArchive']) });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: formRegistrations(['BaseMain', 'BaseArchive']) });
+    const sourceXml = descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, childObjects: formRegistrations(['BaseMain', 'BaseArchive']) });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: [], source: [],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const removeInherited = Buffer.from(projection.targetXml.toString('utf8').replace(/<Form(?:\s[^>]*)?>BaseMain<\/Form>/u, ''));
+    const renameInherited = Buffer.from(projection.targetXml.toString('utf8').replace(/(<Form(?:\s[^>]*)?>)BaseMain(<\/Form>)/u, '$1RenamedMain$2'));
+
+    for (const mergedLogicalTarget of [removeInherited, renameInherited]) {
+      const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget });
+      assert.strictEqual(materialized.ok, false, 'an inherited Form registration cannot be deleted or renamed');
+      if (!materialized.ok) { assert.match(materialized.reason, /inherited|унаслед|allowlist|разреш|registration|Form/iu); }
+    }
+  });
+
+  test('accepts a selected Form package when both base and target omit ChildObjects', () => {
+    const baseXml = Buffer.from(descriptor({ uuid: BASE_UUID, childObjects: [] }).toString('utf8')
+      .replace(/<ChildObjects><\/ChildObjects>/u, ''));
+    const targetXml = Buffer.from(descriptor({ uuid: CFE_UUID, adopted: true }).toString('utf8')
+      .replace(/<ChildObjects><\/ChildObjects>/u, '')
+      .replace('</Catalog>', '<vendor:Tail/></Catalog>'));
+    const sourceXml = descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, childObjects: formRegistrations(['NewSourceForm']) });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: [], source: ['NewSourceForm'],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(projection.sourceXml), ['NewSourceForm']);
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: projection.sourceXml });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(materialized.content), ['NewSourceForm']);
+    assert.ok(materialized.content.toString('utf8').indexOf('<ChildObjects>') < materialized.content.toString('utf8').indexOf('<vendor:Tail'),
+      'a synthesized ChildObjects container is placed before later unknown owner children');
+  });
+
+  test('keeps duplicate, malformed, foreign, and unknown Form registrations read-only', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain']) });
+    const duplicateXml = descriptor({
+      uuid: CFE_UUID,
+      adopted: true,
+      childObjects: [...formRegistrations(['SharedForm', 'sharedform']), '<Form title="malformed">Broken</Form>', '<vendor:Form>ForeignForm</vendor:Form>'],
+    });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-cf', baseXml, sourceXml: duplicateXml }), {
+      target: [], source: ['SharedForm'],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(projection.sourceXml), ['BaseMain']);
+    assert.ok(projection.issues.some((issue) => /duplicate|повтор|неоднознач|Form/iu.test(issue.reason)));
+    assert.ok(projection.issues.some((issue) => /namespace|посторон/u.test(issue.reason)));
+
+    const unknown = projectAdoptedDesignerPair(withOwnFormRegistrations(makeInput({
+      direction: 'adopted-to-cf', baseXml, sourceXml: descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [] }),
+    }), { target: [], source: ['MissingPhysicalForm'] }));
+    assert.strictEqual(unknown.ok, false, 'an allowlist entry must be backed by exactly one physical Form registration');
+    if (!unknown.ok) { assert.match(unknown.reason, /allowlist|registration|Form|спис/u); }
+
+    const duplicateBase = projectAdoptedDesignerPair(withOwnFormRegistrations(makeInput({
+      direction: 'adopted-to-cf', baseXml: descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain', 'basemain']) }),
+    }), { target: [], source: [] }));
+    assert.strictEqual(duplicateBase.ok, false, 'base Form names must be unique after normalization');
   });
 
   test('rejects namespace-spoofed descriptor roots and ownership identities', () => {
@@ -197,7 +1258,7 @@ suite('Adopted Designer descriptor projection (#335)', () => {
     assert.match(xml, /<ExtensionOnly>keep me<\/ExtensionOnly>/u);
     assert.match(xml, /<VendorExtension marker="keep"\/>/u);
     assert.match(xml, /<xr:State>Notify<\/xr:State>/u);
-    assert.match(xml, new RegExp(`<xr:GeneratedType name="CatalogRef" uuid="${BASE_UUID}"\/>`));
+    assert.match(xml, new RegExp(`<xr:GeneratedType name="CatalogRef" uuid="${BASE_UUID}"/>`));
   });
 
   test('updates an adopted child only through its existing local identity and preserves same-name foreign XML', () => {
@@ -816,19 +1877,63 @@ interface DescriptorOptions {
   readonly type?: string;
 }
 
-function makeInput(overrides: Partial<AdoptedDesignerProjectionInput> & { readonly direction?: AdoptedDesignerProjectionInput['direction']; readonly targetXml?: Buffer; readonly sourceXml?: Buffer; readonly baseXml?: Buffer } = {}): AdoptedDesignerProjectionInput {
+interface TemplateDescriptorOptions {
+  readonly uuid: string;
+  readonly adopted?: boolean;
+  readonly comment?: string;
+  readonly namespaceMode?: 'default' | 'prefixed-shadowed-xr';
+  readonly internalInfo?: string;
+  readonly foreignInternalInfo?: string;
+  readonly duplicateProperties?: boolean;
+}
+
+function makeTemplateInput(overrides: { readonly targetXml?: Buffer } = {}): AdoptedDesignerProjectionInput {
+  const baseIdentity: AdoptedDesignerIdentity = { ownership: 'own', type: 'Template', name: 'Print', uuid: BASE_UUID };
+  return {
+    direction: 'cf-to-adopted',
+    targetXml: overrides.targetXml ?? templateDescriptor({ uuid: CFE_UUID, adopted: true, comment: 'Target value' }),
+    sourceXml: templateDescriptor({ uuid: BASE_UUID, comment: 'Base comment' }),
+    baseXml: templateDescriptor({ uuid: BASE_UUID, comment: 'Base comment' }),
+    targetIdentity: { ownership: 'adopted', type: 'Template', name: 'Print', uuid: CFE_UUID, sourceUuid: BASE_UUID },
+    sourceIdentity: baseIdentity,
+    baseIdentity,
+    formatVersion: '2.20',
+  };
+}
+
+function templateDescriptor(options: TemplateDescriptorOptions): Buffer {
+  const prefixed = options.namespaceMode === 'prefixed-shadowed-xr';
+  const prefix = prefixed ? 'm:' : '';
+  const adopted = options.adopted
+    ? `<${prefix}ObjectBelonging>Adopted</${prefix}ObjectBelonging><${prefix}ExtendedConfigurationObject>${BASE_UUID}</${prefix}ExtendedConfigurationObject>`
+    : '';
+  const comment = options.comment ?? 'Base comment';
+  const properties = `<${prefix}Properties><${prefix}Name>Print</${prefix}Name><${prefix}Comment>${comment}</${prefix}Comment><${prefix}TemplateType>Text</${prefix}TemplateType>${adopted}</${prefix}Properties>`;
+  const propertyContainers = options.duplicateProperties ? `${properties}${properties}` : properties;
+  const internalInfo = options.internalInfo ?? '';
+  const foreignInternalInfo = options.foreignInternalInfo ?? '';
+  const metaOpen = prefixed
+    ? '<m:MetaDataObject xmlns:m="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="urn:vendor" xmlns:vendor="urn:vendor" version="2.20">'
+    : '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:vendor="urn:vendor" version="2.20">';
+  const metaClose = prefixed ? '</m:MetaDataObject>' : '</MetaDataObject>';
+  return Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>${metaOpen}<${prefix}Template uuid="${options.uuid}">${propertyContainers}${internalInfo}${foreignInternalInfo}</${prefix}Template>${metaClose}`, 'utf8');
+}
+
+type TestAdoptedDirection = AdoptedDesignerProjectionInput['direction'] | 'adopted-to-adopted';
+
+function makeInput(overrides: Omit<Partial<AdoptedDesignerProjectionInput>, 'direction'> & { readonly direction?: TestAdoptedDirection } = {}): AdoptedDesignerProjectionInput {
   const direction = overrides.direction ?? 'adopted-to-cf';
   const baseIdentity: AdoptedDesignerIdentity = { ownership: 'own', type: 'Catalog', name: 'Products', uuid: BASE_UUID };
   const targetIdentity: AdoptedDesignerIdentity = direction === 'adopted-to-cf'
     ? baseIdentity
     : { ownership: 'adopted', type: 'Catalog', name: 'Products', uuid: CFE_UUID, sourceUuid: BASE_UUID };
-  const sourceIdentity: AdoptedDesignerIdentity = direction === 'adopted-to-cf'
-    ? { ownership: 'adopted', type: 'Catalog', name: 'Products', uuid: CFE_UUID, sourceUuid: BASE_UUID }
+  const sourceIdentity: AdoptedDesignerIdentity = direction !== 'cf-to-adopted'
+    ? { ownership: 'adopted', type: 'Catalog', name: 'Products', uuid: direction === 'adopted-to-adopted' ? SOURCE_CFE_UUID : CFE_UUID, sourceUuid: BASE_UUID }
     : baseIdentity;
   return {
-    direction,
-    targetXml: overrides.targetXml ?? (direction === 'cf-to-adopted' ? descriptor({ uuid: CFE_UUID, adopted: true }) : descriptor({ uuid: BASE_UUID })),
-    sourceXml: overrides.sourceXml ?? (direction === 'adopted-to-cf' ? descriptor({ uuid: CFE_UUID, adopted: true }) : descriptor({ uuid: BASE_UUID })),
+    direction: direction as AdoptedDesignerProjectionInput['direction'],
+    targetXml: overrides.targetXml ?? (direction !== 'adopted-to-cf' ? descriptor({ uuid: CFE_UUID, adopted: true }) : descriptor({ uuid: BASE_UUID })),
+    sourceXml: overrides.sourceXml ?? (direction !== 'cf-to-adopted' ? descriptor({ uuid: direction === 'adopted-to-adopted' ? SOURCE_CFE_UUID : CFE_UUID, adopted: true }) : descriptor({ uuid: BASE_UUID })),
     baseXml: overrides.baseXml ?? descriptor({ uuid: BASE_UUID }),
     targetIdentity,
     sourceIdentity,
@@ -844,6 +1949,151 @@ function withTypeIdReferences(
   typeIdReferenceDescriptors: readonly AdoptedDesignerTypeIdReferenceDescriptor[],
 ): AdoptedDesignerProjectionInput {
   return { ...input, typeIdReferenceDescriptors };
+}
+
+interface OwnFormRegistrationLists {
+  readonly target: readonly string[];
+  readonly source: readonly string[];
+}
+
+function withOwnFormRegistrations(
+  input: AdoptedDesignerProjectionInput,
+  ownFormRegistrations: OwnFormRegistrationLists,
+): AdoptedDesignerProjectionInput {
+  return { ...input, ownFormRegistrations } as AdoptedDesignerProjectionInput;
+}
+
+function formRegistrations(names: readonly string[]): string[] {
+  return names.map((name) => `<Form>${name}</Form>`);
+}
+
+function formRegistrationNames(xml: Buffer): string[] {
+  const document = parseXmlDocument(xml.toString('utf8'));
+  const root = elementChildren(document.root)[0];
+  const childObjects = root && elementChildren(root).find((child) => child.localName === 'ChildObjects');
+  return childObjects
+    ? elementChildren(childObjects).filter((child) => child.localName === 'Form').map((child) => textContent(child).trim())
+    : [];
+}
+
+function orderMetadataChild(kind: string, uuid: string, name: string, nestedChildren: readonly string[] = []): string {
+  const nested = nestedChildren.length > 0 ? `<ChildObjects>${nestedChildren.join('')}</ChildObjects>` : '';
+  return `<${kind} uuid="${uuid}"><Properties><Name>${name}</Name><Comment>Base ${name}</Comment></Properties><InternalInfo><xr:GeneratedType name="${name}Ref" uuid="${uuid}"/></InternalInfo>${nested}</${kind}>`;
+}
+
+function adoptedOrderMetadataChild(
+  kind: string,
+  localUuid: string,
+  anchorUuid: string,
+  name: string,
+  nestedChildren: readonly string[] = [],
+): string {
+  const nested = nestedChildren.length > 0 ? `<ChildObjects>${nestedChildren.join('')}</ChildObjects>` : '';
+  return `<${kind} uuid="${localUuid}"><Properties><Name>${name}</Name><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>${anchorUuid}</ExtendedConfigurationObject></Properties>${nested}</${kind}>`;
+}
+
+function orderOwnMetadataChild(kind: string, uuid: string, name: string): string {
+  return `<${kind} uuid="${uuid}"><Properties><Name>${name}</Name><Comment>Own ${name}</Comment></Properties><InternalInfo><xr:GeneratedType name="${name}Ref" uuid="${uuid}"/></InternalInfo></${kind}>`;
+}
+
+function candidateNode(id: string, kind: string, pointer: string): CompareTreeNode {
+  return {
+    id,
+    label: id,
+    kind,
+    status: 'changed',
+    payloadRef: `xmlPatch:${pointer}`,
+    children: [],
+  };
+}
+
+function metadataChildUuids(xml: Buffer, kind: string, ownerUuid?: string): string[] {
+  const root = metadataRootForTest(xml);
+  const owner = ownerUuid
+    ? elementChildren(elementChildren(root).find((child) => child.localName === 'ChildObjects')!)
+      .find((child) => child.attributes.some((attribute) => attribute.localName === 'uuid' && attribute.value.toLowerCase() === ownerUuid.toLowerCase()))
+    : root;
+  const container = owner && elementChildren(owner).find((child) => child.localName === 'ChildObjects');
+  return container
+    ? elementChildren(container).filter((child) => child.localName === kind)
+      .map((child) => child.attributes.find((attribute) => attribute.localName === 'uuid')?.value ?? '')
+    : [];
+}
+
+function physicalMetadataKindOrder(xml: Buffer, kind: string, ownerUuid?: string): string[] {
+  const root = metadataRootForTest(xml);
+  const owner = ownerUuid
+    ? elementChildren(elementChildren(root).find((child) => child.localName === 'ChildObjects')!)
+      .find((child) => child.attributes.some((attribute) => attribute.localName === 'uuid' && attribute.value.toLowerCase() === ownerUuid.toLowerCase()))
+    : root;
+  const container = owner && elementChildren(owner).find((child) => child.localName === 'ChildObjects');
+  if (!container) { return []; }
+  return elementChildren(container).filter((child) => child.localName === kind).map((child) => {
+    const properties = elementChildren(child).find((element) => element.localName === 'Properties');
+    const anchor = properties && elementChildren(properties).find((element) => element.localName === 'ExtendedConfigurationObject');
+    return (anchor ? textContent(anchor).trim() : child.attributes.find((attribute) => attribute.localName === 'uuid')?.value ?? '').toLowerCase();
+  });
+}
+
+function adoptedShellByAnchor(xml: Buffer, anchorUuid: string) {
+  const root = metadataRootForTest(xml);
+  const container = elementChildren(root).find((child) => child.localName === 'ChildObjects');
+  return container && elementChildren(container).find((child) => {
+    const properties = elementChildren(child).find((element) => element.localName === 'Properties');
+    const anchor = properties && elementChildren(properties).find((element) => element.localName === 'ExtendedConfigurationObject');
+    return anchor !== undefined && textContent(anchor).trim().toLowerCase() === anchorUuid.toLowerCase();
+  });
+}
+
+function childObjectNodesOfKind(xml: Buffer): string[] {
+  const root = metadataRootForTest(xml);
+  const container = elementChildren(root).find((child) => child.localName === 'ChildObjects');
+  return container ? elementChildren(container).map((child) => child.localName) : [];
+}
+
+function reorderMetadataChildren(xml: Buffer, kind: string, uuids: readonly string[], ownerUuid?: string): Buffer {
+  const document = parseXmlDocument(xml.toString('utf8'));
+  const root = elementChildren(document.root)[0]!;
+  const owner = ownerUuid
+    ? elementChildren(elementChildren(root).find((child) => child.localName === 'ChildObjects')!)
+      .find((child) => child.attributes.some((attribute) => attribute.localName === 'uuid' && attribute.value.toLowerCase() === ownerUuid.toLowerCase()))!
+    : root;
+  const container = elementChildren(owner).find((child) => child.localName === 'ChildObjects')!;
+  const elements = elementChildren(container).filter((child) => child.localName === kind);
+  const byUuid = new Map(elements.map((element) => [
+    element.attributes.find((attribute) => attribute.localName === 'uuid')?.value.toLowerCase() ?? '', element,
+  ]));
+  const ordered = uuids.map((uuid) => {
+    const element = byUuid.get(uuid.toLowerCase());
+    assert.ok(element, `selected order contains captured ${kind} UUID ${uuid}`);
+    return element!;
+  });
+  assert.strictEqual(ordered.length, elements.length, `selected order accounts for all ${kind} elements`);
+  const slots = container.children.flatMap((child, index) => child.kind === 'element' && child.localName === kind ? [index] : []);
+  for (const [index, slot] of slots.entries()) {
+    container.children[slot] = ordered[index]!;
+    ordered[index]!.parent = container;
+  }
+  return Buffer.from(serializeXmlDocument(document), 'utf8');
+}
+
+function metadataRootForTest(xml: Buffer) {
+  const document = parseXmlDocument(xml.toString('utf8'));
+  return elementChildren(document.root)[0]!;
+}
+
+function childObjectElementNames(xml: Buffer): string[] {
+  const document = parseXmlDocument(xml.toString('utf8'));
+  const root = elementChildren(document.root)[0];
+  const childObjects = root && elementChildren(root).find((child) => child.localName === 'ChildObjects');
+  return childObjects ? elementChildren(childObjects).map((child) => child.localName) : [];
+}
+
+function childObjectNodes(xml: Buffer): string[] {
+  const document = parseXmlDocument(xml.toString('utf8'));
+  const root = elementChildren(document.root)[0];
+  const childObjects = root && elementChildren(root).find((child) => child.localName === 'ChildObjects');
+  return childObjects ? elementChildren(childObjects).map(stableElement) : [];
 }
 
 function generatedTypeReference(options: {
@@ -881,7 +2131,7 @@ function descriptor(options: DescriptorOptions): Buffer {
 }
 
 function replaceComment(xml: string, before: string, after: string): string {
-  return xml.replace(new RegExp(`(<Comment(?:\\s[^>]*)?>)${before}(</Comment>)`, 'u'), `$1${after}$2`);
+  return xml.replace(new RegExp(`(<(?:[A-Za-z_][\\w.-]*:)?Comment(?:\\s[^>]*)?>)${before}(</(?:[A-Za-z_][\\w.-]*:)?Comment>)`, 'u'), `$1${after}$2`);
 }
 
 function adoptedChild(options: { readonly anchorUuid?: string; readonly comment: string }): string {
