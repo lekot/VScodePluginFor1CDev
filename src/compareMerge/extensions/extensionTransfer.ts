@@ -19,6 +19,8 @@ export type ExtensionTransferAction =
   | 'adopted-to-cf-overlay'
   | 'adopted-cfe-copy';
 
+export type ExtensionTransferSemanticAction = Extract<ExtensionTransferAction, 'overlay-adopted' | 'adopted-to-cf-overlay'> | 'adopted-cfe-semantic';
+
 export interface ExtensionTransferRow {
   readonly id: string;
   readonly qualifiedName: string;
@@ -29,7 +31,7 @@ export interface ExtensionTransferRow {
   readonly incomingRoot: ExtensionMetadataIndex;
   readonly action?: ExtensionTransferAction;
   /** Granular CF↔CFE semantic path; never authorizes a whole-row transfer. */
-  readonly semanticAction?: Extract<ExtensionTransferAction, 'overlay-adopted' | 'adopted-to-cf-overlay'>;
+  readonly semanticAction?: ExtensionTransferSemanticAction;
   readonly mergeable: boolean;
   readonly reason?: string;
   readonly targetBase?: ExtensionMetadataIndex;
@@ -126,7 +128,7 @@ export async function analyzeExtensionTransfers(input: {
       && !incoming.unsupportedReason
       && (!targetMatch.object || !targetDuplicates.has(targetMatch.object))
       && !targetMatch.object?.unsupportedReason
-      ? proveSemanticAdoptedAction(input, incoming, targetMatch.object)
+      ? proveSemanticAdoptedAction(input, incoming, targetMatch.object, targetMatch.sameProvenBase)
       : undefined;
     let action: ExtensionTransferAction | undefined;
     if (!reason) {
@@ -229,7 +231,8 @@ function proveSemanticAdoptedAction(
   input: Parameters<typeof analyzeExtensionTransfers>[0],
   incoming: ExtensionIndexedObject,
   targetObject?: ExtensionIndexedObject,
-): Extract<ExtensionTransferAction, 'overlay-adopted' | 'adopted-to-cf-overlay'> | undefined {
+  sameProvenBase?: boolean,
+): ExtensionTransferSemanticAction | undefined {
   if (!targetObject?.valid || !targetObject.supportedRootType || targetObject.unsupportedReason || !targetObject.identity
       || !targetObject.descriptorContent || !targetObject.descriptorHash || !targetObject.descriptorRelativePath
       || incoming.unsupportedReason || !incoming.identity || !incoming.descriptorContent || !incoming.descriptorHash || !incoming.descriptorRelativePath) {
@@ -277,6 +280,37 @@ function proveSemanticAdoptedAction(
       return undefined;
     }
     return 'adopted-to-cf-overlay';
+  }
+
+  if (input.target.rootKind === 'cfe' && input.incoming.rootKind === 'cfe'
+    && targetObject.identity.ownership === 'adopted' && incoming.identity.ownership === 'adopted'
+    && sameProvenBase === true) {
+    const targetBase = input.targetBase;
+    const sourceBase = input.incomingBase;
+    const anchorUuid = incoming.identity.sourceUuid ?? '';
+    const targetBaseObject = targetBase ? uniqueSemanticBaseObject(targetBase, incoming.metadataType, anchorUuid) : undefined;
+    const sourceBaseObject = sourceBase ? uniqueSemanticBaseObject(sourceBase, incoming.metadataType, anchorUuid) : undefined;
+    if (!targetBase || !sourceBase || targetBase.rootKind !== 'cf' || sourceBase.rootKind !== 'cf'
+      || !sameCapturedCfConfiguration(targetBase, sourceBase)
+      || targetBase.configurationHash?.toLowerCase() !== sourceBase.configurationHash?.toLowerCase()
+      || !sameSupportedFormat(targetBase, input.target) || !sameSupportedFormat(sourceBase, input.incoming)
+      || targetBase.formatVersion !== sourceBase.formatVersion
+      || !targetBaseObject || !sourceBaseObject
+      || !sameSemanticOwnObject(targetBaseObject, sourceBaseObject)
+      || targetBaseObject.descriptorHash?.toLowerCase() !== sourceBaseObject.descriptorHash?.toLowerCase()
+      || targetObject.identity.type !== incoming.identity.type
+      || targetObject.identity.name !== incoming.identity.name
+      || targetObject.qualifiedName !== incoming.qualifiedName
+      || incoming.identity.type !== targetBaseObject.identity!.type
+      || incoming.identity.name !== targetBaseObject.identity!.name
+      || incoming.qualifiedName !== targetBaseObject.qualifiedName
+      || !sameUuid(targetObject.identity.sourceUuid, anchorUuid)
+      || !isValidPropertyState(targetObject) || !isValidPropertyState(incoming)
+      || hasUnknownInterceptShape(targetObject) || hasUnknownInterceptShape(incoming)
+      || hasDescriptorRootAlias(targetObject) || hasDescriptorRootAlias(incoming)) {
+      return undefined;
+    }
+    return 'adopted-cfe-semantic';
   }
 
   return undefined;

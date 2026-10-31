@@ -9,7 +9,7 @@ import {
   type ConfigurationCompareResult,
 } from '../../../src/compareMerge/configurationCompareService';
 import { pairedXmlSidecars } from '../../../src/compareMerge/extensions/extensionSemanticProjection';
-import type { ExtensionIndexedObject, ExtensionMetadataIndex } from '../../../src/compareMerge/extensions/extensionMetadataIndex';
+import { indexExtensionMetadataRoot, type ExtensionIndexedObject, type ExtensionMetadataIndex } from '../../../src/compareMerge/extensions/extensionMetadataIndex';
 import { analyzeExtensionTransfers } from '../../../src/compareMerge/extensions/extensionTransfer';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 import { elementChildren, parseXmlDocument, textContent, type XmlElement } from '../../../src/compareMerge/xml/xmlDom';
@@ -1652,6 +1652,211 @@ suite('Extension-aware configuration compare', () => {
     });
   });
 
+  test('CFE→CFE adopted granular merge preserves target-only properties and rejects stale source, target, or second base', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const baseObject: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalog,
+        propertiesXml: '<Comment>Base comment</Comment><Synonym>Base synonym</Synonym>',
+      };
+      const targetObject: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalogLocal,
+        belonging: 'Adopted', anchorUuid: UUID.catalog,
+        propertiesXml: '<Comment>Target comment</Comment><Synonym>Target-only synonym</Synonym>',
+      };
+      const sourceObject: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalogOther,
+        belonging: 'Adopted', anchorUuid: UUID.catalog,
+        propertiesXml: '<Comment>Source comment</Comment>',
+      };
+      const paths = {
+        target: path.join(tempRoot, 'target-cfe'),
+        source: path.join(tempRoot, 'source-cfe'),
+        targetBase: path.join(tempRoot, 'target-base-cf'),
+        sourceBase: path.join(tempRoot, 'source-base-cf'),
+      };
+      const writeFixture = async (): Promise<void> => {
+        await writeAdoptedProjectionConfiguration(paths.targetBase, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
+        await writeAdoptedProjectionConfiguration(paths.sourceBase, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
+        await writeAdoptedProjectionConfiguration(paths.target, { purpose: 'Customization', objects: [mdClassesFixture(targetObject)] });
+        await writeAdoptedProjectionConfiguration(paths.source, { purpose: 'Customization', objects: [mdClassesFixture(sourceObject)] });
+      };
+      await writeFixture();
+      await fs.copyFile(
+        path.join(paths.targetBase, 'Configuration.xml'),
+        path.join(paths.sourceBase, 'Configuration.xml'),
+      );
+      await fs.copyFile(
+        path.join(paths.targetBase, 'Catalogs/Products.xml'),
+        path.join(paths.sourceBase, 'Catalogs/Products.xml'),
+      );
+      const [targetIndex, sourceIndex, targetBaseIndex, sourceBaseIndex] = await Promise.all([
+        indexExtensionMetadataRoot({ rootPath: paths.target, sourceId: 'left-source', side: 'left' }),
+        indexExtensionMetadataRoot({ rootPath: paths.source, sourceId: 'right-source', side: 'right' }),
+        indexExtensionMetadataRoot({ rootPath: paths.targetBase, sourceId: 'left-base', side: 'left' }),
+        indexExtensionMetadataRoot({ rootPath: paths.sourceBase, sourceId: 'right-base', side: 'right' }),
+      ]);
+      const transfer = await analyzeExtensionTransfers({
+        target: targetIndex,
+        incoming: sourceIndex,
+        targetBase: targetBaseIndex,
+        incomingBase: sourceBaseIndex,
+        targetBaseIsIncoming: false,
+        incomingBaseIsTarget: false,
+      });
+      const analyzedRow = transfer.rows.find((row) => row.qualifiedName === 'Catalog.Products');
+      assert.strictEqual(analyzedRow?.sameProvenBase, true, `the fixture has separately captured exact common bases: ${JSON.stringify({ configuration: [targetBaseIndex.configurationUuid, sourceBaseIndex.configurationUuid, targetBaseIndex.configurationHash, sourceBaseIndex.configurationHash], format: [targetBaseIndex.formatVersion, sourceBaseIndex.formatVersion], owner: [targetBaseIndex.objects[0]?.descriptorHash, sourceBaseIndex.objects[0]?.descriptorHash], row: { semanticAction: analyzedRow?.semanticAction, reason: analyzedRow?.reason } })}`);
+
+      const targetBaseBefore = await fs.readFile(path.join(paths.targetBase, 'Catalogs/Products.xml'));
+      const sourceBaseBefore = await fs.readFile(path.join(paths.sourceBase, 'Catalogs/Products.xml'));
+      const sourceBefore = await fs.readFile(path.join(paths.source, 'Catalogs/Products.xml'));
+      const compare = await openCompare(tempRoot, paths.target, paths.source, {
+        withRuntime: true,
+        extensionBaseRoots: { left: paths.targetBase, right: paths.sourceBase },
+      });
+      try {
+        const owner = collectNodes(compare.result.projection.root).find((node) =>
+          node.kind === 'extensionMetadataObject' && node.label === 'Catalog.Products');
+        assert.ok(owner, 'the adopted row is matched across CFE roots');
+        const comment = owner && collectNodes(owner).find((node) => node.kind === 'xmlProperty'
+          && node.label === 'Comment' && node.mergeable && node.rightValue?.includes('Source comment'));
+        assert.ok(comment, `the separately proven host projection exposes the source Comment as a granular leaf; children=${JSON.stringify(owner && collectNodes(owner).map((node) => ({ kind: node.kind, label: node.label, status: node.status, mergeable: node.mergeable, conflict: node.conflict, mergeState: node.mergeState, rightValue: node.rightValue })))}`);
+        if (!comment) { return; }
+        const preview = await createPreview(compare.result, [comment.id]);
+        await execute(compare.result, preview.previewId);
+
+        const targetXml = await readUtf8(paths.target, 'Catalogs/Products.xml');
+        assert.match(targetXml, new RegExp(`<Catalog uuid="${UUID.catalogLocal}"`, 'u'));
+        assert.match(targetXml, new RegExp(`<ExtendedConfigurationObject>${UUID.catalog}</ExtendedConfigurationObject>`, 'u'));
+        assertMdClassesElementText(targetXml, 'Comment', 'Source comment');
+        assertMdClassesElementText(targetXml, 'Synonym', 'Target-only synonym');
+        assert.deepStrictEqual(await fs.readFile(path.join(paths.source, 'Catalogs/Products.xml')), sourceBefore);
+        assert.deepStrictEqual(await fs.readFile(path.join(paths.targetBase, 'Catalogs/Products.xml')), targetBaseBefore);
+        assert.deepStrictEqual(await fs.readFile(path.join(paths.sourceBase, 'Catalogs/Products.xml')), sourceBaseBefore);
+      } finally {
+        await compare.dispose();
+      }
+
+      for (const staleSide of ['source', 'target', 'sourceBase'] as const) {
+        const caseRoot = path.join(tempRoot, `stale-${staleSide}`);
+        const casePaths = {
+          target: path.join(caseRoot, 'target-cfe'),
+          source: path.join(caseRoot, 'source-cfe'),
+          targetBase: path.join(caseRoot, 'target-base-cf'),
+          sourceBase: path.join(caseRoot, 'source-base-cf'),
+        };
+        await writeAdoptedProjectionConfiguration(casePaths.targetBase, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
+        await writeAdoptedProjectionConfiguration(casePaths.sourceBase, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
+        await fs.copyFile(
+          path.join(casePaths.targetBase, 'Configuration.xml'),
+          path.join(casePaths.sourceBase, 'Configuration.xml'),
+        );
+        await fs.copyFile(
+          path.join(casePaths.targetBase, 'Catalogs/Products.xml'),
+          path.join(casePaths.sourceBase, 'Catalogs/Products.xml'),
+        );
+        await writeAdoptedProjectionConfiguration(casePaths.target, { purpose: 'Customization', objects: [mdClassesFixture(targetObject)] });
+        await writeAdoptedProjectionConfiguration(casePaths.source, { purpose: 'Customization', objects: [mdClassesFixture(sourceObject)] });
+        const staleCompare = await openCompare(tempRoot, casePaths.target, casePaths.source, {
+          withRuntime: true,
+          extensionBaseRoots: { left: casePaths.targetBase, right: casePaths.sourceBase },
+        });
+        try {
+          const owner = collectNodes(staleCompare.result.projection.root).find((node) =>
+            node.kind === 'extensionMetadataObject' && node.label === 'Catalog.Products');
+          const comment = owner && collectNodes(owner).find((node) => node.kind === 'xmlProperty'
+            && node.label === 'Comment' && node.mergeable && node.rightValue?.includes('Source comment'));
+          assert.ok(comment, `${staleSide}: semantic Comment should be available before drift`);
+          if (!comment) { continue; }
+          const preview = await createPreview(staleCompare.result, [comment.id]);
+          const targetBefore = await fs.readFile(path.join(casePaths.target, 'Catalogs/Products.xml'));
+          const driftRoot = casePaths[staleSide];
+          const staleText = staleSide === 'target' ? 'Target comment' : staleSide === 'source' ? 'Source comment' : 'Base comment';
+          const driftedPath = await writeCompareBytes(driftRoot, 'Catalogs/Products.xml',
+            (await readUtf8(driftRoot, 'Catalogs/Products.xml')).replace(staleText, 'drift after preview'));
+          const driftedBytes = await fs.readFile(driftedPath);
+          assert.strictEqual(staleCompare.result.workspace.approvePreview(preview.previewId).ok, true);
+          const executed = await staleCompare.result.workspace.executeApprovedPreview(preview.previewId, { destructiveConfirmed: true });
+          assert.strictEqual(executed.ok, false, `${staleSide} drift must invalidate the approved semantic operation`);
+          assert.ok(executed.result?.failed.some((item) => item.code === 'MERGE_WITNESS_MISMATCH'),
+            `${staleSide}: ${JSON.stringify(executed.result?.failed)}`);
+          assert.deepStrictEqual(await fs.readFile(path.join(casePaths.target, 'Catalogs/Products.xml')),
+            staleSide === 'target' ? driftedBytes : targetBefore,
+            `${staleSide} drift must not be overwritten by a partial semantic write`);
+        } finally {
+          await staleCompare.dispose();
+        }
+      }
+    });
+  });
+
+  test('CFE→CFE selected Form execution rejects drift in the second captured base body', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const paths = {
+        target: path.join(tempRoot, 'target-cfe'),
+        source: path.join(tempRoot, 'source-cfe'),
+        targetBase: path.join(tempRoot, 'target-base-cf'),
+        sourceBase: path.join(tempRoot, 'source-base-cf'),
+      };
+      const formBaseUuid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const formTargetUuid = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      const formSourceUuid = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+      const formDescriptor = (uuid: string, adopted = false): string =>
+        `<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Form uuid="${uuid}"><Properties><Name>Main</Name>${adopted ? `<ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>${formBaseUuid}</ExtendedConfigurationObject>` : ''}</Properties><InternalInfo><xr:GeneratedType name="FormRef.Main" category="Ref"><xr:TypeId>dddddddd-dddd-4ddd-8ddd-dddddddddddd</xr:TypeId></xr:GeneratedType></InternalInfo></Form></MetaDataObject>`;
+      const formBody = (title: string, baseSnapshot?: string): string =>
+        `<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><AutoCommandBar name="FormCommandBar" id="-1"/><ChildItems><Button name="Apply" id="1"><Title>${title}</Title></Button></ChildItems><Attributes/><Commands/><Parameters/>${baseSnapshot === undefined ? '' : `<BaseForm version="2.20"><ChildItems><Button name="Apply" id="1"><Title>${baseSnapshot}</Title></Button></ChildItems></BaseForm>`}</Form>`;
+      const baseObject: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Products', uuid: UUID.catalog, childObjectsXml: '<Form>Main</Form>',
+      };
+      const targetObject: ExtensionCompareObjectFixture = {
+        ...baseObject, uuid: UUID.catalogLocal, belonging: 'Adopted', anchorUuid: UUID.catalog,
+      };
+      const sourceObject: ExtensionCompareObjectFixture = {
+        ...baseObject, uuid: UUID.catalogOther, belonging: 'Adopted', anchorUuid: UUID.catalog,
+      };
+      await writeAdoptedProjectionConfiguration(paths.targetBase, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
+      await writeAdoptedProjectionConfiguration(paths.sourceBase, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
+      await fs.copyFile(path.join(paths.targetBase, 'Configuration.xml'), path.join(paths.sourceBase, 'Configuration.xml'));
+      await fs.copyFile(path.join(paths.targetBase, 'Catalogs/Products.xml'), path.join(paths.sourceBase, 'Catalogs/Products.xml'));
+      await writeAdoptedProjectionConfiguration(paths.target, { purpose: 'Customization', objects: [mdClassesFixture(targetObject)] });
+      await writeAdoptedProjectionConfiguration(paths.source, { purpose: 'Customization', objects: [mdClassesFixture(sourceObject)] });
+      for (const root of [paths.targetBase, paths.sourceBase]) {
+        await writeCompareBytes(root, 'Catalogs/Products/Forms/Main.xml', formDescriptor(formBaseUuid));
+        await writeCompareBytes(root, 'Catalogs/Products/Forms/Main/Ext/Form.xml', formBody('Base form'));
+      }
+      await writeCompareBytes(paths.target, 'Catalogs/Products/Forms/Main.xml', formDescriptor(formTargetUuid, true));
+      await writeCompareBytes(paths.target, 'Catalogs/Products/Forms/Main/Ext/Form.xml', formBody('Target form', 'Target base snapshot'));
+      await writeCompareBytes(paths.source, 'Catalogs/Products/Forms/Main.xml', formDescriptor(formSourceUuid, true));
+      await writeCompareBytes(paths.source, 'Catalogs/Products/Forms/Main/Ext/Form.xml', formBody('Source form', 'Source base snapshot'));
+
+      const compare = await openCompare(tempRoot, paths.target, paths.source, {
+        withRuntime: true,
+        extensionBaseRoots: { left: paths.targetBase, right: paths.sourceBase },
+      });
+      try {
+        const owner = collectNodes(compare.result.projection.root).find((node) =>
+          node.kind === 'extensionMetadataObject' && node.label === 'Catalog.Products');
+        assert.ok(owner);
+        const form = owner && collectNodes(owner).find((node) => node.mergeable
+          && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Catalogs/Products/Forms/Main/Ext/Form.xml')
+          && node.rightValue?.includes('Source form'));
+        assert.ok(form, `the proven source Form body is available as a granular artifact; nodes=${JSON.stringify(owner && collectNodes(owner).map((node) => ({ kind: node.kind, label: node.label, mergeable: node.mergeable, conflict: node.conflict, mergeState: node.mergeState, rightValue: node.rightValue })))}`);
+        if (!form) { return; }
+        const preview = await createPreview(compare.result, [form.id]);
+        const targetBefore = await fs.readFile(path.join(paths.target, 'Catalogs/Products/Forms/Main/Ext/Form.xml'));
+        await writeCompareBytes(paths.sourceBase, 'Catalogs/Products/Forms/Main/Ext/Form.xml', formBody('Changed after preview'));
+
+        assert.strictEqual(compare.result.workspace.approvePreview(preview.previewId).ok, true);
+        const executed = await compare.result.workspace.executeApprovedPreview(preview.previewId, { destructiveConfirmed: true });
+        assert.strictEqual(executed.ok, false, JSON.stringify({ diagnostics: executed.diagnostics, failed: executed.result?.failed }));
+        assert.ok(executed.result?.failed.some((item) => item.code === 'MERGE_WITNESS_MISMATCH'),
+          JSON.stringify(executed.result?.failed));
+        assert.deepStrictEqual(await fs.readFile(path.join(paths.target, 'Catalogs/Products/Forms/Main/Ext/Form.xml')), targetBefore);
+      } finally {
+        await compare.dispose();
+      }
+    });
+  });
+
   test('CFE→CFE own replacement preserves the object UUID without requiring a base relation', async () => {
     await withTempRoot(async (tempRoot) => {
       const target = path.join(tempRoot, 'target-cfe');
@@ -2872,7 +3077,7 @@ async function execute(
     ...options,
     destructiveConfirmed: options.destructiveConfirmed ?? true,
   });
-  assert.strictEqual(executed.ok, true, `Preview execution failed: ${executed.diagnostics.map((item) => item.code).join(', ')}`);
+  assert.strictEqual(executed.ok, true, `Preview execution failed: ${JSON.stringify({ diagnostics: executed.diagnostics, failed: executed.result?.failed })}`);
 }
 
 function assertBlocked(result: ConfigurationCompareResult, context: string): void {

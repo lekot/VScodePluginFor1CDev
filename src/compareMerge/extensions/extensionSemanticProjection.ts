@@ -108,8 +108,14 @@ export async function projectExtensionSemanticNodes(
       ? []
       : await captureExtensionLinkedTemplateTransitions({ row, targetRoot: input.target, incomingRoot: input.incoming });
     const ordinaryReadonlyReason = hasAdoptedProjection ? undefined : semanticSelectionReason(row);
-    const adoptedReadonlyReason = hasAdoptedProjection && !row.semanticAction && (!row.mergeable || row.reason)
-      ? row.reason ?? 'Объект недоступен для семантического переноса.'
+    const adoptedMetadataProofBlocker = hasAdoptedProjection
+      ? adoptedPreparation.blockers.find((blocker) => blocker.kind === 'metadataXml')
+      : undefined;
+    const adoptedReadonlyReason = hasAdoptedProjection
+      ? adoptedMetadataProofBlocker?.reason
+        ?? (!row.semanticAction && (!row.mergeable || row.reason)
+          ? row.reason ?? 'Объект недоступен для семантического переноса.'
+          : undefined)
       : undefined;
     const allowed = hasAdoptedProjection
       ? adoptedReadonlyReason === undefined
@@ -449,7 +455,7 @@ async function compareArtifact(input: {
   }
   let sourceText = source.toString('utf8');
   const normalizeAdoptedRoot = input.kind === 'metadataXml'
-    && input.row.action === 'adopted-cfe-copy'
+    && (input.row.semanticAction === 'adopted-cfe-semantic' || input.row.action === 'adopted-cfe-copy')
     && input.row.sameProvenBase === true
     && input.targetObject.identity?.ownership === 'adopted'
     && input.incomingObject.identity?.ownership === 'adopted';
@@ -760,6 +766,9 @@ function adoptedBlockerNode(row: ExtensionTransferRow, blocker: import('./extens
 function semanticSelectionReason(row: ExtensionTransferRow): string | undefined {
   const targetIdentity = row.target?.identity;
   const incomingIdentity = row.incoming?.identity;
+  if (row.semanticAction === 'adopted-cfe-semantic') {
+    return 'Для CFE→CFE adopted semantics требуется отдельная захваченная host projection.';
+  }
   if ((row.targetRoot.rootKind === 'cf' && row.incomingRoot.rootKind === 'cfe'
       || row.targetRoot.rootKind === 'cfe' && row.incomingRoot.rootKind === 'cf')
       && (targetIdentity?.ownership === 'adopted' || incomingIdentity?.ownership === 'adopted')) {
