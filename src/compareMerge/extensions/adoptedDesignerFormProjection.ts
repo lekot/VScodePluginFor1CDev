@@ -2,7 +2,12 @@ import { createHash } from 'crypto';
 
 import type { MergeFileWitness } from '../merge/mergePreview';
 import { cloneXmlElement, elementChildren, parseXmlDocument, serializeXmlDocument, type XmlDocument, type XmlElement } from '../xml/xmlDom';
-import type { AdoptedDesignerDirection, AdoptedDesignerIdentity, AdoptedDesignerProjectionIssue } from './adoptedDesignerProjection';
+import {
+  isSupportedAdoptedDesignerDirection,
+  type AdoptedDesignerDirection,
+  type AdoptedDesignerIdentity,
+  type AdoptedDesignerProjectionIssue,
+} from './adoptedDesignerProjection';
 
 export interface AdoptedDesignerFormProjectionInput {
   readonly direction: AdoptedDesignerDirection;
@@ -39,17 +44,16 @@ export type AdoptedDesignerFormMaterializationResult =
 const SUPPORTED_FORMATS = new Set(['2.17', '2.18', '2.19', '2.20', '2.21']);
 const LOGFORM_NAMESPACE = 'http://v8.1c.ru/8.3/xcf/logform';
 
-/** Removes only the borrowed BaseForm wrapper after proving it belongs to the captured base form. */
+/** Removes adopted BaseForm wrappers independently after validating each against the captured base form. */
 export function projectAdoptedDesignerFormPair(input: AdoptedDesignerFormProjectionInput): AdoptedDesignerFormProjectionResult {
   try {
     assertContract(input);
     const target = parseForm(input.targetXml, input.formatVersion);
     const source = parseForm(input.sourceXml, input.formatVersion);
     const base = parseForm(input.baseXml, input.formatVersion);
-    const adoptedTarget = input.direction === 'cf-to-adopted';
-    const adoptedDocument = adoptedTarget ? target : source;
-    const ownDocument = adoptedTarget ? source : target;
-    if (direct(base.root, 'BaseForm').length > 0 || direct(ownDocument.root, 'BaseForm').length > 0) {
+    const targetAdopted = input.direction !== 'adopted-to-cf';
+    const sourceAdopted = input.direction !== 'cf-to-adopted';
+    if (direct(base.root, 'BaseForm').length > 0) {
       throw new Error('Собственная Form.xml или captured CF base не должна содержать BaseForm.');
     }
     const baseRoot = base.root;
@@ -57,17 +61,8 @@ export function projectAdoptedDesignerFormPair(input: AdoptedDesignerFormProject
     const issues: AdoptedDesignerProjectionIssue[] = [];
     collectForeignBaseFormIssues(target.root, input.targetIdentity, 'target', issues);
     collectForeignBaseFormIssues(source.root, input.sourceIdentity, 'source', issues);
-    const adoptedRoot = adoptedDocument.root;
-    const bases = direct(adoptedRoot, 'BaseForm');
-    if (bases.length !== 1 || lastElement(adoptedRoot) !== bases[0]) {
-      throw new Error('Заимствованная Form.xml должна содержать ровно один прямой BaseForm последним элементом.');
-    }
-    if (attribute(bases[0]!, 'version') !== input.formatVersion) {
-      throw new Error('Версия BaseForm не совпадает с версией формы.');
-    }
-    validateBaseFormItems(bases[0]!, baseItems, adoptedTarget ? 'target' : 'source', issues);
-    validateMainItemIdentities(adoptedRoot, baseItems, adoptedTarget ? 'target' : 'source', issues);
-    remove(adoptedRoot, bases[0]!);
+    projectSideBaseForm(target.root, targetAdopted, 'target', input.formatVersion, baseItems, issues);
+    projectSideBaseForm(source.root, sourceAdopted, 'source', input.formatVersion, baseItems, issues);
     const witness = baseFormWitness(input);
     return {
       ok: true,
@@ -88,7 +83,7 @@ export function materializeAdoptedDesignerFormTarget(
   const projection = projectAdoptedDesignerFormPair(input);
   if (!projection.ok) { return projection; }
   try {
-    const targetAdopted = input.direction === 'cf-to-adopted';
+    const targetAdopted = input.direction !== 'adopted-to-cf';
     const physicalTarget = parseForm(input.targetXml, input.formatVersion);
     const merged = parseForm(input.mergedLogicalTarget, input.formatVersion);
     const mergedBases = direct(merged.root, 'BaseForm');
@@ -120,16 +115,18 @@ export function materializeAdoptedDesignerFormTarget(
 }
 
 function assertContract(input: AdoptedDesignerFormProjectionInput): void {
+  if (!isSupportedAdoptedDesignerDirection(input.direction)) { throw new Error('Направление adopted Form.xml не поддерживается.'); }
   if (!SUPPORTED_FORMATS.has(input.formatVersion)) { throw new Error(`Формат Designer ${input.formatVersion} не поддержан для adopted Form.xml.`); }
   if (input.baseIdentity.ownership !== 'own' || !isFormMetadataKind(input.baseIdentity.type)) { throw new Error('Base form identity должна быть собственным объектом Form или CommonForm.'); }
-  const adopted = input.direction === 'cf-to-adopted' ? input.targetIdentity : input.sourceIdentity;
-  const own = input.direction === 'cf-to-adopted' ? input.sourceIdentity : input.targetIdentity;
-  if (adopted.ownership !== 'adopted' || own.ownership !== 'own'
-    || adopted.type !== input.baseIdentity.type || own.type !== input.baseIdentity.type
-    || !same(adopted.sourceUuid, input.baseIdentity.uuid)
-    || !same(own.uuid, input.baseIdentity.uuid)
-    || !same(adopted.name, input.baseIdentity.name)
-    || !same(own.name, input.baseIdentity.name)) {
+  const targetAdopted = input.direction !== 'adopted-to-cf';
+  const sourceAdopted = input.direction !== 'cf-to-adopted';
+  if (input.targetIdentity.ownership !== (targetAdopted ? 'adopted' : 'own')
+    || input.sourceIdentity.ownership !== (sourceAdopted ? 'adopted' : 'own')
+    || ![input.targetIdentity, input.sourceIdentity].every((identity) => identity.type === input.baseIdentity.type && same(identity.name, input.baseIdentity.name))
+    || (targetAdopted && !same(input.targetIdentity.sourceUuid, input.baseIdentity.uuid))
+    || (sourceAdopted && !same(input.sourceIdentity.sourceUuid, input.baseIdentity.uuid))
+    || (!targetAdopted && !same(input.targetIdentity.uuid, input.baseIdentity.uuid))
+    || (!sourceAdopted && !same(input.sourceIdentity.uuid, input.baseIdentity.uuid))) {
     throw new Error('Identity target/source Form не совпадает с точным base Form anchor.');
   }
   if (!input.baseFormSourceId.trim() || !safeRelativePath(input.baseFormRelativePath)) {
@@ -142,6 +139,30 @@ function assertContract(input: AdoptedDesignerFormProjectionInput): void {
 }
 
 function isFormMetadataKind(type: string): boolean { return type === 'Form' || type === 'CommonForm'; }
+
+function projectSideBaseForm(
+  root: XmlElement,
+  adopted: boolean,
+  side: 'target' | 'source',
+  formatVersion: string,
+  baseItems: Map<string, XmlElement>,
+  issues: AdoptedDesignerProjectionIssue[],
+): void {
+  const bases = direct(root, 'BaseForm');
+  if (!adopted) {
+    if (bases.length > 0) { throw new Error('Собственная Form.xml или captured CF base не должна содержать BaseForm.'); }
+    return;
+  }
+  if (bases.length !== 1 || lastElement(root) !== bases[0]) {
+    throw new Error('Заимствованная Form.xml должна содержать ровно один прямой BaseForm последним элементом.');
+  }
+  if (attribute(bases[0]!, 'version') !== formatVersion) {
+    throw new Error('Версия BaseForm не совпадает с версией формы.');
+  }
+  validateBaseFormItems(bases[0]!, baseItems, side, issues);
+  validateMainItemIdentities(root, baseItems, side, issues);
+  remove(root, bases[0]!);
+}
 
 function parseForm(xml: Buffer, version: string): XmlDocument {
   const document = parseXmlDocument(xml.toString('utf8'));

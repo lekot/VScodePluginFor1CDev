@@ -12,15 +12,30 @@ import { elementChildren, parseXmlDocument, textContent, type XmlElement } from 
 import { localFilePath } from '../adapters/semanticXml/semanticXmlAdapterUtils';
 import { getExplicitGeneratedTypeSpecs } from '../../utils/xml/metadataGeneratedTypeSchema';
 import type { ExtensionSemanticWrite } from './extensionSemanticMaterializer';
-import { SUPPORTED_EXTENSION_FORMATS, type ExtensionIndexedObject, type ExtensionMetadataIndex } from './extensionMetadataIndex';
+import { type ExtensionIndexedObject, type ExtensionMetadataIndex } from './extensionMetadataIndex';
 import type { ExtensionTransferRow } from './extensionTransfer';
+import type { ExtensionLinkedDesignerPackage } from './extensionLinkedDesignerPackages';
+import {
+  prepareExtensionAdoptedRightsForRow,
+  type ExtensionAdoptedRightsPreparation,
+} from './extensionAdoptedRightsHost';
+import {
+  prepareExtensionAdoptedOwnForms,
+  type ExtensionAdoptedOwnFormPreparation,
+} from './extensionAdoptedOwnFormHost';
+import {
+  prepareExtensionAdoptedTemplatesForRow,
+  type ExtensionAdoptedTemplatePreparation,
+} from './extensionAdoptedTemplateHost';
 import type { ExtensionAdoptedProjectionIssue } from './adoptedDesignerCandidatePolicy';
 import {
   allocateExtensionAdoptedChildUuids,
   allocatedChildUuidProof,
+  copiedOwnChildUuidProof,
   promotedChildUuidProof,
   type ExtensionAdoptedUuidSnapshot,
 } from './adoptedDesignerUuidContext';
+import { introducedAdoptedDescriptorUuidDefinitions } from './adoptedDesignerPhysicalUuidDefinitions';
 import {
   collectExtensionAdoptedChildUuidRequirements,
   materializeExtensionAdoptedArtifact,
@@ -31,13 +46,20 @@ import {
 } from './extensionAdoptedSemanticBridge';
 import type { AdoptedDesignerIdentity } from './adoptedDesignerProjection';
 import { createAdoptedDesignerTypeIdResolver, type AdoptedDesignerTypeIdReferenceDescriptor } from './adoptedDesignerTypeId';
+import {
+  captureExtensionAdoptedConfigurationWitnesses,
+  directionForExtensionAdoptedRow,
+  resolveExtensionAdoptedRowProof,
+  type ExtensionAdoptedDirection,
+  type ExtensionAdoptedRowProof,
+} from './extensionAdoptedSemanticContext';
 
 const MDCLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
 const READABLE_NAMESPACE = 'http://v8.1c.ru/8.3/xcf/readable';
 const FORM_METADATA_TYPES = new Set(['Form', 'CommonForm']);
 const UUID_PATTERN = /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/iu;
 
-export type ExtensionAdoptedDirection = 'cf-to-adopted' | 'adopted-to-cf';
+export type { ExtensionAdoptedDirection } from './extensionAdoptedSemanticContext';
 export { createExtensionAdoptedUuidSnapshot } from './adoptedDesignerUuidContext';
 export type { ExtensionAdoptedUuidSnapshot } from './adoptedDesignerUuidContext';
 
@@ -75,6 +97,9 @@ export type ExtensionAdoptedRowPreparation =
     readonly direction: ExtensionAdoptedDirection;
     readonly artifacts: readonly ExtensionAdoptedPreparedArtifact[];
     readonly blockers: readonly ExtensionAdoptedScopedBlocker[];
+    readonly ownForms?: ExtensionAdoptedOwnFormPreparation;
+    readonly rights?: ExtensionAdoptedRightsPreparation;
+    readonly templates?: ExtensionAdoptedTemplatePreparation;
   };
 
 export type ExtensionAdoptedBatchMaterialization =
@@ -93,12 +118,13 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
   readonly targetRoot: ExtensionMetadataIndex;
   readonly incomingRoot: ExtensionMetadataIndex;
   readonly uuidSnapshot: ExtensionAdoptedUuidSnapshot;
+  readonly linkedPackages?: readonly ExtensionLinkedDesignerPackage[];
 }): Promise<ExtensionAdoptedRowPreparation> {
-  const direction = directionFor(input.row);
+  const direction = directionForExtensionAdoptedRow(input.row);
   if (!direction) { return { applicable: false }; }
   const artifacts: ExtensionAdoptedPreparedArtifact[] = [];
   const blockers: ExtensionAdoptedScopedBlocker[] = [];
-  const proof = resolveRowProof(input.row, input.targetRoot, input.incomingRoot, direction);
+  const proof = resolveExtensionAdoptedRowProof(input.row, input.targetRoot, input.incomingRoot, direction);
   if (!proof.ok) {
     return {
       applicable: true,
@@ -108,7 +134,11 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
     };
   }
 
-  const configurationWitnesses = await captureConfigurationWitnesses(input, proof.baseRoot);
+  const configurationWitnesses = await captureExtensionAdoptedConfigurationWitnesses({
+    targetRoot: input.targetRoot,
+    incomingRoot: input.incomingRoot,
+    baseRoots: [proof.baseRoot, ...(proof.otherBaseRoot ? [proof.otherBaseRoot] : [])],
+  });
   if (!configurationWitnesses.ok) {
     return {
       applicable: true,
@@ -118,11 +148,29 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
     };
   }
 
+  const ownForms = await prepareExtensionAdoptedOwnForms({
+    row: input.row,
+    targetRoot: input.targetRoot,
+    incomingRoot: input.incomingRoot,
+    proof,
+    uuidSnapshot: input.uuidSnapshot,
+    linkedPackages: input.linkedPackages ?? [],
+    configurationWitnesses: configurationWitnesses.witnesses,
+  });
+  for (const ownFormBlocker of ownForms.blockers) {
+    blockers.push({ kind: 'formXml', targetRelativePath: ownFormBlocker.relativePath, reason: ownFormBlocker.reason });
+  }
+
   const targetCapture = await captureObjectDescriptor(input.targetRoot, input.row.target!);
   const sourceCapture = await captureObjectDescriptor(input.incomingRoot, input.row.incoming!);
   const baseCapture = await captureObjectDescriptor(proof.baseRoot, proof.baseObject);
-  if (!targetCapture.ok || !sourceCapture.ok || !baseCapture.ok) {
-    const failure = !targetCapture.ok ? targetCapture.reason : !sourceCapture.ok ? sourceCapture.reason : !baseCapture.ok ? baseCapture.reason : 'Не удалось захватить descriptor.';
+  const otherBaseCapture = proof.otherBaseRoot && proof.otherBaseObject
+    ? await captureObjectDescriptor(proof.otherBaseRoot, proof.otherBaseObject)
+    : undefined;
+  if (!targetCapture.ok || !sourceCapture.ok || !baseCapture.ok || otherBaseCapture && !otherBaseCapture.ok) {
+    const failure = !targetCapture.ok ? targetCapture.reason : !sourceCapture.ok ? sourceCapture.reason
+      : !baseCapture.ok ? baseCapture.reason : otherBaseCapture && !otherBaseCapture.ok ? otherBaseCapture.reason
+        : 'Не удалось захватить descriptor.';
     return {
       applicable: true,
       direction,
@@ -131,7 +179,41 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
     };
   }
 
-  const typeIdReferenceDescriptors = typeIdContext(direction, input.incomingRoot, proof.baseRoot);
+  const rights = input.row.target?.metadataType === 'Role' && input.row.incoming?.metadataType === 'Role'
+    ? await prepareExtensionAdoptedRightsForRow({
+      row: input.row,
+      targetRoot: input.targetRoot,
+      incomingRoot: input.incomingRoot,
+      direction,
+      proof,
+      targetDescriptor: targetCapture.capture,
+      sourceDescriptor: sourceCapture.capture,
+      baseDescriptor: baseCapture.capture,
+      ...(otherBaseCapture?.ok ? { otherBaseDescriptor: otherBaseCapture.capture } : {}),
+      configurationWitnesses: configurationWitnesses.witnesses,
+    })
+    : undefined;
+  const templates = await prepareExtensionAdoptedTemplatesForRow({
+    row: input.row,
+    targetRoot: input.targetRoot,
+    incomingRoot: input.incomingRoot,
+    direction,
+    proof,
+    ownerCaptures: {
+      target: targetCapture.capture,
+      source: sourceCapture.capture,
+      targetBase: baseCapture.capture,
+      sourceBase: otherBaseCapture?.ok ? otherBaseCapture.capture : baseCapture.capture,
+    },
+    configurationWitnesses: configurationWitnesses.witnesses,
+  });
+
+  const typeIdReferenceDescriptors = typeIdContext(direction, input.incomingRoot, proof.baseRoot, proof.otherBaseRoot);
+  const descriptorDependencyWitnesses = dedupeWitnesses([
+    ...configurationWitnesses.witnesses,
+    ...(otherBaseCapture?.ok ? [otherBaseCapture.capture.witness] : []),
+    ...ownForms.descriptorWitnesses,
+  ]);
   const descriptorInput = {
     direction,
     target: targetCapture.capture,
@@ -139,6 +221,7 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
     base: baseCapture.capture,
     formatVersion: input.targetRoot.formatVersion ?? '',
     typeIdReferenceDescriptors,
+    ownFormRegistrations: ownForms.ownFormRegistrations,
   } as const;
   if (direction === 'cf-to-adopted') {
     const requirements = collectExtensionAdoptedChildUuidRequirements(descriptorInput);
@@ -150,23 +233,50 @@ export async function prepareExtensionAdoptedSemanticRow(input: {
         blockers.push({ kind: 'metadataXml', targetRelativePath: input.row.target!.descriptorRelativePath!, sourceRelativePath: input.row.incoming!.descriptorRelativePath, reason: allocation.reason });
       } else {
         const projected = projectExtensionAdoptedDescriptor({ ...descriptorInput, adoptedChildUuidByAnchor: allocation.map });
-        const uuidProof = allocatedChildUuidProof(input.uuidSnapshot, requirements.requirements, allocation.map);
-        addDescriptorProjection(projected, input, allocation.map, typeIdReferenceDescriptors, configurationWitnesses.witnesses, artifacts, blockers, uuidProof);
+        const uuidProof = combineUuidProofs(
+          allocatedChildUuidProof(input.uuidSnapshot, requirements.requirements, allocation.map),
+          copiedOwnChildUuidProof(
+            input.uuidSnapshot,
+            sourceCapture.capture.content,
+            baseCapture.capture.content,
+            targetCapture.capture.content,
+            proof.provenOwnerRootUuid,
+            targetCapture.capture.witness.relativePath,
+          ),
+        );
+        addDescriptorProjection(projected, input, allocation.map, typeIdReferenceDescriptors, descriptorDependencyWitnesses, artifacts, blockers, uuidProof);
       }
     }
   } else {
-    const projected = projectExtensionAdoptedDescriptor(descriptorInput);
-    const uuidProof = promotedChildUuidProof(
-      input.uuidSnapshot,
-      sourceCapture.capture.content,
-      baseCapture.capture.content,
-      proof.provenOwnerRootUuid,
-    );
-    addDescriptorProjection(projected, input, undefined, typeIdReferenceDescriptors, configurationWitnesses.witnesses, artifacts, blockers, uuidProof);
+    const requirements = collectExtensionAdoptedChildUuidRequirements(descriptorInput);
+    if (!requirements.ok) {
+      blockers.push({ kind: 'metadataXml', targetRelativePath: input.row.target!.descriptorRelativePath!, sourceRelativePath: input.row.incoming!.descriptorRelativePath, reason: requirements.reason });
+    } else {
+      const allocation = allocateExtensionAdoptedChildUuids(requirements.requirements, input.uuidSnapshot);
+      if (!allocation.ok) {
+        blockers.push({ kind: 'metadataXml', targetRelativePath: input.row.target!.descriptorRelativePath!, sourceRelativePath: input.row.incoming!.descriptorRelativePath, reason: allocation.reason });
+      } else {
+        const projected = projectExtensionAdoptedDescriptor({ ...descriptorInput, adoptedChildUuidByAnchor: allocation.map });
+        const uuidProof = combineUuidProofs(
+          allocatedChildUuidProof(input.uuidSnapshot, requirements.requirements, allocation.map),
+          direction === 'adopted-to-adopted'
+            ? copiedOwnChildUuidProof(
+              input.uuidSnapshot,
+              sourceCapture.capture.content,
+              baseCapture.capture.content,
+              targetCapture.capture.content,
+              proof.provenOwnerRootUuid,
+              targetCapture.capture.witness.relativePath,
+            )
+            : promotedChildUuidProof(input.uuidSnapshot, sourceCapture.capture.content, baseCapture.capture.content, proof.provenOwnerRootUuid),
+        );
+        addDescriptorProjection(projected, input, allocation.map, typeIdReferenceDescriptors, descriptorDependencyWitnesses, artifacts, blockers, uuidProof);
+      }
+    }
   }
 
-  await prepareFormArtifacts(input, proof, direction, configurationWitnesses.witnesses, artifacts, blockers);
-  return { applicable: true, direction, artifacts, blockers };
+  await prepareFormArtifacts(input, proof, direction, descriptorDependencyWitnesses, artifacts, blockers, ownForms);
+  return { applicable: true, direction, artifacts, blockers, ownForms, ...(rights ? { rights } : {}), templates };
 }
 
 /** Applies one artifact's selected patch batch to its logical target and re-encodes physical XML. */
@@ -199,7 +309,14 @@ export function materializeExtensionAdoptedPatchBatch(input: {
   if (artifact.targetHash !== MISSING_TARGET_HASH && hash(materialized.content) === normalizeHash(artifact.targetHash)) {
     return { ok: true, changed: false };
   }
-  const writeWitnesses = physicalWriteWitnesses(artifact, materialized.requiredWitnesses, patches, input.supplementalWitnesses ?? []);
+  const uuidWitnesses = introducedDefinitionUuidWitnesses(artifact, materialized.content);
+  if (!uuidWitnesses.ok) { return uuidWitnesses; }
+  const writeWitnesses = physicalWriteWitnesses(
+    artifact,
+    [...materialized.requiredWitnesses, ...uuidWitnesses.witnesses],
+    patches,
+    input.supplementalWitnesses ?? [],
+  );
   if (!writeWitnesses.ok) { return writeWitnesses; }
   const write: ExtensionSemanticWrite = {
     relativePath: artifact.targetRelativePath,
@@ -211,32 +328,40 @@ export function materializeExtensionAdoptedPatchBatch(input: {
 
 async function prepareFormArtifacts(
   input: Parameters<typeof prepareExtensionAdoptedSemanticRow>[0],
-  proof: Extract<RowProof, { readonly ok: true }>,
+  proof: Extract<ExtensionAdoptedRowProof, { readonly ok: true }>,
   direction: ExtensionAdoptedDirection,
   configurationWitnesses: readonly MergeFileWitness[],
   artifacts: ExtensionAdoptedPreparedArtifact[],
   blockers: ExtensionAdoptedScopedBlocker[],
+  ownForms: ExtensionAdoptedOwnFormPreparation,
 ): Promise<void> {
   const targetOwner = input.row.target!;
   const sourceOwner = input.row.incoming!;
   const baseOwner = proof.baseObject;
-  const [targetForms, sourceForms, baseForms] = await Promise.all([
+  const [targetForms, sourceForms, baseForms, otherBaseForms] = await Promise.all([
     readFormRecords(input.targetRoot, targetOwner),
     readFormRecords(input.incomingRoot, sourceOwner),
     readFormRecords(proof.baseRoot, baseOwner),
+    proof.otherBaseRoot && proof.otherBaseObject
+      ? readFormRecords(proof.otherBaseRoot, proof.otherBaseObject)
+      : Promise.resolve(undefined),
   ]);
-  for (const result of [targetForms, sourceForms, baseForms]) {
+  for (const result of [targetForms, sourceForms, baseForms, ...(otherBaseForms ? [otherBaseForms] : [])]) {
     if (!result.ok) {
       const root = result.root;
       blockers.push({ kind: 'formXml', targetRelativePath: root, reason: result.reason });
     }
   }
-  if (!targetForms.ok || !sourceForms.ok || !baseForms.ok) { return; }
+  if (!targetForms.ok || !sourceForms.ok || !baseForms.ok || otherBaseForms && !otherBaseForms.ok) { return; }
   const sourceByName = mapForms(sourceForms.forms);
   const baseByName = mapForms(baseForms.forms);
+  const otherBaseByName = otherBaseForms?.ok ? mapForms(otherBaseForms.forms) : undefined;
   const targetByName = mapForms(targetForms.forms);
+  const authorizedOwnSourceForms = new Set(ownForms.ownFormRegistrations.source.map(normalizeName));
   for (const [key, sourceForm] of sourceByName) {
+    if (authorizedOwnSourceForms.has(key)) { continue; }
     const baseForm = baseByName.get(key);
+    const otherBaseForm = otherBaseByName?.get(key);
     if (!baseForm || sourceForm.identity.type !== baseForm.identity.type) {
       blockers.push({
         kind: 'formXml',
@@ -244,6 +369,16 @@ async function prepareFormArtifacts(
         sourceRelativePath: sourceForm.bodyRelativePath,
         reason: 'Формы нет в захваченной базе; для новой формы нужен связанный перенос регистрации, дескриптора и файлов',
       });
+      continue;
+    }
+    if (proof.otherBaseRoot && (!otherBaseForm
+      || otherBaseForm.identity.type !== baseForm.identity.type
+      || !baseForm.descriptorCapture || !otherBaseForm.descriptorCapture
+      || normalizeHash(baseForm.descriptorCapture.witness.expectedHash) !== normalizeHash(otherBaseForm.descriptorCapture.witness.expectedHash)
+      || Boolean(baseForm.bodyCapture) !== Boolean(otherBaseForm.bodyCapture)
+      || baseForm.bodyCapture && otherBaseForm.bodyCapture
+        && normalizeHash(baseForm.bodyCapture.witness.expectedHash) !== normalizeHash(otherBaseForm.bodyCapture.witness.expectedHash))) {
+      blockers.push({ kind: 'formXml', targetRelativePath: baseForm.bodyRelativePath, sourceRelativePath: sourceForm.bodyRelativePath, reason: 'Используемые nested Form descriptor/body hashes различаются между captured CF базами.' });
       continue;
     }
     const targetForm = targetByName.get(key);
@@ -319,6 +454,8 @@ async function prepareFormArtifacts(
         targetForm.descriptorCapture?.witness,
         sourceForm.descriptorCapture?.witness,
         baseForm.descriptorCapture?.witness,
+        otherBaseForm?.descriptorCapture?.witness,
+        otherBaseForm?.bodyCapture?.witness,
       ].filter((witness): witness is MergeFileWitness => witness !== undefined)),
     });
   }
@@ -335,15 +472,6 @@ function targetFormBodyPath(owner: ExtensionIndexedObject, formName: string): st
   }
   return path.posix.join(normalizedOwner, 'Forms', formName, 'Ext', 'Form.xml');
 }
-
-type RowProof =
-  | {
-    readonly ok: true;
-    readonly baseRoot: ExtensionMetadataIndex;
-    readonly baseObject: ExtensionIndexedObject;
-    readonly provenOwnerRootUuid: string;
-  }
-  | { readonly ok: false; readonly reason: string };
 
 function addDescriptorProjection(
   projected: ReturnType<typeof projectExtensionAdoptedDescriptor>,
@@ -385,125 +513,15 @@ function addDescriptorProjection(
   });
 }
 
-function resolveRowProof(
-  row: ExtensionTransferRow,
-  targetRoot: ExtensionMetadataIndex,
-  incomingRoot: ExtensionMetadataIndex,
-  direction: ExtensionAdoptedDirection,
-): RowProof {
-  const target = row.target;
-  const incoming = row.incoming;
-  if (!target?.identity || !incoming?.identity) { return { ok: false, reason: 'Для adopted projection отсутствует полная target/source identity.' }; }
-  const baseRoot = direction === 'cf-to-adopted' ? row.targetBase : row.incomingBase;
-  const proofFlag = direction === 'cf-to-adopted' ? row.targetBaseIsIncoming : row.incomingBaseIsTarget;
-  if (!baseRoot || baseRoot.rootKind !== 'cf') { return { ok: false, reason: 'Для CF↔CFE adopted projection отсутствует captured CF base.' }; }
-  if (targetRoot.sourceId !== row.targetRoot.sourceId || incomingRoot.sourceId !== row.incomingRoot.sourceId) {
-    return { ok: false, reason: 'Переданные root indexes не совпадают с captured roots transfer row.' };
-  }
-  if ((direction === 'cf-to-adopted' && (targetRoot.rootKind !== 'cfe' || incomingRoot.rootKind !== 'cf'))
-    || (direction === 'adopted-to-cf' && (targetRoot.rootKind !== 'cf' || incomingRoot.rootKind !== 'cfe'))) {
-    return { ok: false, reason: 'Root kind не соответствует направлению adopted Designer transfer.' };
-  }
-  if (row.semanticAction) {
-    const matchingSemanticAction = direction === 'cf-to-adopted' ? 'overlay-adopted' : 'adopted-to-cf-overlay';
-    const comparedCfRoot = direction === 'cf-to-adopted' ? incomingRoot : targetRoot;
-    if (row.semanticAction !== matchingSemanticAction || !sameCapturedCfConfiguration(baseRoot, comparedCfRoot)
-      || !sameSupportedRootFormat(baseRoot, targetRoot, incomingRoot)) {
-      return { ok: false, reason: 'Семантическая projection требует одинаковые точные Configuration UUID/name и поддерживаемый формат у захваченной CF base и текущего CF.' };
-    }
-  } else if (!proofFlag) {
-    return { ok: false, reason: 'Перенос без semanticAction требует существующее доказательство exact proven CF base.' };
-  }
-  const cfIdentity = direction === 'cf-to-adopted' ? incoming.identity : target.identity;
-  const adoptedIdentity = direction === 'cf-to-adopted' ? target.identity : incoming.identity;
-  const anchorUuid = cfIdentity.uuid;
-  const matches = baseRoot.objects.filter((object) => object.identity?.ownership === 'own'
-    && object.identity.type === cfIdentity.type
-    && object.metadataType === cfIdentity.type
-    && normalizeUuid(object.identity.uuid) === normalizeUuid(anchorUuid));
-  if (matches.length !== 1) { return { ok: false, reason: 'В proven CF base нет единственного собственного объекта с точной identity transfer row.' }; }
-  const baseObject = matches[0]!;
-  const [targetIdentity, incomingIdentity, baseIdentity] = [target.identity, incoming.identity, baseObject.identity];
-  if (!targetIdentity || !incomingIdentity || !baseIdentity
-    || targetIdentity.type !== incomingIdentity.type || incomingIdentity.type !== baseIdentity.type
-    || targetIdentity.name !== incomingIdentity.name || incomingIdentity.name !== baseIdentity.name
-    || targetIdentity.type !== baseObject.metadataType || incomingIdentity.type !== baseObject.metadataType
-    || row.qualifiedName !== baseObject.qualifiedName
-    || normalizeUuid(baseIdentity.uuid) !== normalizeUuid(adoptedIdentity.sourceUuid ?? '')
-    || normalizeUuid(baseIdentity.uuid) !== normalizeUuid(cfIdentity.uuid)) {
-    return { ok: false, reason: 'Target, source и proven base не имеют согласованной root identity и anchor UUID.' };
-  }
-  if ((direction === 'cf-to-adopted' && (targetIdentity.ownership !== 'adopted' || incomingIdentity.ownership !== 'own'))
-    || (direction === 'adopted-to-cf' && (targetIdentity.ownership !== 'own' || incomingIdentity.ownership !== 'adopted'))) {
-    return { ok: false, reason: 'Ownership стороны не соответствует направлению CF↔CFE transfer.' };
-  }
-  return { ok: true, baseRoot, baseObject, provenOwnerRootUuid: normalizeUuid(baseIdentity.uuid) };
-}
-
-function directionFor(row: ExtensionTransferRow): ExtensionAdoptedDirection | undefined {
-  const semanticAction = row.semanticAction ?? row.action;
-  if (semanticAction === 'overlay-adopted') { return 'cf-to-adopted'; }
-  if (semanticAction === 'adopted-to-cf-overlay') { return 'adopted-to-cf'; }
-  return undefined;
-}
-
-function sameCapturedCfConfiguration(left: ExtensionMetadataIndex, right: ExtensionMetadataIndex): boolean {
-  return left.rootKind === 'cf' && right.rootKind === 'cf'
-    && left.hasConfigurationXml && right.hasConfigurationXml
-    && Boolean(left.configurationHash && right.configurationHash)
-    && Boolean(left.configurationUuid && right.configurationUuid
-      && normalizeUuid(left.configurationUuid) === normalizeUuid(right.configurationUuid))
-    && Boolean(left.configurationName && right.configurationName && left.configurationName === right.configurationName)
-    && Boolean(left.formatVersion && right.formatVersion && left.formatVersion === right.formatVersion
-      && SUPPORTED_EXTENSION_FORMATS.has(left.formatVersion));
-}
-
-function sameSupportedRootFormat(
-  base: ExtensionMetadataIndex,
-  target: ExtensionMetadataIndex,
-  incoming: ExtensionMetadataIndex,
-): boolean {
-  const formatVersion = base.formatVersion;
-  return Boolean(formatVersion && target.formatVersion === formatVersion && incoming.formatVersion === formatVersion
-    && SUPPORTED_EXTENSION_FORMATS.has(formatVersion));
-}
-
-async function captureConfigurationWitnesses(
-  input: Parameters<typeof prepareExtensionAdoptedSemanticRow>[0],
-  baseRoot: ExtensionMetadataIndex,
-): Promise<{ readonly ok: true; readonly witnesses: readonly MergeFileWitness[] } | { readonly ok: false; readonly reason: string }> {
-  const roots = [input.targetRoot, input.incomingRoot, baseRoot];
-  const bySource = new Map(roots.map((root) => [root.sourceId, root]));
-  const witnesses: MergeFileWitness[] = [];
-  for (const root of bySource.values()) {
-    if (!root.hasConfigurationXml || !root.configurationHash) {
-      return { ok: false, reason: `У корня ${root.sourceId} нет captured Configuration.xml hash для adopted semantic proof.` };
-    }
-    const relativePath = 'Configuration.xml';
-    try {
-      const snapshot = await captureMergePath(path.join(root.canonicalRootPath ?? root.rootPath, relativePath), { retainContent: false });
-      if (snapshot.state !== 'file' || normalizeHash(snapshot.hash) !== normalizeHash(root.configurationHash)) {
-        return { ok: false, reason: `Captured Configuration.xml корня ${root.sourceId} изменился или отсутствует.` };
-      }
-      witnesses.push({
-        sourceId: root.sourceId,
-        relativePath,
-        expectedHash: normalizeHash(snapshot.hash),
-        kind: 'file',
-      });
-    } catch (error) {
-      return { ok: false, reason: `Не удалось захватить Configuration.xml корня ${root.sourceId}: ${errorMessage(error)}` };
-    }
-  }
-  return { ok: true, witnesses: dedupeWitnesses(witnesses) };
-}
-
 function typeIdContext(
   direction: ExtensionAdoptedDirection,
   incomingRoot: ExtensionMetadataIndex,
   baseRoot: ExtensionMetadataIndex,
+  otherBaseRoot?: ExtensionMetadataIndex,
 ): AdoptedDesignerTypeIdReferenceDescriptor[] {
-  const indexes = direction === 'cf-to-adopted' ? [incomingRoot] : [incomingRoot, baseRoot];
+  const indexes = direction === 'cf-to-adopted'
+    ? [incomingRoot]
+    : [incomingRoot, baseRoot, ...(otherBaseRoot ? [otherBaseRoot] : [])];
   const result: AdoptedDesignerTypeIdReferenceDescriptor[] = [];
   const mappingsByDescriptor = new Map<AdoptedDesignerTypeIdReferenceDescriptor, string | undefined>();
   const seenPaths = new Set<string>();
@@ -517,7 +535,7 @@ function typeIdContext(
       const candidate: AdoptedDesignerTypeIdReferenceDescriptor = {
         descriptorXml: Buffer.from(object.descriptorContent),
         identity: identityFor(object.identity),
-        provenance: index === baseRoot ? 'proven-base' : 'own',
+        provenance: index === baseRoot || index === otherBaseRoot ? 'proven-base' : 'own',
         sourceId: index.sourceId,
         relativePath: object.descriptorRelativePath,
         expectedHash: object.descriptorHash,
@@ -859,6 +877,63 @@ function matchingSidecars(owner: ExtensionIndexedObject, relativePath: string): 
 function witnessForObject(root: ExtensionMetadataIndex, object: ExtensionIndexedObject): MergeFileWitness | undefined {
   if (!object.descriptorRelativePath || !object.descriptorHash) { return undefined; }
   return { sourceId: root.sourceId, relativePath: object.descriptorRelativePath, expectedHash: normalizeHash(object.descriptorHash), kind: 'file' };
+}
+
+function combineUuidProofs(
+  left: { readonly issues: readonly ExtensionAdoptedProjectionIssue[]; readonly witnesses: ReadonlyMap<string, readonly MergeFileWitness[]> },
+  right: { readonly issues: readonly ExtensionAdoptedProjectionIssue[]; readonly witnesses: ReadonlyMap<string, readonly MergeFileWitness[]> },
+): { readonly issues: readonly ExtensionAdoptedProjectionIssue[]; readonly witnesses: ReadonlyMap<string, readonly MergeFileWitness[]> } {
+  const witnesses = new Map<string, readonly MergeFileWitness[]>();
+  try {
+    for (const proof of [left, right]) {
+      for (const [uuid, candidateWitnesses] of proof.witnesses) {
+        const key = normalizeUuid(uuid);
+        witnesses.set(key, dedupeWitnesses([...(witnesses.get(key) ?? []), ...candidateWitnesses]));
+      }
+    }
+    return { issues: [...left.issues, ...right.issues], witnesses };
+  } catch (error) {
+    return {
+      issues: [...left.issues, ...right.issues, {
+        side: 'source', identityKey: 'root=ChildObjects',
+        reason: `Proof физически вводимого metadata UUID противоречив: ${errorMessage(error)}`,
+      }],
+      witnesses: new Map(),
+    };
+  }
+}
+
+function introducedDefinitionUuidWitnesses(
+  artifact: ExtensionAdoptedPreparedArtifact,
+  materializedContent: Buffer,
+): { readonly ok: true; readonly witnesses: readonly MergeFileWitness[] } | { readonly ok: false; readonly reason: string } {
+  if (artifact.recipe.kind !== 'adopted-descriptor') { return { ok: true, witnesses: [] }; }
+  const introduced = introducedAdoptedDescriptorUuidDefinitions(artifact.recipe.target.content, materializedContent);
+  if (!introduced.ok) { return introduced; }
+  const targetSourceId = artifact.recipe.target.witness.sourceId;
+  const sourceSourceId = artifact.recipe.source.witness.sourceId;
+  const witnesses: MergeFileWitness[] = [];
+  try {
+    for (const uuid of introduced.uuids) {
+      const candidateWitnesses = artifact.uuidCandidateWitnesses.get(normalizeUuid(uuid));
+      if (!candidateWitnesses?.length) {
+        return { ok: false, reason: `Для физически вводимого metadata UUID ${uuid} отсутствует candidate-scoped target registry proof.` };
+      }
+      const captured = dedupeWitnesses(candidateWitnesses);
+      if (!captured.some((witness) => witness.sourceId === targetSourceId
+        && normalizeRelativePath(witness.relativePath).toLocaleLowerCase('en-US') === 'configuration.xml')) {
+        return { ok: false, reason: `Proof физически вводимого metadata UUID ${uuid} не содержит captured target Configuration.xml.` };
+      }
+      if (captured.some((witness) => (witness.sourceId !== targetSourceId && witness.sourceId !== sourceSourceId)
+        || witness.kind !== 'file' || !/^[\da-f]{64}$/iu.test(normalizeHash(witness.expectedHash)))) {
+        return { ok: false, reason: `Proof физически вводимого metadata UUID ${uuid} содержит отсутствующий или некорректный file witness.` };
+      }
+      witnesses.push(...captured);
+    }
+    return { ok: true, witnesses: dedupeWitnesses(witnesses) };
+  } catch (error) {
+    return { ok: false, reason: `Не удалось проверить candidate-scoped UUID proof: ${errorMessage(error)}` };
+  }
 }
 
 function dedupeWitnesses(witnesses: readonly MergeFileWitness[]): MergeFileWitness[] {

@@ -47,7 +47,7 @@ export const roleRightsXmlAdapter: MergeAdapter = {
     const issues = rawWitnessIssue
       ? [...projection.issues, { scope: 'file' as const, reason: rawWitnessIssue }]
       : projection.issues;
-    return applyProjectionIssues(result, issues, targetFilePath);
+    return applyRoleRightsProjectionIssues(result, issues, targetFilePath);
   },
 };
 
@@ -80,7 +80,7 @@ function conflictingSourceWitness(
   return 'Снимок и физический SHA-256 Rights.xml противоречат друг другу; перенос доступен только для чтения.';
 }
 
-function applyProjectionIssues(
+export function applyRoleRightsProjectionIssues(
   result: AdapterCompareResult,
   issues: readonly RoleRightsProjectionIssue[],
   targetFilePath: string,

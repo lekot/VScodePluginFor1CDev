@@ -13,9 +13,131 @@ import { validateSemanticXmlMerge } from '../../../src/compareMerge/adapters/sem
 import { buildXmlSourceWitnesses } from '../../../src/compareMerge/adapters/semanticXml/semanticXmlSourceWitnesses';
 import { applySelectedXmlPatches } from '../../../src/compareMerge/merge/semanticXmlMerge';
 import { applyXmlPatch, applyXmlPatchBatch } from '../../../src/compareMerge/xml/xmlPatch';
-import { buildXmlAddress, elementChildren, getXmlElementIdentityKey, parseXmlDocument, type XmlElement } from '../../../src/compareMerge/xml/xmlDom';
+import { buildXmlAddress, elementChildren, getXmlElementIdentityKey, parseXmlDocument, textContent, type XmlElement } from '../../../src/compareMerge/xml/xmlDom';
 
 suite('Semantic XML deep merge (#335)', () => {
+  for (const registrationKind of ['Form', 'Template', 'Command'] as const) {
+    test(`preserves a target ${registrationKind} when the source has a distinct file-backed registration`, async () => {
+      const namespace = 'http://v8.1c.ru/8.3/MDClasses';
+      const descriptor = (registrationName: string) =>
+        `<MetaDataObject xmlns="${namespace}"><Catalog uuid="catalog-1"><Properties><Name>Products</Name></Properties>` +
+        `<ChildObjects><${registrationKind}>${registrationName}</${registrationKind}></ChildObjects></Catalog></MetaDataObject>`;
+      const left = descriptor('Keep');
+      const addedName = 'Added % [1]';
+      const right = descriptor(addedName);
+      const input = makeInput(left, right);
+      input.linkedDesignerContext = {
+        registrations: [{ kind: registrationKind, name: addedName, packageId: 'added-package' }],
+        defaultObjectForms: [],
+        formEventHandlers: [],
+      };
+
+      const result = await metadataXmlAdapter.compare(input);
+      const selected = collectNodes(result.nodes).find((node) =>
+        node.rightValue?.includes(addedName) && node.payloadRef?.includes('/ChildObjects'));
+      const unlinkedTarget = collectNodes(result.nodes).find((node) =>
+        node.leftValue?.includes('Keep') && node.payloadRef?.includes('/ChildObjects'));
+
+      assert.ok(selected, `the source ${registrationKind} Added should have its own tree node`);
+      assert.ok(unlinkedTarget, `the target ${registrationKind} Keep should remain independently visible`);
+      assert.strictEqual(unlinkedTarget!.status, 'leftOnly');
+      assert.strictEqual(unlinkedTarget!.mergeable, false, 'identity does not authorize transferring an unlinked target package');
+      assert.strictEqual(result.candidateFactories.has(unlinkedTarget!.id), false);
+      assert.strictEqual(selected!.status, 'rightOnly');
+      assert.strictEqual(selected!.mergeable, true);
+      const candidate = await result.candidateFactories.get(selected!.id)!();
+      assert.ok(candidate.ok);
+      if (!candidate.ok) {return;}
+      assert.strictEqual(candidate.candidate.xmlPatch?.kind, 'insertNode');
+      assert.ok(candidate.candidate.xmlPatch!.target.pointer.includes(
+        `${registrationKind}[registration-name%3Dadded%20%25%20%5B1%5D]`,
+      ));
+
+      const applied = applyXmlPatch(left, candidate.candidate.xmlPatch!);
+      const owner = elementChildren(parseXmlDocument(applied).root)[0]!;
+      const childObjects = elementChildren(owner).find((element) => element.localName === 'ChildObjects')!;
+      assert.deepStrictEqual(elementChildren(childObjects).map((element) => [element.localName, textContent(element)]), [
+        [registrationKind, 'Keep'],
+        [registrationKind, addedName],
+      ]);
+    });
+  }
+
+  for (const registrationKind of ['Form', 'Template', 'Command'] as const) {
+    test(`keeps ${registrationKind} registrations distinct for one-to-many and many-to-one changes`, async () => {
+      const descriptor = (names: readonly string[]) => metadataRegistrationDescriptor(
+        names.map((name) => `<${registrationKind}>${name}</${registrationKind}>`).join(''),
+      );
+      const left = descriptor(['Keep']);
+      const right = descriptor(['Added', 'AlsoAdded']);
+      const addInput = makeInput(left, right);
+      addInput.linkedDesignerContext = {
+        registrations: [
+          { kind: registrationKind, name: 'Added', packageId: 'added-package' },
+          { kind: registrationKind, name: 'AlsoAdded', packageId: 'also-added-package' },
+        ],
+        defaultObjectForms: [],
+        formEventHandlers: [],
+      };
+      const additions = await metadataXmlAdapter.compare(addInput);
+      const selectedAdditions = collectNodes(additions.nodes).filter((node) =>
+        node.status === 'rightOnly' &&
+        ['Added', 'AlsoAdded'].some((name) => node.rightValue?.includes(name)));
+      assert.strictEqual(selectedAdditions.length, 2);
+      assert.ok(selectedAdditions.every((node) => node.status === 'rightOnly' && node.mergeable));
+      const additionCandidates = await Promise.all(selectedAdditions.map((node) => additions.candidateFactories.get(node.id)!()));
+      assert.ok(additionCandidates.every((candidate) => candidate.ok));
+      if (additionCandidates.some((candidate) => !candidate.ok)) {return;}
+      assert.ok(additionCandidates.every((candidate) => candidate.candidate.xmlPatch?.kind === 'insertNode'));
+      const added = applyXmlPatchBatch(left, additionCandidates.map((candidate) => candidate.candidate.xmlPatch!));
+      assert.deepStrictEqual(metadataRegistrationNames(added, registrationKind), ['Keep', 'Added', 'AlsoAdded']);
+
+      const deletionTarget = descriptor(['Keep', 'DeleteMe']);
+      const deletionSource = descriptor(['Keep']);
+      const deleteInput = makeInput(deletionTarget, deletionSource);
+      deleteInput.linkedDesignerContext = {
+        registrations: [{ kind: registrationKind, name: 'DeleteMe', packageId: 'delete-package' }],
+        defaultObjectForms: [],
+        formEventHandlers: [],
+      };
+      const deletions = await metadataXmlAdapter.compare(deleteInput);
+      const selectedDeletion = collectNodes(deletions.nodes).find((node) =>
+        node.leftValue?.includes('DeleteMe') && node.payloadRef?.includes('/ChildObjects'));
+      assert.ok(selectedDeletion);
+      assert.strictEqual(selectedDeletion!.status, 'leftOnly');
+      const deletionCandidate = await deletions.candidateFactories.get(selectedDeletion!.id)!();
+      assert.ok(deletionCandidate.ok);
+      if (!deletionCandidate.ok) {return;}
+      assert.strictEqual(deletionCandidate.candidate.xmlPatch?.kind, 'deleteNode');
+      const deleted = applyXmlPatch(deletionTarget, deletionCandidate.candidate.xmlPatch!);
+      assert.deepStrictEqual(metadataRegistrationNames(deleted, registrationKind), ['Keep']);
+    });
+  }
+
+  test('uses file-backed registration names only in exact MDClasses ChildObjects scope', () => {
+    const md = 'http://v8.1c.ru/8.3/MDClasses';
+    const prefixed = `<md:MetaDataObject xmlns:md="${md}"><md:Catalog uuid="catalog-1"><md:Properties><md:Name>Products</md:Name></md:Properties><md:ChildObjects><md:Form>Added</md:Form></md:ChildObjects></md:Catalog></md:MetaDataObject>`;
+    assert.strictEqual(getXmlElementIdentityKey(metadataRegistrationElement(prefixed, 'Form')), 'registration-name=added');
+
+    const ordinaryProperty = `<MetaDataObject xmlns="${md}"><Catalog uuid="catalog-1"><Properties><Name>Products</Name><Form>Added</Form></Properties></Catalog></MetaDataObject>`;
+    assert.strictEqual(getXmlElementIdentityKey(findElement(findElement(elementChildren(parseXmlDocument(ordinaryProperty).root)[0]!, 'Properties'), 'Form')), undefined);
+
+    const foreignRegistration = `<MetaDataObject xmlns="${md}" xmlns:foreign="urn:foreign"><Catalog uuid="catalog-1"><Properties><Name>Products</Name></Properties><ChildObjects><foreign:Form>Added</foreign:Form></ChildObjects></Catalog></MetaDataObject>`;
+    assert.strictEqual(getXmlElementIdentityKey(metadataRegistrationElement(foreignRegistration, 'Form')), undefined);
+
+    const unsupportedOwner = `<MetaDataObject xmlns="${md}"><Mystery uuid="unknown-1"><Properties><Name>Products</Name></Properties><ChildObjects><Form>Added</Form></ChildObjects></Mystery></MetaDataObject>`;
+    assert.strictEqual(getXmlElementIdentityKey(metadataRegistrationElement(unsupportedOwner, 'Form')), undefined);
+  });
+
+  test('rejects duplicate file-backed registration names after case folding and NFC normalization', () => {
+    for (const names of [['Main', 'main'], ['Caf\u00e9', 'Cafe\u0301']] as const) {
+      const source = metadataRegistrationDescriptor(names.map((name) => `<Form>${name}</Form>`).join(''));
+      const validation = validateSemanticXmlMerge(source, 'metadataXml');
+      assert.strictEqual(validation.valid, false, names.join(' / '));
+      assert.ok(validation.diagnostics.some((item) => item.code === 'XML_METADATA_DUPLICATE_ID'), names.join(' / '));
+    }
+  });
+
   test('uses scoped stable selectors for role rights and DCS structured members', () => {
     const rights = parseXmlDocument('<Rights xmlns="http://v8.1c.ru/8.2/roles"><object><name>Catalog.Products</name><right><name>Read</name></right></object><restrictionTemplate><name>Default</name></restrictionTemplate></Rights>').root;
     const rightsObject = elementChildren(rights)[0]!;
@@ -1270,4 +1392,26 @@ function findElement(parent: XmlElement, localName: string): XmlElement {
   const found = elementChildren(parent).find((element) => element.localName === localName);
   assert.ok(found, `Expected XML element ${localName}.`);
   return found!;
+}
+
+function metadataRegistrationDescriptor(registrations: string, ownerType = 'Catalog'): string {
+  return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><${ownerType} uuid="catalog-1"><Properties><Name>Products</Name></Properties>` +
+    `<ChildObjects>${registrations}</ChildObjects></${ownerType}></MetaDataObject>`;
+}
+
+function metadataRegistrationElement(source: string, kind: string): XmlElement {
+  const root = parseXmlDocument(source).root;
+  const owner = elementChildren(root)[0];
+  assert.ok(owner, 'Expected a metadata owner.');
+  return findElement(findElement(owner!, 'ChildObjects'), kind);
+}
+
+function metadataRegistrationNames(source: string, kind: string): string[] {
+  const root = parseXmlDocument(source).root;
+  const owner = elementChildren(root)[0];
+  assert.ok(owner, 'Expected a metadata owner.');
+  const childObjects = findElement(owner!, 'ChildObjects');
+  return elementChildren(childObjects)
+    .filter((element) => element.localName === kind)
+    .map(textContent);
 }

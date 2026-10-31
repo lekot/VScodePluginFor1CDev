@@ -10,9 +10,143 @@ import type { AdoptedDesignerIdentity } from '../../../src/compareMerge/extensio
 
 const BASE_UUID = '11111111-1111-4111-8111-111111111111';
 const CFE_UUID = '22222222-2222-4222-8222-222222222222';
+const SOURCE_CFE_UUID = '99999999-9999-4999-8999-999999999999';
 const FORM_NS = 'http://v8.1c.ru/8.3/xcf/logform';
 
 suite('Adopted Designer Form.xml projection (#335)', () => {
+  test('validates both adopted BaseForms independently and restores the exact target snapshot', () => {
+    const baseXml = form('<Button id="opaque-base-id" title="Current CF"/>');
+    const targetSnapshot = '<Button id="opaque-base-id" title="Old target snapshot"/>';
+    const sourceSnapshot = '<Button id="opaque-base-id" title="Old source snapshot"/>';
+    const input = makeInput({
+      direction: 'adopted-to-adopted',
+      baseXml,
+      targetXml: form('<Button id="opaque-base-id" title="Target main"/>', targetSnapshot),
+      sourceXml: form('<Button id="opaque-base-id" title="Source main"/>', sourceSnapshot),
+    });
+
+    const projection = projectAdoptedDesignerFormPair(input);
+
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.doesNotMatch(projection.targetXml.toString('utf8'), /<BaseForm/u);
+    assert.doesNotMatch(projection.sourceXml.toString('utf8'), /<BaseForm/u);
+    assert.match(projection.targetXml.toString('utf8'), /title="Target main"/u);
+    assert.match(projection.sourceXml.toString('utf8'), /title="Source main"/u);
+
+    const mergedLogicalTarget = Buffer.from(projection.targetXml.toString('utf8').replace('Target main', 'Selected target main'));
+    const materialized = materializeAdoptedDesignerFormTarget({ ...input, mergedLogicalTarget });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    const xml = materialized.content.toString('utf8');
+    assert.match(xml, /title="Selected target main"/u);
+    assert.strictEqual(
+      xml.match(/<BaseForm[^>]*>[\s\S]*?<\/BaseForm>/u)?.[0],
+      `<BaseForm version="2.20"><Items>${targetSnapshot}</Items></BaseForm>`,
+      'materialization restores the target physical BaseForm subtree without taking the source snapshot',
+    );
+    assert.doesNotMatch(xml, /Old source snapshot/u);
+    assert.ok(xml.indexOf('<BaseForm') > xml.indexOf('</Items>'));
+    assert.ok(xml.trimEnd().endsWith('</BaseForm></Form>'));
+    assert.deepStrictEqual(materialized.baseFormWitness, projection.baseFormWitness);
+  });
+
+  test('preserves selected Attributes, Commands, and Parameters order and target BaseForm across all directions', () => {
+    const collections = '<Attributes><Attribute id="attribute-a" name="AttributeA"/><Attribute id="attribute-b" name="AttributeB"/></Attributes>'
+      + '<Commands><Command id="command-a" name="CommandA"/><Command id="command-b" name="CommandB"/></Commands>'
+      + '<Parameters><Parameter id="parameter-a" name="ParameterA"/><Parameter id="parameter-b" name="ParameterB"/></Parameters>';
+    const reordered = '<Attributes><Attribute id="attribute-b" name="AttributeB"/><Attribute id="attribute-a" name="AttributeA"/></Attributes>'
+      + '<Commands><Command id="command-b" name="CommandB"/><Command id="command-a" name="CommandA"/></Commands>'
+      + '<Parameters><Parameter id="parameter-b" name="ParameterB"/><Parameter id="parameter-a" name="ParameterA"/></Parameters>';
+    const targetSnapshot = '<Button id="target-snapshot" title="Exact target snapshot"/>';
+    const sourceSnapshot = '<Button id="source-snapshot" title="Source snapshot"/>';
+
+    for (const direction of ['adopted-to-cf', 'cf-to-adopted', 'adopted-to-adopted'] as const) {
+      const targetAdopted = direction !== 'adopted-to-cf';
+      const sourceAdopted = direction !== 'cf-to-adopted';
+      const input = makeInput({
+        direction,
+        baseXml: form(collections),
+        targetXml: form(collections, targetAdopted ? targetSnapshot : undefined),
+        sourceXml: form(collections, sourceAdopted ? sourceSnapshot : undefined),
+      });
+      const projection = projectAdoptedDesignerFormPair(input);
+      assert.strictEqual(projection.ok, true, `${direction}: ${projection.ok ? '' : projection.reason}`);
+      if (!projection.ok) { continue; }
+      assert.doesNotMatch(projection.targetXml.toString('utf8'), /<BaseForm/u);
+      assert.doesNotMatch(projection.sourceXml.toString('utf8'), /<BaseForm/u);
+      const mergedLogicalTarget = Buffer.from(projection.targetXml.toString('utf8').replace(collections, reordered));
+
+      const materialized = materializeAdoptedDesignerFormTarget({ ...input, mergedLogicalTarget });
+
+      assert.strictEqual(materialized.ok, true, `${direction}: ${materialized.ok ? '' : materialized.reason}`);
+      if (!materialized.ok) { continue; }
+      const xml = materialized.content.toString('utf8');
+      for (const [first, second] of [
+        ['attribute-b', 'attribute-a'],
+        ['command-b', 'command-a'],
+        ['parameter-b', 'parameter-a'],
+      ] as const) {
+        assert.ok(xml.indexOf(`id="${first}"`) < xml.indexOf(`id="${second}"`), `${direction}: ${first} precedes ${second}`);
+      }
+      if (targetAdopted) {
+        assert.strictEqual(
+          xml.match(/<BaseForm[^>]*>[\s\S]*?<\/BaseForm>/u)?.[0],
+          `<BaseForm version="2.20"><Items>${targetSnapshot}</Items></BaseForm>`,
+          `${direction}: selected logical order must restore the exact target BaseForm last`,
+        );
+        assert.doesNotMatch(xml, /Source snapshot/u);
+      } else {
+        assert.doesNotMatch(xml, /<BaseForm/u, `${direction}: own CF target cannot receive a source BaseForm`);
+      }
+    }
+  });
+
+  test('requires one valid final BaseForm on each adopted side', () => {
+    const baseXml = form('<Button id="opaque-base-id" title="Current CF"/>');
+    const validTarget = form('<Button id="opaque-base-id"/>', '<Button id="opaque-base-id" title="Target snapshot"/>');
+    const validSource = form('<Button id="opaque-base-id"/>', '<Button id="opaque-base-id" title="Source snapshot"/>');
+    const malformed = [
+      form('<Button id="opaque-base-id"/>'),
+      Buffer.from(validTarget.toString('utf8').replace('</Form>', '<BaseForm version="2.20"><Items><Button id="opaque-base-id"/></Items></BaseForm></Form>')),
+      Buffer.from(validTarget.toString('utf8').replace('</BaseForm></Form>', '</BaseForm><Marker/></Form>')),
+      Buffer.from(validTarget.toString('utf8').replace('<BaseForm version="2.20">', '<BaseForm version="2.19">')),
+    ];
+
+    for (const side of ['target', 'source'] as const) {
+      for (const invalidBaseForm of malformed) {
+        const input = makeInput({
+          direction: 'adopted-to-adopted',
+          baseXml,
+          targetXml: side === 'target' ? invalidBaseForm : validTarget,
+          sourceXml: side === 'source' ? invalidBaseForm : validSource,
+        });
+        const result = projectAdoptedDesignerFormPair(input);
+        assert.strictEqual(result.ok, false, `${side} adopted BaseForm must satisfy the captured structure contract`);
+        if (!result.ok) { assert.match(result.reason, /BaseForm/u); }
+      }
+    }
+
+    const wrongAnchor = makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml: validTarget, sourceXml: validSource });
+    const anchorResult = projectAdoptedDesignerFormPair({
+      ...wrongAnchor,
+      sourceIdentity: { ...wrongAnchor.sourceIdentity, sourceUuid: SOURCE_CFE_UUID },
+    });
+    assert.strictEqual(anchorResult.ok, false);
+    if (!anchorResult.ok) { assert.match(anchorResult.reason, /anchor/u); }
+  });
+
+  test('rejects an unknown runtime direction instead of treating it as adopted-to-adopted', () => {
+    const input = makeInput({ direction: 'adopted-to-adopted' });
+    const direction = 'unknown-direction' as unknown as AdoptedDesignerFormProjectionInput['direction'];
+
+    const result = projectAdoptedDesignerFormPair({ ...input, direction });
+
+    assert.strictEqual(result.ok, false);
+    if (!result.ok) { assert.match(result.reason, /направлени/iu); }
+  });
+
   test('projects the main tree only and carries the exact captured BaseForm witness', () => {
     const baseXml = form('<Button id="opaque-base-id" title="Current CF"/>');
     const input = makeInput({
@@ -129,29 +263,35 @@ suite('Adopted Designer Form.xml projection (#335)', () => {
     if (!result.ok) { assert.match(result.reason, /BaseForm/u); }
   });
 
-  test('rejects a stale base-file witness before producing a logical projection', () => {
-    const input = makeInput({ baseFormHash: '0'.repeat(64) });
+  test('rejects a stale base-file witness in both one-sided and two-sided adopted projection', () => {
+    for (const direction of ['cf-to-adopted', 'adopted-to-adopted'] as const) {
+      const input = makeInput({ direction, baseFormHash: '0'.repeat(64) });
 
-    const result = projectAdoptedDesignerFormPair(input);
+      const result = projectAdoptedDesignerFormPair(input);
 
-    assert.strictEqual(result.ok, false);
-    if (!result.ok) { assert.match(result.reason, /hash|хеш/iu); }
+      assert.strictEqual(result.ok, false);
+      if (!result.ok) { assert.match(result.reason, /hash|хеш/iu); }
+    }
   });
 });
 
-function makeInput(overrides: Partial<AdoptedDesignerFormProjectionInput> & { readonly direction?: AdoptedDesignerFormProjectionInput['direction'] } = {}): AdoptedDesignerFormProjectionInput {
+type TestAdoptedDirection = AdoptedDesignerFormProjectionInput['direction'] | 'adopted-to-adopted';
+
+function makeInput(overrides: Omit<Partial<AdoptedDesignerFormProjectionInput>, 'direction'> & { readonly direction?: TestAdoptedDirection } = {}): AdoptedDesignerFormProjectionInput {
   const baseXml = overrides.baseXml ?? form('<Button id="opaque-base-id" title="Current CF"/>');
   const baseIdentity: AdoptedDesignerIdentity = { ownership: 'own', type: 'Form', name: 'Main', uuid: BASE_UUID };
   const targetIdentity: AdoptedDesignerIdentity = overrides.direction === 'adopted-to-cf'
     ? baseIdentity
     : { ownership: 'adopted', type: 'Form', name: 'Main', uuid: CFE_UUID, sourceUuid: BASE_UUID };
-  const sourceIdentity: AdoptedDesignerIdentity = overrides.direction === 'adopted-to-cf'
-    ? { ownership: 'adopted', type: 'Form', name: 'Main', uuid: CFE_UUID, sourceUuid: BASE_UUID }
+  const sourceIdentity: AdoptedDesignerIdentity = overrides.direction !== 'cf-to-adopted'
+    ? { ownership: 'adopted', type: 'Form', name: 'Main', uuid: overrides.direction === 'adopted-to-adopted' ? SOURCE_CFE_UUID : CFE_UUID, sourceUuid: BASE_UUID }
     : baseIdentity;
+  const targetAdopted = overrides.direction !== 'adopted-to-cf';
+  const sourceAdopted = overrides.direction !== 'cf-to-adopted';
   return {
-    direction: overrides.direction ?? 'cf-to-adopted',
-    targetXml: overrides.targetXml ?? form('<Button id="opaque-base-id" title="CFE main"/>', '<Button id="opaque-base-id" title="Old base snapshot"/>'),
-    sourceXml: overrides.sourceXml ?? form('<Button id="opaque-base-id" title="Source CF"/>'),
+    direction: (overrides.direction ?? 'cf-to-adopted') as AdoptedDesignerFormProjectionInput['direction'],
+    targetXml: overrides.targetXml ?? form('<Button id="opaque-base-id" title="CFE main"/>', targetAdopted ? '<Button id="opaque-base-id" title="Old base snapshot"/>' : undefined),
+    sourceXml: overrides.sourceXml ?? form('<Button id="opaque-base-id" title="Source CF"/>', sourceAdopted ? '<Button id="opaque-base-id" title="Old source snapshot"/>' : undefined),
     baseXml,
     targetIdentity,
     sourceIdentity,

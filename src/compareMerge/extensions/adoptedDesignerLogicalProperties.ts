@@ -93,8 +93,17 @@ export function projectAdoptedProperties(input: {
       addIssue(issues, side, ownerKey, name, `Неизвестный PropertyState=${state} у ${name}.`);
       continue;
     }
+    if (name === 'Comment' && !baseNode && state === undefined && isExactEmptyUnmarkedComment(overlayNode)) {
+      continue;
+    }
     replaceOrAppendMetadata(target, cloneWithNamespaces(overlayNode));
   }
+}
+
+function isExactEmptyUnmarkedComment(element: XmlElement): boolean {
+  return expandedName(element) === `{${MDCLASSES_NAMESPACE}}Comment`
+    && element.children.length === 0
+    && element.attributes.every((attribute) => attribute.name === 'xmlns' || attribute.name.startsWith('xmlns:'));
 }
 
 function replaceOrAppendMetadata(parent: XmlElement, replacement: XmlElement): void {

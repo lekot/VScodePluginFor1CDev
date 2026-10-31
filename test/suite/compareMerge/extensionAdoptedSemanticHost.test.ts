@@ -10,6 +10,7 @@ import {
   materializeExtensionAdoptedPatchBatch,
   prepareExtensionAdoptedSemanticRow,
 } from '../../../src/compareMerge/extensions/extensionAdoptedSemanticHost';
+import { analyzeExtensionTransfers } from '../../../src/compareMerge/extensions/extensionTransfer';
 import { createAdoptedDesignerTypeIdResolver } from '../../../src/compareMerge/extensions/adoptedDesignerTypeId';
 import { parseCfeObjectIdentity } from '../../../src/extensionSupport/cfeProject/ownership';
 import { buildXmlAddress, elementChildren, parseXmlDocument, type XmlElement } from '../../../src/compareMerge/xml/xmlDom';
@@ -34,6 +35,113 @@ const CONFIGURATION_UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CONFIGURATION_NAME = 'Adopted semantic host fixture';
 
 suite('Extension adopted semantic host seam (#335)', () => {
+  test('proves adopted-to-adopted granular semantics across separately captured exact bases', async () => withRoots(async (roots) => {
+    const sourceBasePath = path.join(roots.parent, 'source-base');
+    await fs.mkdir(sourceBasePath, { recursive: true });
+    const baseXml = descriptor({ uuid: BASE_UUID, comment: 'Base value' });
+    const targetXml = descriptor({ uuid: CFE_UUID, ownership: 'adopted', sourceUuid: BASE_UUID, comment: 'Target override' });
+    const sourceXml = descriptor({ uuid: LOCAL_CHILD_UUID, ownership: 'adopted', sourceUuid: BASE_UUID, comment: 'Source override' });
+    const targetObject = await indexedObject(roots.target, 'left', 'Catalog', 'Products', 'Catalogs/Products.xml', targetXml);
+    const sourceObject = await indexedObject(roots.source, 'right', 'Catalog', 'Products', 'Catalogs/Products.xml', sourceXml);
+    const targetBaseObject = await indexedObject(roots.base, 'left', 'Catalog', 'Products', 'Catalogs/Products.xml', baseXml);
+    const sourceBaseObject = await indexedObject(sourceBasePath, 'right', 'Catalog', 'Products', 'Catalogs/Products.xml', baseXml);
+    const targetRoot = await rootIndex(roots.target, 'target', 'left', 'cfe', [targetObject]);
+    const sourceRoot = await rootIndex(roots.source, 'source', 'right', 'cfe', [sourceObject]);
+    const targetBase = await rootIndex(roots.base, 'target-base', 'left', 'cf', [targetBaseObject]);
+    const sourceBase = await rootIndex(sourceBasePath, 'source-base', 'right', 'cf', [sourceBaseObject]);
+    const analysis = await analyzeExtensionTransfers({
+      target: targetRoot,
+      incoming: sourceRoot,
+      targetBase,
+      incomingBase: sourceBase,
+      targetBaseIsIncoming: false,
+      incomingBaseIsTarget: false,
+    });
+    const row = analysis.rows[0];
+    assert.ok(row);
+    if (!row) { return; }
+    assert.strictEqual(row.sameProvenBase, true, 'the analyzer recognizes the exact common base');
+    assert.strictEqual(String(row.semanticAction), 'adopted-cfe-semantic', 'granular semantics have a separate action from whole-row copy');
+
+    const uuidSnapshot = await createExtensionAdoptedUuidSnapshot({ targetRoot, incomingRoot: sourceRoot });
+    const prepared = await prepareExtensionAdoptedSemanticRow({ row, targetRoot, incomingRoot: sourceRoot, uuidSnapshot });
+
+    assert.strictEqual(prepared.applicable, true);
+    if (!prepared.applicable) { return; }
+    assert.strictEqual(String(prepared.direction), 'adopted-to-adopted');
+    assert.deepStrictEqual(prepared.blockers, []);
+    const artifact = prepared.artifacts.find((item) => item.kind === 'metadataXml');
+    assert.ok(artifact?.recipe.kind === 'adopted-descriptor');
+    if (!artifact || artifact.recipe.kind !== 'adopted-descriptor') { return; }
+    assert.strictEqual(String(artifact.recipe.direction), 'adopted-to-adopted');
+    const baseDescriptorWitnessSources = [...artifact.dependencyWitnesses, ...artifact.recipe.requiredWitnesses]
+        .filter((witness) => witness.relativePath === targetBaseObject.descriptorRelativePath
+          || witness.relativePath === sourceBaseObject.descriptorRelativePath)
+        .map((witness) => witness.sourceId);
+    assert.ok(baseDescriptorWitnessSources.includes('target-base') && baseDescriptorWitnessSources.includes('source-base'),
+      'both base descriptor paths remain raw execution witnesses');
+  }));
+
+  test('blocks only nested Form projection when separately captured base Form descriptor or body differs', async () => withRoots(async (roots) => {
+    const sourceBasePath = path.join(roots.parent, 'source-base');
+    await fs.mkdir(sourceBasePath, { recursive: true });
+    for (const mismatch of ['descriptor', 'body'] as const) {
+      const baseFormDescriptor = formDescriptor({ uuid: BASE_FORM_UUID });
+      const otherBaseFormDescriptor = mismatch === 'descriptor'
+        ? Buffer.from(baseFormDescriptor.toString('utf8').replace('</Properties>', '<Comment>Different descriptor</Comment></Properties>'), 'utf8')
+        : Buffer.from(baseFormDescriptor);
+      const baseFormBody = formXml('Base form');
+      const otherBaseFormBody = mismatch === 'body' ? formXml('Different base body') : Buffer.from(baseFormBody);
+      const targetObject = await indexedObject(roots.target, 'left', 'Catalog', 'Products', 'Catalogs/Products.xml',
+        descriptor({ uuid: CFE_UUID, ownership: 'adopted', sourceUuid: BASE_UUID, forms: ['Main'] }), [
+          { relativePath: 'Catalogs/Products/Forms/Main.xml', content: formDescriptor({ uuid: CFE_FORM_UUID, ownership: 'adopted', sourceUuid: BASE_FORM_UUID }) },
+          { relativePath: 'Catalogs/Products/Forms/Main/Ext/Form.xml', content: formXml('Target form') },
+        ]);
+      const sourceObject = await indexedObject(roots.source, 'right', 'Catalog', 'Products', 'Catalogs/Products.xml',
+        descriptor({ uuid: LOCAL_CHILD_UUID, ownership: 'adopted', sourceUuid: BASE_UUID, forms: ['Main'] }), [
+          { relativePath: 'Catalogs/Products/Forms/Main.xml', content: formDescriptor({ uuid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', ownership: 'adopted', sourceUuid: BASE_FORM_UUID }) },
+          { relativePath: 'Catalogs/Products/Forms/Main/Ext/Form.xml', content: formXml('Source form') },
+        ]);
+      const targetBaseObject = await indexedObject(roots.base, 'left', 'Catalog', 'Products', 'Catalogs/Products.xml',
+        descriptor({ uuid: BASE_UUID, forms: ['Main'] }), [
+          { relativePath: 'Catalogs/Products/Forms/Main.xml', content: baseFormDescriptor },
+          { relativePath: 'Catalogs/Products/Forms/Main/Ext/Form.xml', content: baseFormBody },
+        ]);
+      const sourceBaseObject = await indexedObject(sourceBasePath, 'right', 'Catalog', 'Products', 'Catalogs/Products.xml',
+        descriptor({ uuid: BASE_UUID, forms: ['Main'] }), [
+          { relativePath: 'Catalogs/Products/Forms/Main.xml', content: otherBaseFormDescriptor },
+          { relativePath: 'Catalogs/Products/Forms/Main/Ext/Form.xml', content: otherBaseFormBody },
+        ]);
+      const targetRoot = await rootIndex(roots.target, 'target', 'left', 'cfe', [targetObject]);
+      const sourceRoot = await rootIndex(roots.source, 'source', 'right', 'cfe', [sourceObject]);
+      const targetBase = await rootIndex(roots.base, 'target-base', 'left', 'cf', [targetBaseObject]);
+      const sourceBase = await rootIndex(sourceBasePath, 'source-base', 'right', 'cf', [sourceBaseObject]);
+      const analysis = await analyzeExtensionTransfers({
+        target: targetRoot,
+        incoming: sourceRoot,
+        targetBase,
+        incomingBase: sourceBase,
+        targetBaseIsIncoming: false,
+        incomingBaseIsTarget: false,
+      });
+      const row = analysis.rows[0];
+      assert.strictEqual(row?.sameProvenBase, true, `${mismatch}: root and owner descriptors still prove a common CF base`);
+      assert.strictEqual(row?.semanticAction, 'adopted-cfe-semantic');
+      const uuidSnapshot = await createExtensionAdoptedUuidSnapshot({ targetRoot, incomingRoot: sourceRoot });
+
+      const prepared = await prepareExtensionAdoptedSemanticRow({ row: row!, targetRoot, incomingRoot: sourceRoot, uuidSnapshot });
+
+      assert.strictEqual(prepared.applicable, true);
+      if (!prepared.applicable) { continue; }
+      assert.ok(prepared.artifacts.some((artifact) => artifact.kind === 'metadataXml'), `${mismatch}: root descriptor remains granular`);
+      assert.strictEqual(prepared.artifacts.some((artifact) => artifact.kind === 'formXml'), false,
+        `${mismatch}: no Form recipe may use a base whose nested identity bytes differ`);
+      assert.ok(prepared.blockers.some((blocker) => blocker.kind === 'formXml'
+        && /nested Form descriptor\/body hashes различаются/u.test(blocker.reason)),
+      `${mismatch}: nested difference remains a scoped Form blocker: ${JSON.stringify(prepared.blockers)}`);
+    }
+  }));
+
   test('uses compare-global child UUID allocation and encodes selected CF-to-CFE child edits with raw witnesses', async () => withRoots(async (roots) => {
     const baseXml = descriptor({ uuid: BASE_UUID, comment: 'Base root', children: [dimension('Base child')] });
     const sourceXml = descriptor({ uuid: BASE_UUID, comment: 'Source root', children: [dimension('Updated child')] });
@@ -305,7 +413,7 @@ suite('Extension adopted semantic host seam (#335)', () => {
   }));
 });
 
-async function withRoots(run: (roots: { target: string; source: string; base: string }) => Promise<void>): Promise<void> {
+async function withRoots(run: (roots: { parent: string; target: string; source: string; base: string }) => Promise<void>): Promise<void> {
   const roots = await makeRootDirectories();
   try { await run(roots); }
   finally { await fs.rm(roots.parent, { recursive: true, force: true }); }
