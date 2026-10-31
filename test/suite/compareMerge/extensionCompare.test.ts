@@ -980,7 +980,7 @@ suite('Extension-aware configuration compare', () => {
     }
   });
 
-  test('keeps reordered inherited metadata children read-only in CF→CFE semantic projection', async () => {
+  test('applies a selected inherited metadata child reorder in CF→CFE', async () => {
     await withTempRoot(async (tempRoot) => {
       const base = path.join(tempRoot, 'base-cf');
       const source = path.join(tempRoot, 'updated-cf');
@@ -1008,25 +1008,46 @@ suite('Extension-aware configuration compare', () => {
       await writeAdoptedProjectionConfiguration(base, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
       await writeAdoptedProjectionConfiguration(source, { name: 'Shared configuration', objects: [mdClassesFixture(sourceObject)] });
       await writeAdoptedProjectionConfiguration(target, { purpose: 'Customization', name: 'Shared configuration', objects: [mdClassesFixture(adoptedObject)] });
+      const baseDescriptorBefore = await fs.readFile(path.join(base, 'Catalogs/Products.xml'));
+      const sourceDescriptorBefore = await fs.readFile(path.join(source, 'Catalogs/Products.xml'));
 
-      const compare = await openCompare(tempRoot, target, source, { extensionBaseRoots: { left: base } });
+      const compare = await openCompare(tempRoot, target, source, { extensionBaseRoots: { left: base }, withRuntime: true });
       try {
         const ordered = collectNodes(compare.result.projection.root).filter((node) =>
-          (node.kind === 'metadataOrderMove' || node.kind === 'xmlOrder')
+          node.kind === 'metadataOrderMove' && node.mergeable === true
             && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Catalogs/Products.xml'),
         );
-        assert.ok(ordered.length > 0, `the inherited reorder should remain visible: ${JSON.stringify(collectNodes(compare.result.projection.root).map((node) => ({ label: node.label, kind: node.kind, target: node.mergeState?.targetFilePath, mergeable: node.mergeable })))}`);
-        assert.strictEqual(ordered.some((node) => node.kind === 'metadataOrderMove' && node.mergeable), false,
-          'an adopted descriptor encoder does not preserve the selected inherited ChildObjects order');
-        assert.ok(ordered.every((node) => node.mergeable === false),
-          'the order difference must remain a visible read-only decision');
+        assert.ok(ordered.length > 0,
+          `the inherited reorder should be selectable: ${JSON.stringify(collectNodes(compare.result.projection.root).map((node) => ({ label: node.label, kind: node.kind, target: node.mergeState?.targetFilePath, mergeable: node.mergeable })))}`);
+        const targetDescriptorBefore = await fs.readFile(path.join(target, 'Catalogs/Products.xml'));
+        const preview = await createPreview(compare.result, ordered.map((node) => node.id));
+        assert.ok(preview.items.some((item) => item.previewPath?.replace(/\\/gu, '/').endsWith('Catalogs/Products.xml')),
+          `the selected order must produce a target descriptor write: ${JSON.stringify(preview.items)}`);
+        const approved = compare.result.workspace.approvePreview(preview.previewId);
+        assert.strictEqual(approved.ok, true, JSON.stringify(approved));
+        const executed = await compare.result.workspace.executeApprovedPreview(preview.previewId, { destructiveConfirmed: true });
+        assert.strictEqual(executed.ok, true, JSON.stringify({ diagnostics: executed.diagnostics, failed: executed.result?.failed }));
+
+        const output = await readUtf8(target, 'Catalogs/Products.xml');
+        const snapshot = metadataChildSnapshot(output, 'Catalog');
+        assert.deepStrictEqual(snapshot.children.map((child) => child.name), ['Second', 'First']);
+        assert.strictEqual(snapshot.uuid, UUID.catalogLocal, 'the adopted owner keeps its target-local UUID');
+        assert.strictEqual(snapshot.belonging, 'Adopted');
+        assert.strictEqual(snapshot.anchorUuid, UUID.catalog, 'the adopted owner keeps its base anchor');
+        assert.deepStrictEqual(snapshot.children.map((child) => child.belonging), ['Adopted', 'Adopted']);
+        assert.deepStrictEqual(snapshot.children.map((child) => child.anchorUuid), [attributeUuid.get('Second'), attributeUuid.get('First')]);
+        assert.ok(snapshot.children.every((child) => child.uuid !== attributeUuid.get(child.name)),
+          'materialized borrowed children have local UUIDs distinct from their base anchors');
+        assert.deepStrictEqual(await fs.readFile(path.join(base, 'Catalogs/Products.xml')), baseDescriptorBefore);
+        assert.deepStrictEqual(await fs.readFile(path.join(source, 'Catalogs/Products.xml')), sourceDescriptorBefore);
+        assert.notDeepStrictEqual(await fs.readFile(path.join(target, 'Catalogs/Products.xml')), targetDescriptorBefore);
       } finally {
         await compare.dispose();
       }
     });
   });
 
-  test('keeps reordered inherited EnumValues read-only in CF→CFE semantic projection', async () => {
+  test('applies a selected inherited EnumValue reorder in CF→CFE', async () => {
     await withTempRoot(async (tempRoot) => {
       const base = path.join(tempRoot, 'base-cf');
       const source = path.join(tempRoot, 'updated-cf');
@@ -1054,18 +1075,39 @@ suite('Extension-aware configuration compare', () => {
       await writeAdoptedProjectionConfiguration(base, { name: 'Shared configuration', objects: [mdClassesFixture(baseObject)] });
       await writeAdoptedProjectionConfiguration(source, { name: 'Shared configuration', objects: [mdClassesFixture(sourceObject)] });
       await writeAdoptedProjectionConfiguration(target, { purpose: 'Customization', name: 'Shared configuration', objects: [mdClassesFixture(adoptedObject)] });
+      const baseDescriptorBefore = await fs.readFile(path.join(base, 'Enums/Statuses.xml'));
+      const sourceDescriptorBefore = await fs.readFile(path.join(source, 'Enums/Statuses.xml'));
 
-      const compare = await openCompare(tempRoot, target, source, { extensionBaseRoots: { left: base } });
+      const compare = await openCompare(tempRoot, target, source, { extensionBaseRoots: { left: base }, withRuntime: true });
       try {
         const ordered = collectNodes(compare.result.projection.root).filter((node) =>
-          (node.kind === 'metadataOrderMove' || node.kind === 'xmlOrder')
+          node.kind === 'metadataOrderMove' && node.mergeable === true
             && (node.mergeState?.targetFilePath ?? '').replace(/\\/gu, '/').endsWith('/Enums/Statuses.xml'),
         );
-        assert.ok(ordered.length > 0, `the inherited EnumValue reorder should remain visible: ${JSON.stringify(collectNodes(compare.result.projection.root).map((node) => ({ label: node.label, kind: node.kind, target: node.mergeState?.targetFilePath, mergeable: node.mergeable })))}`);
-        assert.strictEqual(ordered.some((node) => node.kind === 'metadataOrderMove' && node.mergeable), false,
-          'the adopted metadata capability must also cover the Enum-specific order projection');
-        assert.ok(ordered.every((node) => node.mergeable === false),
-          'the Enum order difference must remain a visible read-only decision');
+        assert.ok(ordered.length > 0,
+          `the inherited EnumValue reorder should be selectable: ${JSON.stringify(collectNodes(compare.result.projection.root).map((node) => ({ label: node.label, kind: node.kind, target: node.mergeState?.targetFilePath, mergeable: node.mergeable })))}`);
+        const targetDescriptorBefore = await fs.readFile(path.join(target, 'Enums/Statuses.xml'));
+        const preview = await createPreview(compare.result, ordered.map((node) => node.id));
+        assert.ok(preview.items.some((item) => item.previewPath?.replace(/\\/gu, '/').endsWith('Enums/Statuses.xml')),
+          `the selected EnumValue order must produce a target descriptor write: ${JSON.stringify(preview.items)}`);
+        const approved = compare.result.workspace.approvePreview(preview.previewId);
+        assert.strictEqual(approved.ok, true, JSON.stringify(approved));
+        const executed = await compare.result.workspace.executeApprovedPreview(preview.previewId, { destructiveConfirmed: true });
+        assert.strictEqual(executed.ok, true, JSON.stringify({ diagnostics: executed.diagnostics, failed: executed.result?.failed }));
+
+        const output = await readUtf8(target, 'Enums/Statuses.xml');
+        const snapshot = metadataChildSnapshot(output, 'Enum');
+        assert.deepStrictEqual(snapshot.children.map((child) => child.name), ['Second', 'First']);
+        assert.strictEqual(snapshot.uuid, UUID.catalogLocal, 'the adopted Enum keeps its target-local UUID');
+        assert.strictEqual(snapshot.belonging, 'Adopted');
+        assert.strictEqual(snapshot.anchorUuid, UUID.catalog, 'the adopted Enum keeps its base anchor');
+        assert.deepStrictEqual(snapshot.children.map((child) => child.belonging), ['Adopted', 'Adopted']);
+        assert.deepStrictEqual(snapshot.children.map((child) => child.anchorUuid), [values.get('Second'), values.get('First')]);
+        assert.ok(snapshot.children.every((child) => child.uuid !== values.get(child.name)),
+          'materialized EnumValues have local UUIDs distinct from their base anchors');
+        assert.deepStrictEqual(await fs.readFile(path.join(base, 'Enums/Statuses.xml')), baseDescriptorBefore);
+        assert.deepStrictEqual(await fs.readFile(path.join(source, 'Enums/Statuses.xml')), sourceDescriptorBefore);
+        assert.notDeepStrictEqual(await fs.readFile(path.join(target, 'Enums/Statuses.xml')), targetDescriptorBefore);
       } finally {
         await compare.dispose();
       }
@@ -1226,7 +1268,7 @@ suite('Extension-aware configuration compare', () => {
     });
   });
 
-  test('keeps borrowed Role Rights read-only across CF↔CFE boundaries in both directions', async () => {
+  test('keeps a borrowed Role Rights sidecar read-only without an unambiguous Extended marker', async () => {
     await withTempRoot(async (tempRoot) => {
       const base = path.join(tempRoot, 'rights-old-base');
       const current = path.join(tempRoot, 'rights-current-cf');
@@ -1262,7 +1304,8 @@ suite('Extension-aware configuration compare', () => {
         const blockers = collectNodes(row!).filter((node) => node.kind === 'roleRightsProjectionBlocker');
         assert.strictEqual(blockers.length, 1, 'the changed Rights sidecar is represented by a scoped blocker');
         assert.strictEqual(blockers[0]!.mergeable, false);
-        assert.match(blockers[0]!.mergeState?.reason ?? '', /inherit\/allow\/deny/u);
+        assert.strictEqual(blockers[0]!.mergeState?.reason,
+          'target adopted Rights.xml присутствует без однозначного Rights=Extended PropertyState.');
         assert.strictEqual(collectNodes(row!).some((node) => node.kind === 'xmlProperty'
           && node.payloadRef?.includes('rights-right') && node.mergeable), false,
         'the raw Role Rights adapter never emits executable right patches for a borrowed owner');
@@ -1283,6 +1326,8 @@ suite('Extension-aware configuration compare', () => {
         const blockers = collectNodes(row!).filter((node) => node.kind === 'roleRightsProjectionBlocker');
         assert.strictEqual(blockers.length, 1);
         assert.strictEqual(blockers[0]!.mergeable, false);
+        assert.strictEqual(blockers[0]!.mergeState?.reason,
+          'source adopted Rights.xml присутствует без однозначного Rights=Extended PropertyState.');
         assert.strictEqual(collectNodes(row!).some((node) => node.kind === 'xmlProperty'
           && node.payloadRef?.includes('rights-right') && node.mergeable), false);
       } finally {
@@ -3478,6 +3523,42 @@ function assertBlocked(result: ConfigurationCompareResult, context: string): voi
 
 function collectNodes(root: CompareTreeNode): CompareTreeNode[] {
   return [root, ...root.children.flatMap(collectNodes)];
+}
+
+function metadataChildSnapshot(xml: string, ownerType: string): {
+  readonly uuid?: string;
+  readonly belonging?: string;
+  readonly anchorUuid?: string;
+  readonly children: readonly {
+    readonly name: string;
+    readonly uuid?: string;
+    readonly belonging?: string;
+    readonly anchorUuid?: string;
+  }[];
+} {
+  const owner = elementChildren(parseXmlDocument(xml).root).find((element) => element.localName === ownerType);
+  assert.ok(owner, `Expected ${ownerType} in metadata descriptor`);
+  const readProperty = (element: XmlElement | undefined, name: string): string | undefined => {
+    if (!element) {return undefined;}
+    const property = elementChildren(element).find((child) => child.localName === name);
+    return property ? textContent(property).trim() : undefined;
+  };
+  const ownerProperties = elementChildren(owner!).find((element) => element.localName === 'Properties');
+  const childObjects = elementChildren(owner!).find((element) => element.localName === 'ChildObjects');
+  return {
+    uuid: owner!.attributes.find((attribute) => attribute.localName === 'uuid')?.value,
+    belonging: readProperty(ownerProperties, 'ObjectBelonging'),
+    anchorUuid: readProperty(ownerProperties, 'ExtendedConfigurationObject'),
+    children: (childObjects ? elementChildren(childObjects) : []).map((child) => {
+      const properties = elementChildren(child).find((element) => element.localName === 'Properties');
+      return {
+        name: readProperty(properties, 'Name') ?? '',
+        uuid: child.attributes.find((attribute) => attribute.localName === 'uuid')?.value,
+        belonging: readProperty(properties, 'ObjectBelonging'),
+        anchorUuid: readProperty(properties, 'ExtendedConfigurationObject'),
+      };
+    }),
+  };
 }
 
 function registryDescriptor(type: ExtensionCompareRootType) {

@@ -81,6 +81,77 @@ suite('Adopted Designer descriptor projection (#335)', () => {
     assert.match(xml, /<xr:GeneratedType name="TargetCatalogRef" uuid="11111111-1111-4111-8111-111111111111"\/>/u);
   });
 
+  test('treats only an exact unmarked empty MD Comment as absent when the base child has no Comment', () => {
+    const baseChildWithoutComment = `<Attribute uuid="${CHILD_UUID}"><Properties><Name>Field</Name></Properties></Attribute>`;
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [baseChildWithoutComment] });
+    const cases = [
+      { label: 'empty MD Comment', comment: '<Comment/>', state: undefined, expected: 'absent' },
+      { label: 'empty MD Comment with an allowed namespace declaration', comment: '<Comment xmlns="http://v8.1c.ru/8.3/MDClasses"/>', state: undefined, expected: 'absent' },
+      { label: 'whitespace Comment', comment: '<Comment> </Comment>', state: undefined, expected: 'preserved' },
+      { label: 'non-empty Comment', comment: '<Comment>explicit</Comment>', state: undefined, expected: 'preserved' },
+      { label: 'entity text Comment', comment: '<Comment>&#x41;</Comment>', state: undefined, expected: 'preserved' },
+      { label: 'empty Comment with an opaque attribute', comment: '<Comment marker="opaque"/>', state: undefined, expected: 'preserved' },
+      { label: 'empty Comment explicitly marked Notify', comment: '<Comment/>', state: 'Notify', expected: 'preserved' },
+      { label: 'empty Comment with an invalid PropertyState', comment: '<Comment/>', state: 'Unknown', expected: 'invalid' },
+      { label: 'foreign empty Comment', comment: '<vendor:Comment/>', state: undefined, expected: 'foreign' },
+    ] as const;
+
+    for (const item of cases) {
+      const propertyState = item.state
+        ? `<InternalInfo><xr:PropertyState><xr:Property>Comment</xr:Property><xr:State>${item.state}</xr:State></xr:PropertyState></InternalInfo>`
+        : '';
+      const overlay = `<Attribute uuid="${CHILD_LOCAL_UUID}">${propertyState}<Properties><Name>Field</Name>${item.comment}<ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>${CHILD_UUID}</ExtendedConfigurationObject></Properties></Attribute>`;
+      const input = makeInput({
+        direction: 'cf-to-adopted',
+        baseXml,
+        targetXml: descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [overlay] }),
+        sourceXml: baseXml,
+      });
+
+      const projection = projectAdoptedDesignerPair(input);
+
+      assert.strictEqual(projection.ok, true, `${item.label}: ${projection.ok ? '' : projection.reason}`);
+      if (!projection.ok) { continue; }
+      const projectedChild = stableElement(metadataChildElement(projection.targetXml, 'Attribute', CHILD_UUID));
+      if (item.expected === 'absent') {
+        assert.doesNotMatch(projectedChild, /Comment\[/u, `${item.label} must not invent a logical Comment`);
+      } else if (item.expected === 'preserved') {
+        assert.match(projectedChild, /Comment\[/u, `${item.label} remains a logical property`);
+      } else if (item.expected === 'foreign') {
+        assert.doesNotMatch(projectedChild, /Comment\[/u, 'a foreign namespace lookalike is not a logical MD Comment');
+        assert.ok(projection.issues.some((issue) => /Comment.*namespace|namespace.*Comment/u.test(issue.reason)),
+          'a foreign namespace lookalike remains reported');
+      } else {
+        assert.doesNotMatch(projectedChild, /Comment\[/u, 'malformed state is not treated as a normalized empty Comment');
+        assert.ok(projection.issues.some((issue) => /PropertyState.*malformed|unknown state/iu.test(issue.reason)),
+          'the invalid PropertyState guard remains visible');
+      }
+      if (item.label === 'whitespace Comment') { assert.match(projectedChild, /Comment\[\]T\(" "\)/u); }
+      if (item.label === 'non-empty Comment') { assert.match(projectedChild, /Comment\[\]T\("explicit"\)/u); }
+      if (item.label === 'entity text Comment') { assert.match(projectedChild, /Comment\[\]T\("A"\)/u); }
+      if (item.label === 'empty Comment with an opaque attribute') { assert.match(projectedChild, /Comment\[marker="opaque"\]/u); }
+      if (item.label === 'empty Comment explicitly marked Notify') { assert.match(projectedChild, /Comment\[/u); }
+    }
+
+    const baseWithComment = descriptor({
+      uuid: BASE_UUID,
+      childObjects: [`<Attribute uuid="${CHILD_UUID}"><Properties><Name>Field</Name><Comment>Base value</Comment></Properties></Attribute>`],
+    });
+    const emptyOverlay = `<Attribute uuid="${CHILD_LOCAL_UUID}"><Properties><Name>Field</Name><Comment/><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>${CHILD_UUID}</ExtendedConfigurationObject></Properties></Attribute>`;
+    const presentBaseProjection = projectAdoptedDesignerPair(makeInput({
+      direction: 'cf-to-adopted',
+      baseXml: baseWithComment,
+      targetXml: descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [emptyOverlay] }),
+      sourceXml: baseWithComment,
+    }));
+    assert.strictEqual(presentBaseProjection.ok, true,
+      presentBaseProjection.ok ? undefined : presentBaseProjection.reason);
+    if (presentBaseProjection.ok) {
+      assert.match(stableElement(metadataChildElement(presentBaseProjection.targetXml, 'Attribute', CHILD_UUID)), /Comment\[/u,
+        'an existing base Comment retains the established overlay semantics');
+    }
+  });
+
   test('rejects adopted-to-adopted inputs unless both sides share the exact base anchor', () => {
     const input = makeInput({ direction: 'adopted-to-adopted' });
     const wrongSourceAnchor = projectAdoptedDesignerPair({
@@ -583,6 +654,144 @@ suite('Adopted Designer descriptor projection (#335)', () => {
       assert.match(stableElement(shell!), /Comment\[\]T\("Base Order/u);
       assert.match(stableElement(shell!), /ObjectBelonging\[\]T\("Adopted"\)/u);
     }
+  });
+
+  test('materializes a full root-kind reorder into empty and missing ChildObjects with exact borrowed identities', () => {
+    const baseChildren = [
+      orderMetadataChild('Attribute', ORDER_A_UUID, 'OrderA').replace(/<Comment>Base OrderA<\/Comment>/u, ''),
+      orderMetadataChild('Attribute', ORDER_B_UUID, 'OrderB').replace(/<Comment>Base OrderB<\/Comment>/u, ''),
+    ];
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: baseChildren });
+    const sourceXml = descriptor({ uuid: BASE_UUID, childObjects: [...baseChildren].reverse() });
+    const targetVariants = [
+      { label: 'empty', targetXml: descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [] }) },
+      {
+        label: 'missing',
+        targetXml: Buffer.from(descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [] }).toString('utf8')
+          .replace('<ChildObjects></ChildObjects>', '')),
+      },
+    ] as const;
+
+    for (const variant of targetVariants) {
+      const input = makeInput({ direction: 'cf-to-adopted', baseXml, sourceXml, targetXml: variant.targetXml });
+      const requirements = collectAdoptedDesignerChildUuidRequirements(input);
+      assert.strictEqual(requirements.ok, true, `${variant.label}: ${requirements.ok ? '' : requirements.reason}`);
+      if (!requirements.ok) { continue; }
+      const localByAnchor = new Map([[ORDER_A_UUID, ORDER_LOCAL_A_UUID], [ORDER_B_UUID, ORDER_LOCAL_B_UUID]]);
+      const allocations = new Map(requirements.requirements.map((requirement) => [
+        requirement.mapKey,
+        localByAnchor.get(requirement.anchorUuid)!,
+      ]));
+      const baseBefore = Buffer.from(baseXml);
+      const sourceBefore = Buffer.from(sourceXml);
+      const projection = projectAdoptedDesignerPair({ ...input, adoptedChildUuidByAnchor: allocations });
+      assert.strictEqual(projection.ok, true, `${variant.label}: ${projection.ok ? '' : projection.reason}`);
+      if (!projection.ok) { continue; }
+
+      const materialized = materializeAdoptedDesignerTarget({
+        ...input,
+        adoptedChildUuidByAnchor: allocations,
+        mergedLogicalTarget: projection.sourceXml,
+      });
+
+      assert.strictEqual(materialized.ok, true, `${variant.label}: ${materialized.ok ? '' : materialized.reason}`);
+      if (!materialized.ok) { continue; }
+      assert.deepStrictEqual(physicalMetadataOrder(materialized.content, 'Attribute').map((child) => child.identity), [ORDER_B_UUID, ORDER_A_UUID], variant.label);
+      assert.deepStrictEqual(physicalMetadataOrder(materialized.content, 'Attribute').map((child) => child.uuid), [ORDER_LOCAL_B_UUID, ORDER_LOCAL_A_UUID], variant.label);
+      const outputRoot = metadataRootForTest(materialized.content);
+      const rootProperties = direct(outputRoot, 'Properties')[0]!;
+      assert.strictEqual(outputRoot.attributes.find((attribute) => attribute.name === 'uuid')?.value, CFE_UUID, variant.label);
+      assert.strictEqual(textContent(direct(rootProperties, 'ObjectBelonging')[0]!), 'Adopted', variant.label);
+      assert.strictEqual(textContent(direct(rootProperties, 'ExtendedConfigurationObject')[0]!), BASE_UUID, variant.label);
+      assert.strictEqual(materialized.content.toString('utf8').match(/<ObjectBelonging>Adopted<\/ObjectBelonging>/gu)?.length, 3, variant.label);
+      assert.strictEqual(materialized.content.toString('utf8').match(/<ExtendedConfigurationObject>/gu)?.length, 3, variant.label);
+      assert.deepStrictEqual(baseXml, baseBefore, `${variant.label}: the exact base bytes remain unchanged`);
+      assert.deepStrictEqual(sourceXml, sourceBefore, `${variant.label}: the source bytes remain unchanged`);
+    }
+  });
+
+  test('materializes nested full order from a missing nested ChildObjects while preserving another kind', () => {
+    const nestedBase = (uuid: string, name: string) =>
+      orderMetadataChild('Attribute', uuid, name).replace(new RegExp(`<Comment>Base ${name}<\\/Comment>`, 'u'), '');
+    const baseTable = orderMetadataChild('TabularSection', ORDER_TABULAR_UUID, 'OrderLines', [
+      nestedBase(ORDER_NESTED_X_UUID, 'NestedX'),
+      nestedBase(ORDER_NESTED_Y_UUID, 'NestedY'),
+      nestedBase(ORDER_NESTED_Z_UUID, 'NestedZ'),
+    ]).replace(/<Comment>Base OrderLines<\/Comment>/u, '');
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [baseTable] });
+    const ownTargetUuid = '27272727-2727-4272-8272-272727272727';
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [
+      orderOwnMetadataChild('Attribute', ownTargetUuid, 'TargetOnlyAttribute'),
+      adoptedOrderMetadataChild('TabularSection', ORDER_LOCAL_TABULAR_UUID, ORDER_TABULAR_UUID, 'OrderLines'),
+      '<vendor:Opaque marker="keep-target">opaque payload</vendor:Opaque>',
+    ] });
+    const input = makeInput({ direction: 'cf-to-adopted', baseXml, targetXml, sourceXml: baseXml });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const selected = reorderMetadataChildren(projection.targetXml, 'Attribute', [
+      ORDER_NESTED_Z_UUID, ORDER_NESTED_X_UUID, ORDER_NESTED_Y_UUID,
+    ], ORDER_TABULAR_UUID);
+    const requirements = collectAdoptedDesignerChildUuidRequirements(input);
+    assert.strictEqual(requirements.ok, true, requirements.ok ? undefined : requirements.reason);
+    if (!requirements.ok) { return; }
+    const localByAnchor = new Map([
+      [ORDER_NESTED_X_UUID, ORDER_LOCAL_NESTED_X_UUID],
+      [ORDER_NESTED_Y_UUID, ORDER_LOCAL_NESTED_Y_UUID],
+      [ORDER_NESTED_Z_UUID, ORDER_LOCAL_NESTED_Z_UUID],
+    ]);
+    const allocations = new Map(requirements.requirements.map((requirement) => [
+      requirement.mapKey,
+      localByAnchor.get(requirement.anchorUuid) ?? '28282828-2828-4282-8282-282828282828',
+    ]));
+
+    const materialized = materializeAdoptedDesignerTarget({
+      ...input,
+      adoptedChildUuidByAnchor: allocations,
+      mergedLogicalTarget: selected,
+    });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(physicalMetadataOrder(materialized.content, 'Attribute', ORDER_LOCAL_TABULAR_UUID).map((child) => child.identity), [
+      ORDER_NESTED_Z_UUID, ORDER_NESTED_X_UUID, ORDER_NESTED_Y_UUID,
+    ]);
+    assert.deepStrictEqual(physicalMetadataOrder(materialized.content, 'Attribute', ORDER_LOCAL_TABULAR_UUID).map((child) => child.uuid), [
+      ORDER_LOCAL_NESTED_Z_UUID, ORDER_LOCAL_NESTED_X_UUID, ORDER_LOCAL_NESTED_Y_UUID,
+    ]);
+    assert.deepStrictEqual(physicalMetadataOrder(materialized.content, 'Attribute').map((child) => child.uuid), [ownTargetUuid]);
+    assert.deepStrictEqual(childObjectElementNames(materialized.content), ['Attribute', 'TabularSection', 'Opaque']);
+    assert.match(materialized.content.toString('utf8'), /<vendor:Opaque marker="keep-target">opaque payload<\/vendor:Opaque>/u);
+  });
+
+  test('does not confuse a required empty Comment shell with a selected scalar on a new borrowed child', () => {
+    const baseChild = `<Attribute uuid="${ORDER_A_UUID}"><Properties><Name>Amount</Name><Type><v8:Type>xs:string</v8:Type></Type></Properties></Attribute>`;
+    const selectedChild = `<Attribute uuid="${ORDER_A_UUID}"><Properties><Name>Amount</Name><Type><v8:Type>xs:decimal</v8:Type></Type></Properties></Attribute>`;
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [baseChild] });
+    const sourceXml = descriptor({ uuid: BASE_UUID, childObjects: [selectedChild] });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [] });
+    const input = makeInput({ direction: 'cf-to-adopted', baseXml, sourceXml, targetXml });
+    const requirements = collectAdoptedDesignerChildUuidRequirements(input);
+    assert.strictEqual(requirements.ok, true, requirements.ok ? undefined : requirements.reason);
+    if (!requirements.ok) { return; }
+    const allocations = new Map(requirements.requirements.map((requirement) => [requirement.mapKey, ORDER_LOCAL_A_UUID]));
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+
+    const materialized = materializeAdoptedDesignerTarget({
+      ...input,
+      adoptedChildUuidByAnchor: allocations,
+      mergedLogicalTarget: projection.sourceXml,
+    });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    const output = materialized.content.toString('utf8');
+    assert.match(output, new RegExp(`<Attribute uuid="${ORDER_LOCAL_A_UUID}"`, 'u'));
+    assert.match(output, /<ObjectBelonging>Adopted<\/ObjectBelonging>/u);
+    assert.match(output, new RegExp(`<ExtendedConfigurationObject>${ORDER_A_UUID}</ExtendedConfigurationObject>`, 'u'));
+    assert.match(output, /<v8:Type>xs:decimal<\/v8:Type>/u);
   });
 
   test('inserts a newly completed metadata kind before Template and Command schema neighbors', () => {
@@ -2020,6 +2229,31 @@ function metadataChildUuids(xml: Buffer, kind: string, ownerUuid?: string): stri
     : [];
 }
 
+function physicalMetadataOrder(
+  xml: Buffer,
+  kind: string,
+  ownerUuid?: string,
+): { readonly identity: string; readonly uuid?: string }[] {
+  const root = metadataRootForTest(xml);
+  const rootContainer = elementChildren(root).find((child) => child.localName === 'ChildObjects');
+  const owner = ownerUuid && rootContainer
+    ? elementChildren(rootContainer).find((child) => child.attributes.some((attribute) => attribute.name === 'uuid'
+      && attribute.value.toLowerCase() === ownerUuid.toLowerCase()))
+    : undefined;
+  const container = owner
+    ? elementChildren(owner).find((child) => child.localName === 'ChildObjects')
+    : rootContainer;
+  if (!container) { return []; }
+  return elementChildren(container).filter((child) => child.localName === kind).map((child) => {
+    const properties = elementChildren(child).find((element) => element.localName === 'Properties');
+    const anchor = properties && elementChildren(properties).find((element) => element.localName === 'ExtendedConfigurationObject');
+    return {
+      identity: anchor ? textContent(anchor).trim() : child.attributes.find((attribute) => attribute.name === 'uuid')?.value ?? '',
+      uuid: child.attributes.find((attribute) => attribute.name === 'uuid')?.value,
+    };
+  });
+}
+
 function physicalMetadataKindOrder(xml: Buffer, kind: string, ownerUuid?: string): string[] {
   const root = metadataRootForTest(xml);
   const owner = ownerUuid
@@ -2094,6 +2328,16 @@ function childObjectNodes(xml: Buffer): string[] {
   const root = elementChildren(document.root)[0];
   const childObjects = root && elementChildren(root).find((child) => child.localName === 'ChildObjects');
   return childObjects ? elementChildren(childObjects).map(stableElement) : [];
+}
+
+function metadataChildElement(xml: Buffer, kind: string, uuid: string): import('../../../src/compareMerge/xml/xmlDom').XmlElement {
+  const document = parseXmlDocument(xml.toString('utf8'));
+  const root = elementChildren(document.root).find((element) => element.localName === 'Catalog');
+  const container = root && elementChildren(root).find((element) => element.localName === 'ChildObjects');
+  const child = container && elementChildren(container).find((element) => element.localName === kind
+    && element.attributes.some((attribute) => attribute.name === 'uuid' && attribute.value === uuid));
+  assert.ok(child, `Expected ChildObjects/${kind} with UUID ${uuid}`);
+  return child!;
 }
 
 function generatedTypeReference(options: {
