@@ -85,6 +85,10 @@ export interface ExtensionSemanticSelection {
   readonly adoptedOwnForm?: import('./extensionAdoptedOwnFormHost').CapturedAdoptedOwnFormSelection;
   /** Captured rights transition proof; the Rights bridge owns its producer/materializer. */
   readonly adoptedRights?: import('./extensionAdoptedRightsBridge').CapturedAdoptedRightsRecipe;
+  /** Canonical metadata root QNs affected by this selected adopted Rights patch scope. */
+  readonly requiredCfeDeclarationReferences?: readonly string[];
+  /** Captured adopted Template descriptor/body bundle. */
+  readonly adoptedTemplateBundle?: import('./extensionAdoptedTemplateBridge').CapturedAdoptedTemplateBundle;
   /** Captured CFE↔CFE TemplateType/body transition; separate from adopted descriptor translation. */
   readonly linkedTemplateTypeTransition?: import('../linkedDesignerTypes').LinkedTemplateTypeTransition;
 }
