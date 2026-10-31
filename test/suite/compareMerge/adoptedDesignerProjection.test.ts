@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { createHash } from 'crypto';
-import { elementChildren, parseXmlDocument } from '../../../src/compareMerge/xml/xmlDom';
+import { elementChildren, parseXmlDocument, textContent } from '../../../src/compareMerge/xml/xmlDom';
 import { direct, stableElement } from '../../../src/compareMerge/extensions/adoptedDesignerXml';
 
 import {
@@ -56,7 +56,7 @@ suite('Adopted Designer descriptor projection (#335)', () => {
     if (!materialized.ok) { return; }
     const xml = materialized.content.toString('utf8');
     assert.match(xml, new RegExp(`<Catalog uuid="${CFE_UUID}"`));
-    assert.match(xml, new RegExp(`<ExtendedConfigurationObject>${BASE_UUID}<\/ExtendedConfigurationObject>`));
+    assert.match(xml, new RegExp(`<ExtendedConfigurationObject>${BASE_UUID}</ExtendedConfigurationObject>`));
     assert.match(xml, /<Comment(?:\s[^>]*)?>Selected target value<\/Comment>/u);
     assert.match(xml, /<ExtensionOnly(?:\s[^>]*)?>Target-only change<\/ExtensionOnly>/u);
     assert.doesNotMatch(xml, /Source-only change/u);
@@ -121,7 +121,7 @@ suite('Adopted Designer descriptor projection (#335)', () => {
     if (!materialized.ok) { return; }
     const xml = materialized.content.toString('utf8');
     assert.match(xml, new RegExp(`<Dimension uuid="${NEW_CHILD_LOCAL_UUID}"`));
-    assert.match(xml, new RegExp(`<ExtendedConfigurationObject>${CHILD_UUID}<\/ExtendedConfigurationObject>`));
+    assert.match(xml, new RegExp(`<ExtendedConfigurationObject>${CHILD_UUID}</ExtendedConfigurationObject>`));
     assert.match(xml, new RegExp(`<Catalog uuid="${CFE_UUID}"`));
     assert.match(xml, /Selected borrowed child/u);
   });
@@ -244,12 +244,362 @@ suite('Adopted Designer descriptor projection (#335)', () => {
     assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
     if (!projection.ok) { return; }
     assert.deepStrictEqual(projection.issues, []);
-    assert.match(projection.targetXml.toString('utf8'), /<Form>ManagedForm<\/Form>/u);
+    assert.deepStrictEqual(formRegistrationNames(projection.targetXml), ['ManagedForm']);
 
     const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: projection.targetXml });
     assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
     if (!materialized.ok) { return; }
-    assert.match(materialized.content.toString('utf8'), /<Form>ManagedForm<\/Form>/u);
+    assert.deepStrictEqual(formRegistrationNames(materialized.content), ['ManagedForm']);
+  });
+
+  test('projects allowlisted Form registrations independently on both sides in every direction', () => {
+    const inherited = ['BaseMain', 'BaseArchive'];
+    for (const direction of ['adopted-to-cf', 'cf-to-adopted', 'adopted-to-adopted'] as const) {
+      const targetAdopted = direction !== 'adopted-to-cf';
+      const sourceAdopted = direction !== 'cf-to-adopted';
+      const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(inherited) });
+      const targetXml = descriptor({
+        uuid: targetAdopted ? CFE_UUID : BASE_UUID,
+        adopted: targetAdopted,
+        comment: 'Target-only comment',
+        childObjects: [...(targetAdopted ? [] : formRegistrations(inherited)), ...formRegistrations(['TargetOnly', 'TargetUnapproved'])],
+      });
+      const sourceXml = descriptor({
+        uuid: sourceAdopted ? (direction === 'adopted-to-adopted' ? SOURCE_CFE_UUID : CFE_UUID) : BASE_UUID,
+        adopted: sourceAdopted,
+        childObjects: [...(sourceAdopted ? [] : formRegistrations(inherited)), ...formRegistrations(['SourceOnly', 'SourceUnapproved'])],
+      });
+      const input = withOwnFormRegistrations(
+        makeInput({ direction, baseXml, targetXml, sourceXml }),
+        { target: ['TargetOnly'], source: ['SourceOnly'] },
+      );
+
+      const projection = projectAdoptedDesignerPair(input);
+
+      assert.strictEqual(projection.ok, true, `${direction}: ${projection.ok ? '' : projection.reason}`);
+      if (!projection.ok) { continue; }
+      assert.deepStrictEqual(formRegistrationNames(projection.targetXml), [...inherited, 'TargetOnly', 'TargetUnapproved'], `${direction} target`);
+      assert.deepStrictEqual(formRegistrationNames(projection.sourceXml), [...inherited, 'SourceOnly', 'SourceUnapproved'], `${direction} source`);
+      assert.ok(projection.issues.some((issue) => /TargetUnapproved/u.test(issue.reason)), `${direction} target unapproved registration is scoped read-only`);
+      assert.ok(projection.issues.some((issue) => /SourceUnapproved/u.test(issue.reason)), `${direction} source unapproved registration is scoped read-only`);
+      assert.match(projection.targetXml.toString('utf8'), /Target-only comment/u, `${direction} keeps unrelated target scalar changes`);
+    }
+  });
+
+  test('keeps an old-base Form absent from the current own CF source as scoped read-only', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['RemovedFromCurrentCF']) });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [] });
+    const sourceXml = descriptor({ uuid: BASE_UUID, childObjects: [] });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'cf-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: [], source: [],
+    });
+
+    const projection = projectAdoptedDesignerPair(input);
+
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(projection.sourceXml), [],
+      'an own CF source uses its captured registrations and must not inherit an absent base Form');
+    assert.ok(projection.issues.some((issue) => /RemovedFromCurrentCF|base Form.*absent|absent.*base Form/iu.test(issue.reason)),
+      'the missing own registration is reported as scoped read-only');
+    assert.deepStrictEqual(formRegistrationNames(projection.targetXml), ['RemovedFromCurrentCF'],
+      'the adopted target still inherits the captured base Form');
+  });
+
+  test('keeps an unapproved source-only Form visible but blocks copying it without a package allowlist', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain']) });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [] });
+    const sourceXml = descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, childObjects: formRegistrations(['UnapprovedSourceForm']) });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: [], source: [],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(projection.sourceXml), ['BaseMain', 'UnapprovedSourceForm']);
+    assert.ok(projection.issues.some((issue) => /UnapprovedSourceForm/u.test(issue.reason)));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: projection.sourceXml });
+
+    assert.strictEqual(materialized.ok, false, 'visibility of a scoped read-only source registration does not authorize copying it');
+    if (!materialized.ok) { assert.match(materialized.reason, /allowlist|registration|Form/iu); }
+  });
+
+  test('keeps a target-only unapproved Form through an unrelated adopted-to-adopted scalar merge', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain']) });
+    const targetXml = descriptor({
+      uuid: CFE_UUID, adopted: true, comment: 'Old target comment', childObjects: formRegistrations(['TargetOnly']),
+    });
+    const sourceXml = descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, comment: 'Source comment', childObjects: [] });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: [], source: [],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(projection.targetXml), ['BaseMain', 'TargetOnly']);
+    assert.ok(projection.issues.some((issue) => /TargetOnly/u.test(issue.reason)));
+    const mergedLogicalTarget = Buffer.from(projection.targetXml.toString('utf8').replace('Old target comment', 'Selected comment'));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(materialized.content), ['TargetOnly']);
+    assert.match(materialized.content.toString('utf8'), /Selected comment/u);
+  });
+
+  test('preserves an unapproved target-only CF Form during unrelated adopted-to-CF scalar materialization', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain']) });
+    const targetXml = descriptor({
+      uuid: BASE_UUID, comment: 'Old target comment', childObjects: formRegistrations(['BaseMain', 'CfNewerForm']),
+    });
+    const sourceXml = descriptor({ uuid: CFE_UUID, adopted: true, comment: 'Source comment', childObjects: [] });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-cf', baseXml, targetXml, sourceXml }), {
+      target: [], source: [],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(projection.targetXml), ['BaseMain', 'CfNewerForm']);
+    assert.ok(projection.issues.some((issue) => /CfNewerForm/u.test(issue.reason)));
+    const selected = Buffer.from(projection.targetXml.toString('utf8').replace('Old target comment', 'Selected target comment'));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: selected });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(materialized.content), ['BaseMain', 'CfNewerForm']);
+    assert.match(materialized.content.toString('utf8'), /Selected target comment/u);
+  });
+
+  test('preserves duplicate, malformed, and foreign inherited-name Forms in the own CF target', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['LegacyForm']) });
+    const targetXml = descriptor({
+      uuid: BASE_UUID,
+      comment: 'Old target comment',
+      childObjects: [
+        '<Template>BeforeForms</Template>',
+        '<Form>LegacyForm</Form>',
+        '<Command>BetweenForms</Command>',
+        '<Form>LegacyForm</Form>',
+        '<Form title="malformed">LegacyForm</Form>',
+        '<vendor:Form>LegacyForm</vendor:Form>',
+        '<Template>AfterOpaqueForms</Template>',
+        '<Command>LastChild</Command>',
+      ],
+    });
+    const sourceXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [] });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-cf', baseXml, targetXml, sourceXml }), {
+      target: [], source: [],
+    });
+    const beforeChildren = childObjectNodes(targetXml);
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(childObjectNodes(projection.targetXml), beforeChildren,
+      'the own CF logical target must preserve every captured ChildObjects node and relative position');
+    const selected = Buffer.from(projection.targetXml.toString('utf8').replace('Old target comment', 'Selected target comment'));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: selected });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(childObjectNodes(materialized.content), beforeChildren,
+      'an unrelated scalar merge must preserve opaque Form nodes in their original positions');
+    assert.match(materialized.content.toString('utf8'), /Selected target comment/u);
+  });
+
+  test('materializes allowlisted own Form registration additions in all three directions', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain']) });
+    for (const direction of ['adopted-to-cf', 'cf-to-adopted', 'adopted-to-adopted'] as const) {
+      const targetAdopted = direction !== 'adopted-to-cf';
+      const sourceAdopted = direction !== 'cf-to-adopted';
+      const targetXml = descriptor({
+        uuid: targetAdopted ? CFE_UUID : BASE_UUID,
+        adopted: targetAdopted,
+        childObjects: formRegistrations(['BaseMain']),
+      });
+      const sourceXml = descriptor({
+        uuid: sourceAdopted ? (direction === 'adopted-to-adopted' ? SOURCE_CFE_UUID : CFE_UUID) : BASE_UUID,
+        adopted: sourceAdopted,
+        childObjects: formRegistrations(['BaseMain', 'SelectedOwnForm']),
+      });
+      const input = withOwnFormRegistrations(makeInput({ direction, baseXml, targetXml, sourceXml }), {
+        target: [], source: ['SelectedOwnForm'],
+      });
+      const projection = projectAdoptedDesignerPair(input);
+      assert.strictEqual(projection.ok, true, `${direction}: ${projection.ok ? '' : projection.reason}`);
+      if (!projection.ok) { continue; }
+      assert.deepStrictEqual(formRegistrationNames(projection.sourceXml), ['BaseMain', 'SelectedOwnForm'], `${direction} source`);
+      const selected = Buffer.from(projection.targetXml.toString('utf8').replace(
+        '</ChildObjects>', '<Form>SelectedOwnForm</Form></ChildObjects>',
+      ));
+
+      const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: selected });
+
+      assert.strictEqual(materialized.ok, true, `${direction}: ${materialized.ok ? '' : materialized.reason}`);
+      if (!materialized.ok) { continue; }
+      assert.deepStrictEqual(formRegistrationNames(materialized.content), ['BaseMain', 'SelectedOwnForm'], `${direction} output`);
+      if (targetAdopted) {
+        assert.match(materialized.content.toString('utf8'), new RegExp(`uuid="${CFE_UUID}"`, 'u'), `${direction} preserves target ownership UUID`);
+      } else {
+        assert.match(materialized.content.toString('utf8'), new RegExp(`uuid="${BASE_UUID}"`, 'u'), `${direction} keeps own target UUID`);
+      }
+      assert.match(materialized.content.toString('utf8'), new RegExp(`<xr:GeneratedType name="CatalogRef" uuid="${BASE_UUID}"`, 'u'),
+        `${direction} preserves target GeneratedType identity`);
+    }
+  });
+
+  test('places a selected Form registration before unknown ChildObjects neighbors', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: [] });
+    const targetXml = descriptor({
+      uuid: BASE_UUID, childObjects: ['<vendor:Opaque marker="first"/>', '<vendor:Opaque marker="second"/>'],
+    });
+    const sourceXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: formRegistrations(['SelectedOwnForm']) });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-cf', baseXml, targetXml, sourceXml }), {
+      target: [], source: ['SelectedOwnForm'],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const selected = Buffer.from(projection.targetXml.toString('utf8').replace(
+      '</ChildObjects>', '<Form>SelectedOwnForm</Form></ChildObjects>',
+    ));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: selected });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    const xml = materialized.content.toString('utf8');
+    assert.ok(xml.indexOf('<Form>SelectedOwnForm</Form>') < xml.indexOf('<vendor:Opaque marker="first"/>'));
+    assert.ok(xml.indexOf('<vendor:Opaque marker="first"/>') < xml.indexOf('<vendor:Opaque marker="second"/>'));
+  });
+
+  test('places a selected Form registration before existing Template and Command registrations', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: ['<Template>PrintLayout</Template>', '<Command>RunReport</Command>'] });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: ['<Template>PrintLayout</Template>', '<Command>RunReport</Command>'] });
+    const sourceXml = descriptor({
+      uuid: SOURCE_CFE_UUID, adopted: true,
+      childObjects: ['<Template>PrintLayout</Template>', '<Command>RunReport</Command>', '<Form>SelectedOwnForm</Form>'],
+    });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: [], source: ['SelectedOwnForm'],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const selected = Buffer.from(projection.targetXml.toString('utf8').replace(
+      '</ChildObjects>', '<Form>SelectedOwnForm</Form></ChildObjects>',
+    ));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: selected });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(childObjectElementNames(materialized.content), ['Form', 'Template', 'Command']);
+  });
+
+  test('uses normalized Form names as distinct identities and encodes only source-allowlisted additions', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain', 'BaseArchive']) });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: formRegistrations(['BaseMain', 'BaseArchive', 'TargetOnly']) });
+    const sourceXml = descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, childObjects: formRegistrations(['BaseMain', 'BaseArchive', 'SourceOnly']) });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: ['TargetOnly'], source: ['SourceOnly'],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const mergedLogicalTarget = Buffer.from(projection.targetXml.toString('utf8').replace(
+      '</ChildObjects>', '<Form>SourceOnly</Form></ChildObjects>',
+    ));
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(materialized.content), ['BaseMain', 'BaseArchive', 'TargetOnly', 'SourceOnly']);
+    assert.deepStrictEqual(formRegistrationNames(materialized.content), formRegistrationNames(mergedLogicalTarget));
+
+    const unapproved = materializeAdoptedDesignerTarget({
+      ...input,
+      mergedLogicalTarget: Buffer.from(mergedLogicalTarget.toString('utf8').replace('SourceOnly', 'NotAllowlisted')),
+    });
+    assert.strictEqual(unapproved.ok, false, 'an arbitrary new Form registration is not a UUID-keyed child addition');
+    if (!unapproved.ok) { assert.match(unapproved.reason, /allowlist|разреш|registration|Form/iu); }
+  });
+
+  test('retains the target inherited Form registrations and rejects their removal or rename', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain', 'BaseArchive']) });
+    const targetXml = descriptor({ uuid: CFE_UUID, adopted: true, childObjects: formRegistrations(['BaseMain', 'BaseArchive']) });
+    const sourceXml = descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, childObjects: formRegistrations(['BaseMain', 'BaseArchive']) });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: [], source: [],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    const removeInherited = Buffer.from(projection.targetXml.toString('utf8').replace(/<Form(?:\s[^>]*)?>BaseMain<\/Form>/u, ''));
+    const renameInherited = Buffer.from(projection.targetXml.toString('utf8').replace(/(<Form(?:\s[^>]*)?>)BaseMain(<\/Form>)/u, '$1RenamedMain$2'));
+
+    for (const mergedLogicalTarget of [removeInherited, renameInherited]) {
+      const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget });
+      assert.strictEqual(materialized.ok, false, 'an inherited Form registration cannot be deleted or renamed');
+      if (!materialized.ok) { assert.match(materialized.reason, /inherited|унаслед|allowlist|разреш|registration|Form/iu); }
+    }
+  });
+
+  test('accepts a selected Form package when both base and target omit ChildObjects', () => {
+    const baseXml = Buffer.from(descriptor({ uuid: BASE_UUID, childObjects: [] }).toString('utf8')
+      .replace(/<ChildObjects><\/ChildObjects>/u, ''));
+    const targetXml = Buffer.from(descriptor({ uuid: CFE_UUID, adopted: true }).toString('utf8')
+      .replace(/<ChildObjects><\/ChildObjects>/u, '')
+      .replace('</Catalog>', '<vendor:Tail/></Catalog>'));
+    const sourceXml = descriptor({ uuid: SOURCE_CFE_UUID, adopted: true, childObjects: formRegistrations(['NewSourceForm']) });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-adopted', baseXml, targetXml, sourceXml }), {
+      target: [], source: ['NewSourceForm'],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(projection.sourceXml), ['NewSourceForm']);
+
+    const materialized = materializeAdoptedDesignerTarget({ ...input, mergedLogicalTarget: projection.sourceXml });
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(materialized.content), ['NewSourceForm']);
+    assert.ok(materialized.content.toString('utf8').indexOf('<ChildObjects>') < materialized.content.toString('utf8').indexOf('<vendor:Tail'),
+      'a synthesized ChildObjects container is placed before later unknown owner children');
+  });
+
+  test('keeps duplicate, malformed, foreign, and unknown Form registrations read-only', () => {
+    const baseXml = descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain']) });
+    const duplicateXml = descriptor({
+      uuid: CFE_UUID,
+      adopted: true,
+      childObjects: [...formRegistrations(['SharedForm', 'sharedform']), '<Form title="malformed">Broken</Form>', '<vendor:Form>ForeignForm</vendor:Form>'],
+    });
+    const input = withOwnFormRegistrations(makeInput({ direction: 'adopted-to-cf', baseXml, sourceXml: duplicateXml }), {
+      target: [], source: ['SharedForm'],
+    });
+    const projection = projectAdoptedDesignerPair(input);
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok) { return; }
+    assert.deepStrictEqual(formRegistrationNames(projection.sourceXml), ['BaseMain']);
+    assert.ok(projection.issues.some((issue) => /duplicate|повтор|неоднознач|Form/iu.test(issue.reason)));
+    assert.ok(projection.issues.some((issue) => /namespace|посторон/u.test(issue.reason)));
+
+    const unknown = projectAdoptedDesignerPair(withOwnFormRegistrations(makeInput({
+      direction: 'adopted-to-cf', baseXml, sourceXml: descriptor({ uuid: CFE_UUID, adopted: true, childObjects: [] }),
+    }), { target: [], source: ['MissingPhysicalForm'] }));
+    assert.strictEqual(unknown.ok, false, 'an allowlist entry must be backed by exactly one physical Form registration');
+    if (!unknown.ok) { assert.match(unknown.reason, /allowlist|registration|Form|спис/u); }
+
+    const duplicateBase = projectAdoptedDesignerPair(withOwnFormRegistrations(makeInput({
+      direction: 'adopted-to-cf', baseXml: descriptor({ uuid: BASE_UUID, childObjects: formRegistrations(['BaseMain', 'basemain']) }),
+    }), { target: [], source: [] }));
+    assert.strictEqual(duplicateBase.ok, false, 'base Form names must be unique after normalization');
   });
 
   test('rejects namespace-spoofed descriptor roots and ownership identities', () => {
@@ -300,7 +650,7 @@ suite('Adopted Designer descriptor projection (#335)', () => {
     assert.match(xml, /<ExtensionOnly>keep me<\/ExtensionOnly>/u);
     assert.match(xml, /<VendorExtension marker="keep"\/>/u);
     assert.match(xml, /<xr:State>Notify<\/xr:State>/u);
-    assert.match(xml, new RegExp(`<xr:GeneratedType name="CatalogRef" uuid="${BASE_UUID}"\/>`));
+    assert.match(xml, new RegExp(`<xr:GeneratedType name="CatalogRef" uuid="${BASE_UUID}"/>`));
   });
 
   test('updates an adopted child only through its existing local identity and preserves same-name foreign XML', () => {
@@ -949,6 +1299,45 @@ function withTypeIdReferences(
   typeIdReferenceDescriptors: readonly AdoptedDesignerTypeIdReferenceDescriptor[],
 ): AdoptedDesignerProjectionInput {
   return { ...input, typeIdReferenceDescriptors };
+}
+
+interface OwnFormRegistrationLists {
+  readonly target: readonly string[];
+  readonly source: readonly string[];
+}
+
+function withOwnFormRegistrations(
+  input: AdoptedDesignerProjectionInput,
+  ownFormRegistrations: OwnFormRegistrationLists,
+): AdoptedDesignerProjectionInput {
+  return { ...input, ownFormRegistrations } as AdoptedDesignerProjectionInput;
+}
+
+function formRegistrations(names: readonly string[]): string[] {
+  return names.map((name) => `<Form>${name}</Form>`);
+}
+
+function formRegistrationNames(xml: Buffer): string[] {
+  const document = parseXmlDocument(xml.toString('utf8'));
+  const root = elementChildren(document.root)[0];
+  const childObjects = root && elementChildren(root).find((child) => child.localName === 'ChildObjects');
+  return childObjects
+    ? elementChildren(childObjects).filter((child) => child.localName === 'Form').map((child) => textContent(child).trim())
+    : [];
+}
+
+function childObjectElementNames(xml: Buffer): string[] {
+  const document = parseXmlDocument(xml.toString('utf8'));
+  const root = elementChildren(document.root)[0];
+  const childObjects = root && elementChildren(root).find((child) => child.localName === 'ChildObjects');
+  return childObjects ? elementChildren(childObjects).map((child) => child.localName) : [];
+}
+
+function childObjectNodes(xml: Buffer): string[] {
+  const document = parseXmlDocument(xml.toString('utf8'));
+  const root = elementChildren(document.root)[0];
+  const childObjects = root && elementChildren(root).find((child) => child.localName === 'ChildObjects');
+  return childObjects ? elementChildren(childObjects).map(stableElement) : [];
 }
 
 function generatedTypeReference(options: {

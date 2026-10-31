@@ -67,7 +67,7 @@ suite('Extension adopted semantic bridge (#335)', () => {
     if (!materialized.ok) { return; }
     const xml = materialized.content.toString('utf8');
     assert.match(xml, new RegExp(`<Catalog uuid="${CFE_UUID}"`));
-    assert.match(xml, new RegExp(`<ExtendedConfigurationObject>${BASE_UUID}<\/ExtendedConfigurationObject>`));
+    assert.match(xml, new RegExp(`<ExtendedConfigurationObject>${BASE_UUID}</ExtendedConfigurationObject>`));
     assert.match(xml, /Selected target overlay/u);
     assert.match(xml, /<xr:GeneratedType name="TargetCatalogRef"/u);
     assert.doesNotMatch(xml, /Source overlay/u);
@@ -81,6 +81,87 @@ suite('Extension adopted semantic bridge (#335)', () => {
       formatVersion: '2.20',
     });
     assert.strictEqual(wrongAnchor.ok, false);
+  });
+
+  test('snapshots the target/source own Form registration allowlists in the descriptor recipe', () => {
+    const direction = 'adopted-to-adopted' as AdoptedDesignerDirection;
+    const baseIdentity: AdoptedDesignerIdentity = { ownership: 'own', type: 'Catalog', name: 'Products', uuid: BASE_UUID };
+    const targetIdentity: AdoptedDesignerIdentity = { ownership: 'adopted', type: 'Catalog', name: 'Products', uuid: CFE_UUID, sourceUuid: BASE_UUID };
+    const sourceIdentity: AdoptedDesignerIdentity = { ownership: 'adopted', type: 'Catalog', name: 'Products', uuid: SOURCE_CFE_UUID, sourceUuid: BASE_UUID };
+    const target = capture(descriptor(CFE_UUID, 'Target', true), targetIdentity, 'target', 'Catalogs/Products.xml');
+    const sourceXml = Buffer.from(descriptor(SOURCE_CFE_UUID, 'Source', true).toString('utf8')
+      .replace('<ChildObjects/>', '<ChildObjects><Form>SourcePackageForm</Form></ChildObjects>'));
+    const source = capture(sourceXml, sourceIdentity, 'source', 'Catalogs/Products.xml');
+    const base = capture(descriptor(BASE_UUID, 'Base'), baseIdentity, 'base', 'Catalogs/Products.xml');
+    const targetNames: string[] = [];
+    const sourceNames: string[] = ['SourcePackageForm'];
+
+    const projection = projectExtensionAdoptedDescriptor({
+      direction, target, source, base, formatVersion: '2.20',
+      ownFormRegistrations: { target: targetNames, source: sourceNames },
+    } as Parameters<typeof projectExtensionAdoptedDescriptor>[0]);
+
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok || projection.recipe.kind !== 'adopted-descriptor') { return; }
+    assert.match(projection.sourceXml.toString('utf8'), /<Form(?:\s[^>]*)?>SourcePackageForm<\/Form>/u);
+    const recipeLists = (projection.recipe as typeof projection.recipe & {
+      readonly ownFormRegistrations: { readonly target: readonly string[]; readonly source: readonly string[] };
+    }).ownFormRegistrations;
+    sourceNames[0] = 'MutatedAfterProjection';
+    targetNames.push('AddedAfterProjection');
+    assert.deepStrictEqual(recipeLists.target, []);
+    assert.deepStrictEqual(recipeLists.source, ['SourcePackageForm']);
+    assert.notStrictEqual(recipeLists.target, targetNames);
+    assert.notStrictEqual(recipeLists.source, sourceNames);
+
+    const selected = Buffer.from(projection.targetXml.toString('utf8').replace(
+      '<ChildObjects/>', '<ChildObjects><Form>SourcePackageForm</Form></ChildObjects>',
+    ));
+    const materialized = materializeExtensionAdoptedArtifact(projection.recipe, selected);
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.match(materialized.content.toString('utf8'), /<Form(?:\s[^>]*)?>SourcePackageForm<\/Form>/u,
+      'the immutable recipe retains the original allowlist after caller arrays change');
+  });
+
+  test('preserves an absent old-base Form in an own CF target during unrelated Comment materialization', () => {
+    const direction = 'adopted-to-cf' as AdoptedDesignerDirection;
+    const baseIdentity: AdoptedDesignerIdentity = { ownership: 'own', type: 'Catalog', name: 'Products', uuid: BASE_UUID };
+    const targetIdentity = baseIdentity;
+    const sourceIdentity: AdoptedDesignerIdentity = { ownership: 'adopted', type: 'Catalog', name: 'Products', uuid: CFE_UUID, sourceUuid: BASE_UUID };
+    const baseXml = Buffer.from(descriptor(BASE_UUID, 'Base').toString('utf8')
+      .replace('<ChildObjects/>', '<ChildObjects><Form>OldBaseForm</Form></ChildObjects>'));
+    const targetXml = descriptor(BASE_UUID, 'Old target');
+    const sourceXml = descriptor(CFE_UUID, 'Source', true);
+    const target = capture(targetXml, targetIdentity, 'target', 'Catalogs/Products.xml');
+    const source = capture(sourceXml, sourceIdentity, 'source', 'Catalogs/Products.xml');
+    const base = capture(baseXml, baseIdentity, 'base', 'Catalogs/Products.xml');
+
+    const projection = projectExtensionAdoptedDescriptor({
+      direction, target, source, base, formatVersion: '2.20',
+      ownFormRegistrations: { target: [], source: [] },
+    } as Parameters<typeof projectExtensionAdoptedDescriptor>[0]);
+
+    assert.strictEqual(projection.ok, true, projection.ok ? undefined : projection.reason);
+    if (!projection.ok || projection.recipe.kind !== 'adopted-descriptor') { return; }
+    assert.doesNotMatch(projection.targetXml.toString('utf8'), /<Form(?:\s[^>]*)?>OldBaseForm<\/Form>/u,
+      'an absent registration in the own CF target must not be synthesized from the old base');
+    const selected = Buffer.from(projection.targetXml.toString('utf8').replace('Old target', 'Selected target'));
+
+    const materialized = materializeExtensionAdoptedArtifact(projection.recipe, selected);
+
+    assert.strictEqual(materialized.ok, true, materialized.ok ? undefined : materialized.reason);
+    if (!materialized.ok) { return; }
+    assert.doesNotMatch(materialized.content.toString('utf8'), /<Form(?:\s[^>]*)?>OldBaseForm<\/Form>/u);
+    assert.match(materialized.content.toString('utf8'), /Selected target/u);
+
+    const reintroduced = Buffer.from(projection.targetXml.toString('utf8').replace(
+      '<ChildObjects/>', '<ChildObjects><Form>OldBaseForm</Form></ChildObjects>',
+    ));
+    const unauthorizedRestore = materializeExtensionAdoptedArtifact(projection.recipe, reintroduced);
+    assert.strictEqual(unauthorizedRestore.ok, false,
+      'a base Form absent from the current own CF target is not an implicit inherited registration that can be restored');
+    if (!unauthorizedRestore.ok) { assert.match(unauthorizedRestore.reason, /absent|scoped|read-only|readonly|Form/iu); }
   });
 
   test('validates each adopted Form BaseForm and restores the captured target BaseForm through the bridge', () => {
@@ -110,7 +191,7 @@ suite('Extension adopted semantic bridge (#335)', () => {
     if (!materialized.ok) { return; }
     const xml = materialized.content.toString('utf8');
     assert.match(xml, /Selected target main/u);
-    assert.match(xml, new RegExp(`<BaseForm version="2.20"><Items>${targetSnapshot}<\/Items><\/BaseForm><\/Form>$`));
+    assert.match(xml, new RegExp(`<BaseForm version="2.20"><Items>${targetSnapshot}</Items></BaseForm></Form>$`));
     assert.doesNotMatch(xml, /Old source snapshot/u);
     assert.deepStrictEqual(materialized.requiredWitnesses, projection.requiredWitnesses);
   });

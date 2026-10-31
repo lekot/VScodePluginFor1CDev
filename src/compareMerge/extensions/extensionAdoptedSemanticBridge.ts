@@ -29,6 +29,10 @@ import {
 } from './adoptedDesignerProjection';
 import type { AdoptedDesignerTypeIdReferenceDescriptor } from './adoptedDesignerTypeId';
 import {
+  snapshotOwnFormRegistrations,
+  type AdoptedDesignerOwnFormRegistrations,
+} from './adoptedDesignerFormRegistrations';
+import {
   materializeAdoptedDesignerFormTarget,
   projectAdoptedDesignerFormPair,
   type AdoptedDesignerFormProjectionInput,
@@ -64,6 +68,7 @@ export interface AdoptedDescriptorArtifactRecipe {
   readonly base: AdoptedSemanticArtifactCapture;
   readonly formatVersion: string;
   readonly adoptedChildUuidByAnchor?: ReadonlyMap<string, string>;
+  readonly ownFormRegistrations?: AdoptedDesignerOwnFormRegistrations;
   readonly typeIdReferenceDescriptors: readonly AdoptedDesignerTypeIdReferenceDescriptor[];
   readonly initialLogicalTarget: Buffer;
   readonly initialLogicalSource: Buffer;
@@ -97,6 +102,7 @@ export interface AdoptedDescriptorProjectionInput {
   readonly formatVersion: string;
   readonly adoptedChildUuidByAnchor?: ReadonlyMap<string, string>;
   readonly typeIdReferenceDescriptors?: readonly AdoptedDesignerTypeIdReferenceDescriptor[];
+  readonly ownFormRegistrations?: AdoptedDesignerOwnFormRegistrations;
 }
 
 export interface AdoptedFormProjectionInput {
@@ -155,6 +161,7 @@ export function projectExtensionAdoptedDescriptor(input: AdoptedDescriptorProjec
       base: cloneCapture(input.base),
       formatVersion: input.formatVersion,
       ...(input.adoptedChildUuidByAnchor ? { adoptedChildUuidByAnchor: new Map(input.adoptedChildUuidByAnchor) } : {}),
+      ...(input.ownFormRegistrations !== undefined ? { ownFormRegistrations: snapshotOwnFormRegistrations(input.ownFormRegistrations) } : {}),
       typeIdReferenceDescriptors: cloneTypeIdDescriptors(input.typeIdReferenceDescriptors ?? []),
       initialLogicalTarget: Buffer.from(projected.targetXml),
       initialLogicalSource: Buffer.from(projected.sourceXml),
@@ -317,6 +324,7 @@ function descriptorHelperInput(input: AdoptedDescriptorArtifactRecipe | AdoptedD
     formatVersion: input.formatVersion,
     ...(input.adoptedChildUuidByAnchor ? { adoptedChildUuidByAnchor: input.adoptedChildUuidByAnchor } : {}),
     ...(input.typeIdReferenceDescriptors ? { typeIdReferenceDescriptors: input.typeIdReferenceDescriptors } : {}),
+    ...(input.ownFormRegistrations !== undefined ? { ownFormRegistrations: snapshotOwnFormRegistrations(input.ownFormRegistrations) } : {}),
   };
 }
 

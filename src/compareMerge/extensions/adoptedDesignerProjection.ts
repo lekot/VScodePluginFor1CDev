@@ -21,6 +21,15 @@ import {
   type AdoptedDesignerTypeIdReferenceDescriptor,
 } from './adoptedDesignerTypeId';
 import { projectAdoptedProperties } from './adoptedDesignerLogicalProperties';
+import {
+  collectBaseFormRegistrations,
+  encodeOwnFormRegistrations,
+  ownFormRegistrationNames,
+  projectOwnFormRegistrations,
+  selectedNewFormRegistrationNames,
+  type AdoptedDesignerOwnFormRegistrations,
+  type FormRegistrationRecord,
+} from './adoptedDesignerFormRegistrations';
 export { adoptedChildUuidMapKey } from './adoptedDesignerChildIdentity';
 export type { AdoptedDesignerChildUuidRequirement, AdoptedDesignerChildUuidRequirementsResult } from './adoptedDesignerChildIdentity';
 import {
@@ -49,7 +58,6 @@ import {
   exactlyOne,
   identityXmlEqual,
   inMetadataNamespace,
-  isFormRegistration,
   metadataChildName,
   metadataRoot,
   physicalChildMapsTo,
@@ -60,6 +68,7 @@ import {
 } from './adoptedDesignerMetadataXml';
 
 export type { AdoptedDesignerTypeIdReferenceDescriptor } from './adoptedDesignerTypeId';
+export type { AdoptedDesignerOwnFormRegistrations } from './adoptedDesignerFormRegistrations';
 
 export interface AdoptedDesignerIdentity {
   readonly ownership: 'own' | 'adopted';
@@ -92,6 +101,8 @@ export interface AdoptedDesignerProjectionInput {
   readonly adoptedChildUuidByAnchor?: ReadonlyMap<string, string>;
   /** Captured own/base metadata descriptors needed to normalize native ExtendedProperty TypeIds. */
   readonly typeIdReferenceDescriptors?: readonly AdoptedDesignerTypeIdReferenceDescriptor[];
+  /** Host-validated own Form package registrations outside the captured base. */
+  readonly ownFormRegistrations?: AdoptedDesignerOwnFormRegistrations;
 }
 
 export type AdoptedDesignerProjectionResult =
@@ -129,6 +140,10 @@ export function projectAdoptedDesignerPair(input: AdoptedDesignerProjectionInput
     const target = parseDescriptor(input.targetXml, input.formatVersion, input.targetIdentity);
     const source = parseDescriptor(input.sourceXml, input.formatVersion, input.sourceIdentity);
     const base = parseDescriptor(input.baseXml, input.formatVersion, input.baseIdentity);
+    const targetFormNames = ownFormRegistrationNames(input.ownFormRegistrations, 'target');
+    const sourceFormNames = ownFormRegistrationNames(input.ownFormRegistrations, 'source');
+    const baseForms = collectBaseFormRegistrations(metadataRoot(base, input.baseIdentity.type));
+    if (!baseForms.ok) { return baseForms; }
     const targetIsAdopted = input.direction !== 'adopted-to-cf';
     const sourceIsAdopted = input.direction !== 'cf-to-adopted';
     const issues: AdoptedDesignerProjectionIssue[] = [];
@@ -136,11 +151,11 @@ export function projectAdoptedDesignerPair(input: AdoptedDesignerProjectionInput
     collectForeignStructureIssues(target, input.targetIdentity, 'target', issues);
     collectForeignStructureIssues(source, input.sourceIdentity, 'source', issues);
     const logicalTarget = targetIsAdopted
-      ? projectAdoptedDocument(target, base, input.targetIdentity, 'target', input.formatVersion, issues, typeIdResolver)
-      : target;
+      ? projectAdoptedDocument(target, base, input.targetIdentity, 'target', input.formatVersion, issues, typeIdResolver, baseForms.registrations, targetFormNames)
+      : projectOwnDocument(target, input.targetIdentity, 'target', issues, baseForms.registrations, targetFormNames);
     const logicalSource = sourceIsAdopted
-      ? projectAdoptedDocument(source, base, input.sourceIdentity, 'source', input.formatVersion, issues, typeIdResolver)
-      : source;
+      ? projectAdoptedDocument(source, base, input.sourceIdentity, 'source', input.formatVersion, issues, typeIdResolver, baseForms.registrations, sourceFormNames)
+      : projectOwnDocument(source, input.sourceIdentity, 'source', issues, baseForms.registrations, sourceFormNames);
     return {
       ok: true,
       targetXml: Buffer.from(serializeXmlDocument(logicalTarget), 'utf8'),
@@ -191,6 +206,18 @@ export function materializeAdoptedDesignerTarget(
     assertLogicalIdentity(mergedRoot, input.baseIdentity);
     if (!targetIsAdopted) {
       const original = parseDescriptor(input.targetXml, input.formatVersion, targetIdentity);
+      const initialLogical = parseDescriptor(projection.targetXml, input.formatVersion, targetIdentity);
+      const base = parseDescriptor(input.baseXml, input.formatVersion, input.baseIdentity);
+      const physicalFormCheck = { ...original, root: cloneXmlElement(original.root) };
+      const formError = encodeOwnFormRegistrations({
+        physicalRoot: metadataRoot(physicalFormCheck, targetIdentity.type),
+        baseRoot: metadataRoot(base, input.baseIdentity.type),
+        initialRoot: metadataRoot(initialLogical, targetIdentity.type),
+        selectedRoot: mergedRoot,
+        sourceAllowedNames: ownFormRegistrationNames(input.ownFormRegistrations, 'source'),
+        targetOwnership: targetIdentity.ownership,
+      });
+      if (formError) { return { ok: false, reason: formError }; }
       preserveMetadataIdentity(original, merged, input.targetIdentity.type);
       stripOwnershipMarkersFromPromotedNodes(mergedRoot);
       return {
@@ -224,13 +251,24 @@ export function materializeAdoptedDesignerTarget(
       side: 'target',
       issues,
       adoptedChildUuidByAnchor: input.adoptedChildUuidByAnchor,
+      sourceAllowedFormNames: ownFormRegistrationNames(input.ownFormRegistrations, 'source'),
       targetChildUuids,
       ownerScope: rootKey(targetIdentity),
     });
     if (encodeError) { return { ok: false, reason: encodeError }; }
     preserveRootIdentity(physicalRoot, targetIdentity, targetIdentity.type);
     const content = Buffer.from(serializeXmlDocument(physical), 'utf8');
-    const roundTrip = projectAdoptedDesignerPair({ ...input, targetXml: content });
+    const roundTripRegistrations = input.ownFormRegistrations === undefined
+      ? undefined
+      : {
+        target: [...ownFormRegistrationNames(input.ownFormRegistrations, 'target'), ...selectedNewFormRegistrationNames(initialRoot, selectedRoot)],
+        source: [...ownFormRegistrationNames(input.ownFormRegistrations, 'source')],
+      };
+    const roundTrip = projectAdoptedDesignerPair({
+      ...input,
+      targetXml: content,
+      ...(roundTripRegistrations ? { ownFormRegistrations: roundTripRegistrations } : {}),
+    });
     if (!roundTrip.ok) { return { ok: false, reason: `Материализованный target нельзя повторно спроецировать: ${roundTrip.reason}` }; }
     const roundTripDocument = parseXmlDocument(roundTrip.targetXml.toString('utf8'));
     if (!sameElement(metadataRoot(roundTripDocument, targetIdentity.type), mergedRoot)) {
@@ -257,6 +295,8 @@ function assertProjectionContract(input: AdoptedDesignerProjectionInput): void {
     throw new Error('Направление переноса не совпадает с ownership target/source.');
   }
   const identities = [input.targetIdentity, input.sourceIdentity];
+  ownFormRegistrationNames(input.ownFormRegistrations, 'target');
+  ownFormRegistrationNames(input.ownFormRegistrations, 'source');
   if (identities.some((identity) => !same(identity.type, input.baseIdentity.type) || !same(identity.name, input.baseIdentity.name))
     || (targetAdopted && !same(input.targetIdentity.sourceUuid, input.baseIdentity.uuid))
     || (sourceAdopted && !same(input.sourceIdentity.sourceUuid, input.baseIdentity.uuid))
@@ -296,6 +336,8 @@ function projectAdoptedDocument(
   formatVersion: string,
   issues: AdoptedDesignerProjectionIssue[],
   typeIdResolver: ReturnType<typeof createAdoptedDesignerTypeIdResolver>,
+  baseFormRegistrations: readonly FormRegistrationRecord[],
+  allowedFormNames: readonly string[],
 ): XmlDocument {
   const result = { ...base, root: cloneXmlElement(base.root) };
   const baseRoot = metadataRoot(result, identity.type);
@@ -312,8 +354,42 @@ function projectAdoptedDocument(
     issues,
     typeIdResolver,
   });
+  const formError = projectOwnFormRegistrations({
+    physicalRoot: adoptedRoot,
+    logicalRoot: baseRoot,
+    baseRegistrations: baseFormRegistrations,
+    allowedNames: allowedFormNames,
+    ownership: identity.ownership,
+    side,
+    ownerKey: rootKey(identity),
+    issues,
+  });
+  if (formError) { throw new Error(formError); }
   projectChildren(adoptedRoot, baseRoot, side, formatVersion, issues, rootKey(identity), typeIdResolver);
   // The materialized logical view always carries base UUID and GeneratedType identities.
+  return result;
+}
+
+function projectOwnDocument(
+  physical: XmlDocument,
+  identity: AdoptedDesignerIdentity,
+  side: 'target' | 'source',
+  issues: AdoptedDesignerProjectionIssue[],
+  baseFormRegistrations: readonly FormRegistrationRecord[],
+  allowedFormNames: readonly string[],
+): XmlDocument {
+  const result = { ...physical, root: cloneXmlElement(physical.root) };
+  const formError = projectOwnFormRegistrations({
+    physicalRoot: metadataRoot(physical, identity.type),
+    logicalRoot: metadataRoot(result, identity.type),
+    baseRegistrations: baseFormRegistrations,
+    allowedNames: allowedFormNames,
+    ownership: identity.ownership,
+    side,
+    ownerKey: rootKey(identity),
+    issues,
+  });
+  if (formError) { throw new Error(formError); }
   return result;
 }
 
@@ -345,7 +421,7 @@ function projectChildren(
       continue;
     }
     const childType = overlayChild.localName;
-    if (isFormRegistration(overlayChild)) { continue; }
+    if (overlayChild.localName === 'Form') { continue; }
     const properties = direct(overlayChild, 'Properties')[0];
     if (!properties) {
       addIssue(issues, side, parentKey, childType, `ChildObjects/${childType} отсутствует Properties.`);
@@ -451,6 +527,7 @@ function encodeAdoptedRoot(input: {
   side: 'target';
   issues: AdoptedDesignerProjectionIssue[];
   adoptedChildUuidByAnchor?: ReadonlyMap<string, string>;
+  sourceAllowedFormNames: readonly string[];
   targetChildUuids: Set<string>;
   ownerScope: string;
 }): string | undefined {
@@ -496,26 +573,37 @@ function encodeChildObjects(input: {
   side: 'target';
   issues: AdoptedDesignerProjectionIssue[];
   adoptedChildUuidByAnchor?: ReadonlyMap<string, string>;
+  sourceAllowedFormNames: readonly string[];
   targetChildUuids: Set<string>;
   ownerScope: string;
 }): string | undefined {
+  const formError = encodeOwnFormRegistrations({
+    physicalRoot: input.physicalRoot,
+    baseRoot: input.baseRoot,
+    initialRoot: input.initialRoot,
+    selectedRoot: input.selectedRoot,
+    sourceAllowedNames: input.sourceAllowedFormNames,
+    targetOwnership: 'adopted',
+  });
+  if (formError) { return formError; }
   const physicalContainer = direct(input.physicalRoot, 'ChildObjects')[0];
   const baseContainer = direct(input.baseRoot, 'ChildObjects')[0];
   const initialContainer = direct(input.initialRoot, 'ChildObjects')[0];
   const selectedContainer = direct(input.selectedRoot, 'ChildObjects')[0];
-  if (!baseContainer && selectedContainer && elementChildren(selectedContainer).length > 0) {
+  const isInlineChild = (child: XmlElement) => child.localName !== 'Form';
+  if (!baseContainer && selectedContainer && elementChildren(selectedContainer).some(isInlineChild)) {
     return 'Target base descriptor lacks ChildObjects required to encode selected child edits.';
   }
   if (!physicalContainer) {
-    if (selectedContainer && elementChildren(selectedContainer).length > 0) {
+    if (selectedContainer && elementChildren(selectedContainer).some(isInlineChild)) {
       return 'Target adopted descriptor lacks ChildObjects required to encode selected child edits.';
     }
     return undefined;
   }
-  const baseChildren = elementChildren(baseContainer ?? input.baseRoot);
-  const beforeChildren = elementChildren(initialContainer ?? input.initialRoot);
-  const selectedChildren = elementChildren(selectedContainer ?? input.selectedRoot);
-  const physicalChildren = elementChildren(physicalContainer);
+  const baseChildren = (baseContainer ? elementChildren(baseContainer) : []).filter(isInlineChild);
+  const beforeChildren = (initialContainer ? elementChildren(initialContainer) : []).filter(isInlineChild);
+  const selectedChildren = (selectedContainer ? elementChildren(selectedContainer) : []).filter(isInlineChild);
+  const physicalChildren = elementChildren(physicalContainer).filter(isInlineChild);
   const ids = new Set<string>();
   for (const child of baseChildren) {
     const uuid = attribute(child, 'uuid');

@@ -111,13 +111,25 @@ export function metadataChildName(element: XmlElement): string | undefined {
 
 export function isFormRegistration(element: XmlElement): boolean {
   return element.localName === 'Form'
+    && inMetadataNamespace(element)
     && direct(element, 'Properties').length === 0
-    && elementChildren(element).length === 0
+    && element.children.every((child) => child.kind === 'text')
     && element.attributes.every((item) => item.name === 'xmlns' || item.name.startsWith('xmlns:'))
     && textContent(element).trim().length > 0;
 }
 
+export function formRegistrationName(element: XmlElement): string | undefined {
+  return isFormRegistration(element) ? textContent(element).trim() : undefined;
+}
+
+export function normalizeFormRegistrationName(name: string): string {
+  return name.trim().normalize('NFC').toLocaleLowerCase('en-US');
+}
+
 export function childIdentity(child: XmlElement): string {
+  const formName = formRegistrationName(child);
+  if (formName) { return `form\0${normalizeFormRegistrationName(formName)}`; }
+  if (child.localName === 'Form' && inMetadataNamespace(child)) { return `form-invalid\0${stableElement(child)}`; }
   return `${child.localName.toLocaleLowerCase('en-US')}\0${(attribute(child, 'uuid') ?? '').toLowerCase()}`;
 }
 
