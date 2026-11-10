@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { performance } from 'perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 import {
@@ -46,6 +47,107 @@ suite('ConfigurationCompareService', () => {
     now = 100;
     assert.strictEqual(shouldPublish(51, 100), true);
     assert.strictEqual(shouldPublish(100, 100), true);
+  });
+
+  test('applies the minimum cooldown after publication completes', () => {
+    let now = 0;
+    const shouldPublish = createCompareProgressThrottle(() => now);
+
+    assert.strictEqual(shouldPublish(1, 10), true);
+    now = 5;
+    shouldPublish.publicationFinished(0);
+    now = 104;
+    assert.strictEqual(shouldPublish(2, 10), false);
+    now = 105;
+    assert.strictEqual(shouldPublish(3, 10), true);
+  });
+
+  test('sets cooldown to publication end plus nine times its duration when longer', () => {
+    let now = 0;
+    const shouldPublish = createCompareProgressThrottle(() => now);
+
+    assert.strictEqual(shouldPublish(1, 10), true);
+    now = 20;
+    shouldPublish.publicationFinished(0);
+    now = 199;
+    assert.strictEqual(shouldPublish(2, 10), false);
+    now = 200;
+    assert.strictEqual(shouldPublish(3, 10), true);
+  });
+
+  test('cools progress from publication completion when observers consume the interval', async () => {
+    const originalNow = performance.now;
+    const items = Array.from({ length: 1024 }, (_, index) => index);
+    const publications: Array<{ completed: number; total: number; results: number[] }> = [];
+    let now = 0;
+    performance.now = () => now;
+
+    try {
+      const results = await mapLimit(
+        items,
+        4,
+        async (item) => {
+          await Promise.resolve();
+          if (item % 7 === 0) {
+            await Promise.resolve();
+          }
+          return item;
+        },
+        undefined,
+        (completed, total, completedResults) => {
+          publications.push({ completed, total, results: [...completedResults] });
+          now += 1000;
+        }
+      );
+
+      assert.deepStrictEqual(results, items);
+      assert.deepStrictEqual(publications.map((publication) => publication.completed), [1, items.length]);
+      assert.ok(publications.every((publication) => publication.results.length === publication.completed));
+      assert.ok(publications.every((publication) =>
+        publication.results.every((value, index, values) => index === 0 || values[index - 1]! < value)
+      ));
+      assert.ok(publications.every((publication) => publication.total === items.length));
+    } finally {
+      performance.now = originalNow;
+    }
+  });
+
+  test('keeps observer exceptions advisory while still applying publication cooldown', async () => {
+    const originalNow = performance.now;
+    const items = Array.from({ length: 32 }, (_, index) => index);
+    const publicationCounts: number[] = [];
+    let now = 0;
+    performance.now = () => now;
+
+    try {
+      const results = await mapLimit(items, 4, async (item) => item, undefined, (completed) => {
+        publicationCounts.push(completed);
+        now += 1000;
+        throw new Error('advisory observer failure');
+      });
+
+      assert.deepStrictEqual(results, items);
+      assert.deepStrictEqual(publicationCounts, [1, items.length]);
+    } finally {
+      performance.now = originalNow;
+    }
+  });
+
+  test('does not read the progress clock when no observer is registered', async () => {
+    const originalNow = performance.now;
+    let clockReads = 0;
+    performance.now = () => {
+      clockReads += 1;
+      return clockReads;
+    };
+
+    try {
+      const items = Array.from({ length: 128 }, (_, index) => index);
+      assert.deepStrictEqual(await mapLimit(items, 4, async (item) => item), items);
+      assert.strictEqual(clockReads, 0);
+    } finally {
+      performance.now = originalNow;
+    }
   });
 
   test('publishes read-only metadata presence before inventory and preserves it in later partial projections', async () => {

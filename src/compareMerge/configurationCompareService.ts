@@ -1,17 +1,17 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { createHash } from 'crypto';
 import { pathToFileURL } from 'url';
 
 import type { ConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
 import type { ConfigurationId } from '../services/configurationSession/types';
 import { compareCodeUnits } from '../utils/compareCodeUnits';
 import {
-  buildBslModuleIndex,
   indexBslModuleSource,
   type BslModuleIndexEntry,
   type BslModuleDiagnostic,
 } from './bsl/bslModuleIndexer';
+import { collectBslInventorySources, resolveBslInventoryIdentities } from './bsl/bslInventoryCollection';
+import { selectBslSourceRetention } from './bsl/bslSourceRetention';
 import { createBslRoutineLogicalMergePlan } from './bsl/bslRoutineLogicalMerge';
 import {
   hashText,
@@ -622,44 +622,47 @@ async function buildConfigurationCompareState(
     for (const diagnostic of linkedDesignerIndex.diagnostics) {session.addMessage(diagnostic);}
     throwIfCompareCancelled(input.cancellation);
     publishCompareBuildProgress(input, { phase: 'bsl' });
-    const leftCollection = await collectBslFileSourcesFromInventory(
-      leftInventory,
-      input.cancellation,
-      limits.bslReadConcurrency,
-      input.io?.readTextFile,
-    );
-    const rightCollection = await collectBslFileSourcesFromInventory(
-      rightInventory,
-      input.cancellation,
-      limits.bslReadConcurrency,
-      input.io?.readTextFile,
-    );
+    const [leftResolution, rightResolution] = await awaitAllSettled([
+      resolveBslInventoryIdentities({
+        sourceId: LEFT_SOURCE_ID,
+        side: 'left',
+        configRoot: leftRootPath,
+        filePaths: collectBslArtifactPaths(leftInventory),
+        cancellation: input.cancellation,
+      }),
+      resolveBslInventoryIdentities({
+        sourceId: RIGHT_SOURCE_ID,
+        side: 'right',
+        configRoot: rightRootPath,
+        filePaths: collectBslArtifactPaths(rightInventory),
+        cancellation: input.cancellation,
+      }),
+    ]);
+    const retention = selectBslSourceRetention({
+      left: leftResolution.files,
+      right: rightResolution.files,
+      matchedFormModuleIds: collectMatchedFormModuleIds(metadata.matches),
+    });
+    const leftCollection = await collectBslInventorySources({
+      resolution: leftResolution,
+      retainedPaths: retention.leftPaths,
+      concurrency: limits.bslReadConcurrency,
+      cancellation: input.cancellation,
+      readTextFile: input.io?.readTextFile,
+    });
+    const rightCollection = await collectBslInventorySources({
+      resolution: rightResolution,
+      retainedPaths: retention.rightPaths,
+      concurrency: limits.bslReadConcurrency,
+      cancellation: input.cancellation,
+      readTextFile: input.io?.readTextFile,
+    });
     leftSources = leftCollection.sources;
     rightSources = rightCollection.sources;
-    const [leftBsl, rightBsl] = await awaitAllSettled([
-      buildBslModuleIndex(
-        [...leftSources].map(([filePath, source]) => ({
-          sourceId: LEFT_SOURCE_ID,
-          side: 'left' as const,
-          filePath,
-          configRoots: [leftRootPath],
-          source,
-        })),
-        input.cancellation,
-      ),
-      buildBslModuleIndex(
-        [...rightSources].map(([filePath, source]) => ({
-          sourceId: RIGHT_SOURCE_ID,
-          side: 'right' as const,
-          filePath,
-          configRoots: [rightRootPath],
-          source,
-        })),
-        input.cancellation,
-      ),
-    ]);
+    const leftBsl = leftCollection.index;
+    const rightBsl = rightCollection.index;
     throwIfCompareCancelled(input.cancellation);
-    const indexedBslSourceCount = leftSources.size + rightSources.size;
+    const indexedBslSourceCount = leftCollection.sourceCount + rightCollection.sourceCount;
     publishCompareBuildProgress(input, {
       phase: 'bsl',
       completed: indexedBslSourceCount,
@@ -731,6 +734,9 @@ async function buildConfigurationCompareState(
     }
     const linkedModules = linkedBslContext.modules;
     const { eventRoutineDependencies, defaultFormDependencies } = linkedBslContext;
+    // Candidate factories and linked snapshots retain the module details they still need.
+    leftBsl.modules.length = 0;
+    rightBsl.modules.length = 0;
     // Candidate factories retain only sources for matched/mergeable modules.
     // Release the full workspace maps before XML adapter processing.
     leftSources.clear();
@@ -866,32 +872,27 @@ function throwIfCompareCancelledAndDispose(
   }
 }
 
-interface BslSourceCollection {
-  sources: Map<string, string>;
-  contentHash: string;
-}
-
-async function collectBslFileSourcesFromInventory(
-  inventory: ConfigurationInventory,
-  cancellation: CompareCancellationToken | undefined,
-  concurrency: number,
-  readTextFile: ((filePath: string) => Promise<string>) | undefined,
-): Promise<BslSourceCollection> {
-  throwIfCompareCancelled(cancellation);
-  const bslArtifacts = [...inventory.artifactsByObjectId.values()]
+function collectBslArtifactPaths(inventory: ConfigurationInventory): string[] {
+  return [...inventory.artifactsByObjectId.values()]
     .flat()
     .filter((artifact) => artifact.kind === 'bslModule')
-    .sort((left, right) => left.filePath.localeCompare(right.filePath));
-  const reader = readTextFile ?? ((filePath: string) => fs.readFile(filePath, 'utf-8'));
+    .map((artifact) => artifact.filePath)
+    .sort((left, right) => left.localeCompare(right));
+}
 
-  const entries = await mapLimit(bslArtifacts, concurrency, async (artifact) => {
-    throwIfCompareCancelled(cancellation);
-    const source = await reader(artifact.filePath);
-    throwIfCompareCancelled(cancellation);
-    return [artifact.filePath, source] as const;
-  }, cancellation);
-  const sources = new Map(entries);
-  return { sources, contentHash: hashFileSources(sources) };
+function collectMatchedFormModuleIds(
+  matches: readonly { left: MetadataIdentity; right: MetadataIdentity }[]
+): Set<string> {
+  const moduleIds = new Set<string>();
+  for (const { left, right } of matches) {
+    if (left.metadataType !== right.metadataType || left.qualifiedName !== right.qualifiedName) {
+      continue;
+    }
+    if (left.metadataType === 'Form' || left.metadataType === 'CommonForm') {
+      moduleIds.add(`${left.qualifiedName}.FormModule`);
+    }
+  }
+  return moduleIds;
 }
 
 function buildBslProjectionInputs(input: {
@@ -1468,19 +1469,6 @@ function isExecutableRoutineDiff(
   routine: BslRoutineDiffItem
 ): routine is BslRoutineDiffItem & Required<Pick<BslRoutineDiffItem, 'left' | 'right'>> {
   return routine.status === 'changed' && Boolean(routine.left && routine.right);
-}
-
-function hashFileSources(files: ReadonlyMap<string, string>): string {
-  const hash = createHash('sha256');
-  const entries = [...files].sort(([left], [right]) => left.localeCompare(right));
-  for (const [filePath, source] of entries) {
-    hash.update(path.normalize(filePath).replace(/\\/g, '/'));
-    hash.update('\0');
-    hash.update(hashText(source));
-    hash.update('\0');
-  }
-
-  return hash.digest('hex');
 }
 
 function addUnmatchedBslMessage(

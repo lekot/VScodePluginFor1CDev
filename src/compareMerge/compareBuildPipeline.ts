@@ -20,6 +20,10 @@ import { findInventoryObjectByDescriptor, metadataIdentityToObjectUnit } from '.
 export const COMPARE_PROGRESS_MIN_INTERVAL_MS = 100;
 const COMPARE_MAP_YIELD_BATCH = 64;
 
+export type CompareProgressThrottle = ((completed: number, total: number) => boolean) & {
+  publicationFinished(startedAt: number): void;
+};
+
 /** Wait for every side of a parallel build stage before propagating its first failure. */
 export async function awaitAllSettled<T>(tasks: readonly Promise<T>[]): Promise<T[]> {
   const settled = await Promise.allSettled(tasks);
@@ -82,16 +86,21 @@ export async function mapLimit<T, R>(
         completedCount += 1;
         completedSinceYield += 1;
         if (onProgress && shouldPublishProgress?.(completedCount, items.length)) {
-          const completedResults: R[] = [];
-          for (let resultIndex = 0; resultIndex < results.length; resultIndex += 1) {
-            if (completedIndexes?.[resultIndex]) {
-              completedResults.push(results[resultIndex]!);
-            }
-          }
+          const publicationStartedAt = performance.now();
           try {
-            onProgress(completedCount, items.length, completedResults);
-          } catch {
-            // Progress reporting is advisory; callback failures must not cancel workers.
+            const completedResults: R[] = [];
+            for (let resultIndex = 0; resultIndex < results.length; resultIndex += 1) {
+              if (completedIndexes?.[resultIndex]) {
+                completedResults.push(results[resultIndex]!);
+              }
+            }
+            try {
+              onProgress(completedCount, items.length, completedResults);
+            } catch {
+              // Progress reporting is advisory; callback failures must not cancel workers.
+            }
+          } finally {
+            shouldPublishProgress.publicationFinished(publicationStartedAt);
           }
         }
         if (completedSinceYield >= COMPARE_MAP_YIELD_BATCH) {
@@ -231,22 +240,31 @@ function buildMetadataObjectMatches(input: {
 export function createCompareProgressThrottle(
   now: () => number = () => performance.now(),
   minIntervalMs = COMPARE_PROGRESS_MIN_INTERVAL_MS
-): (completed: number, total: number) => boolean {
-  let lastPublishedAt: number | undefined;
-  return (completed, total) => {
+): CompareProgressThrottle {
+  let nextAllowedAt: number | undefined;
+  const shouldPublish = ((completed: number, total: number) => {
     const current = now();
     if (completed === 1 && total > 0) {
-      lastPublishedAt = current;
+      nextAllowedAt = current + minIntervalMs;
       return true;
     }
     if (completed === total && total > 0) {
-      lastPublishedAt = current;
+      nextAllowedAt = current + minIntervalMs;
       return true;
     }
-    if (lastPublishedAt === undefined || current - lastPublishedAt >= minIntervalMs) {
-      lastPublishedAt = current;
+    if (nextAllowedAt === undefined || current >= nextAllowedAt) {
+      nextAllowedAt = current + minIntervalMs;
       return true;
     }
     return false;
+  }) as CompareProgressThrottle;
+
+  shouldPublish.publicationFinished = (startedAt) => {
+    const finishedAt = now();
+    const duration = Math.max(0, finishedAt - startedAt);
+    // A 9x cooldown keeps the synchronous projection near a 10% steady-state budget.
+    nextAllowedAt = finishedAt + Math.max(minIntervalMs, 9 * duration);
   };
+
+  return shouldPublish;
 }

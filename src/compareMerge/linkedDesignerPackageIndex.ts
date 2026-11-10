@@ -5,9 +5,7 @@ import { MISSING_TARGET_HASH } from './merge/mergePreview';
 import { parseXmlDocument, elementChildren, textContent } from './xml/xmlDom';
 import type { CompareMessage, MetadataIdentity, MatchResult } from './domain/compareContracts';
 import type { ConfigurationInventory, MetadataObjectUnit, ArtifactUnit } from './inventory/configurationInventory';
-import type { AdapterCompareResult } from './adapters/mergeAdapter';
 import { namespaceUriForName } from './adapters/semanticXml/semanticXmlIdentity';
-import type { CompareTreeNode } from './compareTreeTypes';
 import { blocked, canonicalRelativePath, finalName, normalizeAbsolutePath, normalizePath, stripHash } from './linkedDesignerUtils';
 import type { LinkedDesignerCompareIndex, LinkedDesignerKind, LinkedDesignerPackageRecipe, LinkedDesignerPackageMember, IndexedPackageObject, LinkedDesignerRootConfigurationSnapshot, LinkedOwnerDescriptorSnapshot } from './linkedDesignerTypes';
 import { requiredLinkedDesignerBodyPath } from './linkedDesignerPackageRules';
@@ -244,81 +242,7 @@ export async function buildLinkedDesignerCompareIndex(input: {
   return { packages: validPackages, diagnostics, blockedPresenceNodeIds, ...(rootConfiguration ? { rootConfiguration } : {}) };
 }
 
-/** Associates enabled registration or object-presence nodes with their host-owned package recipes. */
-export function bindLinkedDesignerPackageNodes(input: {
-  readonly results: readonly AdapterCompareResult[];
-  readonly packages: readonly LinkedDesignerPackageRecipe[];
-  readonly blockedPresenceNodeIds?: ReadonlyMap<string, string>;
-}): { packagesByNodeId: ReadonlyMap<string, LinkedDesignerPackageRecipe>; results: readonly AdapterCompareResult[] } {
-  const packagesByNodeId = new Map<string, LinkedDesignerPackageRecipe>();
-  const byOwnerAndRegistration = new Map<string, LinkedDesignerPackageRecipe[]>();
-  for (const recipe of input.packages) {
-    if (recipe.rootRegistration) {continue;}
-    const key = `${normalizePath(recipe.ownerTargetRelativePath ?? '')}\0${recipe.kind}\0${finalName(recipe.qualifiedName).normalize('NFC').toLocaleLowerCase('en-US')}`;
-    byOwnerAndRegistration.set(key, [...(byOwnerAndRegistration.get(key) ?? []), recipe]);
-  }
-
-  const nextResults = input.results.map((result) => ({
-    ...result,
-    nodes: [...result.nodes],
-    candidateFactories: new Map(result.candidateFactories),
-  }));
-  for (const recipe of input.packages) {
-    if (recipe.rootRegistration) {
-      const status = recipe.action === 'copy' ? 'rightOnly' : 'leftOnly';
-      const nodeId = `fileObject:${status}:${encodeURIComponent(recipe.qualifiedName)}`;
-      const result = nextResults.find((item) => item.candidateFactories.has(nodeId) || findNode(item.nodes, nodeId));
-      if (result && findNode(result.nodes, nodeId)) {
-        packagesByNodeId.set(nodeId, recipe);
-        recipe.registrationNodeId = nodeId;
-      }
-      continue;
-    }
-    const ownerRelative = recipe.ownerTargetRelativePath ?? '';
-    const ownerKey = `${normalizePath(ownerRelative)}\0${recipe.kind}\0${finalName(recipe.qualifiedName).normalize('NFC').toLocaleLowerCase('en-US')}`;
-    const candidate = nextResults
-      .flatMap((result) => collectNodes(result.nodes))
-      .find((node) => {
-        if (!node.mergeable || node.kind !== 'xmlElement' || node.status !== (recipe.action === 'copy' ? 'rightOnly' : 'leftOnly')) {return false;}
-        const xml = recipe.action === 'copy' ? node.rightValue : node.leftValue;
-        const registration = readRegistration(xml, node.label, recipe.kind);
-        const targetPath = node.mergeState?.targetFilePath;
-        const relative = targetPath ? relativePathFromPackagePath(targetPath, recipe.ownerTargetRelativePath) : undefined;
-        return registration?.kind === recipe.kind && registration.name.normalize('NFC').toLocaleLowerCase('en-US') === finalName(recipe.qualifiedName).normalize('NFC').toLocaleLowerCase('en-US') && relative !== undefined && normalizePath(relative) === normalizePath(ownerRelative);
-      });
-    if (candidate) {
-      const duplicate = byOwnerAndRegistration.get(ownerKey) ?? [];
-      if (duplicate.length === 1) {
-        packagesByNodeId.set(candidate.id, recipe);
-        recipe.registrationNodeId = candidate.id;
-      }
-    }
-  }
-
-  for (const result of nextResults) {
-    result.nodes = result.nodes.filter((node) => {
-      const recipe = input.packages.find((item) => !item.rootRegistration && (item.action === 'copy' ? node.id === fileObjectNodeId(item, 'rightOnly') : node.id === fileObjectNodeId(item, 'leftOnly')));
-      if (!recipe) {return true;}
-      result.candidateFactories.delete(node.id);
-      return false;
-    });
-  }
-  for (const [nodeId, reason] of input.blockedPresenceNodeIds ?? []) {
-    for (const result of nextResults) {
-      if (!findNode(result.nodes, nodeId)) {continue;}
-      result.candidateFactories.delete(nodeId);
-      result.nodes = result.nodes.map((node) => disableNode(node, nodeId, reason));
-    }
-  }
-  return { packagesByNodeId, results: nextResults };
-}
-
-function disableNode(node: CompareTreeNode, id: string, reason: string): CompareTreeNode {
-  if (node.id === id) {
-    return { ...node, mergeable: false, conflict: { kind: 'unsupported', message: reason, blocking: true }, mergeState: { state: 'blocked', reason }, children: [] };
-  }
-  return { ...node, children: node.children.map((child) => disableNode(child, id, reason)) };
-}
+export { bindLinkedDesignerPackageNodes } from './linkedDesignerPackageBinding';
 
 function fileObjectNodeIdForIdentity(identity: MetadataIdentity, action: 'copy' | 'delete'): string {
   return `fileObject:${action === 'copy' ? 'rightOnly' : 'leftOnly'}:${encodeURIComponent(identity.qualifiedName)}`;
@@ -398,53 +322,6 @@ function matchPackageArtifact(
 
 function packageIdFor(kind: LinkedDesignerKind, qualifiedName: string): string {
   return `designer:${kind}:${encodeURIComponent(qualifiedName)}`;
-}
-
-function collectNodes(nodes: readonly CompareTreeNode[]): CompareTreeNode[] {
-  const result: CompareTreeNode[] = [];
-  for (const node of nodes) {
-    result.push(node, ...collectNodes(node.children));
-  }
-  return result;
-}
-
-function findNode(nodes: readonly CompareTreeNode[], nodeId: string): CompareTreeNode | undefined {
-  for (const node of nodes) {
-    if (node.id === nodeId) {return node;}
-    const nested = findNode(node.children, nodeId);
-    if (nested) {return nested;}
-  }
-  return undefined;
-}
-
-function readRegistration(xml: string | undefined, label: string, expectedKind: LinkedDesignerKind): { kind: LinkedDesignerKind; name: string } | undefined {
-  if (xml) {
-    try {
-      const root = parseXmlDocument(xml).root;
-      const kind = root.localName;
-      if (kind === 'Form' || kind === 'Template' || kind === 'Command') {
-        return { kind, name: textContent(root).trim() };
-      }
-    } catch {
-      // Some host projections expose only scalar text instead of the captured subtree.
-    }
-  }
-  const kindMatch = /^(Form|Template|Command)\s*:\s*(.+)$/u.exec(label.trim());
-  if (kindMatch) {return { kind: kindMatch[1] as LinkedDesignerKind, name: kindMatch[2]!.trim() };}
-  // Semantic XML tree labels contain the exact metadata Name value; the package recipe
-  // supplies the registration kind while this fallback binds by owner path and name.
-  return label.trim() ? { kind: expectedKind, name: label.trim() } : undefined;
-}
-
-function relativePathFromPackagePath(targetPath: string, ownerRelativePath: string | undefined): string | undefined {
-  if (!ownerRelativePath) {return undefined;}
-  const normalizedTarget = normalizePath(targetPath);
-  const normalizedOwner = normalizePath(ownerRelativePath);
-  return normalizedTarget.endsWith(normalizedOwner) ? ownerRelativePath : undefined;
-}
-
-function fileObjectNodeId(recipe: LinkedDesignerPackageRecipe, status: 'leftOnly' | 'rightOnly'): string {
-  return `fileObject:${status}:${encodeURIComponent(recipe.qualifiedName)}`;
 }
 
 async function captureRootConfigurationSnapshot(
