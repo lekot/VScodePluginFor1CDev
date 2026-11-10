@@ -1,4 +1,5 @@
 import * as fs from 'fs/promises';
+import { performance } from 'perf_hooks';
 
 import { parseBslRoutines } from '../../bsl/routineRangeProvider';
 import type { BslRoutineDiagnostic, BslRoutineInfo, BslTextRange } from '../../bsl/bslRoutineTypes';
@@ -14,6 +15,9 @@ import {
   type CompareCancellationToken,
   throwIfCompareCancelled,
 } from '../compareCancellation';
+
+const BSL_MODULE_INDEX_YIELD_BATCH = 64;
+const BSL_MODULE_INDEX_YIELD_INTERVAL_MS = 8;
 
 export type SupportedBslModuleKind = 'Object' | 'Manager' | 'CommonModule' | 'Form' | 'Command';
 
@@ -83,13 +87,24 @@ export async function buildBslModuleIndex(
 ): Promise<BslModuleIndexResult> {
   const modules: BslModuleIndexEntry[] = [];
   const diagnostics: BslModuleDiagnostic[] = [];
+  let completedSinceYield = 0;
+  let lastYieldAt: number | undefined;
 
   for (const input of inputs) {
     throwIfCompareCancelled(cancellation);
+    lastYieldAt ??= performance.now();
     const result = await indexBslModuleFile(input);
     throwIfCompareCancelled(cancellation);
     diagnostics.push(...result.diagnostics);
     modules.push(...result.modules);
+    completedSinceYield += 1;
+    if (completedSinceYield >= BSL_MODULE_INDEX_YIELD_BATCH
+      || performance.now() - lastYieldAt >= BSL_MODULE_INDEX_YIELD_INTERVAL_MS) {
+      completedSinceYield = 0;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      throwIfCompareCancelled(cancellation);
+      lastYieldAt = performance.now();
+    }
   }
 
   return { modules, diagnostics };
