@@ -145,6 +145,18 @@ function projectMetadataMatch(match: MatchResult['matches'][number]): CompareTre
             state: 'readOnly',
             reason: 'Metadata identity match is read-only in this merge mode.',
           },
+    presentation: {
+      ownerKey: metadataOwnerKey(match.left, match.right, match.matchKind === 'uuid'),
+      ownerAliases: metadataOwnerAliases([match.left, match.right]),
+      metadataType: match.right.metadataType || match.left.metadataType,
+      qualifiedName: match.right.qualifiedName || match.left.qualifiedName,
+      identities: [match.left, match.right].map((identity) => ({
+        side: identity.side,
+        qualifiedName: identity.qualifiedName,
+        uuid: identity.uuid,
+        filePath: identity.filePath,
+      })),
+    },
   });
 }
 
@@ -172,6 +184,23 @@ function projectIdentityConflict(conflict: IdentityConflict): CompareTreeNode {
     mergeState: {
       state: 'identityConflict',
       reason: conflict.message,
+    },
+    presentation: {
+      ownerKey: conflictOwnerKey(conflict),
+      ownerAliases: metadataOwnerAliases(conflict.identities),
+      metadataType:
+        conflict.metadataType ?? conflict.left?.metadataType ?? conflict.right?.metadataType,
+      qualifiedName:
+        conflict.qualifiedName ?? conflict.right?.qualifiedName ?? conflict.left?.qualifiedName,
+      identityConflict: true,
+      ambiguousIdentitySet:
+        conflict.kind === 'duplicateUuid' || conflict.kind === 'duplicateQualifiedName',
+      identities: conflict.identities.map((identity) => ({
+        side: identity.side,
+        qualifiedName: identity.qualifiedName,
+        uuid: identity.uuid,
+        filePath: identity.filePath,
+      })),
     },
   });
 }
@@ -211,7 +240,10 @@ function projectUnmatchedMetadata(
     metadataObjectOperationKey(identity.qualifiedName, status)
   );
   if (operation) {
-    return operation;
+    return {
+      ...operation,
+      presentation: metadataIdentityPresentation(identity),
+    };
   }
 
   return leafNode({
@@ -227,7 +259,63 @@ function projectUnmatchedMetadata(
       state: 'blocked',
       reason: 'Structural metadata merge is not supported in this merge mode.',
     },
+    presentation: metadataIdentityPresentation(identity),
   });
+}
+
+function metadataIdentityPresentation(identity: MetadataIdentity) {
+  return {
+    ownerKey: metadataOwnerKey(identity, undefined, false),
+    ownerAliases: metadataOwnerAliases([identity]),
+    metadataType: identity.metadataType,
+    qualifiedName: identity.qualifiedName,
+    identities: [
+      {
+        side: identity.side,
+        qualifiedName: identity.qualifiedName,
+        uuid: identity.uuid,
+        filePath: identity.filePath,
+      },
+    ],
+  };
+}
+
+function metadataOwnerAliases(identities: readonly MetadataIdentity[]): string[] {
+  const aliases = new Set<string>();
+  for (const identity of identities) {
+    const metadataType = identity.metadataType || 'Metadata';
+    aliases.add(`${metadataType}:name:${identity.qualifiedName}`);
+    if (identity.uuid) {
+      aliases.add(`${metadataType}:uuid:${identity.uuid}`);
+    }
+  }
+  return [...aliases];
+}
+
+function metadataOwnerKey(
+  identity: MetadataIdentity,
+  counterpart: MetadataIdentity | undefined,
+  useUuid: boolean
+): string {
+  const metadataType = identity.metadataType || counterpart?.metadataType || 'Metadata';
+  const uuid = identity.uuid || counterpart?.uuid;
+  const identityPart = useUuid && uuid ? `uuid:${uuid}` : `name:${identity.qualifiedName}`;
+  return `${metadataType}:${identityPart}`;
+}
+
+function conflictOwnerKey(conflict: IdentityConflict): string {
+  const identity = conflict.right ?? conflict.left ?? conflict.identities[0];
+  if (!identity) {
+    return `conflict:${conflict.kind}:${conflict.uuid ?? conflict.qualifiedName ?? ''}`;
+  }
+  const metadataType = conflict.metadataType ?? identity.metadataType;
+  if (conflict.kind === 'sameUuidDifferentName' || conflict.kind === 'duplicateUuid') {
+    return `${metadataType}:uuid:${conflict.uuid ?? identity.uuid ?? ''}`;
+  }
+  if (conflict.kind === 'sameNameDifferentUuid' || conflict.kind === 'duplicateQualifiedName') {
+    return `${metadataType}:name:${conflict.qualifiedName ?? identity.qualifiedName}`;
+  }
+  return `${metadataType}:conflict:${conflict.kind}:${conflict.uuid ?? conflict.qualifiedName ?? identity.qualifiedName}`;
 }
 
 function metadataObjectOperationKey(
@@ -287,12 +375,68 @@ function projectBslDiff(input: BslRoutineDiffProjectionInput): CompareTreeNode {
     ...diff.diagnostics.map((diagnostic) => projectBslDiagnostic(diagnostic)),
   ];
 
-  return branchNode(
+  return {
+    ...branchNode(
     `bsl:module:${diff.moduleId}`,
     diff.leftIdentity.displayName || diff.rightIdentity.displayName || diff.moduleId,
     'bslModule',
     moduleChildren
-  );
+    ),
+    presentation: bslOwnerPresentation(diff.leftIdentity, diff.rightIdentity),
+  };
+}
+
+function bslOwnerPresentation(
+  left: BslRoutineDiffResult['leftIdentity'],
+  right: BslRoutineDiffResult['rightIdentity']
+): CompareTreeNode['presentation'] {
+  const identities = [left, right];
+  const aliases = new Set<string>();
+  const owners = identities.map((identity) => {
+    const owner = bslOwnerIdentity(identity);
+    const qualifiedName = owner.qualifiedName;
+    aliases.add(`${owner.metadataType}:name:${qualifiedName}`);
+    return {
+      side: identity.side,
+      qualifiedName,
+      filePath: identity.filePath,
+    };
+  });
+  const owner = right ?? left;
+  const displayOwner = owner ? bslOwnerIdentity(owner) : undefined;
+  return {
+    ownerAliases: [...aliases],
+    metadataType: displayOwner?.metadataType,
+    moduleKind: displayOwner?.moduleKind,
+    qualifiedName: displayOwner?.qualifiedName,
+    identities: owners,
+  };
+}
+
+function bslOwnerIdentity(identity: BslRoutineDiffResult['leftIdentity']): {
+  metadataType: string;
+  moduleKind: BslRoutineDiffResult['leftIdentity']['moduleKind'];
+  qualifiedName: string;
+} {
+  if (identity.moduleKind === 'Form' && identity.metadataType !== 'CommonForm' && identity.formName) {
+    return {
+      metadataType: 'Form',
+      moduleKind: identity.moduleKind,
+      qualifiedName: `${identity.metadataType}.${identity.objectName}.Form.${identity.formName}`,
+    };
+  }
+  if (identity.moduleKind === 'Command' && identity.metadataType !== 'CommonCommand' && identity.commandName) {
+    return {
+      metadataType: 'Command',
+      moduleKind: identity.moduleKind,
+      qualifiedName: `${identity.metadataType}.${identity.objectName}.Command.${identity.commandName}`,
+    };
+  }
+  return {
+    metadataType: identity.metadataType,
+    moduleKind: identity.moduleKind,
+    qualifiedName: `${identity.metadataType}.${identity.objectName}`,
+  };
 }
 
 function projectMessages(messages: readonly CompareMessage[]): CompareTreeNode | undefined {

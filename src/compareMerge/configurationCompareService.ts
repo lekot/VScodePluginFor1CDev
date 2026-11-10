@@ -30,10 +30,12 @@ import {
   type ConfigurationCompareWorkspaceState,
   type ExecutableCandidateFactory,
 } from './configurationCompareWorkspace';
-import { fileObjectAdapter } from './adapters/fileObjectAdapter';
-import type { AdapterCompareResult, CompareJoinStrategy, MetadataObjectMatch } from './adapters/mergeAdapter';
-import { ambiguousArtifactPairResult, findArtifactPairs } from './adapters/artifactPairing';
-import { buildMetadataReferenceContext } from './adapters/metadataReferenceContext';
+import type { AdapterCompareResult, CompareJoinStrategy } from './adapters/mergeAdapter';
+import {
+  awaitAllSettled,
+  buildAdapterCompareResults,
+  mapLimit,
+} from './compareBuildPipeline';
 import { CompareSession } from './domain/compareSession';
 import type { CompareMessage, CompareSide, MetadataIdentity } from './domain/compareContracts';
 import { buildConfigurationInventory } from './inventory/configurationInventory';
@@ -53,17 +55,20 @@ import {
 } from './linkedDesignerContext';
 import { captureLinkedFormXmlSnapshots } from './linkedDesignerCapture';
 import { captureBslRoutineSpan } from './linkedDesignerRoutineSpan';
-import { compareLinkedDesignerXmlArtifact } from './linkedDesignerAdapterCompare';
 import { prepareLinkedDesignerBslContext } from './linkedDesignerBslContext';
 import { tryBuildExtensionCompareState } from './extensions/extensionCompare';
+import {
+  createReadOnlyCompareProjection,
+  publishCompareBuildProgress,
+  type CompareBuildOptions,
+  type CompareBuildProgress,
+} from './compareProgress';
 import { tryBuildEdtUnsupportedState } from './edtUnsupportedCompare';
-import { findInventoryObjectByDescriptor, metadataIdentityToObjectUnit } from './metadataObjectLookup';
 import {
   bindLinkedDesignerPackageNodes,
   buildLinkedDesignerCompareIndex,
   materializeLinkedDesignerSelection,
   type LinkedDesignerMaterializerContext,
-  type LinkedFormModuleSnapshot,
 } from './linkedDesignerMaterializer';
 import { bindLinkedTemplateTypeTransitionNodes, captureLinkedTemplateTypeTransitions } from './linkedDesignerTemplateTransitions';
 
@@ -131,14 +136,13 @@ const METADATA_TYPE_FOLDERS: Record<string, string> = {
   XDTOPackage: 'XDTOPackages',
 };
 
-export interface ConfigurationCompareInput {
+export interface ConfigurationCompareInput extends CompareBuildOptions {
   leftRootPath: string;
   rightRootPath: string;
   backupRootPath: string;
   mutationEngine?: ConfigurationMutationEngine;
   configurationId?: ConfigurationId;
   createdAt?: Date;
-  cancellation?: CompareCancellationToken;
   extensionBaseRoots?: Readonly<Partial<Record<CompareSide, string>>>;
   limits?: ConfigurationCompareLimits;
   io?: ConfigurationCompareIo;
@@ -167,8 +171,17 @@ export async function buildConfigurationCompare(
 ): Promise<ConfigurationCompareResult> {
   throwIfCompareCancelled(input.cancellation);
   const state = await buildConfigurationCompareState(input);
-  throwIfCompareCancelled(input.cancellation);
-  const refreshInput: ConfigurationCompareInput = { ...input, cancellation: undefined };
+  try {
+    throwIfCompareCancelled(input.cancellation);
+  } catch (error) {
+    state.session.dispose();
+    throw error;
+  }
+  const refreshInput: ConfigurationCompareInput = {
+    ...input,
+    cancellation: undefined,
+    onProgress: undefined,
+  };
   const workspace = new ConfigurationCompareWorkspace({
     ...state,
     leftRootPath: path.normalize(input.leftRootPath),
@@ -177,7 +190,8 @@ export async function buildConfigurationCompare(
     backupRootPath: input.backupRootPath,
     mutationEngine: input.mutationEngine,
     configurationId: input.configurationId,
-    refreshWorkspace: (strategy) => buildConfigurationCompareState(refreshInput, strategy),
+    refreshWorkspace: (strategy, options) =>
+      buildConfigurationCompareState({ ...refreshInput, ...options }, strategy),
   });
 
   return {
@@ -235,7 +249,7 @@ async function indexMetadataForStrategy(input: {
     return [leftMetadata, rightMetadata] as const;
   }
 
-  return Promise.all([
+  const [leftMetadata, rightMetadata] = await awaitAllSettled([
     indexMetadataFolder({
       sourceId: LEFT_SOURCE_ID,
       side: 'left',
@@ -253,6 +267,7 @@ async function indexMetadataForStrategy(input: {
       directoryConcurrency: input.limits.directoryReadConcurrency,
     }),
   ]);
+  return [leftMetadata, rightMetadata] as const;
 }
 
 async function indexCounterpartMetadata(input: {
@@ -500,39 +515,21 @@ async function directoryExists(folderPath: string): Promise<boolean> {
   }
 }
 
-async function mapLimit<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  worker: (item: T) => Promise<R>,
-  cancellation?: CompareCancellationToken,
-): Promise<R[]> {
-  const limit = Math.max(1, Math.min(concurrency, items.length || 1));
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-
-  async function run(): Promise<void> {
-    while (nextIndex < items.length) {
-      throwIfCompareCancelled(cancellation);
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await worker(items[index]);
-    }
-  }
-
-  await Promise.all(Array.from({ length: limit }, run));
-  return results;
-}
-
 async function buildConfigurationCompareState(
   input: ConfigurationCompareInput,
   strategy: CompareJoinStrategy = 'right'
 ): Promise<ConfigurationCompareWorkspaceState> {
+  publishCompareBuildProgress(input, { phase: 'detecting' });
   const edtState = await tryBuildEdtUnsupportedState(input);
   if (edtState) {
+    throwIfCompareCancelledAndDispose(input.cancellation, edtState.session);
+    publishProjectionProgress(input, 'projecting', edtState.projection);
     return edtState;
   }
   const extensionState = await tryBuildExtensionCompareState(input, strategy);
   if (extensionState) {
+    throwIfCompareCancelledAndDispose(input.cancellation, extensionState.session);
+    publishProjectionProgress(input, 'projecting', extensionState.projection);
     return extensionState;
   }
   const leftRootPath = path.normalize(input.leftRootPath);
@@ -566,6 +563,7 @@ async function buildConfigurationCompareState(
   let rightSources: Map<string, string> | undefined;
   try {
     throwIfCompareCancelled(input.cancellation);
+    publishCompareBuildProgress(input, { phase: 'metadata' });
     const [leftMetadata, rightMetadata] = await indexMetadataForStrategy({
       strategy,
       leftRootPath,
@@ -574,8 +572,23 @@ async function buildConfigurationCompareState(
       limits,
     });
     const metadata = matchMetadataIdentities({ left: leftMetadata, right: rightMetadata });
+    const partialMetadata = { ...metadata, matches: [] };
+    const indexedMetadataCount = leftMetadata.length + rightMetadata.length;
+    publishCompareBuildProgress(input, {
+      phase: 'metadata',
+      completed: indexedMetadataCount,
+      total: indexedMetadataCount,
+    });
+    if (input.onProgress) {
+      publishProjectionProgress(
+        input,
+        'metadata',
+        buildCompareTreeProjection({ metadata: partialMetadata })
+      );
+    }
     const descriptorScope = linkedDesignerDescriptorScope(metadata, strategy);
-    const [leftInventory, rightInventory] = await Promise.all([
+    publishCompareBuildProgress(input, { phase: 'inventory' });
+    const [leftInventory, rightInventory] = await awaitAllSettled([
       buildConfigurationInventory(leftRootPath, {
         identities: leftMetadata,
         includeDescriptorPaths: descriptorScope.left,
@@ -589,6 +602,7 @@ async function buildConfigurationCompareState(
         artifactConcurrency: limits.inventoryReadConcurrency,
       }),
     ]);
+    publishCompareBuildProgress(input, { phase: 'inventory', completed: 2, total: 2 });
     const linkedFormXmlCapture = await captureLinkedFormXmlSnapshots(leftInventory);
     const linkedDesignerIndex = await buildLinkedDesignerCompareIndex({
       metadata,
@@ -607,6 +621,7 @@ async function buildConfigurationCompareState(
     });
     for (const diagnostic of linkedDesignerIndex.diagnostics) {session.addMessage(diagnostic);}
     throwIfCompareCancelled(input.cancellation);
+    publishCompareBuildProgress(input, { phase: 'bsl' });
     const leftCollection = await collectBslFileSourcesFromInventory(
       leftInventory,
       input.cancellation,
@@ -621,7 +636,7 @@ async function buildConfigurationCompareState(
     );
     leftSources = leftCollection.sources;
     rightSources = rightCollection.sources;
-    const [leftBsl, rightBsl] = await Promise.all([
+    const [leftBsl, rightBsl] = await awaitAllSettled([
       buildBslModuleIndex(
         [...leftSources].map(([filePath, source]) => ({
           sourceId: LEFT_SOURCE_ID,
@@ -644,6 +659,12 @@ async function buildConfigurationCompareState(
       ),
     ]);
     throwIfCompareCancelled(input.cancellation);
+    const indexedBslSourceCount = leftSources.size + rightSources.size;
+    publishCompareBuildProgress(input, {
+      phase: 'bsl',
+      completed: indexedBslSourceCount,
+      total: indexedBslSourceCount,
+    });
 
     const leftSnapshotId = `configuration-compare-${createdAt.getTime()}-left`;
     const rightSnapshotId = `configuration-compare-${createdAt.getTime()}-right`;
@@ -697,6 +718,17 @@ async function buildConfigurationCompareState(
       bslItems: bsl.items,
       candidateFactories: bsl.candidateFactories,
     });
+    if (input.onProgress) {
+      publishProjectionProgress(
+        input,
+        'bsl',
+        buildCompareTreeProjection({
+          metadata: partialMetadata,
+          bsl: bsl.items,
+          messages: [...session.state.messages],
+        })
+      );
+    }
     const linkedModules = linkedBslContext.modules;
     const { eventRoutineDependencies, defaultFormDependencies } = linkedBslContext;
     // Candidate factories retain only sources for matched/mergeable modules.
@@ -707,6 +739,7 @@ async function buildConfigurationCompareState(
     rightSources = undefined;
 
     const adapterResults = await buildAdapterCompareResults({
+      targetSourceId: LEFT_SOURCE_ID,
       strategy,
       leftInventory,
       rightInventory,
@@ -719,6 +752,23 @@ async function buildConfigurationCompareState(
       linkedModules,
       eventRoutineDependencies,
       defaultFormDependencies,
+      ...(input.onProgress
+        ? {
+            onProgress: (completed: number, total: number, completedResults: readonly AdapterCompareResult[]) => {
+              if (completed === 0) {
+                publishCompareBuildProgress(input, { phase: 'comparing', completed, total });
+                return;
+              }
+              const projection = buildCompareTreeProjection({
+                metadata: partialMetadata,
+                bsl: bsl.items,
+                adapterResults: completedResults,
+                messages: [...session.state.messages],
+              });
+              publishProjectionProgress(input, 'comparing', projection, completed, total);
+            },
+          }
+        : {}),
     });
     const bound = bindLinkedDesignerPackageNodes({
       results: adapterResults,
@@ -736,6 +786,7 @@ async function buildConfigurationCompareState(
       result.candidateFactories.forEach((factory, nodeId) => candidateFactories.set(nodeId, factory));
     }
     throwIfCompareCancelled(input.cancellation);
+    publishCompareBuildProgress(input, { phase: 'projecting' });
     const projection = buildCompareTreeProjection({
       metadata,
       bsl: [
@@ -746,6 +797,7 @@ async function buildConfigurationCompareState(
       adapterResults: projectedAdapterResults,
       messages: session.state.messages,
     });
+    publishProjectionProgress(input, 'projecting', projection);
     const modulesByTargetPath = mapLinkedModulesByTargetPath(leftRootPath, linkedModules);
     const materializerContext: LinkedDesignerMaterializerContext = {
       targetRootPath: leftRootPath,
@@ -784,106 +836,34 @@ async function buildConfigurationCompareState(
   }
 }
 
-async function buildAdapterCompareResults(input: {
-  strategy: CompareJoinStrategy;
-  leftInventory: ConfigurationInventory;
-  rightInventory: ConfigurationInventory;
-  metadata: ReturnType<typeof matchMetadataIdentities>;
-  session: CompareSession;
-  cancellation?: CompareCancellationToken;
-  concurrency: number;
-  readTextFile?: (filePath: string) => Promise<string>;
-  linkedDesignerPackages: readonly import('./linkedDesignerMaterializer').LinkedDesignerPackageRecipe[];
-  linkedModules: readonly LinkedFormModuleSnapshot[];
-  eventRoutineDependencies: Map<string, {
-    moduleId: string;
-    handlerName: string;
-    targetHasHandler: boolean;
-    incomingRoutineNodeId?: string;
-  }>;
-  defaultFormDependencies: Map<string, import('./linkedDesignerMaterializer').LinkedDefaultFormDependency>;
-}): Promise<AdapterCompareResult[]> {
-  throwIfCompareCancelled(input.cancellation);
-  const metadataReferenceContext = await buildMetadataReferenceContext({
-    inventory: input.leftInventory,
-    sourceId: LEFT_SOURCE_ID,
-    readTextFile: input.readTextFile,
+function publishProjectionProgress(
+  options: ConfigurationCompareInput,
+  phase: CompareBuildProgress['phase'],
+  projection: CompareTreeProjection,
+  completed?: number,
+  total?: number
+): void {
+  if (!options.onProgress) {
+    return;
+  }
+  publishCompareBuildProgress(options, {
+    phase,
+    ...(completed === undefined ? {} : { completed }),
+    ...(total === undefined ? {} : { total }),
+    projection: createReadOnlyCompareProjection(projection),
   });
-  const matches = buildMetadataObjectMatches(input);
-
-  const results = await mapLimit(matches, input.concurrency, async (match) => {
-    throwIfCompareCancelled(input.cancellation);
-    const matchResults: AdapterCompareResult[] = [
-      await fileObjectAdapter.compare({
-        strategy: input.strategy,
-        leftInventory: input.leftInventory,
-        rightInventory: input.rightInventory,
-        match,
-        session: input.session,
-        snapshots: { left: '', right: '' },
-      }),
-    ];
-
-    if (!match.left || !match.right) {
-      return matchResults;
-    }
-
-    for (const artifactKind of ['metadataXml', 'formXml', 'predefinedXml', 'roleRightsXml', 'dcsXml'] as const) {
-      throwIfCompareCancelled(input.cancellation);
-      const pairing = findArtifactPairs(
-        input.leftInventory,
-        input.rightInventory,
-        match,
-        artifactKind
-      );
-      if (pairing.ambiguousRelativePaths.length > 0) {
-        matchResults.push(ambiguousArtifactPairResult(LEFT_SOURCE_ID));
-        continue;
-      }
-      for (const artifactPair of pairing.pairs) {
-        if (artifactPair.left.contentHash === artifactPair.right.contentHash) {
-          continue;
-        }
-        matchResults.push(await compareLinkedDesignerXmlArtifact(input, match, artifactPair, artifactKind, metadataReferenceContext));
-      }
-    }
-    return matchResults;
-  }, input.cancellation);
-
-  return results
-    .flat()
-    .filter((result) => result.nodes.length > 0 || result.diagnostics.length > 0);
 }
 
-function buildMetadataObjectMatches(input: {
-  strategy: CompareJoinStrategy;
-  leftInventory: ConfigurationInventory;
-  rightInventory: ConfigurationInventory;
-  metadata: ReturnType<typeof matchMetadataIdentities>;
-}): MetadataObjectMatch[] {
-  const matches: MetadataObjectMatch[] = [
-    ...input.metadata.matches.map((identity) => ({
-      left: findInventoryObjectByDescriptor(input.leftInventory, identity.left.filePath),
-      right: findInventoryObjectByDescriptor(input.rightInventory, identity.right.filePath),
-      identity,
-      leftIdentity: identity.left,
-      rightIdentity: identity.right,
-    })),
-    ...input.metadata.unmatchedLeft.map((identity) => ({
-      left:
-        findInventoryObjectByDescriptor(input.leftInventory, identity.filePath) ??
-        (input.strategy === 'full' ? metadataIdentityToObjectUnit(identity) : undefined),
-      leftIdentity: identity,
-    })),
-    ...input.metadata.unmatchedRight.map((identity) => ({
-      right:
-        findInventoryObjectByDescriptor(input.rightInventory, identity.filePath) ??
-        (input.strategy === 'full' ? metadataIdentityToObjectUnit(identity) : undefined),
-      rightIdentity: identity,
-    })),
-  ];
-
-  return matches.filter((match) => match.left || match.right);
+function throwIfCompareCancelledAndDispose(
+  cancellation: CompareCancellationToken | undefined,
+  session: CompareSession
+): void {
+  try {
+    throwIfCompareCancelled(cancellation);
+  } catch (error) {
+    session.dispose();
+    throw error;
+  }
 }
 
 interface BslSourceCollection {

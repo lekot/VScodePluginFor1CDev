@@ -8,6 +8,9 @@ import { renderSecureWebviewHtml } from '../utils/webviewSecurity';
 import type { MutationFailureProjection } from '../services/configurationSession/mutationReceiptError';
 import type { CompareTreeNode } from './compareTreeTypes';
 import type { CompareMessage } from './domain/compareContracts';
+import type { CompareBuildOptions, CompareBuildProgress } from './compareProgress';
+import type { CompareTreeProjection } from './projection/compareTreeProjection';
+import { buildCompareDisplayTree } from './projection/compareDisplayTree';
 import type {
   ConfigCompareAppliedOperationDto,
   ConfigCompareHostToWebviewMessage,
@@ -19,6 +22,7 @@ import type {
   ConfigCompareWebviewPayload,
   ConfigurationCompareWorkspace,
   WorkspacePreviewDto,
+  WorkspaceRefreshResult,
   WorkspaceSelectionState,
   WorkspaceStrategyResult,
   CompareJoinStrategy,
@@ -31,9 +35,23 @@ export interface ConfigCompareWebviewRenderInput {
   title?: string;
   nonce?: string;
   htmlPath?: string;
+  initialLoadState?: Omit<ConfigCompareLoadStateMessage, 'type'>;
 }
 
-type ConfigCompareWorkspaceLike = Pick<
+export interface ConfigCompareLoadStateMessage {
+  type: 'loadState';
+  generation: number;
+  status: 'loading' | 'ready' | 'cancelled' | 'error';
+  phase?: CompareBuildProgress['phase'];
+  completed?: number;
+  total?: number;
+  partial?: boolean;
+  payload?: ConfigCompareWebviewPayloadDto;
+  error?: string;
+  retryAvailable?: boolean;
+}
+
+export type ConfigCompareWorkspaceLike = Pick<
   ConfigurationCompareWorkspace,
   | 'payload'
   | 'selectNodeIds'
@@ -44,8 +62,17 @@ type ConfigCompareWorkspaceLike = Pick<
   | 'dispose'
 > & {
   listMergeableNodeIds?: () => string[];
-  setStrategy?: (strategy: CompareJoinStrategy) => WorkspaceStrategyResult | Promise<WorkspaceStrategyResult>;
+  setStrategy?: (
+    strategy: CompareJoinStrategy,
+    options?: CompareBuildOptions
+  ) => WorkspaceStrategyResult | Promise<WorkspaceStrategyResult>;
 };
+
+export interface BindConfigurationCompareWebviewOptions {
+  renderHtml?: boolean;
+  alreadyReady?: boolean;
+  generation?: number;
+}
 
 interface ControllerState {
   selectedNodeIds: string[];
@@ -54,6 +81,7 @@ interface ControllerState {
   diagnostics: CompareMessage[];
   preview?: ConfigComparePreviewDto;
   busy: boolean;
+  locked?: boolean;
 }
 
 export function renderConfigCompareWebviewHtml(input: ConfigCompareWebviewRenderInput): string {
@@ -62,6 +90,10 @@ export function renderConfigCompareWebviewHtml(input: ConfigCompareWebviewRender
     input.executableNodeIds ?? [],
     input.title ?? 'Сравнение конфигураций'
   );
+  const initialLoadState = input.initialLoadState ?? {
+    generation: 0,
+    status: 'ready' as const,
+  };
   const template = input.htmlPath
     ? fs.readFileSync(input.htmlPath, 'utf8')
     : readConfigCompareWebviewTemplate();
@@ -71,6 +103,8 @@ export function renderConfigCompareWebviewHtml(input: ConfigCompareWebviewRender
     substitutions: {
       '// __CONFIG_COMPARE_DATA_PLACEHOLDER__':
         `window.__configCompareData = ${escapeJsonForScript(JSON.stringify(payload))};`,
+      '// __CONFIG_COMPARE_LOAD_PLACEHOLDER__':
+        `window.__configCompareLoadState = ${escapeJsonForScript(JSON.stringify(initialLoadState))};`,
     },
   });
 }
@@ -95,9 +129,10 @@ export function showConfigurationCompare(
 }
 
 export function bindConfigurationCompareWebview(
-  panel: Pick<vscode.WebviewPanel, 'webview' | 'onDidDispose'>,
+  panel: Pick<vscode.WebviewPanel, 'webview' | 'onDidDispose' | 'dispose'>,
   workspace: ConfigCompareWorkspaceLike,
-  title = 'Сравнение конфигураций'
+  title = 'Сравнение конфигураций',
+  options: BindConfigurationCompareWebviewOptions = {}
 ): vscode.Disposable {
   const state: ControllerState = {
     selectedNodeIds: [],
@@ -105,14 +140,182 @@ export function bindConfigurationCompareWebview(
     canCreatePreview: false,
     diagnostics: [],
     busy: false,
+    locked: workspace.payload.locked,
+  };
+  let operationGeneration = options.generation ?? 0;
+  let operationSource: vscode.CancellationTokenSource | undefined;
+  let queuedProgress: CompareBuildProgress | undefined;
+  let activePartialProjection: CompareTreeProjection | undefined;
+  let activePartialPayload: ConfigCompareWebviewPayloadDto | undefined;
+  let progressTimer: ReturnType<typeof setTimeout> | undefined;
+  let retryOperation: (() => Promise<void>) | undefined;
+
+  const publishLoadState = async (message: ConfigCompareLoadStateMessage): Promise<void> => {
+    try {
+      await panel.webview.postMessage(message);
+    } catch (error) {
+      Logger.warn('Configuration compare webview no longer accepts messages', error);
+      operationSource?.cancel();
+    }
   };
 
-  panel.webview.html = renderConfigCompareWebviewHtml({
-    webview: panel.webview,
-    payload: workspace.payload,
-    executableNodeIds: workspace.listMergeableNodeIds?.() ?? [],
-    title,
-  });
+  const publishProgress = (generation: number, source: vscode.CancellationTokenSource): void => {
+    if (generation !== operationGeneration || source.token.isCancellationRequested) {
+      return;
+    }
+    progressTimer = undefined;
+    const progress = queuedProgress;
+    queuedProgress = undefined;
+    if (!progress) {
+      return;
+    }
+    if (progress.projection) {
+      activePartialPayload = toWebviewPayload({
+        ...workspace.payload,
+        root: progress.projection.root,
+        stats: progress.projection.stats,
+        locked: true,
+      }, [], title, true);
+    }
+    const payload = activePartialPayload ?? toWebviewPayload(workspace.payload, [], title, true);
+    void publishLoadState({
+      type: 'loadState',
+      generation,
+      status: 'loading',
+      phase: progress.phase,
+      completed: progress.completed,
+      total: progress.total,
+      partial: true,
+      payload,
+    });
+  };
+
+  const runBuildOperation = async (
+    run: (buildOptions: CompareBuildOptions) => Promise<WorkspaceRefreshResult | WorkspaceStrategyResult>
+  ): Promise<void> => {
+    const previousSelection = [...state.selectedNodeIds];
+    operationSource?.cancel();
+    operationSource?.dispose();
+    if (progressTimer !== undefined) {clearTimeout(progressTimer);}
+    progressTimer = undefined;
+    queuedProgress = undefined;
+    activePartialProjection = undefined;
+    activePartialPayload = undefined;
+    const source = new vscode.CancellationTokenSource();
+    operationSource = source;
+    const generation = ++operationGeneration;
+    state.busy = true;
+    state.preview = undefined;
+    state.canCreatePreview = false;
+    retryOperation = () => runBuildOperation(run);
+    await publishLoadState({
+      type: 'loadState',
+      generation,
+      status: 'loading',
+      phase: 'detecting',
+      partial: true,
+      payload: toWebviewPayload(workspace.payload, [], title, true),
+    });
+    const report = (progress: CompareBuildProgress): void => {
+      if (generation !== operationGeneration || source.token.isCancellationRequested) {return;}
+      if (progress.projection) {
+        activePartialProjection = progress.projection;
+      }
+      queuedProgress = activePartialProjection && !progress.projection
+        ? { ...progress, projection: activePartialProjection }
+        : progress;
+      if (progressTimer === undefined) {
+        progressTimer = setTimeout(() => publishProgress(generation, source), 60);
+      }
+    };
+    try {
+      const result = await run({ cancellation: source.token, onProgress: report });
+      if (generation !== operationGeneration || source.token.isCancellationRequested) {return;}
+      if (progressTimer !== undefined) {clearTimeout(progressTimer);}
+      progressTimer = undefined;
+      queuedProgress = undefined;
+      state.busy = false;
+      state.diagnostics = result.diagnostics;
+      if (!result.ok) {
+        state.locked = true;
+        await publishLoadState({
+          type: 'loadState', generation, status: 'error',
+          partial: Boolean(activePartialPayload),
+          payload: activePartialPayload ?? toWebviewPayload(workspace.payload, workspace.listMergeableNodeIds?.() ?? [], title),
+          error: result.diagnostics.map((item: CompareMessage) => item.suggestedAction ?? item.code).join('\n') || 'Не удалось построить сравнение.',
+          retryAvailable: true,
+        });
+        return;
+      }
+      state.locked = workspace.payload.locked;
+      const allExecutableNodeIds = workspace.listMergeableNodeIds?.() ?? [];
+      state.executableNodeIds = allExecutableNodeIds;
+      const executable = new Set(allExecutableNodeIds);
+      const retainedSelection = previousSelection.filter((nodeId) => executable.has(nodeId));
+      if (retainedSelection.length > 0) {
+        applySelection(state, workspace.selectNodeIds(retainedSelection));
+      } else {
+        state.selectedNodeIds = [];
+        state.executableNodeIds = [];
+        state.canCreatePreview = false;
+      }
+      await publishLoadState({
+        type: 'loadState', generation, status: 'ready',
+        payload: toWebviewPayload(workspace.payload, allExecutableNodeIds, title),
+      });
+      activePartialProjection = undefined;
+      activePartialPayload = undefined;
+      await postState(panel.webview, workspace, title, state);
+    } catch (error) {
+      if (generation !== operationGeneration || source.token.isCancellationRequested) {return;}
+      if (progressTimer !== undefined) {clearTimeout(progressTimer);}
+      progressTimer = undefined;
+      queuedProgress = undefined;
+      state.busy = false;
+      state.locked = true;
+      await publishLoadState({
+        type: 'loadState', generation, status: 'error',
+        partial: Boolean(activePartialPayload),
+        payload: activePartialPayload ?? toWebviewPayload(workspace.payload, workspace.listMergeableNodeIds?.() ?? [], title),
+        error: safeErrorMessage(error),
+        retryAvailable: true,
+      });
+    } finally {
+      if (operationSource === source) {
+        operationSource.dispose();
+        operationSource = undefined;
+      }
+    }
+  };
+
+  const cancelBuildOperation = async (): Promise<void> => {
+    const source = operationSource;
+    if (!source) {return;}
+    source.cancel();
+    if (progressTimer !== undefined) {clearTimeout(progressTimer);}
+    progressTimer = undefined;
+    queuedProgress = undefined;
+    state.busy = false;
+    await publishLoadState({
+      type: 'loadState',
+      generation: operationGeneration,
+      status: 'cancelled',
+      partial: Boolean(activePartialPayload),
+      payload: activePartialPayload ?? toWebviewPayload(workspace.payload, [], title, true),
+      retryAvailable: Boolean(retryOperation),
+    });
+    source.dispose();
+    if (operationSource === source) {operationSource = undefined;}
+  };
+
+  if (options.renderHtml !== false) {
+    panel.webview.html = renderConfigCompareWebviewHtml({
+      webview: panel.webview,
+      payload: workspace.payload,
+      executableNodeIds: workspace.listMergeableNodeIds?.() ?? [],
+      title,
+    });
+  }
 
   const messageSubscription = panel.webview.onDidReceiveMessage(async (rawMessage: unknown) => {
     const message = parseWebviewMessage(rawMessage);
@@ -121,8 +324,38 @@ export function bindConfigurationCompareWebview(
       return;
     }
 
+    if (
+      state.busy &&
+      !operationSource &&
+      (message.type === 'refresh' || message.type === 'setStrategy' || message.type === 'retry')
+    ) {
+      await rejectBusyMessage(panel.webview, workspace, title, state);
+      return;
+    }
+
+    if (message.type === 'cancel' && operationSource) {
+      await cancelBuildOperation();
+      return;
+    }
+    if (message.type === 'retry' && retryOperation) {
+      await retryOperation();
+      return;
+    }
+    if (message.type === 'close') {
+      panel.dispose();
+      return;
+    }
+
     try {
-      await handleWebviewMessage(panel.webview, workspace, title, state, message);
+      if (message.type === 'refresh') {
+        await runBuildOperation((buildOptions) => workspace.refresh(buildOptions));
+      } else if (message.type === 'setStrategy') {
+        await runBuildOperation((buildOptions) => workspace.setStrategy
+          ? Promise.resolve(workspace.setStrategy(message.strategy, buildOptions))
+          : Promise.resolve({ ok: false, payload: workspace.payload, diagnostics: [] }));
+      } else {
+        await handleWebviewMessage(panel.webview, workspace, title, state, message);
+      }
     } catch (error) {
       Logger.error('Configuration compare webview message failed', error);
       state.busy = false;
@@ -137,12 +370,24 @@ export function bindConfigurationCompareWebview(
   });
 
   const disposeSubscription = panel.onDidDispose(() => {
+    operationSource?.cancel();
+    operationSource?.dispose();
+    operationSource = undefined;
+    if (progressTimer !== undefined) {clearTimeout(progressTimer);}
     messageSubscription.dispose();
     workspace.dispose();
   });
 
+  if (options.alreadyReady) {
+    void postState(panel.webview, workspace, title, state);
+  }
+
   return {
     dispose: () => {
+      operationSource?.cancel();
+      operationSource?.dispose();
+      operationSource = undefined;
+      if (progressTimer !== undefined) {clearTimeout(progressTimer);}
       messageSubscription.dispose();
       disposeSubscription.dispose();
     },
@@ -188,6 +433,10 @@ async function handleWebviewMessage(
       return;
     case 'refresh':
       await refresh(webview, workspace, title, state);
+      return;
+    case 'cancel':
+    case 'retry':
+    case 'close':
       return;
     default:
       assertNever(message);
@@ -376,7 +625,7 @@ function applySelection(state: ControllerState, selection: WorkspaceSelectionSta
   state.diagnostics = selection.diagnostics;
 }
 
-async function postState(
+export async function postState(
   webview: Pick<vscode.Webview, 'postMessage'>,
   workspace: ConfigCompareWorkspaceLike,
   title: string,
@@ -421,15 +670,18 @@ async function postMessage(
   await webview.postMessage(message);
 }
 
-function toWebviewPayload(
+export function toWebviewPayload(
   payload: ConfigCompareWebviewPayload,
   executableNodeIds: readonly string[],
   title: string,
   lockedOverride?: boolean
 ): ConfigCompareWebviewPayloadDto {
+  const safeRoot = redactTreeNode(payload.root);
   return {
     title,
-    root: redactTreeNode(payload.root),
+    targetLabel: safeRootLabel(payload.sourceRoots.left),
+    sourceLabel: safeRootLabel(payload.sourceRoots.right),
+    root: buildCompareDisplayTree(safeRoot).root,
     stats: payload.stats,
     locked: lockedOverride ?? payload.locked,
     strategy: payload.strategy ?? 'right',
@@ -455,11 +707,32 @@ function redactTreeNode(node: CompareTreeNode): CompareTreeNode {
     rightValue: redactTreeValue(node.rightValue),
     mergeable: node.mergeable,
     destructive: node.destructive,
-    conflict: node.conflict,
+    conflict: node.conflict
+      ? { ...node.conflict, message: redactSafeText(node.conflict.message) ?? node.conflict.message }
+      : undefined,
     mergeState: node.mergeState
       ? {
           state: node.mergeState.state,
-          reason: node.mergeState.reason,
+          reason: redactSafeText(node.mergeState.reason),
+        }
+      : undefined,
+    presentation: node.presentation
+      ? {
+          ownerKey: node.presentation.ownerKey,
+          ownerAliases: node.presentation.ownerAliases ? [...node.presentation.ownerAliases] : undefined,
+          metadataType: node.presentation.metadataType,
+          moduleKind: node.presentation.moduleKind,
+          qualifiedName: node.presentation.qualifiedName,
+          identityConflict: node.presentation.identityConflict,
+          ambiguousIdentitySet: node.presentation.ambiguousIdentitySet,
+          identities: node.presentation.identities?.map((identity) => ({
+            side: identity.side,
+            qualifiedName: identity.qualifiedName,
+            uuid: identity.uuid,
+            filePath: redactIdentityPath(identity.filePath),
+            ownership: identity.ownership,
+            sourceUuid: identity.sourceUuid,
+          })),
         }
       : undefined,
     children: node.children.map(redactTreeNode),
@@ -478,7 +751,41 @@ function redactTreeValue(value: string | undefined): string | undefined {
 
   return value;
 }
-
+function safeRootLabel(value: string | undefined): string {
+  if (!value) {
+    return 'Конфигурация';
+  }
+  const basename = path.win32.basename(value.replace(/\//g, '\\')) || path.posix.basename(value);
+  return basename && basename !== '.' && basename !== '\\' ? basename : 'Конфигурация';
+}
+function redactSafeText(value: string | undefined): string | undefined {
+  if (!value) {
+    return value;
+  }
+  return value.replace(/(?:[A-Za-z]:[\\/]|(?<![\w:])\/)[^\s"'<>]*/g, (match) => {
+    const basename = safeRootLabel(match);
+    return basename === 'Конфигурация' ? '[путь]' : `…/${basename}`;
+  });
+}
+export function safeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return redactSafeText(message) ?? 'Неизвестная ошибка сравнения.';
+}
+export function createEmptyComparePayload(target: string, source: string): ConfigCompareWebviewPayload {
+  return {
+    root: {
+      id: 'configCompare',
+      label: 'Configuration compare',
+      kind: 'configCompare',
+      status: 'equal',
+      children: [],
+    },
+    stats: { total: 0, different: 0, mergeable: 0 },
+    sourceRoots: { left: target, right: source },
+    locked: true,
+    strategy: 'right',
+  };
+}
 function toPreviewDto(
   preview: WorkspacePreviewDto,
   approved: boolean,
@@ -539,6 +846,19 @@ function redactPreviewPath(value: string | undefined): string | undefined {
     : normalized;
 }
 
+function redactIdentityPath(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (!path.isAbsolute(value) && !path.win32.isAbsolute(value) && !path.posix.isAbsolute(value)) {
+    const normalized = value.replace(/\\/g, '/');
+    if (!normalized.split('/').some((segment) => segment === '..' || segment === '.')) {
+      return normalized;
+    }
+  }
+  return safeRootLabel(value);
+}
+
 function previewRequiresDestructiveConfirmation(
   preview: ConfigComparePreviewDto | undefined,
   previewId: string
@@ -580,13 +900,16 @@ function redactAppliedOperation(input: {
   };
 }
 
-function parseWebviewMessage(message: unknown): ConfigCompareWebviewToHostMessage | undefined {
+export function parseWebviewMessage(message: unknown): ConfigCompareWebviewToHostMessage | undefined {
   if (!isRecord(message) || typeof message.type !== 'string') {
     return undefined;
   }
 
   switch (message.type) {
     case 'ready':
+    case 'cancel':
+    case 'retry':
+    case 'close':
     case 'refresh':
       return hasOnlyKeys(message, ['type']) ? { type: message.type } : undefined;
     case 'setStrategy':
@@ -614,7 +937,6 @@ function parseWebviewMessage(message: unknown): ConfigCompareWebviewToHostMessag
       return undefined;
   }
 }
-
 function isExecuteMergeMessage(
   message: Record<string, unknown>
 ): message is { type: 'executeMerge'; previewId: string; destructiveConfirmed?: boolean } {
@@ -625,34 +947,27 @@ function isExecuteMergeMessage(
     (message.destructiveConfirmed === undefined || typeof message.destructiveConfirmed === 'boolean')
   );
 }
-
 function isCompareJoinStrategy(value: unknown): value is CompareJoinStrategy {
   return value === 'left' || value === 'right' || value === 'full';
 }
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const expected = new Set(keys);
   return Object.keys(value).every((key) => expected.has(key)) && Object.keys(value).length === keys.length;
 }
-
 function hasOnlyAllowedKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const expected = new Set(keys);
   return Object.keys(value).every((key) => expected.has(key));
 }
-
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
-
 function readConfigCompareWebviewTemplate(): string {
   const htmlPath = resolveConfigCompareWebviewHtmlPath();
   return htmlPath ? fs.readFileSync(htmlPath, 'utf8') : DEFAULT_CONFIG_COMPARE_WEBVIEW_HTML;
 }
-
 function resolveConfigCompareWebviewHtmlPath(): string | undefined {
   const candidates = [
     path.join(__dirname, 'configCompareWebview.html'),
@@ -662,7 +977,6 @@ function resolveConfigCompareWebviewHtmlPath(): string | undefined {
   ];
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
-
 function assertNever(value: never): never {
   throw new Error(`Unexpected configuration compare message: ${String(value)}`);
 }

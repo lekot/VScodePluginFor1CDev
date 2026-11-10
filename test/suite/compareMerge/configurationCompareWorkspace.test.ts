@@ -11,8 +11,10 @@ import type { BslRoutineLogicalMergePlan } from '../../../src/compareMerge/bsl/b
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 import {
   ConfigurationCompareWorkspace,
+  type ConfigurationCompareWorkspaceState,
   type ExecutableCandidateFactory,
 } from '../../../src/compareMerge/configurationCompareWorkspace';
+import type { CompareBuildOptions } from '../../../src/compareMerge/compareProgress';
 import { CompareSession } from '../../../src/compareMerge/domain/compareSession';
 import type { CompareMessage } from '../../../src/compareMerge/domain/compareContracts';
 import type { MergeCandidate } from '../../../src/compareMerge/merge/mergePlanner';
@@ -313,6 +315,7 @@ suite('ConfigurationCompareWorkspace', () => {
   });
 
   test('treats a noncommitted receipt as failure even when legacy failures are empty', async () => {
+    let refreshCalls = 0;
     const workspace = makeWorkspace({
       executeMerge: async (input) => ({
         ...emptyExecutionResult(input.preflight.previewId),
@@ -324,6 +327,14 @@ suite('ConfigurationCompareWorkspace', () => {
           resourcePath: path.join('repo', 'left'),
         },
       }),
+      refreshWorkspace: async () => {
+        refreshCalls += 1;
+        return {
+          session: makeSession(),
+          projection: makeProjection(),
+          candidateFactories: makeCandidateFactories(),
+        };
+      },
     });
     const preview = await workspace.createPreviewForNodeIds(['bsl:routine:Catalog.Products.Object:run']);
     assert.strictEqual(preview.ok, true);
@@ -331,6 +342,7 @@ suite('ConfigurationCompareWorkspace', () => {
 
     const execution = await workspace.executeApprovedPreview(preview.preview.previewId);
     const afterRecovery = await workspace.createPreviewForNodeIds(['bsl:routine:Catalog.Products.Object:run']);
+    const strategyAfterRecovery = await workspace.setStrategy('full');
 
     assert.strictEqual(execution.ok, false);
     assert.strictEqual(execution.locked, true);
@@ -338,6 +350,9 @@ suite('ConfigurationCompareWorkspace', () => {
     assert.strictEqual(execution.result?.receipt?.status, 'recoveryRequired');
     assert.strictEqual(afterRecovery.ok, false);
     assert.strictEqual(afterRecovery.diagnostics[0]?.code, 'CONFIG_COMPARE_WORKSPACE_LOCKED');
+    assert.strictEqual(strategyAfterRecovery.ok, false);
+    assert.strictEqual(strategyAfterRecovery.diagnostics[0]?.code, 'CONFIG_COMPARE_WORKSPACE_LOCKED');
+    assert.strictEqual(refreshCalls, 0);
   });
 
   test('refresh and dispose invalidate stale previews safely', async () => {
@@ -389,6 +404,332 @@ suite('ConfigurationCompareWorkspace', () => {
     assert.strictEqual(refreshedDisposals, 1);
   });
 
+  test('disposes a refresh result that arrives after the workspace closes', async () => {
+    const lateSession = makeSession();
+    let lateDisposals = 0;
+    const disposeLate = lateSession.dispose.bind(lateSession);
+    lateSession.dispose = () => {
+      lateDisposals += 1;
+      disposeLate();
+    };
+    let resolveRefresh!: (state: ConfigurationCompareWorkspaceState) => void;
+    const refreshTask = new Promise<ConfigurationCompareWorkspaceState>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const workspace = makeWorkspace({ refreshWorkspace: () => refreshTask });
+
+    const resultPromise = workspace.refresh();
+    workspace.dispose();
+    resolveRefresh({
+      session: lateSession,
+      projection: makeProjection(),
+      candidateFactories: makeCandidateFactories(),
+    });
+    const result = await resultPromise;
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.locked, true);
+    assert.strictEqual(result.diagnostics[0]?.code, 'CONFIG_COMPARE_WORKSPACE_DISPOSED');
+    assert.strictEqual(lateDisposals, 1);
+    assert.strictEqual(workspace.payload.locked, true);
+  });
+
+  test('disposes a late refresh result when its cancellation token was set before publication', async () => {
+    const lateSession = makeSession();
+    let lateDisposals = 0;
+    const disposeLate = lateSession.dispose.bind(lateSession);
+    lateSession.dispose = () => {
+      lateDisposals += 1;
+      disposeLate();
+    };
+    let resolveRefresh!: (state: ConfigurationCompareWorkspaceState) => void;
+    const refreshTask = new Promise<ConfigurationCompareWorkspaceState>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const cancellation = { isCancellationRequested: false };
+    const workspace = makeWorkspace({ refreshWorkspace: () => refreshTask });
+    const originalRoot = workspace.payload.root;
+
+    const resultPromise = workspace.refresh({ cancellation });
+    cancellation.isCancellationRequested = true;
+    resolveRefresh({
+      session: lateSession,
+      projection: makeProjectionForStrategy('full'),
+      candidateFactories: makeCandidateFactories(),
+    });
+    const result = await resultPromise;
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.locked, true);
+    assert.strictEqual(result.diagnostics[0]?.code, 'CONFIGURATION_COMPARE_CANCELLED');
+    assert.strictEqual(lateDisposals, 1);
+    assert.strictEqual(workspace.payload.root, originalRoot);
+    assert.strictEqual(workspace.payload.locked, true);
+    workspace.dispose();
+  });
+
+  test('restores the selected strategy when its late refresh result is cancelled', async () => {
+    let resolveRefresh!: (state: ConfigurationCompareWorkspaceState) => void;
+    const refreshTask = new Promise<ConfigurationCompareWorkspaceState>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const cancellation = { isCancellationRequested: false };
+    const workspace = makeWorkspace({ refreshWorkspace: () => refreshTask });
+    const originalRoot = workspace.payload.root;
+    const resultPromise = workspace.setStrategy('full', { cancellation });
+
+    cancellation.isCancellationRequested = true;
+    resolveRefresh({
+      session: makeSession(),
+      projection: makeProjectionForStrategy('full'),
+      candidateFactories: makeCandidateFactoriesForStrategy('full'),
+    });
+    const result = await resultPromise;
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.diagnostics[0]?.code, 'CONFIGURATION_COMPARE_CANCELLED');
+    assert.strictEqual(result.payload.strategy, 'right');
+    assert.strictEqual(result.payload.root, originalRoot);
+    assert.strictEqual(workspace.payload.strategy, 'right');
+    workspace.dispose();
+  });
+
+  test('allows retrying a strategy after its compare refresh fails while keeping the old snapshot locked', async () => {
+    let refreshCount = 0;
+    const workspace = makeWorkspace({
+      refreshWorkspace: async (strategy) => {
+        refreshCount += 1;
+        if (refreshCount === 1) {
+          throw new Error('temporary compare failure');
+        }
+        return {
+          session: makeSession(),
+          projection: makeProjectionForStrategy(strategy),
+          candidateFactories: makeCandidateFactoriesForStrategy(strategy),
+        };
+      },
+    });
+    const originalRoot = workspace.payload.root;
+
+    const failed = await workspace.setStrategy('full');
+
+    assert.strictEqual(failed.ok, false);
+    assert.strictEqual(failed.diagnostics[0]?.code, 'CONFIG_COMPARE_REFRESH_FAILED');
+    assert.strictEqual(workspace.payload.strategy, 'right');
+    assert.strictEqual(workspace.payload.root, originalRoot);
+    assert.strictEqual(workspace.payload.locked, true);
+    const previewWhileLocked = await workspace.createPreviewForNodeIds([
+      'bsl:routine:Catalog.Products.Object:run',
+    ]);
+    assert.strictEqual(previewWhileLocked.ok, false);
+    assert.strictEqual(previewWhileLocked.diagnostics[0]?.code, 'CONFIG_COMPARE_WORKSPACE_LOCKED');
+
+    const retried = await workspace.setStrategy('full');
+
+    assert.strictEqual(retried.ok, true);
+    assert.strictEqual(refreshCount, 2);
+    assert.strictEqual(retried.payload.strategy, 'full');
+    assert.strictEqual(retried.payload.root.id, 'configCompare:full');
+    assert.strictEqual(retried.payload.locked, false);
+    workspace.dispose();
+  });
+
+  test('allows retrying a cancelled strategy refresh after preserving the committed snapshot', async () => {
+    let resolveFirstRefresh!: (state: ConfigurationCompareWorkspaceState) => void;
+    let refreshCount = 0;
+    const cancellation = { isCancellationRequested: false };
+    const workspace = makeWorkspace({
+      refreshWorkspace: async (strategy) => {
+        refreshCount += 1;
+        if (refreshCount === 1) {
+          return new Promise<ConfigurationCompareWorkspaceState>((resolve) => {
+            resolveFirstRefresh = resolve;
+          });
+        }
+        return {
+          session: makeSession(),
+          projection: makeProjectionForStrategy(strategy),
+          candidateFactories: makeCandidateFactoriesForStrategy(strategy),
+        };
+      },
+    });
+    const originalRoot = workspace.payload.root;
+    const cancelledStrategy = workspace.setStrategy('full', { cancellation });
+    const cancelledSession = makeSession();
+
+    cancellation.isCancellationRequested = true;
+    resolveFirstRefresh({
+      session: cancelledSession,
+      projection: makeProjectionForStrategy('full'),
+      candidateFactories: makeCandidateFactoriesForStrategy('full'),
+    });
+    const cancelled = await cancelledStrategy;
+
+    assert.strictEqual(cancelled.ok, false);
+    assert.strictEqual(cancelled.diagnostics[0]?.code, 'CONFIGURATION_COMPARE_CANCELLED');
+    assert.strictEqual(workspace.payload.strategy, 'right');
+    assert.strictEqual(workspace.payload.root, originalRoot);
+    assert.strictEqual(workspace.payload.locked, true);
+    const previewWhileLocked = await workspace.createPreviewForNodeIds([
+      'bsl:routine:Catalog.Products.Object:run',
+    ]);
+    assert.strictEqual(previewWhileLocked.ok, false);
+    assert.strictEqual(previewWhileLocked.diagnostics[0]?.code, 'CONFIG_COMPARE_WORKSPACE_LOCKED');
+
+    const retried = await workspace.setStrategy('full');
+
+    assert.strictEqual(retried.ok, true);
+    assert.strictEqual(refreshCount, 2);
+    assert.strictEqual(retried.payload.strategy, 'full');
+    assert.strictEqual(retried.payload.root.id, 'configCompare:full');
+    assert.strictEqual(retried.payload.locked, false);
+    workspace.dispose();
+  });
+
+  test('does not let a stale in-flight refresh bypass a recovery lock', async () => {
+    let resolveOldRefresh!: (state: ConfigurationCompareWorkspaceState) => void;
+    let refreshCalls = 0;
+    const oldRefreshState = new Promise<ConfigurationCompareWorkspaceState>((resolve) => {
+      resolveOldRefresh = resolve;
+    });
+    const workspace = makeWorkspace({
+      executeMerge: async (input) => ({
+        ...emptyExecutionResult(input.preflight.previewId),
+        receipt: {
+          status: 'recoveryRequired',
+          code: 'RECOVERY_REQUIRED',
+          message: 'Injected recovery uncertainty.',
+          kind: 'configuration-compare-merge',
+          resourcePath: path.join('repo', 'left'),
+        },
+      }),
+      refreshWorkspace: async (strategy) => {
+        refreshCalls += 1;
+        if (refreshCalls === 1) {
+          return oldRefreshState;
+        }
+        return {
+          session: makeSession(),
+          projection: makeProjectionForStrategy(strategy),
+          candidateFactories: makeCandidateFactoriesForStrategy(strategy),
+        };
+      },
+    });
+
+    const staleRefresh = workspace.refresh();
+    const currentRefresh = await workspace.refresh();
+    assert.strictEqual(currentRefresh.ok, true);
+    assert.strictEqual(workspace.payload.locked, false);
+
+    const preview = await workspace.createPreviewForNodeIds([
+      'bsl:routine:Catalog.Products.Object:run',
+    ]);
+    assert.strictEqual(preview.ok, true);
+    workspace.approvePreview(preview.preview.previewId);
+    const execution = await workspace.executeApprovedPreview(preview.preview.previewId);
+    assert.strictEqual(execution.ok, false);
+    assert.strictEqual(execution.locked, true);
+
+    const strategyAfterRecovery = await workspace.setStrategy('left');
+    assert.strictEqual(strategyAfterRecovery.ok, false);
+    assert.strictEqual(strategyAfterRecovery.diagnostics[0]?.code, 'CONFIG_COMPARE_WORKSPACE_LOCKED');
+    assert.strictEqual(refreshCalls, 2, 'recovery lock must prevent a third compare refresh');
+
+    resolveOldRefresh({
+      session: makeSession(),
+      projection: makeProjection(),
+      candidateFactories: makeCandidateFactories(),
+    });
+    const staleResult = await staleRefresh;
+    assert.strictEqual(staleResult.ok, false);
+    assert.strictEqual(workspace.payload.locked, true);
+    assert.strictEqual(refreshCalls, 2);
+    workspace.dispose();
+  });
+
+  test('a stale strategy change cannot roll back the latest committed strategy', async () => {
+    let resolveEarlier!: (state: ConfigurationCompareWorkspaceState) => void;
+    let resolveLater!: (state: ConfigurationCompareWorkspaceState) => void;
+    const earlierTask = new Promise<ConfigurationCompareWorkspaceState>((resolve) => {
+      resolveEarlier = resolve;
+    });
+    const laterTask = new Promise<ConfigurationCompareWorkspaceState>((resolve) => {
+      resolveLater = resolve;
+    });
+    const laterCancellation = { isCancellationRequested: false };
+    let refreshCount = 0;
+    const workspace = makeWorkspace({
+      refreshWorkspace: () => (++refreshCount === 1 ? earlierTask : laterTask),
+    });
+    const originalRoot = workspace.payload.root;
+
+    const earlierStrategy = workspace.setStrategy('full');
+    const laterStrategy = workspace.setStrategy('left', { cancellation: laterCancellation });
+    laterCancellation.isCancellationRequested = true;
+    resolveLater({
+      session: makeSession(),
+      projection: makeProjectionForStrategy('left'),
+      candidateFactories: makeCandidateFactoriesForStrategy('left'),
+    });
+    const laterResult = await laterStrategy;
+    resolveEarlier({
+      session: makeSession(),
+      projection: makeProjectionForStrategy('full'),
+      candidateFactories: makeCandidateFactoriesForStrategy('full'),
+    });
+    const earlierResult = await earlierStrategy;
+
+    assert.strictEqual(laterResult.ok, false);
+    assert.strictEqual(earlierResult.ok, false);
+    assert.strictEqual(workspace.payload.strategy, 'right');
+    assert.strictEqual(workspace.payload.root, originalRoot);
+    assert.strictEqual(workspace.payload.locked, true);
+    workspace.dispose();
+  });
+
+  test('a cancelled older refresh cannot replace or relock a newer result', async () => {
+    let resolveOlder!: (state: ConfigurationCompareWorkspaceState) => void;
+    const olderTask = new Promise<ConfigurationCompareWorkspaceState>((resolve) => {
+      resolveOlder = resolve;
+    });
+    const olderSession = makeSession();
+    let olderDisposals = 0;
+    const disposeOlder = olderSession.dispose.bind(olderSession);
+    olderSession.dispose = () => {
+      olderDisposals += 1;
+      disposeOlder();
+    };
+    const newerState: ConfigurationCompareWorkspaceState = {
+      session: makeSession(),
+      projection: makeProjectionForStrategy('full'),
+      candidateFactories: makeCandidateFactoriesForStrategy('full'),
+    };
+    const newerRoot = newerState.projection.root;
+    let refreshCount = 0;
+    const workspace = makeWorkspace({
+      refreshWorkspace: () => (++refreshCount === 1 ? olderTask : Promise.resolve(newerState)),
+    });
+    const cancellation = { isCancellationRequested: false };
+
+    const olderResultPromise = workspace.refresh({ cancellation });
+    const newerResult = await workspace.refresh();
+    cancellation.isCancellationRequested = true;
+    resolveOlder({
+      session: olderSession,
+      projection: makeProjectionForStrategy('right'),
+      candidateFactories: makeCandidateFactories(),
+    });
+    const olderResult = await olderResultPromise;
+
+    assert.strictEqual(newerResult.ok, true);
+    assert.strictEqual(olderResult.ok, false);
+    assert.strictEqual(olderResult.locked, false);
+    assert.strictEqual(olderDisposals, 1);
+    assert.strictEqual(workspace.payload.root, newerRoot);
+    assert.strictEqual(workspace.payload.locked, false);
+    workspace.dispose();
+  });
+
   test('successful execute reports and locks refresh failure diagnostics', async () => {
     const workspace = makeWorkspace({
       refreshWorkspace: async () => {
@@ -413,9 +754,15 @@ suite('ConfigurationCompareWorkspace', () => {
 
   test('setStrategy refreshes projection stats and executable node ids for selected strategy', async () => {
     const refreshStrategies: string[] = [];
+    const options: CompareBuildOptions = {
+      cancellation: { isCancellationRequested: false },
+      onProgress: () => undefined,
+    };
+    let receivedOptions: CompareBuildOptions | undefined;
     const workspace = makeWorkspace({
-      refreshWorkspace: async (strategy) => {
+      refreshWorkspace: async (strategy, refreshOptions) => {
         refreshStrategies.push(strategy);
+        receivedOptions = refreshOptions;
         return {
           session: makeSession(),
           projection: makeProjectionForStrategy(strategy),
@@ -424,12 +771,13 @@ suite('ConfigurationCompareWorkspace', () => {
       },
     });
 
-    const result = await workspace.setStrategy('full');
+    const result = await workspace.setStrategy('full', options);
 
     assert.strictEqual(result.ok, true);
     assert.deepStrictEqual(refreshStrategies, ['full']);
     assert.strictEqual(result.payload.strategy, 'full');
     assert.strictEqual(result.payload.root.id, 'configCompare:full');
+    assert.strictEqual(receivedOptions, options);
     assert.deepStrictEqual(result.payload.stats, { total: 3, different: 3, mergeable: 2 });
     assert.deepStrictEqual(workspace.listMergeableNodeIds(), [
       'bsl:routine:Catalog.Products.Object:added',

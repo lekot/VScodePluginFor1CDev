@@ -6,21 +6,24 @@ import type { CompareMessage, CompareSide, CompareSnapshot, CompareSource } from
 import { CompareSession } from '../domain/compareSession';
 import type { CompareTreeNode, CompareTreeStats, CompareTreeStatus } from '../compareTreeTypes';
 import type { CompareTreeProjection } from '../projection/compareTreeProjection';
-import type { CompareCancellationToken } from '../compareCancellation';
 import { throwIfCompareCancelled } from '../compareCancellation';
+import {
+  createReadOnlyCompareProjection,
+  publishCompareBuildProgress,
+  type CompareBuildOptions,
+} from '../compareProgress';
 import type { CompareJoinStrategy, ConfigurationCompareInfo, ConfigurationCompareWorkspaceState } from '../configurationCompareWorkspace';
-import { indexExtensionMetadataRoot, SUPPORTED_EXTENSION_FORMATS, type ExtensionIndexDiagnostic, type ExtensionMetadataIndex } from './extensionMetadataIndex';
+import { indexExtensionMetadataRoot, probeExtensionMetadataRoot, SUPPORTED_EXTENSION_FORMATS, type ExtensionIndexDiagnostic, type ExtensionMetadataIndex } from './extensionMetadataIndex';
 import { analyzeExtensionTransfers, materializeExtensionSelection, type ExtensionTransferRow } from './extensionTransfer';
 import { projectExtensionSemanticNodes } from './extensionSemanticProjection';
 
 const LEFT_SOURCE_ID = 'left-source';
 const RIGHT_SOURCE_ID = 'right-source';
 
-export interface ExtensionCompareInput {
+export interface ExtensionCompareInput extends CompareBuildOptions {
   readonly leftRootPath: string;
   readonly rightRootPath: string;
   readonly createdAt?: Date;
-  readonly cancellation?: CompareCancellationToken;
   readonly extensionBaseRoots?: Readonly<Partial<Record<CompareSide, string>>>;
 }
 
@@ -37,19 +40,36 @@ export async function tryBuildExtensionCompareState(
   const createdAt = input.createdAt ?? new Date();
   const explicitLeftBasePath = input.extensionBaseRoots?.left;
   const explicitRightBasePath = input.extensionBaseRoots?.right;
+  publishCompareBuildProgress(input, { phase: 'detecting' });
 
-  const [left, right] = await Promise.all([
-    indexExtensionMetadataRoot({ rootPath: leftRootPath, sourceId: LEFT_SOURCE_ID, side: 'left', cancellation: input.cancellation }),
-    indexExtensionMetadataRoot({ rootPath: rightRootPath, sourceId: RIGHT_SOURCE_ID, side: 'right', cancellation: input.cancellation }),
-  ]);
+  let anyCfeEvidence = Boolean(explicitLeftBasePath) || Boolean(explicitRightBasePath);
+  let leftRootProbe: Awaited<ReturnType<typeof probeExtensionMetadataRoot>> | undefined;
+  let rightRootProbe: Awaited<ReturnType<typeof probeExtensionMetadataRoot>> | undefined;
+  if (!anyCfeEvidence) {
+    [leftRootProbe, rightRootProbe] = await settlePair(
+      probeExtensionMetadataRoot({ rootPath: leftRootPath, cancellation: input.cancellation }),
+      probeExtensionMetadataRoot({ rootPath: rightRootPath, cancellation: input.cancellation }),
+    );
+    throwIfCompareCancelled(input.cancellation);
+    anyCfeEvidence = leftRootProbe.cfeMarkerSeen || rightRootProbe.cfeMarkerSeen;
+  }
+  if (!anyCfeEvidence) {return undefined;}
+
+  publishCompareBuildProgress(input, { phase: 'metadata', completed: 0 });
+  let completedMetadataObjects = 0;
+  const onIndexedObject = (): void => {
+    completedMetadataObjects += 1;
+    publishCompareBuildProgress(input, { phase: 'metadata', completed: completedMetadataObjects });
+  };
+  const [left, right] = await settlePair(
+    indexExtensionMetadataRoot({ rootPath: leftRootPath, sourceId: LEFT_SOURCE_ID, side: 'left', cancellation: input.cancellation, onProgress: onIndexedObject, rootEvidence: leftRootProbe }),
+    indexExtensionMetadataRoot({ rootPath: rightRootPath, sourceId: RIGHT_SOURCE_ID, side: 'right', cancellation: input.cancellation, onProgress: onIndexedObject, rootEvidence: rightRootProbe }),
+  );
   throwIfCompareCancelled(input.cancellation);
 
   // The ordinary CF compare route remains authoritative until a CFE marker or explicit
   // manifest relation identifies extension semantics. Legacy roots can be partial Designer
   // fixtures, so one missing Configuration.xml does not by itself imply malformed CFE.
-  const anyCfeEvidence = left.cfeMarkerSeen || right.cfeMarkerSeen || Boolean(explicitLeftBasePath) || Boolean(explicitRightBasePath);
-  if (!anyCfeEvidence) {return undefined;}
-
   const baseIndexes: Partial<Record<CompareSide, ExtensionMetadataIndex>> = {};
   const baseInputs = [
     { side: 'left' as const, pathValue: explicitLeftBasePath, sourceId: 'left-base-source' },
@@ -64,6 +84,7 @@ export async function tryBuildExtensionCompareState(
       sourceId: item.sourceId,
       side: item.side,
       cancellation: input.cancellation,
+      onProgress: onIndexedObject,
     });
     baseIndexes[item.side] = base;
   }
@@ -172,10 +193,13 @@ export async function tryBuildExtensionCompareState(
   const session = CompareSession.create({ sessionId, createdAt: createdAt.toISOString(), sources });
   const leftSnapshotId = `${sessionId}-left`;
   const rightSnapshotId = `${sessionId}-right`;
+  let returnedState = false;
+  try {
   session.registerSnapshot(createSnapshot(left, leftSnapshotId, createdAt, false));
   session.registerSnapshot(createSnapshot(right, rightSnapshotId, createdAt, true));
   for (const message of diagnostics) {session.addMessage(message);}
 
+  publishCompareBuildProgress(input, { phase: 'comparing' });
   const analysis = await analyzeExtensionTransfers({
     target: left,
     incoming: right,
@@ -202,6 +226,9 @@ export async function tryBuildExtensionCompareState(
 
   const rootDiagnostics = collectVisibleDiagnostics([left, right, ...Object.values(baseIndexes).filter(isDefined)]);
   const projection = buildExtensionProjection(semanticProjection.nodes, rootDiagnostics, semanticProjection.rootPurposeNode, semanticDiagnostics);
+  if (input.onProgress) {
+    publishCompareBuildProgress(input, { phase: 'projecting', projection: createReadOnlyCompareProjection(projection) });
+  }
   const comparisonInfo: ConfigurationCompareInfo = {
     mode: 'extension',
     targetLabel: safeBasename(leftRootPath),
@@ -214,7 +241,7 @@ export async function tryBuildExtensionCompareState(
   };
 
   const rows: readonly ExtensionTransferRow[] = analysis.rows;
-  return {
+  const result: ConfigurationCompareWorkspaceState = {
     session,
     projection,
     candidateFactories: new Map(),
@@ -236,6 +263,11 @@ export async function tryBuildExtensionCompareState(
       cancellation: input.cancellation,
     }, nodeIds),
   };
+  returnedState = true;
+  return result;
+  } finally {
+    if (!returnedState) {session.dispose();}
+  }
 }
 
 function comparisonSource(index: ExtensionMetadataIndex, side: CompareSide, writable: boolean): CompareSource {
@@ -428,6 +460,16 @@ function normalizeComparisonPath(value: string): string {
 
 function safeBasename(rootPath: string): string {
   return path.basename(rootPath) || 'корень';
+}
+
+async function settlePair<TLeft, TRight>(
+  left: Promise<TLeft>,
+  right: Promise<TRight>,
+): Promise<[TLeft, TRight]> {
+  const [leftResult, rightResult] = await Promise.allSettled([left, right]);
+  if (leftResult.status === 'rejected') {throw leftResult.reason;}
+  if (rightResult.status === 'rejected') {throw rightResult.reason;}
+  return [leftResult.value, rightResult.value];
 }
 
 function isDefined<T>(value: T | undefined): value is T {

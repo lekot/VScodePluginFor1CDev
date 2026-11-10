@@ -12,7 +12,8 @@ import { localName } from '../../parsers/xmlNavHelpers';
 import { XmlParser } from '../../parsers/xmlParser';
 import { validateElementName } from '../../utils/elementNameValidator';
 import type { CompareSide } from '../domain/compareContracts';
-import { throwIfCompareCancelled, type CompareCancellationToken } from '../compareCancellation';
+import { isConfigurationCompareCancelled, throwIfCompareCancelled, type CompareCancellationToken } from '../compareCancellation';
+import type { CompareBuildProgress } from '../compareProgress';
 
 export type ExtensionRootKind = 'cf' | 'cfe' | 'unknown';
 
@@ -70,6 +71,11 @@ export interface ExtensionMetadataIndex {
   readonly cfeMarkerSeen: boolean;
 }
 
+export interface ExtensionMetadataRootEvidence {
+  readonly rootKind: ExtensionRootKind;
+  readonly cfeMarkerSeen: boolean;
+}
+
 const CFE_PURPOSES = new Set(['Customization', 'Patch', 'AddOn']);
 export const SUPPORTED_EXTENSION_FORMATS: ReadonlySet<string> = new Set(['2.17', '2.18', '2.19', '2.20', '2.21']);
 const CFE_MARKER_PATTERN = /<(?:[\w.-]+:)?(?:ObjectBelonging|ExtendedConfigurationObject|ConfigurationExtensionPurpose)\b/iu;
@@ -94,6 +100,16 @@ interface RootProbe {
   cfeMarkerSeen: boolean;
 }
 
+interface RootProbeEvidenceRecord {
+  readonly probe: RootProbe;
+  readonly canonicalRootPath?: string;
+  readonly hasConfigurationXml: boolean;
+  readonly configurationHash?: string;
+}
+
+// Evidence handles are short-lived and opaque; this WeakMap is not a root-path cache.
+const rootProbeEvidence = new WeakMap<ExtensionMetadataRootEvidence, RootProbeEvidenceRecord>();
+
 interface RootRegistration {
   readonly metadataType: string;
   readonly name: string;
@@ -106,9 +122,17 @@ export async function indexExtensionMetadataRoot(input: {
   readonly sourceId: string;
   readonly side: CompareSide;
   readonly cancellation?: CompareCancellationToken;
+  readonly onProgress?: (progress: CompareBuildProgress) => void;
+  readonly rootEvidence?: ExtensionMetadataRootEvidence;
 }): Promise<ExtensionMetadataIndex> {
   throwIfCompareCancelled(input.cancellation);
-  const probe = await probeRoot(input);
+  const evidenceRecord = input.rootEvidence ? rootProbeEvidence.get(input.rootEvidence) : undefined;
+  if (input.rootEvidence && !evidenceRecord) {
+    throw new Error('Extension metadata root evidence was not produced by this module.');
+  }
+  const probe = evidenceRecord
+    ? await validateRootProbeEvidence(input, evidenceRecord)
+    : await probeRoot(input);
   const objects: ExtensionIndexedObject[] = [];
   let objectMarkerSeen = false;
 
@@ -123,6 +147,7 @@ export async function indexExtensionMetadataRoot(input: {
       cancellation: input.cancellation,
     });
     objects.push(indexed);
+    notifyProgress(input.onProgress, { phase: 'metadata', completed: objects.length, total: probe.registrations.length });
     if (indexed.descriptorContent && CFE_MARKER_PATTERN.test(decodeXml(indexed.descriptorContent))) {
       objectMarkerSeen = true;
     }
@@ -166,6 +191,82 @@ export async function indexExtensionMetadataRoot(input: {
   };
 }
 
+/** Probes only root metadata and direct descriptor XML for CFE evidence. */
+export async function probeExtensionMetadataRoot(input: {
+  readonly rootPath: string;
+  readonly cancellation?: CompareCancellationToken;
+}): Promise<ExtensionMetadataRootEvidence> {
+  throwIfCompareCancelled(input.cancellation);
+  const probe = await probeRoot({
+    rootPath: input.rootPath,
+    sourceId: '',
+    side: 'left',
+    cancellation: input.cancellation,
+  });
+  const evidence: ExtensionMetadataRootEvidence = Object.freeze({
+    rootKind: probe.rootKind,
+    cfeMarkerSeen: probe.cfeMarkerSeen,
+  });
+  rootProbeEvidence.set(evidence, {
+    probe,
+    canonicalRootPath: probe.canonicalRootPath,
+    hasConfigurationXml: probe.hasConfigurationXml,
+    configurationHash: probe.configurationHash,
+  });
+  return evidence;
+}
+
+async function validateRootProbeEvidence(
+  input: { readonly rootPath: string; readonly sourceId: string; readonly side: CompareSide; readonly cancellation?: CompareCancellationToken },
+  record: RootProbeEvidenceRecord,
+): Promise<RootProbe> {
+  throwIfCompareCancelled(input.cancellation);
+  let canonicalRootPath: string;
+  try {
+    canonicalRootPath = await fs.realpath(input.rootPath);
+    throwIfCompareCancelled(input.cancellation);
+  } catch (error) {
+    throwIfCompareCancelled(input.cancellation);
+    throw error;
+  }
+  if (!record.canonicalRootPath || normalizeRootPath(canonicalRootPath) !== normalizeRootPath(record.canonicalRootPath)) {
+    throw new Error('Extension metadata root evidence belongs to a different root.');
+  }
+
+  const currentRootStat = await fs.lstat(canonicalRootPath);
+  throwIfCompareCancelled(input.cancellation);
+  if (!currentRootStat.isDirectory()) {
+    throw new Error('Extension metadata root evidence no longer identifies a directory.');
+  }
+  const configurationPath = path.join(canonicalRootPath, CONFIGURATION_XML);
+  let currentConfigurationContent: Buffer | undefined;
+  let configurationEntryInvalid = false;
+  try {
+    const configurationStat = await fs.lstat(configurationPath);
+    throwIfCompareCancelled(input.cancellation);
+    if (configurationStat.isFile() && !configurationStat.isSymbolicLink()) {
+      currentConfigurationContent = await fs.readFile(configurationPath);
+      throwIfCompareCancelled(input.cancellation);
+    } else {
+      configurationEntryInvalid = true;
+    }
+  } catch (error) {
+    throwIfCompareCancelled(input.cancellation);
+    if (!isMissing(error)) {throw error;}
+  }
+  const configurationHash = currentConfigurationContent ? hash(currentConfigurationContent) : undefined;
+  if (configurationEntryInvalid || record.hasConfigurationXml !== (currentConfigurationContent !== undefined)
+    || record.configurationHash !== configurationHash) {
+    return probeRoot(input);
+  }
+  return {
+    ...record.probe,
+    rootPath: input.rootPath,
+    sourceId: input.sourceId,
+    side: input.side,
+  };
+}
+
 async function probeRoot(input: {
   rootPath: string;
   sourceId: string;
@@ -187,25 +288,33 @@ async function probeRoot(input: {
   let cfeMarkerSeen = false;
 
   try {
+    throwIfCompareCancelled(input.cancellation);
     canonicalRootPath = await fs.realpath(input.rootPath);
+    throwIfCompareCancelled(input.cancellation);
     const rootStat = await fs.lstat(canonicalRootPath);
+    throwIfCompareCancelled(input.cancellation);
     if (!rootStat.isDirectory()) {
       diagnostics.push({ code: 'EXTENSION_ROOT_INVALID', message: 'Корень сравнения не является каталогом.' });
       canonicalRootPath = undefined;
     }
   } catch (error) {
+    throwIfCompareCancelled(input.cancellation);
+    rethrowIfCancelled(error);
     diagnostics.push({ code: 'EXTENSION_ROOT_UNAVAILABLE', message: `Корень сравнения недоступен: ${errorMessage(error)}` });
   }
 
   if (canonicalRootPath) {
-    cfeMarkerSeen = await hasCfeMarkerFile(canonicalRootPath);
+    cfeMarkerSeen = await hasCfeMarkerFile(canonicalRootPath, input.cancellation);
     const configurationPath = path.join(canonicalRootPath, CONFIGURATION_XML);
     try {
+      throwIfCompareCancelled(input.cancellation);
       const stat = await fs.lstat(configurationPath);
+      throwIfCompareCancelled(input.cancellation);
       if (!stat.isFile() || stat.isSymbolicLink()) {
         diagnostics.push({ code: 'EXTENSION_CONFIGURATION_XML_INVALID', message: 'Корневой Configuration.xml не является обычным файлом.', relativePath: CONFIGURATION_XML });
       } else {
         configurationContent = await fs.readFile(configurationPath);
+        throwIfCompareCancelled(input.cancellation);
         hasConfigurationXml = true;
         configurationHash = hash(configurationContent);
         const xml = decodeXml(configurationContent);
@@ -259,6 +368,8 @@ async function probeRoot(input: {
         }
       }
     } catch (error) {
+      throwIfCompareCancelled(input.cancellation);
+      rethrowIfCancelled(error);
       if (isMissing(error)) {
         diagnostics.push({ code: 'EXTENSION_CONFIGURATION_XML_MISSING', message: 'Корневой Configuration.xml отсутствует.', relativePath: CONFIGURATION_XML });
       } else {
@@ -316,10 +427,12 @@ async function indexRegisteredObject(input: {
   try {
     throwIfCompareCancelled(input.cancellation);
     const stat = await fs.lstat(absoluteDescriptorPath);
+      throwIfCompareCancelled(input.cancellation);
     if (!stat.isFile() || stat.isSymbolicLink()) {
       return invalidObject(input, 'EXTENSION_DESCRIPTOR_INVALID', 'Дескриптор объекта не является обычным файлом.', relativeDescriptorPath, supportedRootType);
     }
     const descriptorContent = await fs.readFile(absoluteDescriptorPath);
+    throwIfCompareCancelled(input.cancellation);
     const descriptorXml = decodeXml(descriptorContent);
     const validation = XMLValidator.validate(descriptorXml);
     if (validation !== true) {
@@ -339,8 +452,14 @@ async function indexRegisteredObject(input: {
     const sidecarAbsolutePath = path.join(input.rootPath, descriptor.designerFolder, registration.name);
     let sidecarSnapshot: MergePathSnapshot;
     try {
-      sidecarSnapshot = await captureMergePath(sidecarAbsolutePath, { retainContent: false, probeXmlRootNames: true });
+      sidecarSnapshot = await captureMergePath(sidecarAbsolutePath, {
+        retainContent: false,
+        probeXmlRootNames: true,
+        cancellation: input.cancellation,
+      });
     } catch (error) {
+      throwIfCompareCancelled(input.cancellation);
+      rethrowIfCancelled(error);
       return invalidObject(input, 'EXTENSION_SIDECAR_UNSAFE', `Дерево sidecar содержит недопустимый файловый объект: ${errorMessage(error)}`, relativeDescriptorPath, supportedRootType, descriptorContent, identity);
     }
     const sidecarFiles = sidecarSnapshot.state === 'directory'
@@ -372,6 +491,8 @@ async function indexRegisteredObject(input: {
       unsupportedReason,
     };
   } catch (error) {
+    throwIfCompareCancelled(input.cancellation);
+    rethrowIfCancelled(error);
     if (isMissing(error)) {
       return invalidObject(input, 'EXTENSION_DESCRIPTOR_MISSING', 'Зарегистрированный объект не имеет корневого XML-дескриптора.', relativeDescriptorPath, supportedRootType);
     }
@@ -555,14 +676,18 @@ function flattenDirectory(snapshot: MergeSnapshotDirectory, baseRelativePath: st
   return files;
 }
 
-async function hasCfeMarkerFile(rootPath: string): Promise<boolean> {
+async function hasCfeMarkerFile(rootPath: string, cancellation?: CompareCancellationToken): Promise<boolean> {
   for (const name of ['1cv8.cfe', 'ConfigurationExtension.xml']) {
     try {
+      throwIfCompareCancelled(cancellation);
       const stat = await fs.lstat(path.join(rootPath, name));
+      throwIfCompareCancelled(cancellation);
       if (stat.isFile() && !stat.isSymbolicLink()) {
         return true;
       }
     } catch (error) {
+      throwIfCompareCancelled(cancellation);
+      rethrowIfCancelled(error);
       if (!isMissing(error)) {
         return true;
       }
@@ -575,33 +700,86 @@ async function hasObjectCfeMarkers(rootPath: string, cancellation?: CompareCance
   // Root descriptors live directly in the known metadata folders. Recursing is limited to
   // metadata XML only so a missing Configuration.xml cannot silently fall through to CF mode.
   const typeFolders = new Set(METADATA_TYPE_DESCRIPTORS.map((descriptor) => descriptor.designerFolder));
+  const descriptorPaths: string[] = [];
   for (const folder of typeFolders) {
     throwIfCompareCancelled(cancellation);
     const directory = path.join(rootPath, folder);
     let entries: Dirent[];
     try {
       entries = await fs.readdir(directory, { withFileTypes: true });
+      throwIfCompareCancelled(cancellation);
     } catch (error) {
+      throwIfCompareCancelled(cancellation);
+      rethrowIfCancelled(error);
       if (isMissing(error)) {
         continue;
       }
       return true;
     }
     for (const entry of entries) {
+      throwIfCompareCancelled(cancellation);
       if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.xml') {
         continue;
       }
-      try {
-        const content = await fs.readFile(path.join(directory, entry.name));
-        if (CFE_MARKER_PATTERN.test(decodeXml(content))) {
-          return true;
-        }
-      } catch {
-        return true;
-      }
+      descriptorPaths.push(path.join(directory, entry.name));
     }
   }
-  return false;
+
+  let found = false;
+  let cancellationError: unknown;
+  let nextDescriptor = 0;
+  const readWorker = async (): Promise<void> => {
+    while (!found && cancellationError === undefined) {
+      try {
+        throwIfCompareCancelled(cancellation);
+      } catch (error) {
+        cancellationError = error;
+        return;
+      }
+      const descriptorPath = descriptorPaths[nextDescriptor++];
+      if (!descriptorPath) {return;}
+      try {
+        const content = await fs.readFile(descriptorPath);
+        try {
+          throwIfCompareCancelled(cancellation);
+        } catch (error) {
+          cancellationError = error;
+          return;
+        }
+        if (CFE_MARKER_PATTERN.test(decodeXml(content))) {found = true;}
+      } catch (error) {
+        if (isConfigurationCompareCancelled(error)) {
+          cancellationError = error;
+        } else {
+          try {
+            throwIfCompareCancelled(cancellation);
+          } catch (cancelled) {
+            cancellationError = cancelled;
+            return;
+          }
+          // An unreadable descriptor cannot establish that the root is an ordinary CF.
+          found = true;
+        }
+        return;
+      }
+    }
+  };
+  const workerCount = Math.min(16, descriptorPaths.length);
+  await Promise.all(Array.from({ length: workerCount }, () => readWorker()));
+  if (cancellationError !== undefined) {throw cancellationError;}
+  throwIfCompareCancelled(cancellation);
+  return found;
+}
+
+function notifyProgress(
+  callback: ((progress: CompareBuildProgress) => void) | undefined,
+  progress: CompareBuildProgress,
+): void {
+  try {callback?.(progress);} catch { /* Progress observers cannot fail metadata indexing. */ }
+}
+
+function rethrowIfCancelled(error: unknown): void {
+  if (isConfigurationCompareCancelled(error)) {throw error;}
 }
 
 function isXmlMetaKey(key: string): boolean {
@@ -618,6 +796,11 @@ function decodeXml(content: Buffer): string {
 
 function hash(content: Buffer): string {
   return createHash('sha256').update(content).digest('hex');
+}
+
+function normalizeRootPath(value: string): string {
+  const normalized = path.resolve(value).replace(/[\\/]+$/u, '');
+  return process.platform === 'win32' ? normalized.toLocaleLowerCase() : normalized;
 }
 
 function errorMessage(error: unknown): string {

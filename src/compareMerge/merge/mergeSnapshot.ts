@@ -1,11 +1,13 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { createHash } from 'crypto';
+import type { Dirent } from 'fs';
 
 import {
   calculateDirectoryFingerprintFromEntries,
   type DirectoryFingerprintEntry,
 } from '../../services/configurationSession/mutationPlan';
+import { throwIfCompareCancelled, type CompareCancellationToken } from '../compareCancellation';
 import { probeXmlRootExpandedName } from '../xml/xmlRootProbe';
 
 export interface MergeSnapshotFile {
@@ -36,12 +38,19 @@ export type MergePathSnapshot =
 /** Captures regular files and directories without following links or special entries. */
 export async function captureMergePath(
   filePath: string,
-  options: { readonly retainContent?: boolean; readonly probeXmlRootNames?: boolean } = {},
+  options: {
+    readonly retainContent?: boolean;
+    readonly probeXmlRootNames?: boolean;
+    readonly cancellation?: CompareCancellationToken;
+  } = {},
 ): Promise<MergePathSnapshot> {
   let stat: Awaited<ReturnType<typeof fs.lstat>>;
   try {
+    throwIfCompareCancelled(options.cancellation);
     stat = await fs.lstat(filePath);
+    throwIfCompareCancelled(options.cancellation);
   } catch (error) {
+    throwIfCompareCancelled(options.cancellation);
     if (isMissing(error)) {
       return { state: 'missing' };
     }
@@ -52,7 +61,7 @@ export async function captureMergePath(
     throw new Error(`Merge snapshot refuses symbolic links: ${filePath}`);
   }
   if (stat.isFile()) {
-    const content = await fs.readFile(filePath);
+    const content = await readFileWithCancellation(filePath, options.cancellation);
     const rootExpandedName = options.probeXmlRootNames && shouldProbeXmlRoot(filePath)
       ? probeXmlRootExpandedName(content.subarray(0, 64 * 1024).toString('utf8'))
       : undefined;
@@ -69,7 +78,7 @@ export async function captureMergePath(
     throw new Error(`Merge snapshot refuses special filesystem entries: ${filePath}`);
   }
 
-  return captureDirectory(filePath, '', options.retainContent !== false, options.probeXmlRootNames === true);
+  return captureDirectory(filePath, '', options.retainContent !== false, options.probeXmlRootNames === true, options.cancellation);
 }
 
 /** Hash format matches the established compare/merge folder-preview algorithm. */
@@ -105,21 +114,32 @@ async function captureDirectory(
   relativePath: string,
   retainContent: boolean,
   probeXmlRootNames: boolean,
+  cancellation?: CompareCancellationToken,
 ): Promise<MergeSnapshotDirectory> {
-  const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+  throwIfCompareCancelled(cancellation);
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(directoryPath, { withFileTypes: true });
+  } catch (error) {
+    throwIfCompareCancelled(cancellation);
+    throw error;
+  }
+  throwIfCompareCancelled(cancellation);
   const captured: MergeSnapshotEntry[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    throwIfCompareCancelled(cancellation);
     const entryPath = path.join(directoryPath, entry.name);
     const childRelativePath = relativePath ? path.join(relativePath, entry.name) : entry.name;
     if (entry.isSymbolicLink()) {
       throw new Error(`Merge snapshot refuses symbolic links: ${entryPath}`);
     }
     if (entry.isDirectory()) {
-      captured.push(await captureDirectory(entryPath, childRelativePath, retainContent, probeXmlRootNames));
+      captured.push(await captureDirectory(entryPath, childRelativePath, retainContent, probeXmlRootNames, cancellation));
+      throwIfCompareCancelled(cancellation);
       continue;
     }
     if (entry.isFile()) {
-      const content = await fs.readFile(entryPath);
+      const content = await readFileWithCancellation(entryPath, cancellation);
       const rootExpandedName = probeXmlRootNames && shouldProbeXmlRoot(entryPath)
         ? probeXmlRootExpandedName(content.subarray(0, 64 * 1024).toString('utf8'))
         : undefined;
@@ -148,7 +168,20 @@ async function captureDirectory(
         fingerprint: entry.mutationFingerprint,
       });
   const mutationFingerprint = calculateDirectoryFingerprintFromEntries(fingerprintEntries);
+  throwIfCompareCancelled(cancellation);
   return { state: 'directory', relativePath, type: 'directory', children: captured, mergeHash, mutationFingerprint };
+}
+
+async function readFileWithCancellation(filePath: string, cancellation?: CompareCancellationToken): Promise<Buffer> {
+  throwIfCompareCancelled(cancellation);
+  try {
+    const content = await fs.readFile(filePath);
+    throwIfCompareCancelled(cancellation);
+    return content;
+  } catch (error) {
+    throwIfCompareCancelled(cancellation);
+    throw error;
+  }
 }
 
 function shouldProbeXmlRoot(filePath: string): boolean {

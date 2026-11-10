@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 
 import type { TreeNode } from '../models/treeNode';
 import type { ConfigurationCompareContext } from '../extension/extensionFeatureContexts';
-import { showConfigurationCompare } from '../compareMerge/configCompareProvider';
+import { showConfigurationCompareLoading, type ConfigCompareLoadingSession } from '../compareMerge/configCompareLoadingController';
 import {
   buildConfigurationCompare,
   type ConfigurationCompareInput,
@@ -13,7 +13,7 @@ import {
 } from '../compareMerge/configurationCompareService';
 import { getSelectedNode } from '../helpers/commandHelpers';
 import { Logger } from '../utils/logger';
-import { isConfigurationCompareCancelled } from '../compareMerge/compareCancellation';
+import { isConfigurationCompareCancelled, throwIfCompareCancelled } from '../compareMerge/compareCancellation';
 import { CfeProjectManifestStorage } from '../extensionSupport/cfeProject/manifest';
 import type { CompareSide } from '../compareMerge/domain/compareContracts';
 
@@ -21,16 +21,12 @@ export interface RegisterConfigurationCompareCommandsDeps {
   context: vscode.ExtensionContext;
   state: ConfigurationCompareContext;
   pickRightRoot?: () => Promise<string | undefined>;
-  withCompareProgress?: (
-    title: string,
-    task: (token?: vscode.CancellationToken) => Promise<void>
-  ) => Promise<void>;
   buildCompare?: (input: ConfigurationCompareInput) => Promise<ConfigurationCompareResult>;
-  showCompare?: (
+  showCompareLoading?: (
     context: vscode.ExtensionContext,
-    workspace: ConfigurationCompareResult['workspace'],
-    title?: string
-  ) => vscode.WebviewPanel;
+    title: string,
+    labels: { target: string; source: string }
+  ) => ConfigCompareLoadingSession;
 }
 
 export function registerConfigurationCompareCommands(
@@ -75,13 +71,21 @@ export async function executeConfigurationCompareCommand(
     return;
   }
 
-  try {
-    const progressTitle = 'Сравнение конфигураций';
-    await withConfigurationCompareProgress(deps, progressTitle, async (token) => {
+  const progressTitle = `Сравнение конфигураций: ${path.basename(leftRootPath)} — ${path.basename(rightRootPath)}`;
+  const loading = (deps.showCompareLoading ?? showConfigurationCompareLoading)(
+    deps.context,
+    progressTitle,
+    { target: path.basename(leftRootPath), source: path.basename(rightRootPath) }
+  );
+
+  const runComparison = async (): Promise<void> => {
+    const generation = loading.beginGeneration();
+    try {
       const extensionBaseRoots = await resolveConfigurationCompareExtensionBaseRoots(
         leftRootPath,
         rightRootPath
       );
+      throwIfCompareCancelled(generation.token);
       let configurationId;
       try {
         configurationId = await deps.state.configurationContextResolver
@@ -90,6 +94,7 @@ export async function executeConfigurationCompareCommand(
       } catch {
         // Keep comparison available in view-only contexts without a registered write identity.
       }
+      throwIfCompareCancelled(generation.token);
       const result = await (deps.buildCompare ?? buildConfigurationCompare)({
         leftRootPath,
         rightRootPath,
@@ -101,23 +106,27 @@ export async function executeConfigurationCompareCommand(
           leftRootPath,
           rightRootPath
         ),
-        cancellation: token,
+        cancellation: generation.token,
+        onProgress: (progress) => generation.report(progress),
       });
-      (deps.showCompare ?? showConfigurationCompare)(
-        deps.context,
-        result.workspace,
-        `Сравнение конфигураций: ${path.basename(leftRootPath)} - ${path.basename(rightRootPath)}`
-      );
-    });
-  } catch (error) {
-    if (isConfigurationCompareCancelled(error)) {
-      return;
+      if (!generation.isCurrent()) {
+        result.workspace.dispose();
+        return;
+      }
+      generation.complete(result.workspace);
+    } catch (error) {
+      if (isConfigurationCompareCancelled(error) || generation.token.isCancellationRequested) {
+        return;
+      }
+      Logger.error('Failed to compare configuration folders', error);
+      generation.fail(error);
     }
-    Logger.error('Failed to compare configuration folders', error);
-    void vscode.window.showErrorMessage(
-      `Не удалось сравнить конфигурации: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
+  };
+
+  loading.setRetryHandler(() => {
+    void runComparison();
+  });
+  await runComparison();
 }
 
 export function createConfigurationCompareBackupRootPath(
@@ -223,24 +232,4 @@ function sameCanonicalRoot(left: string, right: string): boolean {
   return process.platform === 'win32'
     ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
     : normalizedLeft === normalizedRight;
-}
-
-async function withConfigurationCompareProgress(
-  deps: RegisterConfigurationCompareCommandsDeps,
-  title: string,
-  task: (token?: vscode.CancellationToken) => Promise<void>
-): Promise<void> {
-  if (deps.withCompareProgress) {
-    await deps.withCompareProgress(title, task);
-    return;
-  }
-
-  await vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title,
-      cancellable: true,
-    },
-    (_progress, token) => task(token)
-  );
 }

@@ -41,7 +41,7 @@ suite('ConfigCompareProvider bulk controls', () => {
     assert.match(html, /destructiveConfirmed/);
     assert.match(html, /confirm\(/);
     assert.match(html, /destructive-warning/);
-    assert.match(html, /strategyButtons[\s\S]+disabled = state\.busy/);
+    assert.match(html, /const actionable = ready && !state\.busy && !state\.locked;[\s\S]+elements\.strategyButtons\.forEach[\s\S]+button\.disabled = !actionable/);
   });
 
   test('accepts strategy message and sends bulk create preview for selected visible nodes', async () => {
@@ -68,7 +68,7 @@ suite('ConfigCompareProvider bulk controls', () => {
     assert.strictEqual(state?.canCreatePreview, true);
   });
 
-  test('strategy change resets selection preview and posts bulk-ready refreshed state', async () => {
+  test('strategy change retains surviving selection, resets preview, and posts bulk-ready state', async () => {
     const panel = makePanel();
     const workspace = makeWorkspace();
 
@@ -82,6 +82,7 @@ suite('ConfigCompareProvider bulk controls', () => {
       'select:xml:name,file:template',
       'createPreview:xml:name,file:template',
       'setStrategy:full',
+      'select:xml:name,file:template',
     ]);
     const state = [...panel.posts]
       .reverse()
@@ -91,9 +92,9 @@ suite('ConfigCompareProvider bulk controls', () => {
     assert.ok(state);
     assert.strictEqual(state.payload.strategy, 'full');
     assert.deepStrictEqual(state.payload.executableNodeIds, ['xml:name', 'file:template', 'xml:full-only']);
-    assert.deepStrictEqual(state.selectedNodeIds, []);
-    assert.deepStrictEqual(state.executableNodeIds, []);
-    assert.strictEqual(state.canCreatePreview, false);
+    assert.deepStrictEqual(state.selectedNodeIds, ['xml:name', 'file:template']);
+    assert.deepStrictEqual(state.executableNodeIds, ['xml:name', 'file:template']);
+    assert.strictEqual(state.canCreatePreview, true);
     assert.strictEqual(state.preview, undefined);
   });
 });

@@ -6,6 +6,7 @@ import type { ConfigurationId } from '../services/configurationSession/types';
 
 import { compareCodeUnits } from '../utils/compareCodeUnits';
 import type { CompareTreeNode, CompareTreeStats } from './compareTreeTypes';
+import type { CompareBuildOptions } from './compareProgress';
 import type { CompareTreeProjection } from './projection/compareTreeProjection';
 import { CompareSession } from './domain/compareSession';
 import type { CompareMessage, CompareSide } from './domain/compareContracts';
@@ -26,6 +27,11 @@ import {
 } from './merge/mergeExecutor';
 import { isCanonicalWitnessRelativePath } from './merge/capturedFileWrite';
 import { validateSemanticXmlCandidates } from './merge/semanticXmlPreviewValidation';
+import { isConfigurationCompareCancelled } from './compareCancellation';
+import {
+  cancelledRefreshDiagnostic,
+  configurationCompareWorkspaceDiagnostic as diagnostic,
+} from './configurationCompareWorkspaceDiagnostics';
 
 const LEFT_SOURCE_ID = 'left-source';
 export type CompareJoinStrategy = 'left' | 'right' | 'full';
@@ -126,7 +132,7 @@ export type WorkspaceRefreshResult =
   | {
       ok: false;
       payload: ConfigCompareWebviewPayload;
-      locked: true;
+      locked: boolean;
       diagnostics: CompareMessage[];
     };
 
@@ -177,7 +183,10 @@ export interface ConfigurationCompareWorkspaceInput extends ConfigurationCompare
   backupRootPath: string;
   mutationEngine?: ConfigurationMutationEngine;
   configurationId?: ConfigurationId;
-  refreshWorkspace?: (strategy: CompareJoinStrategy) => Promise<ConfigurationCompareWorkspaceState>;
+  refreshWorkspace?: (
+    strategy: CompareJoinStrategy,
+    options?: CompareBuildOptions
+  ) => Promise<ConfigurationCompareWorkspaceState>;
   createPreview?: typeof createMergePreview;
   validatePreflight?: typeof validateMergePreflight;
   executeMerge?: (input: MergeExecutorInput) => Promise<MergeExecutionResult>;
@@ -198,7 +207,10 @@ export class ConfigurationCompareWorkspace {
   private readonly backupRootPath: string;
   private readonly mutationEngine?: ConfigurationMutationEngine;
   private readonly configurationId?: ConfigurationId;
-  private readonly refreshWorkspace?: (strategy: CompareJoinStrategy) => Promise<ConfigurationCompareWorkspaceState>;
+  private readonly refreshWorkspace?: (
+    strategy: CompareJoinStrategy,
+    options?: CompareBuildOptions
+  ) => Promise<ConfigurationCompareWorkspaceState>;
   private readonly createPreview: typeof createMergePreview;
   private readonly validatePreflight: typeof validateMergePreflight;
   private readonly executeMerge: (input: MergeExecutorInput) => Promise<MergeExecutionResult>;
@@ -211,6 +223,9 @@ export class ConfigurationCompareWorkspace {
   private previewCounter = 0;
   private disposed = false;
   private locked = false;
+  private retryableCompareRefreshLock = false;
+  private refreshGeneration = 0;
+  private committedStrategy: CompareJoinStrategy = 'right';
   private strategy: CompareJoinStrategy = 'right';
 
   constructor(input: ConfigurationCompareWorkspaceInput) {
@@ -270,17 +285,23 @@ export class ConfigurationCompareWorkspace {
     return this.disposed ? [] : this.availableMergeableNodeIds().sort(compareCodeUnits);
   }
 
-  async setStrategy(strategy: CompareJoinStrategy): Promise<WorkspaceStrategyResult> {
-    const unavailable = this.unavailableDiagnostic();
+  async setStrategy(
+    strategy: CompareJoinStrategy,
+    options?: CompareBuildOptions
+  ): Promise<WorkspaceStrategyResult> {
+    const unavailable =
+      this.disposed || (this.locked && !this.retryableCompareRefreshLock)
+      ? this.unavailableDiagnostic()
+      : undefined;
     if (unavailable) {
       return { ok: false, payload: this.payload, diagnostics: [unavailable] };
     }
 
     this.strategy = strategy;
-    const refreshResult = await this.refresh();
+    const refreshResult = await this.refresh(options);
     return refreshResult.ok
       ? { ok: true, payload: refreshResult.payload, diagnostics: [] }
-      : { ok: false, payload: refreshResult.payload, diagnostics: refreshResult.diagnostics };
+      : { ok: false, payload: this.payload, diagnostics: refreshResult.diagnostics };
   }
 
   async createPreviewForNodeIds(nodeIds: readonly string[]): Promise<WorkspacePreviewResult> {
@@ -495,6 +516,7 @@ export class ConfigurationCompareWorkspace {
       const mutationStatus = result.receipt?.status ?? result.mutationFailure?.status;
       if (mutationStatus === 'recoveryRequired' || mutationStatus === 'inDoubt') {
         this.locked = true;
+        this.retryableCompareRefreshLock = false;
         this.invalidateVolatileState();
       }
       const backupPaths = result.backupPaths.length > 0
@@ -534,7 +556,7 @@ export class ConfigurationCompareWorkspace {
     };
   }
 
-  async refresh(): Promise<WorkspaceRefreshResult> {
+  async refresh(options?: CompareBuildOptions): Promise<WorkspaceRefreshResult> {
     const unavailable = this.disposed
       ? diagnostic('CONFIG_COMPARE_WORKSPACE_DISPOSED', 'Workspace сравнения закрыт.')
       : undefined;
@@ -542,10 +564,14 @@ export class ConfigurationCompareWorkspace {
       return { ok: false, payload: this.payload, locked: true, diagnostics: [unavailable] };
     }
 
+    const refreshGeneration = ++this.refreshGeneration;
     this.previewRecords.clear();
+    const retryableCompareRefresh = !this.locked || this.retryableCompareRefreshLock;
     this.locked = true;
     if (!this.refreshWorkspace) {
       this.locked = true;
+      this.retryableCompareRefreshLock = false;
+      this.strategy = this.committedStrategy;
       return {
         ok: false,
         payload: this.payload,
@@ -558,9 +584,11 @@ export class ConfigurationCompareWorkspace {
         ],
       };
     }
-
+    if (retryableCompareRefresh) {
+      this.retryableCompareRefreshLock = true;
+    }
     try {
-      const refreshed = await this.refreshWorkspace(this.strategy);
+      const refreshed = await this.refreshWorkspace(this.strategy, options);
       if (this.disposed) {
         refreshed.session.dispose();
         return {
@@ -568,14 +596,37 @@ export class ConfigurationCompareWorkspace {
           payload: this.payload,
           locked: true,
           diagnostics: [
-            diagnostic('CONFIG_COMPARE_WORKSPACE_DISPOSED', 'Workspace СЃСЂР°РІРЅРµРЅРёСЏ Р·Р°РєСЂС‹С‚.'),
+            diagnostic('CONFIG_COMPARE_WORKSPACE_DISPOSED', 'Workspace сравнения закрыт.'),
           ],
+        };
+      }
+      if (refreshGeneration !== this.refreshGeneration) {
+        refreshed.session.dispose();
+        return {
+          ok: false,
+          payload: this.payload,
+          locked: this.locked,
+          diagnostics: [cancelledRefreshDiagnostic()],
+        };
+      }
+      if (options?.cancellation?.isCancellationRequested) {
+        refreshed.session.dispose();
+        this.locked = true;
+        this.strategy = this.committedStrategy;
+        this.retryableCompareRefreshLock = retryableCompareRefresh;
+        return {
+          ok: false,
+          payload: this.payload,
+          locked: true,
+          diagnostics: [cancelledRefreshDiagnostic()],
         };
       }
       const previousSession = this.session;
       this.applyWorkspaceState(refreshed);
+      this.committedStrategy = this.strategy;
       previousSession.dispose();
       this.locked = false;
+      this.retryableCompareRefreshLock = false;
       return {
         ok: true,
         payload: this.payload,
@@ -583,7 +634,36 @@ export class ConfigurationCompareWorkspace {
         diagnostics: [],
       };
     } catch (error) {
+      if (this.disposed) {
+        return {
+          ok: false,
+          payload: this.payload,
+          locked: true,
+          diagnostics: [
+            diagnostic('CONFIG_COMPARE_WORKSPACE_DISPOSED', 'Workspace сравнения закрыт.'),
+          ],
+        };
+      }
+      if (refreshGeneration !== this.refreshGeneration) {
+        return {
+          ok: false,
+          payload: this.payload,
+          locked: this.locked,
+          diagnostics: [cancelledRefreshDiagnostic()],
+        };
+      }
       this.locked = true;
+      this.retryableCompareRefreshLock = retryableCompareRefresh;
+      if (options?.cancellation?.isCancellationRequested || isConfigurationCompareCancelled(error)) {
+        this.strategy = this.committedStrategy;
+        return {
+          ok: false,
+          payload: this.payload,
+          locked: true,
+          diagnostics: [cancelledRefreshDiagnostic()],
+        };
+      }
+      this.strategy = this.committedStrategy;
       return {
         ok: false,
         payload: this.payload,
@@ -604,6 +684,7 @@ export class ConfigurationCompareWorkspace {
     }
     this.disposed = true;
     this.locked = true;
+    this.retryableCompareRefreshLock = false;
     this.invalidateVolatileState();
     this.session.dispose();
   }
@@ -907,16 +988,4 @@ function sensitivePathVariants(sensitivePath: string): string[] {
 
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
-}
-
-function diagnostic(code: string, suggestedAction: string, nodeId?: string): CompareMessage {
-  return {
-    severity: 'error',
-    code,
-    phase: 'preview',
-    sourceId: LEFT_SOURCE_ID,
-    nodeId,
-    blocking: true,
-    suggestedAction,
-  };
 }

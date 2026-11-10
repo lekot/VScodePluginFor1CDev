@@ -127,7 +127,7 @@ export async function indexMetadataFolder(
       readUuid: input.readUuid,
       cancellation: input.cancellation,
     });
-  });
+  }, input.cancellation);
 
   return indexed.filter((identity): identity is MetadataIdentity => Boolean(identity));
 }
@@ -145,55 +145,128 @@ async function collectMetadataXmlFiles(
   const xmlFiles: string[] = [];
   const directories = [folderPath];
   let nextDirectoryIndex = 0;
+  let activeDirectoryReads = 0;
+  let failure: { error: unknown } | undefined;
+  const directoryWaiters: Array<() => void> = [];
+
+  function wakeDirectoryWaiters(): void {
+    for (const wake of directoryWaiters.splice(0)) {
+      wake();
+    }
+  }
 
   async function collect(): Promise<void> {
-    while (nextDirectoryIndex < directories.length) {
-      throwIfCompareCancelled(cancellation);
-      const directoryIndex = nextDirectoryIndex;
-      nextDirectoryIndex += 1;
-      const currentFolderPath = directories[directoryIndex];
-      const entries = await fs.readdir(currentFolderPath, { withFileTypes: true });
-      throwIfCompareCancelled(cancellation);
-
-      for (const entry of entries) {
-        const entryPath = path.join(currentFolderPath, entry.name);
-        if (entry.isDirectory()) {
-          if (entry.name.toLowerCase() !== 'ext') {
-            directories.push(entryPath);
+    while (!failure) {
+      try {
+        throwIfCompareCancelled(cancellation);
+        if (nextDirectoryIndex >= directories.length) {
+          if (activeDirectoryReads === 0) {
+            return;
           }
+
+          await new Promise<void>((resolve) => directoryWaiters.push(resolve));
           continue;
         }
 
-        if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.xml') {
-          xmlFiles.push(entryPath);
+        const currentFolderPath = directories[nextDirectoryIndex];
+        nextDirectoryIndex += 1;
+        activeDirectoryReads += 1;
+        try {
+          const entries = await fs.readdir(currentFolderPath, { withFileTypes: true });
+          throwIfCompareCancelled(cancellation);
+          if (failure) {
+            return;
+          }
+
+          for (const entry of entries) {
+            const entryPath = path.join(currentFolderPath, entry.name);
+            if (entry.isDirectory()) {
+              if (entry.name.toLowerCase() !== 'ext') {
+                directories.push(entryPath);
+              }
+              continue;
+            }
+
+            if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.xml') {
+              xmlFiles.push(entryPath);
+            }
+          }
+        } finally {
+          activeDirectoryReads -= 1;
+          wakeDirectoryWaiters();
         }
+      } catch (error) {
+        failure ??= { error };
+        wakeDirectoryWaiters();
       }
     }
   }
 
   const limit = Math.max(1, Math.min(Math.floor(concurrency), 32));
-  await Promise.all(Array.from({ length: limit }, collect));
+  const settled = await Promise.allSettled(Array.from({ length: limit }, collect));
+  const rejectedWorker = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failure) {
+    throw failure.error;
+  }
+  if (rejectedWorker) {
+    throw rejectedWorker.reason;
+  }
+  throwIfCompareCancelled(cancellation);
   return xmlFiles.sort((left, right) => left.localeCompare(right));
 }
 
 async function mapLimit<T, R>(
   items: readonly T[],
   concurrency: number,
-  worker: (item: T) => Promise<R>
+  worker: (item: T) => Promise<R>,
+  cancellation?: CompareCancellationToken
 ): Promise<R[]> {
   const limit = Math.max(1, Math.min(concurrency, items.length || 1));
   const results = new Array<R>(items.length);
   let nextIndex = 0;
+  let failure: { error: unknown } | undefined;
+  let completedSinceYield = 0;
 
   async function run(): Promise<void> {
-    while (nextIndex < items.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await worker(items[index]);
+    while (!failure) {
+      let index: number;
+      try {
+        throwIfCompareCancelled(cancellation);
+        if (nextIndex >= items.length) {
+          return;
+        }
+        index = nextIndex;
+        nextIndex += 1;
+      } catch (error) {
+        failure ??= { error };
+        return;
+      }
+
+      try {
+        results[index] = await worker(items[index]);
+        throwIfCompareCancelled(cancellation);
+        completedSinceYield += 1;
+        if (completedSinceYield >= 64) {
+          completedSinceYield = 0;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          throwIfCompareCancelled(cancellation);
+        }
+      } catch (error) {
+        failure ??= { error };
+        return;
+      }
     }
   }
 
-  await Promise.all(Array.from({ length: limit }, run));
+  const settled = await Promise.allSettled(Array.from({ length: limit }, run));
+  const rejectedWorker = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failure) {
+    throw failure.error;
+  }
+  if (rejectedWorker) {
+    throw rejectedWorker.reason;
+  }
+  throwIfCompareCancelled(cancellation);
   return results;
 }
 
