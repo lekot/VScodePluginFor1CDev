@@ -86,6 +86,8 @@ export async function resolveBslInventoryIdentities(input: {
 export async function collectBslInventorySources(input: {
   resolution: BslInventoryResolution;
   retainedPaths: ReadonlySet<string>;
+  /** When provided, only these supported modules receive a full routine parse. */
+  analysisPaths?: ReadonlySet<string>;
   concurrency: number;
   cancellation?: CompareCancellationToken;
   readTextFile?: (filePath: string) => Promise<string>;
@@ -113,7 +115,9 @@ export async function collectBslInventorySources(input: {
       throwIfCompareCancelled(input.cancellation);
       const file = fileByPath.get(filePath);
       const indexed = file?.identity
-        ? indexBslModuleSource({ identity: file.identity, source })
+        ? input.analysisPaths !== undefined && !input.analysisPaths.has(filePath)
+          ? { identity: file.identity, routines: [], diagnostics: [], analysisState: 'deferred' as const }
+          : indexBslModuleSource({ identity: file.identity, source })
         : undefined;
       processedByPath.set(filePath, {
         contentHash: hashText(source),

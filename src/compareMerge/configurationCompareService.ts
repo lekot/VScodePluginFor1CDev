@@ -646,6 +646,7 @@ async function buildConfigurationCompareState(
     const leftCollection = await collectBslInventorySources({
       resolution: leftResolution,
       retainedPaths: retention.leftPaths,
+      analysisPaths: retention.leftPaths,
       concurrency: limits.bslReadConcurrency,
       cancellation: input.cancellation,
       readTextFile: input.io?.readTextFile,
@@ -653,6 +654,7 @@ async function buildConfigurationCompareState(
     const rightCollection = await collectBslInventorySources({
       resolution: rightResolution,
       retainedPaths: retention.rightPaths,
+      analysisPaths: retention.rightPaths,
       concurrency: limits.bslReadConcurrency,
       cancellation: input.cancellation,
       readTextFile: input.io?.readTextFile,

@@ -27,7 +27,8 @@ export type BslModuleDiagnosticCode =
   | 'BSL_MODULE_PARSE_ERROR'
   | 'BSL_MODULE_READ_FAILED'
   | 'BSL_MODULE_UNSUPPORTED_KIND'
-  | 'BSL_MODULE_UNSUPPORTED_PATH';
+  | 'BSL_MODULE_UNSUPPORTED_PATH'
+  | 'BSL_MODULE_ANALYSIS_REQUIRED';
 
 export interface BslModuleIdentity {
   sourceId: string;
@@ -61,6 +62,8 @@ export interface BslModuleIndexEntry {
   identity: BslModuleIdentity;
   routines: BslRoutineInfo[];
   diagnostics: BslModuleDiagnostic[];
+  /** Omitted means complete for compatibility with existing index entries. */
+  analysisState?: 'complete' | 'deferred';
 }
 
 export interface BslModuleIndexResult {

@@ -4,8 +4,12 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 
+import * as bslModuleIndexer from '../../../src/compareMerge/bsl/bslModuleIndexer';
 import { hashText } from '../../../src/compareMerge/bsl/bslRoutineLogicalScanner';
-import { buildBslModuleIndex } from '../../../src/compareMerge/bsl/bslModuleIndexer';
+import {
+  buildBslModuleIndex,
+  indexBslModuleSource,
+} from '../../../src/compareMerge/bsl/bslModuleIndexer';
 import {
   collectBslInventorySources,
   resolveBslInventoryIdentities,
@@ -115,17 +119,153 @@ suite('BSL inventory collection', () => {
     }
   });
 
+  test('reads and hashes deferred sources without parsing them while retaining paired and unsupported results', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bsl-inventory-selective-analysis-'));
+    const pairedPath = await createBslFile(root, 'Catalogs/Paired/Ext/ObjectModule.bsl');
+    const deferredPath = await createBslFile(root, 'Catalogs/Unmatched/Ext/ObjectModule.bsl');
+    const unsupportedPath = await createBslFile(root, 'Unsupported.bsl');
+    const filePaths = [pairedPath, deferredPath, unsupportedPath, deferredPath];
+    const resolution = await resolveBslInventoryIdentities({
+      sourceId: 'right-source',
+      side: 'right',
+      configRoot: root,
+      filePaths,
+    });
+    const pairedIdentity = resolution.files.find((file) => file.filePath === pairedPath)?.identity;
+    assert.ok(pairedIdentity, 'paired module path should have a supported identity');
+    const pairedSource = 'Procedure Shared()\n  Value = 1;\nEndProcedure';
+    const deferredFirstSource = 'Procedure Temporary()\nEndProcedure';
+    const deferredLastSource = 'Procedure Broken(\n';
+    const unsupportedSource = 'Unrecognized module source';
+    const expectedPaired = indexBslModuleSource({ identity: pairedIdentity!, source: pairedSource });
+    const indexerModule = bslModuleIndexer as unknown as {
+      indexBslModuleSource: typeof indexBslModuleSource;
+    };
+    const originalIndexBslModuleSource = indexerModule.indexBslModuleSource;
+    const indexedPaths: string[] = [];
+    const readsByPath = new Map<string, number>();
+    const expectedSources = new Map([
+      [pairedPath, pairedSource],
+      [deferredPath, deferredLastSource],
+      [unsupportedPath, unsupportedSource],
+    ]);
+
+    indexerModule.indexBslModuleSource = (input) => {
+      indexedPaths.push(input.identity.filePath);
+      return originalIndexBslModuleSource(input);
+    };
+
+    try {
+      const collectionOptions = {
+        resolution,
+        retainedPaths: new Set([pairedPath, deferredPath]),
+        analysisPaths: new Set([pairedPath]),
+        concurrency: 3,
+        readTextFile: async (filePath: string) => {
+          const occurrence = (readsByPath.get(filePath) ?? 0) + 1;
+          readsByPath.set(filePath, occurrence);
+          if (filePath === pairedPath) {return pairedSource;}
+          if (filePath === deferredPath) {
+            return occurrence === 1 ? deferredFirstSource : deferredLastSource;
+          }
+          return unsupportedSource;
+        },
+      };
+      const collection = await collectBslInventorySources(
+        collectionOptions as Parameters<typeof collectBslInventorySources>[0]
+      );
+      const pairedModule = collection.index.modules.find((module) => module.identity.filePath === pairedPath);
+      const deferredModule = collection.index.modules.find((module) => module.identity.filePath === deferredPath);
+
+      assert.strictEqual(resolution.sourceCount, 4);
+      assert.strictEqual([...readsByPath.values()].reduce((sum, count) => sum + count, 0), 4);
+      assert.deepStrictEqual(indexedPaths, [pairedPath], 'only the paired module should invoke the parser');
+      assert.ok(pairedModule);
+      assert.deepStrictEqual(pairedModule!.identity, expectedPaired.identity);
+      assert.deepStrictEqual(pairedModule!.routines, expectedPaired.routines);
+      assert.deepStrictEqual(pairedModule!.diagnostics, expectedPaired.diagnostics);
+      assert.ok(
+        moduleAnalysisState(pairedModule) === undefined || moduleAnalysisState(pairedModule) === 'complete',
+        'parsed entries may omit analysisState or declare complete analysis',
+      );
+      assert.ok(deferredModule);
+      assert.deepStrictEqual(deferredModule!.routines, []);
+      assert.deepStrictEqual(deferredModule!.diagnostics, []);
+      assert.strictEqual(moduleAnalysisState(deferredModule), 'deferred');
+      assert.deepStrictEqual(
+        collection.index.diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.filePath]),
+        [['BSL_MODULE_UNSUPPORTED_PATH', unsupportedPath]],
+      );
+      assert.deepStrictEqual([...collection.sources.keys()].sort(), [pairedPath, deferredPath].sort());
+      assert.strictEqual(collection.sources.get(pairedPath), pairedSource);
+      assert.strictEqual(collection.sources.get(deferredPath), deferredLastSource);
+      assert.strictEqual(collection.contentHash, hashSourcesLikeLegacyMap(expectedSources));
+    } finally {
+      indexerModule.indexBslModuleSource = originalIndexBslModuleSource;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps read draining and cancellation active when every source is deferred', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bsl-inventory-deferred-cancel-'));
+    const filePaths: string[] = [];
+    const cancellation = { isCancellationRequested: false };
+    let started = 0;
+    let active = 0;
+    const releases: Array<() => void> = [];
+
+    try {
+      for (let index = 0; index < 4; index += 1) {
+        filePaths.push(await createBslFile(root, `Catalogs/Deferred${index}/Ext/ObjectModule.bsl`));
+      }
+      const resolution = await resolveBslInventoryIdentities({
+        sourceId: 'right-source', side: 'right', configRoot: root, filePaths,
+      });
+      const collectionOptions = {
+        resolution,
+        retainedPaths: new Set(filePaths),
+        analysisPaths: new Set<string>(),
+        concurrency: 2,
+        cancellation,
+        readTextFile: async () => {
+          started += 1;
+          active += 1;
+          return new Promise<string>((resolve) => {
+            releases.push(() => {
+              active -= 1;
+              resolve('Procedure Deferred()\nEndProcedure');
+            });
+          });
+        },
+      };
+      const task = collectBslInventorySources(
+        collectionOptions as Parameters<typeof collectBslInventorySources>[0]
+      );
+
+      await waitFor(() => started === 2);
+      cancellation.isCancellationRequested = true;
+      releases.splice(0).forEach((release) => release());
+      await assert.rejects(task, (error: unknown) =>
+        (error as { code?: unknown }).code === 'CONFIGURATION_COMPARE_CANCELLED');
+      assert.strictEqual(active, 0);
+      assert.strictEqual(started, 2, 'deferred sources still flow through bounded reads before cancellation');
+    } finally {
+      releases.splice(0).forEach((release) => release());
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('yields during identity pre-resolution and observes cancellation', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bsl-inventory-prepass-'));
     const filePaths: string[] = [];
     const cancellation = { isCancellationRequested: false };
-    let timer: NodeJS.Timeout | undefined;
+    let cancellationImmediate: NodeJS.Immediate | undefined;
 
     try {
       for (let index = 0; index < 65; index += 1) {
         filePaths.push(await createBslFile(root, `Catalogs/Item${String(index).padStart(2, '0')}/Ext/ObjectModule.bsl`));
       }
-      timer = setTimeout(() => { cancellation.isCancellationRequested = true; }, 0);
+      cancellationImmediate = setImmediate(() => { cancellation.isCancellationRequested = true; });
 
       await assert.rejects(
         resolveBslInventoryIdentities({
@@ -138,7 +278,7 @@ suite('BSL inventory collection', () => {
         (error: unknown) => (error as { code?: unknown }).code === 'CONFIGURATION_COMPARE_CANCELLED'
       );
     } finally {
-      if (timer) {clearTimeout(timer);}
+      if (cancellationImmediate) {clearImmediate(cancellationImmediate);}
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -336,6 +476,10 @@ function hashSourcesLikeLegacyMap(files: ReadonlyMap<string, string>): string {
     hash.update('\0');
   }
   return hash.digest('hex');
+}
+
+function moduleAnalysisState(module: unknown): 'complete' | 'deferred' | undefined {
+  return (module as { analysisState?: 'complete' | 'deferred' }).analysisState;
 }
 
 function unsupportedFile(filePath: string): ResolvedBslInventoryFile {
