@@ -5,10 +5,13 @@ import * as path from 'path';
 import { performance } from 'perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'url';
 
+import { discoverConfigurationCompareManifest } from '../../../src/compareMerge/configurationCompareManifest';
+import metadataIndexerRuntime = require('../../../src/compareMerge/metadata/metadataIndexer');
 import {
   buildConfigurationCompare as buildConfigurationCompareWithoutMutationRuntime,
   type ConfigurationCompareInput,
 } from '../../../src/compareMerge/configurationCompareService';
+import type { MetadataIdentity } from '../../../src/compareMerge/domain/compareContracts';
 import { toWebviewPayload } from '../../../src/compareMerge/configCompareProvider';
 import type { CompareBuildProgress } from '../../../src/compareMerge/compareProgress';
 import type { CompareDisplayNode } from '../../../src/compareMerge/projection/compareDisplayTree';
@@ -34,6 +37,128 @@ suite('ConfigurationCompareService', () => {
       (error: unknown) =>
         (error as { code?: unknown }).code === 'CONFIGURATION_COMPARE_CANCELLED'
     );
+  });
+
+  test('manifest discovery treats only an explicitly allowed exact missing root as empty', async () => {
+    const originalIndexMetadataFolder = metadataIndexerRuntime.indexMetadataFolder;
+    const leftRoot = path.join(os.tmpdir(), 'configuration-compare-allowed-missing-left');
+    const missingRootError = Object.assign(new Error('left root is missing'), {
+      code: 'ENOENT',
+      path: leftRoot,
+    });
+
+    metadataIndexerRuntime.indexMetadataFolder = async (input) => {
+      if (input.side === 'left') {
+        throw missingRootError;
+      }
+      return [];
+    };
+
+    try {
+      const allowed = await discoverConfigurationCompareManifest({
+        left: { sourceId: 'left-source', rootPath: leftRoot, allowMissingRoot: true },
+        right: { sourceId: 'right-source', rootPath: path.join(os.tmpdir(), 'right-root') },
+        metadataReadConcurrency: 2,
+        directoryReadConcurrency: 2,
+      });
+      assert.deepStrictEqual(allowed.leftMetadata, []);
+
+      await assert.rejects(
+        discoverConfigurationCompareManifest({
+          left: { sourceId: 'left-source', rootPath: leftRoot },
+          right: { sourceId: 'right-source', rootPath: path.join(os.tmpdir(), 'right-root') },
+          metadataReadConcurrency: 2,
+          directoryReadConcurrency: 2,
+        }),
+        (error: unknown) => error === missingRootError
+      );
+    } finally {
+      metadataIndexerRuntime.indexMetadataFolder = originalIndexMetadataFolder;
+    }
+  });
+
+  test('manifest discovery rethrows non-root-missing errors unchanged when a root is optional', async () => {
+    const originalIndexMetadataFolder = metadataIndexerRuntime.indexMetadataFolder;
+    const leftRoot = path.join(os.tmpdir(), 'configuration-compare-optional-left');
+    const errors = [
+      Object.assign(new Error('nested folder is missing'), {
+        code: 'ENOENT',
+        path: path.join(leftRoot, 'Catalogs'),
+      }),
+      Object.assign(new Error('missing path is unspecified'), { code: 'ENOENT' }),
+      Object.assign(new Error('access denied'), { code: 'EACCES', path: leftRoot }),
+    ];
+
+    try {
+      for (const expectedError of errors) {
+        metadataIndexerRuntime.indexMetadataFolder = async (input) => {
+          if (input.side === 'left') {
+            throw expectedError;
+          }
+          return [];
+        };
+
+        await assert.rejects(
+          discoverConfigurationCompareManifest({
+            left: { sourceId: 'left-source', rootPath: leftRoot, allowMissingRoot: true },
+            right: { sourceId: 'right-source', rootPath: path.join(os.tmpdir(), 'right-root') },
+            metadataReadConcurrency: 2,
+            directoryReadConcurrency: 2,
+          }),
+          (error: unknown) => error === expectedError
+        );
+      }
+    } finally {
+      metadataIndexerRuntime.indexMetadataFolder = originalIndexMetadataFolder;
+    }
+  });
+
+  test('manifest discovery drains the other side before propagating an indexing failure', async () => {
+    const originalIndexMetadataFolder = metadataIndexerRuntime.indexMetadataFolder;
+    const leftError = new Error('left metadata indexing failed');
+    let rightStarted = false;
+    let releaseRight!: (identities: MetadataIdentity[]) => void;
+    let settled = false;
+    const rightPending = new Promise<MetadataIdentity[]>((resolve) => {
+      releaseRight = resolve;
+    });
+
+    metadataIndexerRuntime.indexMetadataFolder = async (input) => {
+      if (input.side === 'left') {
+        throw leftError;
+      }
+      rightStarted = true;
+      return rightPending;
+    };
+
+    try {
+      const discovery = discoverConfigurationCompareManifest({
+        left: { sourceId: 'left-source', rootPath: path.join(os.tmpdir(), 'left-root') },
+        right: { sourceId: 'right-source', rootPath: path.join(os.tmpdir(), 'right-root') },
+        metadataReadConcurrency: 2,
+        directoryReadConcurrency: 2,
+      }).then(
+        () => {
+          settled = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          settled = true;
+          return error;
+        }
+      );
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(rightStarted, true, 'both metadata sides should start before failure propagation');
+      assert.strictEqual(settled, false, 'discovery must await the still-pending side');
+
+      releaseRight([]);
+      assert.strictEqual(await discovery, leftError);
+      assert.strictEqual(settled, true);
+    } finally {
+      releaseRight([]);
+      metadataIndexerRuntime.indexMetadataFolder = originalIndexMetadataFolder;
+    }
   });
 
   test('throttles progress on a deterministic monotonic clock while keeping first and final results', () => {
@@ -585,21 +710,19 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
-  test('default right strategy indexes only matching left descriptors for small incoming config', async () => {
+  test('default right strategy discovers unrelated left descriptors without creating candidates', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
     const rightRoot = path.join(tempRoot, 'right');
     const backupRoot = path.join(tempRoot, 'backups');
+    let result: Awaited<ReturnType<typeof buildConfigurationCompare>> | undefined;
 
     try {
-      await writeCatalog(leftRoot, 'Products', 'catalog-products');
-      await writeCatalog(rightRoot, 'Products', 'catalog-products');
-      await writeFile(
-        path.join(leftRoot, 'Catalogs', 'Unrelated.xml'),
-        '<MetaDataObject><Catalog>'
-      );
+      await writeCatalogDescriptor(leftRoot, 'Products', 'catalog-products', 'Products');
+      await writeCatalogDescriptor(rightRoot, 'Products', 'catalog-products', 'Products');
+      await writeCatalogDescriptor(leftRoot, 'Unrelated', 'left-unrelated', 'Unrelated');
 
-      const result = await buildConfigurationCompare({
+      result = await buildConfigurationCompare({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
         backupRootPath: backupRoot,
@@ -607,11 +730,173 @@ suite('ConfigurationCompareService', () => {
       });
 
       assert.strictEqual(result.projection.stats.total > 0, true);
-      assert.strictEqual(
-        collectNodes(result.projection.root, (node) => node.label.includes('Unrelated')).length,
-        0
+      const unrelated = requireSingleNode(
+        result.projection.root,
+        (node) => node.kind === 'metadataObject' && node.label === 'Catalog.Unrelated'
+      );
+      assert.strictEqual(unrelated.status, 'leftOnly');
+      assert.strictEqual(unrelated.mergeable, false);
+      assert.strictEqual(unrelated.mergeState?.state, 'blocked');
+      assert.ok(!result.workspace.listMergeableNodeIds().includes(unrelated.id));
+    } finally {
+      result?.workspace.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('discovers the same metadata universe across right, left, and full strategies without changing candidate direction', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-metadata-strategies-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    let result: Awaited<ReturnType<typeof buildConfigurationCompare>> | undefined;
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'Products', 'shared-products', 'Products');
+      await writeCatalogDescriptor(rightRoot, 'Products', 'shared-products', 'Products');
+      await writeCatalogDescriptor(leftRoot, 'LeftOnly', 'left-only', 'Left only');
+      await writeCatalogDescriptor(rightRoot, 'RightOnly', 'right-only', 'Right only');
+
+      result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+
+      const expectedMetadataRows = [
+        { qualifiedName: 'Catalog.LeftOnly', kind: 'metadataObject', status: 'leftOnly' },
+        { qualifiedName: 'Catalog.Products', kind: 'metadataMatch', status: 'equal' },
+        { qualifiedName: 'Catalog.RightOnly', kind: 'metadataObject', status: 'rightOnly' },
+      ];
+      const rightRows = metadataRows(result.workspace.payload.root);
+      assert.deepStrictEqual(rightRows, expectedMetadataRows);
+
+      const rightLeftOnly = requireSingleNode(
+        result.workspace.payload.root,
+        (node) => node.kind === 'metadataObject' && node.label === 'Catalog.LeftOnly'
+      );
+      const rightRightOnly = requireSingleNode(
+        result.workspace.payload.root,
+        (node) => node.kind === 'metadataObject' && node.label === 'Catalog.RightOnly'
+      );
+      const rightCandidates = result.workspace.listMergeableNodeIds();
+      assert.strictEqual(rightLeftOnly.mergeable, false, 'default right strategy must not delete left-only metadata');
+      assert.ok(!rightCandidates.includes(rightLeftOnly.id));
+      assert.strictEqual(rightRightOnly.mergeable, true, 'default right strategy keeps right-only copy candidates');
+      assert.ok(rightCandidates.includes(rightRightOnly.id));
+
+      const leftStrategy = await result.workspace.setStrategy('left');
+      assert.strictEqual(leftStrategy.ok, true, JSON.stringify(leftStrategy));
+      assert.deepStrictEqual(metadataRows(result.workspace.payload.root), expectedMetadataRows);
+
+      const leftLeftOnly = requireSingleNode(
+        result.workspace.payload.root,
+        (node) => node.kind === 'metadataObject' && node.label === 'Catalog.LeftOnly'
+      );
+      const leftRightOnly = requireSingleNode(
+        result.workspace.payload.root,
+        (node) => node.kind === 'metadataObject' && node.label === 'Catalog.RightOnly'
+      );
+      const leftCandidates = result.workspace.listMergeableNodeIds();
+      assert.strictEqual(leftLeftOnly.mergeable, true, 'left strategy retains its existing left-only candidate direction');
+      assert.ok(leftCandidates.includes(leftLeftOnly.id));
+      assert.strictEqual(leftRightOnly.mergeable, false, 'left strategy must not copy right-only metadata');
+      assert.ok(!leftCandidates.includes(leftRightOnly.id));
+
+      const fullStrategy = await result.workspace.setStrategy('full');
+      assert.strictEqual(fullStrategy.ok, true, JSON.stringify(fullStrategy));
+      const fullRows = metadataRows(result.workspace.payload.root);
+      assert.deepStrictEqual(fullRows, expectedMetadataRows);
+
+      const reversed = await buildConfigurationCompare({
+        leftRootPath: rightRoot,
+        rightRootPath: leftRoot,
+        backupRootPath: path.join(tempRoot, 'reverse-backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      try {
+        const reversedRows = metadataRows(reversed.workspace.payload.root);
+        assert.deepStrictEqual(
+          reversedRows.map((row) => row.qualifiedName),
+          fullRows.map((row) => row.qualifiedName),
+          'swapping roots must preserve the metadata qualified-name universe'
+        );
+        const reversedByName = new Map(reversedRows.map((row) => [row.qualifiedName, row]));
+        for (const row of fullRows) {
+          const mirroredStatus = row.status === 'leftOnly'
+            ? 'rightOnly'
+            : row.status === 'rightOnly'
+              ? 'leftOnly'
+              : row.status;
+          assert.strictEqual(
+            reversedByName.get(row.qualifiedName)?.status,
+            mirroredStatus,
+            `swapping roots must mirror the status for ${row.qualifiedName}`
+          );
+        }
+      } finally {
+        reversed.workspace.dispose();
+      }
+    } finally {
+      result?.workspace.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('rejects a missing right root instead of treating all left metadata as unmatched', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-missing-right-root-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'Products', 'left-products', 'Products');
+      await assert.rejects(
+        buildConfigurationCompare({
+          leftRootPath: leftRoot,
+          rightRootPath: rightRoot,
+          backupRootPath: path.join(tempRoot, 'backups'),
+          createdAt: new Date('2026-05-30T10:00:00.000Z'),
+        }),
+        (error: unknown) => {
+          const fsError = error as { code?: unknown; path?: string };
+          return fsError.code === 'ENOENT' && path.resolve(fsError.path ?? '') === path.resolve(rightRoot);
+        }
       );
     } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('default right strategy preserves duplicate-UUID diagnostics in unrelated left metadata', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-unrelated-duplicate-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    let result: Awaited<ReturnType<typeof buildConfigurationCompare>> | undefined;
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'DuplicateA', 'duplicate-left-uuid', 'Duplicate A');
+      await writeCatalogDescriptor(leftRoot, 'DuplicateB', 'duplicate-left-uuid', 'Duplicate B');
+      await writeCatalogDescriptor(rightRoot, 'Products', 'right-products', 'Products');
+
+      result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+
+      const duplicateConflict = requireSingleNode(
+        result.workspace.payload.root,
+        (node) => node.kind === 'metadataConflict' && node.conflict?.kind === 'duplicateUuid'
+      );
+      assert.strictEqual(duplicateConflict.mergeable, false);
+      assert.strictEqual(duplicateConflict.conflict?.blocking, true);
+      assert.deepStrictEqual(
+        duplicateConflict.presentation?.identities?.map((identity) => identity.qualifiedName).sort(),
+        ['Catalog.DuplicateA', 'Catalog.DuplicateB']
+      );
+    } finally {
+      result?.workspace.dispose();
       await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
@@ -648,7 +933,7 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
-  test('default right strategy preserves same-uuid different-name conflict with targeted indexing', async () => {
+  test('default right strategy preserves same-uuid different-name conflict with symmetric discovery', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
     const rightRoot = path.join(tempRoot, 'right');
@@ -1964,6 +2249,28 @@ function collectNodes(
     }
   });
   return found;
+}
+
+function metadataRows(root: CompareTreeNode): Array<{
+  qualifiedName: string;
+  kind: string;
+  status: CompareTreeNode['status'];
+}> {
+  const metadataGroup = root.children.find((node) => node.kind === 'metadataGroup');
+  assert.ok(metadataGroup, 'expected metadata projection group');
+  return metadataGroup.children
+    .filter(
+      (node) =>
+        node.kind === 'metadataMatch' ||
+        node.kind === 'metadataConflict' ||
+        node.kind === 'metadataObject'
+    )
+    .map((node) => ({
+      qualifiedName: node.presentation?.qualifiedName ?? node.label,
+      kind: node.kind,
+      status: node.status,
+    }))
+    .sort((left, right) => left.qualifiedName.localeCompare(right.qualifiedName));
 }
 
 function assertPartialMetadataProjection(

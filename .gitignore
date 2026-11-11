@@ -27,6 +27,9 @@ FormatSamples/ut_demo_ForFormat/
 /FormatSamples/empty_c.cf
 BUGS/
 docs/*
+!docs/design/
+docs/design/*
+!docs/design/configuration-compare-manifest-plan.md
 !docs/third-party-notices.md
 # Публичная документация. Остальной docs/ — локальные планы, отчёты и черновики.
 !docs/analytics/

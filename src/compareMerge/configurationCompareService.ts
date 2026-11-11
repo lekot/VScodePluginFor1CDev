@@ -34,14 +34,12 @@ import type { AdapterCompareResult, CompareJoinStrategy } from './adapters/merge
 import {
   awaitAllSettled,
   buildAdapterCompareResults,
-  mapLimit,
 } from './compareBuildPipeline';
 import { CompareSession } from './domain/compareSession';
 import type { CompareMessage, CompareSide, MetadataIdentity } from './domain/compareContracts';
 import { buildConfigurationInventory } from './inventory/configurationInventory';
 import type { ConfigurationInventory } from './inventory/configurationInventory';
-import { indexMetadataFile, indexMetadataFolder } from './metadata/metadataIndexer';
-import { matchMetadataIdentities } from './metadata/metadataMatcher';
+import { discoverConfigurationCompareManifest } from './configurationCompareManifest';
 import {
   buildCompareTreeProjection,
   type CompareTreeProjection,
@@ -74,7 +72,6 @@ import { bindLinkedTemplateTypeTransitionNodes, captureLinkedTemplateTypeTransit
 
 const LEFT_SOURCE_ID = 'left-source';
 const RIGHT_SOURCE_ID = 'right-source';
-const TARGETED_METADATA_INDEX_THRESHOLD = 2000;
 const DEFAULT_COMPARE_LIMITS: Required<ConfigurationCompareLimits> = {
   metadataReadConcurrency: 16,
   directoryReadConcurrency: 8,
@@ -82,60 +79,6 @@ const DEFAULT_COMPARE_LIMITS: Required<ConfigurationCompareLimits> = {
   bslReadConcurrency: 8,
   adapterReadConcurrency: 8,
 };
-const METADATA_TYPE_FOLDERS: Record<string, string> = {
-  AccumulationRegister: 'AccumulationRegisters',
-  AccountingRegister: 'AccountingRegisters',
-  Attribute: 'Attributes',
-  BusinessProcess: 'BusinessProcesses',
-  CalculationRegister: 'CalculationRegisters',
-  Catalog: 'Catalogs',
-  ChartOfAccounts: 'ChartsOfAccounts',
-  ChartOfCalculationTypes: 'ChartsOfCalculationTypes',
-  ChartOfCharacteristicTypes: 'ChartsOfCharacteristicTypes',
-  Command: 'Commands',
-  CommonAttribute: 'CommonAttributes',
-  CommonCommand: 'CommonCommands',
-  CommonForm: 'CommonForms',
-  CommonModule: 'CommonModules',
-  CommonPicture: 'CommonPictures',
-  CommonTemplate: 'CommonTemplates',
-  CommandGroup: 'CommandGroups',
-  Constant: 'Constants',
-  DataProcessor: 'DataProcessors',
-  DefinedType: 'DefinedTypes',
-  Dimension: 'Dimensions',
-  Document: 'Documents',
-  DocumentJournal: 'DocumentJournals',
-  DocumentNumerator: 'DocumentNumerators',
-  Enum: 'Enums',
-  EventSubscription: 'EventSubscriptions',
-  ExchangePlan: 'ExchangePlans',
-  ExternalDataSource: 'ExternalDataSources',
-  FilterCriterion: 'FilterCriteria',
-  Form: 'Forms',
-  FunctionalOption: 'FunctionalOptions',
-  FunctionalOptionsParameter: 'FunctionalOptionsParameters',
-  HTTPService: 'HTTPServices',
-  InformationRegister: 'InformationRegisters',
-  IntegrationService: 'IntegrationServices',
-  Interface: 'Interfaces',
-  Language: 'Languages',
-  Report: 'Reports',
-  Resource: 'Resources',
-  Role: 'Roles',
-  ScheduledJob: 'ScheduledJobs',
-  SessionParameter: 'SessionParameters',
-  SettingsStorage: 'SettingsStorages',
-  Style: 'Styles',
-  Subsystem: 'Subsystems',
-  TabularSection: 'TabularSections',
-  Task: 'Tasks',
-  Template: 'Templates',
-  WebService: 'WebServices',
-  WSReference: 'WSReferences',
-  XDTOPackage: 'XDTOPackages',
-};
-
 export interface ConfigurationCompareInput extends CompareBuildOptions {
   leftRootPath: string;
   rightRootPath: string;
@@ -201,320 +144,6 @@ export async function buildConfigurationCompare(
   };
 }
 
-async function indexMetadataForStrategy(input: {
-  strategy: CompareJoinStrategy;
-  leftRootPath: string;
-  rightRootPath: string;
-  cancellation?: CompareCancellationToken;
-  limits: Required<ConfigurationCompareLimits>;
-}): Promise<readonly [MetadataIdentity[], MetadataIdentity[]]> {
-  throwIfCompareCancelled(input.cancellation);
-  if (input.strategy === 'right') {
-    const rightMetadata = await indexMetadataFolder({
-      sourceId: RIGHT_SOURCE_ID,
-      side: 'right',
-      folderPath: input.rightRootPath,
-      cancellation: input.cancellation,
-      concurrency: input.limits.metadataReadConcurrency,
-      directoryConcurrency: input.limits.directoryReadConcurrency,
-    });
-    const leftMetadata = await indexCounterpartMetadata({
-      rootPath: input.leftRootPath,
-      sourceId: LEFT_SOURCE_ID,
-      side: 'left',
-      counterparts: rightMetadata,
-      cancellation: input.cancellation,
-      limits: input.limits,
-    });
-    return [leftMetadata, rightMetadata] as const;
-  }
-
-  if (input.strategy === 'left') {
-    const leftMetadata = await indexMetadataFolder({
-      sourceId: LEFT_SOURCE_ID,
-      side: 'left',
-      folderPath: input.leftRootPath,
-      cancellation: input.cancellation,
-      concurrency: input.limits.metadataReadConcurrency,
-      directoryConcurrency: input.limits.directoryReadConcurrency,
-    });
-    const rightMetadata = await indexCounterpartMetadata({
-      rootPath: input.rightRootPath,
-      sourceId: RIGHT_SOURCE_ID,
-      side: 'right',
-      counterparts: leftMetadata,
-      cancellation: input.cancellation,
-      limits: input.limits,
-    });
-    return [leftMetadata, rightMetadata] as const;
-  }
-
-  const [leftMetadata, rightMetadata] = await awaitAllSettled([
-    indexMetadataFolder({
-      sourceId: LEFT_SOURCE_ID,
-      side: 'left',
-      folderPath: input.leftRootPath,
-      cancellation: input.cancellation,
-      concurrency: input.limits.metadataReadConcurrency,
-      directoryConcurrency: input.limits.directoryReadConcurrency,
-    }),
-    indexMetadataFolder({
-      sourceId: RIGHT_SOURCE_ID,
-      side: 'right',
-      folderPath: input.rightRootPath,
-      cancellation: input.cancellation,
-      concurrency: input.limits.metadataReadConcurrency,
-      directoryConcurrency: input.limits.directoryReadConcurrency,
-    }),
-  ]);
-  return [leftMetadata, rightMetadata] as const;
-}
-
-async function indexCounterpartMetadata(input: {
-  rootPath: string;
-  sourceId: string;
-  side: CompareSide;
-  counterparts: readonly MetadataIdentity[];
-  cancellation?: CompareCancellationToken;
-  limits: Required<ConfigurationCompareLimits>;
-}): Promise<MetadataIdentity[]> {
-  throwIfCompareCancelled(input.cancellation);
-  if (input.counterparts.length > TARGETED_METADATA_INDEX_THRESHOLD) {
-    return indexMetadataFolder({
-      sourceId: input.sourceId,
-      side: input.side,
-      folderPath: input.rootPath,
-      cancellation: input.cancellation,
-      concurrency: input.limits.metadataReadConcurrency,
-      directoryConcurrency: input.limits.directoryReadConcurrency,
-    });
-  }
-
-  const identities: MetadataIdentity[] = [];
-  const seen = new Set<string>();
-  const topLevelTypeCache = new Map<string, Promise<ReadonlyMap<string, string>>>();
-  for (const counterpart of input.counterparts) {
-    throwIfCompareCancelled(input.cancellation);
-    let matchedByPath = false;
-    for (const filePath of descriptorPathCandidates(input.rootPath, counterpart.qualifiedName)) {
-      const key = path.normalize(filePath).toLowerCase();
-      if (seen.has(key) || !(await fileExists(filePath))) {
-        continue;
-      }
-      seen.add(key);
-      identities.push(
-        await indexMetadataFile({
-          sourceId: input.sourceId,
-          side: input.side,
-          filePath,
-          metadataType: counterpart.metadataType,
-          qualifiedName: counterpart.qualifiedName,
-          cancellation: input.cancellation,
-        })
-      );
-      matchedByPath = true;
-      break;
-    }
-    if (!matchedByPath && counterpart.uuid) {
-      const uuidMatch = await findTopLevelMetadataByUuid({
-        rootPath: input.rootPath,
-        sourceId: input.sourceId,
-        side: input.side,
-        counterpart,
-        cache: topLevelTypeCache,
-        cancellation: input.cancellation,
-        concurrency: input.limits.metadataReadConcurrency,
-      });
-      if (uuidMatch && !seen.has(path.normalize(uuidMatch.filePath).toLowerCase())) {
-        seen.add(path.normalize(uuidMatch.filePath).toLowerCase());
-        identities.push(uuidMatch);
-      }
-    }
-  }
-
-  return identities;
-}
-
-async function findTopLevelMetadataByUuid(input: {
-  rootPath: string;
-  sourceId: string;
-  side: CompareSide;
-  counterpart: MetadataIdentity;
-  cache: Map<string, Promise<ReadonlyMap<string, string>>>;
-  cancellation?: CompareCancellationToken;
-  concurrency: number;
-}): Promise<MetadataIdentity | undefined> {
-  const uuid = input.counterpart.uuid;
-  if (!uuid) {
-    return undefined;
-  }
-  const folderPath = descriptorSiblingFolder(input.rootPath, input.counterpart.qualifiedName);
-  if (!folderPath) {
-    return undefined;
-  }
-  const cacheKey = path.normalize(folderPath).toLowerCase();
-  let uuidIndex = input.cache.get(cacheKey);
-  if (!uuidIndex) {
-    uuidIndex = collectDirectDescriptorUuidIndex(folderPath, input.cancellation, input.concurrency);
-    input.cache.set(cacheKey, uuidIndex);
-  }
-
-  const filePath = (await uuidIndex).get(uuid);
-  if (!filePath) {
-    return undefined;
-  }
-
-  return indexMetadataFile({
-    sourceId: input.sourceId,
-    side: input.side,
-    filePath,
-    metadataType: input.counterpart.metadataType,
-    cancellation: input.cancellation,
-  });
-}
-
-function descriptorPathCandidates(rootPath: string, qualifiedName: string): string[] {
-  const parts = qualifiedName.split('.').filter(Boolean);
-  if (parts.length < 2 || parts.length % 2 !== 0) {
-    return [];
-  }
-
-  const folders: string[] = [];
-  for (let index = 0; index < parts.length; index += 2) {
-    const metadataType = parts[index];
-    const objectName = parts[index + 1];
-    const folderName = metadataFolderName(metadataType);
-    if (!folderName || !objectName) {
-      return [];
-    }
-    folders.push(folderName, objectName);
-  }
-
-  const objectName = parts[parts.length - 1];
-  const objectFolder = path.join(rootPath, ...folders);
-  const descriptorFolder = path.join(rootPath, ...folders.slice(0, -1));
-  return [
-    path.join(descriptorFolder, `${objectName}.xml`),
-    path.join(objectFolder, `${objectName}.xml`),
-  ];
-}
-
-function descriptorSiblingFolder(rootPath: string, qualifiedName: string): string | undefined {
-  const parts = qualifiedName.split('.').filter(Boolean);
-  if (parts.length < 2 || parts.length % 2 !== 0) {
-    return undefined;
-  }
-
-  const folders: string[] = [];
-  for (let index = 0; index < parts.length - 2; index += 2) {
-    const folderName = metadataFolderName(parts[index]);
-    const objectName = parts[index + 1];
-    if (!folderName || !objectName) {
-      return undefined;
-    }
-    folders.push(folderName, objectName);
-  }
-
-  const targetFolder = metadataFolderName(parts[parts.length - 2]);
-  return targetFolder ? path.join(rootPath, ...folders, targetFolder) : undefined;
-}
-
-async function collectDirectDescriptorCandidates(
-  folderPath: string,
-  cancellation?: CompareCancellationToken,
-): Promise<string[]> {
-  throwIfCompareCancelled(cancellation);
-  if (!(await directoryExists(folderPath))) {
-    return [];
-  }
-
-  const entries = await fs.readdir(folderPath, { withFileTypes: true });
-  throwIfCompareCancelled(cancellation);
-  const candidates: string[] = [];
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    throwIfCompareCancelled(cancellation);
-    const entryPath = path.join(folderPath, entry.name);
-    if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.xml') {
-      candidates.push(entryPath);
-      continue;
-    }
-    if (entry.isDirectory()) {
-      const descriptorPath = path.join(entryPath, `${entry.name}.xml`);
-      if (await fileExists(descriptorPath)) {
-        candidates.push(descriptorPath);
-      }
-    }
-  }
-
-  return candidates;
-}
-
-async function collectDirectDescriptorUuidIndex(
-  folderPath: string,
-  cancellation: CompareCancellationToken | undefined,
-  concurrency: number,
-): Promise<ReadonlyMap<string, string>> {
-  throwIfCompareCancelled(cancellation);
-  const candidates = await collectDirectDescriptorCandidates(folderPath, cancellation);
-  const entries = await mapLimit(candidates, concurrency, async (filePath) => {
-    throwIfCompareCancelled(cancellation);
-    const uuid = await readMetadataUuidPrefix(filePath);
-    throwIfCompareCancelled(cancellation);
-    return uuid ? { uuid, filePath } : undefined;
-  }, cancellation);
-  const byUuid = new Map<string, string>();
-  for (const entry of entries) {
-    if (entry && !byUuid.has(entry.uuid)) {
-      byUuid.set(entry.uuid, entry.filePath);
-    }
-  }
-
-  return byUuid;
-}
-
-async function readMetadataUuidPrefix(filePath: string): Promise<string | undefined> {
-  const handle = await fs.open(filePath, 'r');
-  try {
-    const buffer = Buffer.alloc(65536);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    return readMetadataUuidFast(buffer.toString('utf-8', 0, bytesRead));
-  } finally {
-    await handle.close();
-  }
-}
-
-function readMetadataUuidFast(content: string): string | undefined {
-  return content.match(/\buuid\s*=\s*"([^"]+)"/i)?.[1];
-}
-
-function metadataFolderName(metadataType: string): string | undefined {
-  return METADATA_TYPE_FOLDERS[metadataType];
-}
-
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch (error) {
-    if ((error as { code?: unknown })?.code === 'ENOENT') {
-      return false;
-    }
-    throw error;
-  }
-}
-
-async function directoryExists(folderPath: string): Promise<boolean> {
-  try {
-    const stat = await fs.stat(folderPath);
-    return stat.isDirectory();
-  } catch (error) {
-    if ((error as { code?: unknown })?.code === 'ENOENT') {
-      return false;
-    }
-    throw error;
-  }
-}
-
 async function buildConfigurationCompareState(
   input: ConfigurationCompareInput,
   strategy: CompareJoinStrategy = 'right'
@@ -564,14 +193,13 @@ async function buildConfigurationCompareState(
   try {
     throwIfCompareCancelled(input.cancellation);
     publishCompareBuildProgress(input, { phase: 'metadata' });
-    const [leftMetadata, rightMetadata] = await indexMetadataForStrategy({
-      strategy,
-      leftRootPath,
-      rightRootPath,
+    const { leftMetadata, rightMetadata, metadata } = await discoverConfigurationCompareManifest({
+      left: { sourceId: LEFT_SOURCE_ID, rootPath: leftRootPath, allowMissingRoot: true },
+      right: { sourceId: RIGHT_SOURCE_ID, rootPath: rightRootPath },
+      metadataReadConcurrency: limits.metadataReadConcurrency,
+      directoryReadConcurrency: limits.directoryReadConcurrency,
       cancellation: input.cancellation,
-      limits,
     });
-    const metadata = matchMetadataIdentities({ left: leftMetadata, right: rightMetadata });
     const partialMetadata = { ...metadata, matches: [] };
     const indexedMetadataCount = leftMetadata.length + rightMetadata.length;
     publishCompareBuildProgress(input, {
