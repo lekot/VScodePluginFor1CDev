@@ -6,6 +6,7 @@ import {
   indexBslModuleFile,
   indexBslModuleSource,
   type BslModuleIdentity,
+  type BslModuleIndexEntry,
 } from '../../../src/compareMerge/bsl/bslModuleIndexer';
 import { diffBslModules } from '../../../src/compareMerge/bsl/bslRoutineDiff';
 
@@ -203,6 +204,73 @@ suite('BslRoutineDiff', () => {
       result.diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.blocking]),
       [['BSL_MODULE_DUPLICATE_ROUTINE', true]]
     );
+  });
+
+  test('blocks a diff when one side defers analysis instead of emitting fake routine deletions', () => {
+    const left = moduleFromSource(
+      'left-source',
+      'left',
+      ['Procedure Keep()', '  Value = 1;', 'EndProcedure'].join('\n'),
+    );
+    const right = deferredModule(moduleFromSource(
+      'right-source',
+      'right',
+      ['Procedure Keep()', '  Value = 1;', 'EndProcedure'].join('\n'),
+    ));
+
+    const result = diffBslModules({ left, right });
+
+    assert.strictEqual(result.canAutoMatch, false);
+    assert.deepStrictEqual(result.routines, []);
+    assert.deepStrictEqual(result.summary, {
+      added: 0,
+      changed: 0,
+      deleted: 0,
+      reordered: 0,
+      unchanged: 0,
+    });
+    assert.deepStrictEqual(result.diagnostics.map((diagnostic) => ({
+      severity: diagnostic.severity,
+      code: diagnostic.code,
+      blocking: diagnostic.blocking,
+      sourceId: diagnostic.sourceId,
+      side: diagnostic.side,
+      filePath: diagnostic.filePath,
+      moduleId: diagnostic.moduleId,
+    })), [{
+      severity: 'error',
+      code: 'BSL_MODULE_ANALYSIS_REQUIRED',
+      blocking: true,
+      sourceId: 'right-source',
+      side: 'right',
+      filePath: right.identity.filePath,
+      moduleId: right.identity.moduleId,
+    }]);
+  });
+
+  test('emits one blocking analysis-required diagnostic for each deferred input', () => {
+    const left = deferredModule(moduleFromSource('left-source', 'left', ''));
+    const right = deferredModule(moduleFromSource('right-source', 'right', ''));
+
+    const result = diffBslModules({ left, right });
+
+    assert.strictEqual(result.canAutoMatch, false);
+    assert.deepStrictEqual(result.routines, []);
+    assert.deepStrictEqual(result.diagnostics.map((diagnostic) => ({
+      code: diagnostic.code,
+      blocking: diagnostic.blocking,
+      sourceId: diagnostic.sourceId,
+      side: diagnostic.side,
+      filePath: diagnostic.filePath,
+      moduleId: diagnostic.moduleId,
+    })), [left, right].map((entry) => ({
+      code: 'BSL_MODULE_ANALYSIS_REQUIRED',
+      blocking: true,
+      sourceId: entry.identity.sourceId,
+      side: entry.identity.side,
+      filePath: entry.identity.filePath,
+      moduleId: entry.identity.moduleId,
+    })));
   });
 
   test('indexes supported object and manager modules including CalculationRegister manager', async () => {
@@ -498,6 +566,14 @@ function moduleFromSource(sourceId: string, side: 'left' | 'right', source: stri
     identity: makeIdentity(sourceId, side),
     source,
   });
+}
+
+function deferredModule(entry: BslModuleIndexEntry): BslModuleIndexEntry {
+  return {
+    ...entry,
+    routines: [],
+    analysisState: 'deferred',
+  } as unknown as BslModuleIndexEntry;
 }
 
 function makeIdentity(sourceId: string, side: 'left' | 'right'): BslModuleIdentity {

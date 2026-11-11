@@ -7,7 +7,7 @@ import { MISSING_TARGET_HASH, type MergeCandidate, type MergeFileWitness } from 
 import { rootRegistrationIsAvailable } from './linkedDesignerPackageIndex';
 import { blocked, hashBuffer, uniqueWitnesses } from './linkedDesignerUtils';
 import type { CompareMessage } from './domain/compareContracts';
-import type { LinkedDesignerMaterializerContext, LinkedDesignerPackageRecipe } from './linkedDesignerTypes';
+import type { LinkedDesignerMaterializerContext, LinkedDesignerPackageRecipe, LinkedRootObjectCopyRecipe } from './linkedDesignerTypes';
 
 export async function materializePackageMembers(
   input: LinkedDesignerMaterializerContext,
@@ -65,7 +65,7 @@ export async function materializePackageMembers(
 export async function materializeRootConfigurationWrite(
   input: LinkedDesignerMaterializerContext,
   mutations: readonly RootObjectConfigurationMutation[],
-  recipes: readonly LinkedDesignerPackageRecipe[],
+  recipes: readonly (LinkedDesignerPackageRecipe | LinkedRootObjectCopyRecipe)[],
 ): Promise<{ candidate: MergeCandidate } | { diagnostic: CompareMessage }> {
   const snapshot = input.rootConfiguration;
   if (!snapshot || !snapshot.sourceHash || !snapshot.sourceContent) {
@@ -95,12 +95,16 @@ export async function materializeRootConfigurationWrite(
     expectedHash: snapshot.sourceHash,
     kind: 'file',
   };
+  const rootRecipe = recipes.find((recipe) => recipe.rootRegistration);
+  const rootNodeId = rootRecipe?.registrationNodeId
+    ?? (rootRecipe && 'packageId' in rootRecipe ? rootRecipe.packageId : undefined)
+    ?? 'linked-designer-root-registration';
   const candidate = await createCapturedOutputCandidate(input, {
-    nodeId: recipes.find((recipe) => recipe.rootRegistration)?.registrationNodeId ?? recipes[0]?.packageId ?? 'linked-designer-root-registration',
+    nodeId: rootNodeId,
     targetRelativePath: 'Configuration.xml',
     expectedTargetHash: snapshot.targetHash,
     content: Buffer.from(next, 'utf8'),
-    witnesses: [sourceWitness, ...recipes.flatMap((recipe) => recipe.targetDirectoryWitness ? [recipe.targetDirectoryWitness] : [])],
+    witnesses: [sourceWitness, ...recipes.flatMap((recipe) => 'targetDirectoryWitness' in recipe && recipe.targetDirectoryWitness ? [recipe.targetDirectoryWitness] : [])],
   });
   return { candidate };
 }

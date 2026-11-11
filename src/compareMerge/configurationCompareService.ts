@@ -1,17 +1,17 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { createHash } from 'crypto';
 import { pathToFileURL } from 'url';
 
 import type { ConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
 import type { ConfigurationId } from '../services/configurationSession/types';
 import { compareCodeUnits } from '../utils/compareCodeUnits';
 import {
-  buildBslModuleIndex,
   indexBslModuleSource,
   type BslModuleIndexEntry,
   type BslModuleDiagnostic,
 } from './bsl/bslModuleIndexer';
+import { collectBslInventorySources, resolveBslInventoryIdentities } from './bsl/bslInventoryCollection';
+import { selectBslSourceRetention } from './bsl/bslSourceRetention';
 import { createBslRoutineLogicalMergePlan } from './bsl/bslRoutineLogicalMerge';
 import {
   hashText,
@@ -30,16 +30,16 @@ import {
   type ConfigurationCompareWorkspaceState,
   type ExecutableCandidateFactory,
 } from './configurationCompareWorkspace';
-import { fileObjectAdapter } from './adapters/fileObjectAdapter';
-import type { AdapterCompareResult, CompareJoinStrategy, MetadataObjectMatch } from './adapters/mergeAdapter';
-import { ambiguousArtifactPairResult, findArtifactPairs } from './adapters/artifactPairing';
-import { buildMetadataReferenceContext } from './adapters/metadataReferenceContext';
+import type { AdapterCompareResult, CompareJoinStrategy } from './adapters/mergeAdapter';
+import {
+  awaitAllSettled,
+  buildAdapterCompareResults,
+} from './compareBuildPipeline';
 import { CompareSession } from './domain/compareSession';
 import type { CompareMessage, CompareSide, MetadataIdentity } from './domain/compareContracts';
 import { buildConfigurationInventory } from './inventory/configurationInventory';
 import type { ConfigurationInventory } from './inventory/configurationInventory';
-import { indexMetadataFile, indexMetadataFolder } from './metadata/metadataIndexer';
-import { matchMetadataIdentities } from './metadata/metadataMatcher';
+import { discoverConfigurationCompareManifest } from './configurationCompareManifest';
 import {
   buildCompareTreeProjection,
   type CompareTreeProjection,
@@ -53,23 +53,25 @@ import {
 } from './linkedDesignerContext';
 import { captureLinkedFormXmlSnapshots } from './linkedDesignerCapture';
 import { captureBslRoutineSpan } from './linkedDesignerRoutineSpan';
-import { compareLinkedDesignerXmlArtifact } from './linkedDesignerAdapterCompare';
 import { prepareLinkedDesignerBslContext } from './linkedDesignerBslContext';
 import { tryBuildExtensionCompareState } from './extensions/extensionCompare';
+import {
+  createReadOnlyCompareProjection,
+  publishCompareBuildProgress,
+  type CompareBuildOptions,
+  type CompareBuildProgress,
+} from './compareProgress';
 import { tryBuildEdtUnsupportedState } from './edtUnsupportedCompare';
-import { findInventoryObjectByDescriptor, metadataIdentityToObjectUnit } from './metadataObjectLookup';
 import {
   bindLinkedDesignerPackageNodes,
   buildLinkedDesignerCompareIndex,
   materializeLinkedDesignerSelection,
   type LinkedDesignerMaterializerContext,
-  type LinkedFormModuleSnapshot,
 } from './linkedDesignerMaterializer';
 import { bindLinkedTemplateTypeTransitionNodes, captureLinkedTemplateTypeTransitions } from './linkedDesignerTemplateTransitions';
 
 const LEFT_SOURCE_ID = 'left-source';
 const RIGHT_SOURCE_ID = 'right-source';
-const TARGETED_METADATA_INDEX_THRESHOLD = 2000;
 const DEFAULT_COMPARE_LIMITS: Required<ConfigurationCompareLimits> = {
   metadataReadConcurrency: 16,
   directoryReadConcurrency: 8,
@@ -77,68 +79,13 @@ const DEFAULT_COMPARE_LIMITS: Required<ConfigurationCompareLimits> = {
   bslReadConcurrency: 8,
   adapterReadConcurrency: 8,
 };
-const METADATA_TYPE_FOLDERS: Record<string, string> = {
-  AccumulationRegister: 'AccumulationRegisters',
-  AccountingRegister: 'AccountingRegisters',
-  Attribute: 'Attributes',
-  BusinessProcess: 'BusinessProcesses',
-  CalculationRegister: 'CalculationRegisters',
-  Catalog: 'Catalogs',
-  ChartOfAccounts: 'ChartsOfAccounts',
-  ChartOfCalculationTypes: 'ChartsOfCalculationTypes',
-  ChartOfCharacteristicTypes: 'ChartsOfCharacteristicTypes',
-  Command: 'Commands',
-  CommonAttribute: 'CommonAttributes',
-  CommonCommand: 'CommonCommands',
-  CommonForm: 'CommonForms',
-  CommonModule: 'CommonModules',
-  CommonPicture: 'CommonPictures',
-  CommonTemplate: 'CommonTemplates',
-  CommandGroup: 'CommandGroups',
-  Constant: 'Constants',
-  DataProcessor: 'DataProcessors',
-  DefinedType: 'DefinedTypes',
-  Dimension: 'Dimensions',
-  Document: 'Documents',
-  DocumentJournal: 'DocumentJournals',
-  DocumentNumerator: 'DocumentNumerators',
-  Enum: 'Enums',
-  EventSubscription: 'EventSubscriptions',
-  ExchangePlan: 'ExchangePlans',
-  ExternalDataSource: 'ExternalDataSources',
-  FilterCriterion: 'FilterCriteria',
-  Form: 'Forms',
-  FunctionalOption: 'FunctionalOptions',
-  FunctionalOptionsParameter: 'FunctionalOptionsParameters',
-  HTTPService: 'HTTPServices',
-  InformationRegister: 'InformationRegisters',
-  IntegrationService: 'IntegrationServices',
-  Interface: 'Interfaces',
-  Language: 'Languages',
-  Report: 'Reports',
-  Resource: 'Resources',
-  Role: 'Roles',
-  ScheduledJob: 'ScheduledJobs',
-  SessionParameter: 'SessionParameters',
-  SettingsStorage: 'SettingsStorages',
-  Style: 'Styles',
-  Subsystem: 'Subsystems',
-  TabularSection: 'TabularSections',
-  Task: 'Tasks',
-  Template: 'Templates',
-  WebService: 'WebServices',
-  WSReference: 'WSReferences',
-  XDTOPackage: 'XDTOPackages',
-};
-
-export interface ConfigurationCompareInput {
+export interface ConfigurationCompareInput extends CompareBuildOptions {
   leftRootPath: string;
   rightRootPath: string;
   backupRootPath: string;
   mutationEngine?: ConfigurationMutationEngine;
   configurationId?: ConfigurationId;
   createdAt?: Date;
-  cancellation?: CompareCancellationToken;
   extensionBaseRoots?: Readonly<Partial<Record<CompareSide, string>>>;
   limits?: ConfigurationCompareLimits;
   io?: ConfigurationCompareIo;
@@ -167,8 +114,17 @@ export async function buildConfigurationCompare(
 ): Promise<ConfigurationCompareResult> {
   throwIfCompareCancelled(input.cancellation);
   const state = await buildConfigurationCompareState(input);
-  throwIfCompareCancelled(input.cancellation);
-  const refreshInput: ConfigurationCompareInput = { ...input, cancellation: undefined };
+  try {
+    throwIfCompareCancelled(input.cancellation);
+  } catch (error) {
+    state.session.dispose();
+    throw error;
+  }
+  const refreshInput: ConfigurationCompareInput = {
+    ...input,
+    cancellation: undefined,
+    onProgress: undefined,
+  };
   const workspace = new ConfigurationCompareWorkspace({
     ...state,
     leftRootPath: path.normalize(input.leftRootPath),
@@ -177,7 +133,8 @@ export async function buildConfigurationCompare(
     backupRootPath: input.backupRootPath,
     mutationEngine: input.mutationEngine,
     configurationId: input.configurationId,
-    refreshWorkspace: (strategy) => buildConfigurationCompareState(refreshInput, strategy),
+    refreshWorkspace: (strategy, options) =>
+      buildConfigurationCompareState({ ...refreshInput, ...options }, strategy),
   });
 
   return {
@@ -187,352 +144,21 @@ export async function buildConfigurationCompare(
   };
 }
 
-async function indexMetadataForStrategy(input: {
-  strategy: CompareJoinStrategy;
-  leftRootPath: string;
-  rightRootPath: string;
-  cancellation?: CompareCancellationToken;
-  limits: Required<ConfigurationCompareLimits>;
-}): Promise<readonly [MetadataIdentity[], MetadataIdentity[]]> {
-  throwIfCompareCancelled(input.cancellation);
-  if (input.strategy === 'right') {
-    const rightMetadata = await indexMetadataFolder({
-      sourceId: RIGHT_SOURCE_ID,
-      side: 'right',
-      folderPath: input.rightRootPath,
-      cancellation: input.cancellation,
-      concurrency: input.limits.metadataReadConcurrency,
-      directoryConcurrency: input.limits.directoryReadConcurrency,
-    });
-    const leftMetadata = await indexCounterpartMetadata({
-      rootPath: input.leftRootPath,
-      sourceId: LEFT_SOURCE_ID,
-      side: 'left',
-      counterparts: rightMetadata,
-      cancellation: input.cancellation,
-      limits: input.limits,
-    });
-    return [leftMetadata, rightMetadata] as const;
-  }
-
-  if (input.strategy === 'left') {
-    const leftMetadata = await indexMetadataFolder({
-      sourceId: LEFT_SOURCE_ID,
-      side: 'left',
-      folderPath: input.leftRootPath,
-      cancellation: input.cancellation,
-      concurrency: input.limits.metadataReadConcurrency,
-      directoryConcurrency: input.limits.directoryReadConcurrency,
-    });
-    const rightMetadata = await indexCounterpartMetadata({
-      rootPath: input.rightRootPath,
-      sourceId: RIGHT_SOURCE_ID,
-      side: 'right',
-      counterparts: leftMetadata,
-      cancellation: input.cancellation,
-      limits: input.limits,
-    });
-    return [leftMetadata, rightMetadata] as const;
-  }
-
-  return Promise.all([
-    indexMetadataFolder({
-      sourceId: LEFT_SOURCE_ID,
-      side: 'left',
-      folderPath: input.leftRootPath,
-      cancellation: input.cancellation,
-      concurrency: input.limits.metadataReadConcurrency,
-      directoryConcurrency: input.limits.directoryReadConcurrency,
-    }),
-    indexMetadataFolder({
-      sourceId: RIGHT_SOURCE_ID,
-      side: 'right',
-      folderPath: input.rightRootPath,
-      cancellation: input.cancellation,
-      concurrency: input.limits.metadataReadConcurrency,
-      directoryConcurrency: input.limits.directoryReadConcurrency,
-    }),
-  ]);
-}
-
-async function indexCounterpartMetadata(input: {
-  rootPath: string;
-  sourceId: string;
-  side: CompareSide;
-  counterparts: readonly MetadataIdentity[];
-  cancellation?: CompareCancellationToken;
-  limits: Required<ConfigurationCompareLimits>;
-}): Promise<MetadataIdentity[]> {
-  throwIfCompareCancelled(input.cancellation);
-  if (input.counterparts.length > TARGETED_METADATA_INDEX_THRESHOLD) {
-    return indexMetadataFolder({
-      sourceId: input.sourceId,
-      side: input.side,
-      folderPath: input.rootPath,
-      cancellation: input.cancellation,
-      concurrency: input.limits.metadataReadConcurrency,
-      directoryConcurrency: input.limits.directoryReadConcurrency,
-    });
-  }
-
-  const identities: MetadataIdentity[] = [];
-  const seen = new Set<string>();
-  const topLevelTypeCache = new Map<string, Promise<ReadonlyMap<string, string>>>();
-  for (const counterpart of input.counterparts) {
-    throwIfCompareCancelled(input.cancellation);
-    let matchedByPath = false;
-    for (const filePath of descriptorPathCandidates(input.rootPath, counterpart.qualifiedName)) {
-      const key = path.normalize(filePath).toLowerCase();
-      if (seen.has(key) || !(await fileExists(filePath))) {
-        continue;
-      }
-      seen.add(key);
-      identities.push(
-        await indexMetadataFile({
-          sourceId: input.sourceId,
-          side: input.side,
-          filePath,
-          metadataType: counterpart.metadataType,
-          qualifiedName: counterpart.qualifiedName,
-          cancellation: input.cancellation,
-        })
-      );
-      matchedByPath = true;
-      break;
-    }
-    if (!matchedByPath && counterpart.uuid) {
-      const uuidMatch = await findTopLevelMetadataByUuid({
-        rootPath: input.rootPath,
-        sourceId: input.sourceId,
-        side: input.side,
-        counterpart,
-        cache: topLevelTypeCache,
-        cancellation: input.cancellation,
-        concurrency: input.limits.metadataReadConcurrency,
-      });
-      if (uuidMatch && !seen.has(path.normalize(uuidMatch.filePath).toLowerCase())) {
-        seen.add(path.normalize(uuidMatch.filePath).toLowerCase());
-        identities.push(uuidMatch);
-      }
-    }
-  }
-
-  return identities;
-}
-
-async function findTopLevelMetadataByUuid(input: {
-  rootPath: string;
-  sourceId: string;
-  side: CompareSide;
-  counterpart: MetadataIdentity;
-  cache: Map<string, Promise<ReadonlyMap<string, string>>>;
-  cancellation?: CompareCancellationToken;
-  concurrency: number;
-}): Promise<MetadataIdentity | undefined> {
-  const uuid = input.counterpart.uuid;
-  if (!uuid) {
-    return undefined;
-  }
-  const folderPath = descriptorSiblingFolder(input.rootPath, input.counterpart.qualifiedName);
-  if (!folderPath) {
-    return undefined;
-  }
-  const cacheKey = path.normalize(folderPath).toLowerCase();
-  let uuidIndex = input.cache.get(cacheKey);
-  if (!uuidIndex) {
-    uuidIndex = collectDirectDescriptorUuidIndex(folderPath, input.cancellation, input.concurrency);
-    input.cache.set(cacheKey, uuidIndex);
-  }
-
-  const filePath = (await uuidIndex).get(uuid);
-  if (!filePath) {
-    return undefined;
-  }
-
-  return indexMetadataFile({
-    sourceId: input.sourceId,
-    side: input.side,
-    filePath,
-    metadataType: input.counterpart.metadataType,
-    cancellation: input.cancellation,
-  });
-}
-
-function descriptorPathCandidates(rootPath: string, qualifiedName: string): string[] {
-  const parts = qualifiedName.split('.').filter(Boolean);
-  if (parts.length < 2 || parts.length % 2 !== 0) {
-    return [];
-  }
-
-  const folders: string[] = [];
-  for (let index = 0; index < parts.length; index += 2) {
-    const metadataType = parts[index];
-    const objectName = parts[index + 1];
-    const folderName = metadataFolderName(metadataType);
-    if (!folderName || !objectName) {
-      return [];
-    }
-    folders.push(folderName, objectName);
-  }
-
-  const objectName = parts[parts.length - 1];
-  const objectFolder = path.join(rootPath, ...folders);
-  const descriptorFolder = path.join(rootPath, ...folders.slice(0, -1));
-  return [
-    path.join(descriptorFolder, `${objectName}.xml`),
-    path.join(objectFolder, `${objectName}.xml`),
-  ];
-}
-
-function descriptorSiblingFolder(rootPath: string, qualifiedName: string): string | undefined {
-  const parts = qualifiedName.split('.').filter(Boolean);
-  if (parts.length < 2 || parts.length % 2 !== 0) {
-    return undefined;
-  }
-
-  const folders: string[] = [];
-  for (let index = 0; index < parts.length - 2; index += 2) {
-    const folderName = metadataFolderName(parts[index]);
-    const objectName = parts[index + 1];
-    if (!folderName || !objectName) {
-      return undefined;
-    }
-    folders.push(folderName, objectName);
-  }
-
-  const targetFolder = metadataFolderName(parts[parts.length - 2]);
-  return targetFolder ? path.join(rootPath, ...folders, targetFolder) : undefined;
-}
-
-async function collectDirectDescriptorCandidates(
-  folderPath: string,
-  cancellation?: CompareCancellationToken,
-): Promise<string[]> {
-  throwIfCompareCancelled(cancellation);
-  if (!(await directoryExists(folderPath))) {
-    return [];
-  }
-
-  const entries = await fs.readdir(folderPath, { withFileTypes: true });
-  throwIfCompareCancelled(cancellation);
-  const candidates: string[] = [];
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    throwIfCompareCancelled(cancellation);
-    const entryPath = path.join(folderPath, entry.name);
-    if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.xml') {
-      candidates.push(entryPath);
-      continue;
-    }
-    if (entry.isDirectory()) {
-      const descriptorPath = path.join(entryPath, `${entry.name}.xml`);
-      if (await fileExists(descriptorPath)) {
-        candidates.push(descriptorPath);
-      }
-    }
-  }
-
-  return candidates;
-}
-
-async function collectDirectDescriptorUuidIndex(
-  folderPath: string,
-  cancellation: CompareCancellationToken | undefined,
-  concurrency: number,
-): Promise<ReadonlyMap<string, string>> {
-  throwIfCompareCancelled(cancellation);
-  const candidates = await collectDirectDescriptorCandidates(folderPath, cancellation);
-  const entries = await mapLimit(candidates, concurrency, async (filePath) => {
-    throwIfCompareCancelled(cancellation);
-    const uuid = await readMetadataUuidPrefix(filePath);
-    throwIfCompareCancelled(cancellation);
-    return uuid ? { uuid, filePath } : undefined;
-  }, cancellation);
-  const byUuid = new Map<string, string>();
-  for (const entry of entries) {
-    if (entry && !byUuid.has(entry.uuid)) {
-      byUuid.set(entry.uuid, entry.filePath);
-    }
-  }
-
-  return byUuid;
-}
-
-async function readMetadataUuidPrefix(filePath: string): Promise<string | undefined> {
-  const handle = await fs.open(filePath, 'r');
-  try {
-    const buffer = Buffer.alloc(65536);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    return readMetadataUuidFast(buffer.toString('utf-8', 0, bytesRead));
-  } finally {
-    await handle.close();
-  }
-}
-
-function readMetadataUuidFast(content: string): string | undefined {
-  return content.match(/\buuid\s*=\s*"([^"]+)"/i)?.[1];
-}
-
-function metadataFolderName(metadataType: string): string | undefined {
-  return METADATA_TYPE_FOLDERS[metadataType];
-}
-
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch (error) {
-    if ((error as { code?: unknown })?.code === 'ENOENT') {
-      return false;
-    }
-    throw error;
-  }
-}
-
-async function directoryExists(folderPath: string): Promise<boolean> {
-  try {
-    const stat = await fs.stat(folderPath);
-    return stat.isDirectory();
-  } catch (error) {
-    if ((error as { code?: unknown })?.code === 'ENOENT') {
-      return false;
-    }
-    throw error;
-  }
-}
-
-async function mapLimit<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  worker: (item: T) => Promise<R>,
-  cancellation?: CompareCancellationToken,
-): Promise<R[]> {
-  const limit = Math.max(1, Math.min(concurrency, items.length || 1));
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-
-  async function run(): Promise<void> {
-    while (nextIndex < items.length) {
-      throwIfCompareCancelled(cancellation);
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await worker(items[index]);
-    }
-  }
-
-  await Promise.all(Array.from({ length: limit }, run));
-  return results;
-}
-
 async function buildConfigurationCompareState(
   input: ConfigurationCompareInput,
   strategy: CompareJoinStrategy = 'right'
 ): Promise<ConfigurationCompareWorkspaceState> {
+  publishCompareBuildProgress(input, { phase: 'detecting' });
   const edtState = await tryBuildEdtUnsupportedState(input);
   if (edtState) {
+    throwIfCompareCancelledAndDispose(input.cancellation, edtState.session);
+    publishProjectionProgress(input, 'projecting', edtState.projection);
     return edtState;
   }
   const extensionState = await tryBuildExtensionCompareState(input, strategy);
   if (extensionState) {
+    throwIfCompareCancelledAndDispose(input.cancellation, extensionState.session);
+    publishProjectionProgress(input, 'projecting', extensionState.projection);
     return extensionState;
   }
   const leftRootPath = path.normalize(input.leftRootPath);
@@ -566,16 +192,31 @@ async function buildConfigurationCompareState(
   let rightSources: Map<string, string> | undefined;
   try {
     throwIfCompareCancelled(input.cancellation);
-    const [leftMetadata, rightMetadata] = await indexMetadataForStrategy({
-      strategy,
-      leftRootPath,
-      rightRootPath,
+    publishCompareBuildProgress(input, { phase: 'metadata' });
+    const { leftMetadata, rightMetadata, metadata } = await discoverConfigurationCompareManifest({
+      left: { sourceId: LEFT_SOURCE_ID, rootPath: leftRootPath, allowMissingRoot: true },
+      right: { sourceId: RIGHT_SOURCE_ID, rootPath: rightRootPath },
+      metadataReadConcurrency: limits.metadataReadConcurrency,
+      directoryReadConcurrency: limits.directoryReadConcurrency,
       cancellation: input.cancellation,
-      limits,
     });
-    const metadata = matchMetadataIdentities({ left: leftMetadata, right: rightMetadata });
+    const partialMetadata = { ...metadata, matches: [] };
+    const indexedMetadataCount = leftMetadata.length + rightMetadata.length;
+    publishCompareBuildProgress(input, {
+      phase: 'metadata',
+      completed: indexedMetadataCount,
+      total: indexedMetadataCount,
+    });
+    if (input.onProgress) {
+      publishProjectionProgress(
+        input,
+        'metadata',
+        buildCompareTreeProjection({ metadata: partialMetadata })
+      );
+    }
     const descriptorScope = linkedDesignerDescriptorScope(metadata, strategy);
-    const [leftInventory, rightInventory] = await Promise.all([
+    publishCompareBuildProgress(input, { phase: 'inventory' });
+    const [leftInventory, rightInventory] = await awaitAllSettled([
       buildConfigurationInventory(leftRootPath, {
         identities: leftMetadata,
         includeDescriptorPaths: descriptorScope.left,
@@ -589,6 +230,7 @@ async function buildConfigurationCompareState(
         artifactConcurrency: limits.inventoryReadConcurrency,
       }),
     ]);
+    publishCompareBuildProgress(input, { phase: 'inventory', completed: 2, total: 2 });
     const linkedFormXmlCapture = await captureLinkedFormXmlSnapshots(leftInventory);
     const linkedDesignerIndex = await buildLinkedDesignerCompareIndex({
       metadata,
@@ -607,43 +249,55 @@ async function buildConfigurationCompareState(
     });
     for (const diagnostic of linkedDesignerIndex.diagnostics) {session.addMessage(diagnostic);}
     throwIfCompareCancelled(input.cancellation);
-    const leftCollection = await collectBslFileSourcesFromInventory(
-      leftInventory,
-      input.cancellation,
-      limits.bslReadConcurrency,
-      input.io?.readTextFile,
-    );
-    const rightCollection = await collectBslFileSourcesFromInventory(
-      rightInventory,
-      input.cancellation,
-      limits.bslReadConcurrency,
-      input.io?.readTextFile,
-    );
+    publishCompareBuildProgress(input, { phase: 'bsl' });
+    const [leftResolution, rightResolution] = await awaitAllSettled([
+      resolveBslInventoryIdentities({
+        sourceId: LEFT_SOURCE_ID,
+        side: 'left',
+        configRoot: leftRootPath,
+        filePaths: collectBslArtifactPaths(leftInventory),
+        cancellation: input.cancellation,
+      }),
+      resolveBslInventoryIdentities({
+        sourceId: RIGHT_SOURCE_ID,
+        side: 'right',
+        configRoot: rightRootPath,
+        filePaths: collectBslArtifactPaths(rightInventory),
+        cancellation: input.cancellation,
+      }),
+    ]);
+    const retention = selectBslSourceRetention({
+      left: leftResolution.files,
+      right: rightResolution.files,
+      matchedFormModuleIds: collectMatchedFormModuleIds(metadata.matches),
+    });
+    const leftCollection = await collectBslInventorySources({
+      resolution: leftResolution,
+      retainedPaths: retention.leftPaths,
+      analysisPaths: retention.leftPaths,
+      concurrency: limits.bslReadConcurrency,
+      cancellation: input.cancellation,
+      readTextFile: input.io?.readTextFile,
+    });
+    const rightCollection = await collectBslInventorySources({
+      resolution: rightResolution,
+      retainedPaths: retention.rightPaths,
+      analysisPaths: retention.rightPaths,
+      concurrency: limits.bslReadConcurrency,
+      cancellation: input.cancellation,
+      readTextFile: input.io?.readTextFile,
+    });
     leftSources = leftCollection.sources;
     rightSources = rightCollection.sources;
-    const [leftBsl, rightBsl] = await Promise.all([
-      buildBslModuleIndex(
-        [...leftSources].map(([filePath, source]) => ({
-          sourceId: LEFT_SOURCE_ID,
-          side: 'left' as const,
-          filePath,
-          configRoots: [leftRootPath],
-          source,
-        })),
-        input.cancellation,
-      ),
-      buildBslModuleIndex(
-        [...rightSources].map(([filePath, source]) => ({
-          sourceId: RIGHT_SOURCE_ID,
-          side: 'right' as const,
-          filePath,
-          configRoots: [rightRootPath],
-          source,
-        })),
-        input.cancellation,
-      ),
-    ]);
+    const leftBsl = leftCollection.index;
+    const rightBsl = rightCollection.index;
     throwIfCompareCancelled(input.cancellation);
+    const indexedBslSourceCount = leftCollection.sourceCount + rightCollection.sourceCount;
+    publishCompareBuildProgress(input, {
+      phase: 'bsl',
+      completed: indexedBslSourceCount,
+      total: indexedBslSourceCount,
+    });
 
     const leftSnapshotId = `configuration-compare-${createdAt.getTime()}-left`;
     const rightSnapshotId = `configuration-compare-${createdAt.getTime()}-right`;
@@ -697,8 +351,22 @@ async function buildConfigurationCompareState(
       bslItems: bsl.items,
       candidateFactories: bsl.candidateFactories,
     });
+    if (input.onProgress) {
+      publishProjectionProgress(
+        input,
+        'bsl',
+        buildCompareTreeProjection({
+          metadata: partialMetadata,
+          bsl: bsl.items,
+          messages: [...session.state.messages],
+        })
+      );
+    }
     const linkedModules = linkedBslContext.modules;
     const { eventRoutineDependencies, defaultFormDependencies } = linkedBslContext;
+    // Candidate factories and linked snapshots retain the module details they still need.
+    leftBsl.modules.length = 0;
+    rightBsl.modules.length = 0;
     // Candidate factories retain only sources for matched/mergeable modules.
     // Release the full workspace maps before XML adapter processing.
     leftSources.clear();
@@ -707,6 +375,7 @@ async function buildConfigurationCompareState(
     rightSources = undefined;
 
     const adapterResults = await buildAdapterCompareResults({
+      targetSourceId: LEFT_SOURCE_ID,
       strategy,
       leftInventory,
       rightInventory,
@@ -719,6 +388,23 @@ async function buildConfigurationCompareState(
       linkedModules,
       eventRoutineDependencies,
       defaultFormDependencies,
+      ...(input.onProgress
+        ? {
+            onProgress: (completed: number, total: number, completedResults: readonly AdapterCompareResult[]) => {
+              if (completed === 0) {
+                publishCompareBuildProgress(input, { phase: 'comparing', completed, total });
+                return;
+              }
+              const projection = buildCompareTreeProjection({
+                metadata: partialMetadata,
+                bsl: bsl.items,
+                adapterResults: completedResults,
+                messages: [...session.state.messages],
+              });
+              publishProjectionProgress(input, 'comparing', projection, completed, total);
+            },
+          }
+        : {}),
     });
     const bound = bindLinkedDesignerPackageNodes({
       results: adapterResults,
@@ -736,6 +422,7 @@ async function buildConfigurationCompareState(
       result.candidateFactories.forEach((factory, nodeId) => candidateFactories.set(nodeId, factory));
     }
     throwIfCompareCancelled(input.cancellation);
+    publishCompareBuildProgress(input, { phase: 'projecting' });
     const projection = buildCompareTreeProjection({
       metadata,
       bsl: [
@@ -746,6 +433,7 @@ async function buildConfigurationCompareState(
       adapterResults: projectedAdapterResults,
       messages: session.state.messages,
     });
+    publishProjectionProgress(input, 'projecting', projection);
     const modulesByTargetPath = mapLinkedModulesByTargetPath(leftRootPath, linkedModules);
     const materializerContext: LinkedDesignerMaterializerContext = {
       targetRootPath: leftRootPath,
@@ -756,6 +444,7 @@ async function buildConfigurationCompareState(
       session,
       candidateFactories,
       packagesByNodeId: bound.packagesByNodeId,
+      wholeObjectCopiesByNodeId: linkedDesignerIndex.wholeObjectCopiesByNodeId,
       rootConfiguration: linkedDesignerIndex.rootConfiguration,
       formModules: linkedModules.filter((module) => module.moduleId.includes('.Form.') || module.moduleId.startsWith('CommonForm.')),
       modulesByTargetPath,
@@ -784,134 +473,57 @@ async function buildConfigurationCompareState(
   }
 }
 
-async function buildAdapterCompareResults(input: {
-  strategy: CompareJoinStrategy;
-  leftInventory: ConfigurationInventory;
-  rightInventory: ConfigurationInventory;
-  metadata: ReturnType<typeof matchMetadataIdentities>;
-  session: CompareSession;
-  cancellation?: CompareCancellationToken;
-  concurrency: number;
-  readTextFile?: (filePath: string) => Promise<string>;
-  linkedDesignerPackages: readonly import('./linkedDesignerMaterializer').LinkedDesignerPackageRecipe[];
-  linkedModules: readonly LinkedFormModuleSnapshot[];
-  eventRoutineDependencies: Map<string, {
-    moduleId: string;
-    handlerName: string;
-    targetHasHandler: boolean;
-    incomingRoutineNodeId?: string;
-  }>;
-  defaultFormDependencies: Map<string, import('./linkedDesignerMaterializer').LinkedDefaultFormDependency>;
-}): Promise<AdapterCompareResult[]> {
-  throwIfCompareCancelled(input.cancellation);
-  const metadataReferenceContext = await buildMetadataReferenceContext({
-    inventory: input.leftInventory,
-    sourceId: LEFT_SOURCE_ID,
-    readTextFile: input.readTextFile,
+function publishProjectionProgress(
+  options: ConfigurationCompareInput,
+  phase: CompareBuildProgress['phase'],
+  projection: CompareTreeProjection,
+  completed?: number,
+  total?: number
+): void {
+  if (!options.onProgress) {
+    return;
+  }
+  publishCompareBuildProgress(options, {
+    phase,
+    ...(completed === undefined ? {} : { completed }),
+    ...(total === undefined ? {} : { total }),
+    projection: createReadOnlyCompareProjection(projection),
   });
-  const matches = buildMetadataObjectMatches(input);
-
-  const results = await mapLimit(matches, input.concurrency, async (match) => {
-    throwIfCompareCancelled(input.cancellation);
-    const matchResults: AdapterCompareResult[] = [
-      await fileObjectAdapter.compare({
-        strategy: input.strategy,
-        leftInventory: input.leftInventory,
-        rightInventory: input.rightInventory,
-        match,
-        session: input.session,
-        snapshots: { left: '', right: '' },
-      }),
-    ];
-
-    if (!match.left || !match.right) {
-      return matchResults;
-    }
-
-    for (const artifactKind of ['metadataXml', 'formXml', 'predefinedXml', 'roleRightsXml', 'dcsXml'] as const) {
-      throwIfCompareCancelled(input.cancellation);
-      const pairing = findArtifactPairs(
-        input.leftInventory,
-        input.rightInventory,
-        match,
-        artifactKind
-      );
-      if (pairing.ambiguousRelativePaths.length > 0) {
-        matchResults.push(ambiguousArtifactPairResult(LEFT_SOURCE_ID));
-        continue;
-      }
-      for (const artifactPair of pairing.pairs) {
-        if (artifactPair.left.contentHash === artifactPair.right.contentHash) {
-          continue;
-        }
-        matchResults.push(await compareLinkedDesignerXmlArtifact(input, match, artifactPair, artifactKind, metadataReferenceContext));
-      }
-    }
-    return matchResults;
-  }, input.cancellation);
-
-  return results
-    .flat()
-    .filter((result) => result.nodes.length > 0 || result.diagnostics.length > 0);
 }
 
-function buildMetadataObjectMatches(input: {
-  strategy: CompareJoinStrategy;
-  leftInventory: ConfigurationInventory;
-  rightInventory: ConfigurationInventory;
-  metadata: ReturnType<typeof matchMetadataIdentities>;
-}): MetadataObjectMatch[] {
-  const matches: MetadataObjectMatch[] = [
-    ...input.metadata.matches.map((identity) => ({
-      left: findInventoryObjectByDescriptor(input.leftInventory, identity.left.filePath),
-      right: findInventoryObjectByDescriptor(input.rightInventory, identity.right.filePath),
-      identity,
-      leftIdentity: identity.left,
-      rightIdentity: identity.right,
-    })),
-    ...input.metadata.unmatchedLeft.map((identity) => ({
-      left:
-        findInventoryObjectByDescriptor(input.leftInventory, identity.filePath) ??
-        (input.strategy === 'full' ? metadataIdentityToObjectUnit(identity) : undefined),
-      leftIdentity: identity,
-    })),
-    ...input.metadata.unmatchedRight.map((identity) => ({
-      right:
-        findInventoryObjectByDescriptor(input.rightInventory, identity.filePath) ??
-        (input.strategy === 'full' ? metadataIdentityToObjectUnit(identity) : undefined),
-      rightIdentity: identity,
-    })),
-  ];
-
-  return matches.filter((match) => match.left || match.right);
-}
-
-interface BslSourceCollection {
-  sources: Map<string, string>;
-  contentHash: string;
-}
-
-async function collectBslFileSourcesFromInventory(
-  inventory: ConfigurationInventory,
+function throwIfCompareCancelledAndDispose(
   cancellation: CompareCancellationToken | undefined,
-  concurrency: number,
-  readTextFile: ((filePath: string) => Promise<string>) | undefined,
-): Promise<BslSourceCollection> {
-  throwIfCompareCancelled(cancellation);
-  const bslArtifacts = [...inventory.artifactsByObjectId.values()]
+  session: CompareSession
+): void {
+  try {
+    throwIfCompareCancelled(cancellation);
+  } catch (error) {
+    session.dispose();
+    throw error;
+  }
+}
+
+function collectBslArtifactPaths(inventory: ConfigurationInventory): string[] {
+  return [...inventory.artifactsByObjectId.values()]
     .flat()
     .filter((artifact) => artifact.kind === 'bslModule')
-    .sort((left, right) => left.filePath.localeCompare(right.filePath));
-  const reader = readTextFile ?? ((filePath: string) => fs.readFile(filePath, 'utf-8'));
+    .map((artifact) => artifact.filePath)
+    .sort((left, right) => left.localeCompare(right));
+}
 
-  const entries = await mapLimit(bslArtifacts, concurrency, async (artifact) => {
-    throwIfCompareCancelled(cancellation);
-    const source = await reader(artifact.filePath);
-    throwIfCompareCancelled(cancellation);
-    return [artifact.filePath, source] as const;
-  }, cancellation);
-  const sources = new Map(entries);
-  return { sources, contentHash: hashFileSources(sources) };
+function collectMatchedFormModuleIds(
+  matches: readonly { left: MetadataIdentity; right: MetadataIdentity }[]
+): Set<string> {
+  const moduleIds = new Set<string>();
+  for (const { left, right } of matches) {
+    if (left.metadataType !== right.metadataType || left.qualifiedName !== right.qualifiedName) {
+      continue;
+    }
+    if (left.metadataType === 'Form' || left.metadataType === 'CommonForm') {
+      moduleIds.add(`${left.qualifiedName}.FormModule`);
+    }
+  }
+  return moduleIds;
 }
 
 function buildBslProjectionInputs(input: {
@@ -1488,19 +1100,6 @@ function isExecutableRoutineDiff(
   routine: BslRoutineDiffItem
 ): routine is BslRoutineDiffItem & Required<Pick<BslRoutineDiffItem, 'left' | 'right'>> {
   return routine.status === 'changed' && Boolean(routine.left && routine.right);
-}
-
-function hashFileSources(files: ReadonlyMap<string, string>): string {
-  const hash = createHash('sha256');
-  const entries = [...files].sort(([left], [right]) => left.localeCompare(right));
-  for (const [filePath, source] of entries) {
-    hash.update(path.normalize(filePath).replace(/\\/g, '/'));
-    hash.update('\0');
-    hash.update(hashText(source));
-    hash.update('\0');
-  }
-
-  return hash.digest('hex');
 }
 
 function addUnmatchedBslMessage(

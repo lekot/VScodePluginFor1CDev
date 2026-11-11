@@ -444,13 +444,16 @@ suite('Issue 336 configuration compare workspace and UI', () => {
     await drainHandlers(pendingHandlers);
 
     const document = dom.window.document;
-    assert.strictEqual(document.getElementById('comparisonSides')?.textContent, 'Приёмник (слева) ← Источник (справа)');
+    assert.deepStrictEqual(
+      Array.from(document.querySelectorAll('#comparisonSides .side-name'), (element) => element.textContent),
+      ['Приёмник: workspace-target', 'Источник: workspace-source']
+    );
     assert.match(document.getElementById('comparisonInfo')?.textContent ?? '', /Тестовая цель CFE/);
     assert.match(document.getElementById('comparisonInfo')?.textContent ?? '', /Тестовый источник CF/);
     assert.match(document.getElementById('comparisonInfo')?.textContent ?? '', /Динамические BSL-ссылки проверяются ограниченно/);
     assert.strictEqual(document.getElementById('strategyControls')?.classList.contains('hidden'), true);
 
-    const checkbox = document.querySelector<HTMLInputElement>('#tree input[type="checkbox"]');
+    const checkbox = document.querySelector<HTMLInputElement>('#rows input.row-check');
     assert.ok(checkbox);
     checkbox!.click();
     await drainHandlers(pendingHandlers);
@@ -467,7 +470,7 @@ suite('Issue 336 configuration compare workspace and UI', () => {
       notice: document.getElementById('notice')?.textContent,
       outbound,
     }));
-    assert.match(previewText, /эффект: замена/);
+    assert.match(previewText, /Операций с удалением или перезаписью: 1/);
     assert.doesNotMatch(previewText, new RegExp(secret));
     assert.doesNotMatch(JSON.stringify(outbound), /contentBase64|targetUri|expectedOldHash|newHash/);
     assert.doesNotMatch(JSON.stringify(outbound), new RegExp(contentBase64));
@@ -485,7 +488,7 @@ suite('Issue 336 configuration compare workspace and UI', () => {
     assert.strictEqual(executeMessage?.destructiveConfirmed, true);
     assert.strictEqual(confirmCalls, 1);
     assert.ok(outbound.some((message) => message.type === 'mergeSuccess'));
-    assert.match(document.getElementById('result')?.textContent ?? '', /Merge выполнен/);
+    assert.match(document.getElementById('result')?.textContent ?? '', /Объединение выполнено/);
 
     binding.dispose();
     workspace.dispose();
@@ -607,6 +610,7 @@ suite('Issue 336 CFE manifest base-root resolution', () => {
         extensionName: 'SampleExtension',
       }]);
       const buildInputs: unknown[] = [];
+      const completedWorkspaces: unknown[] = [];
       const workspaceFoldersDescriptor = Object.getOwnPropertyDescriptor(vscode.workspace, 'workspaceFolders');
       Object.defineProperty(vscode.workspace, 'workspaceFolders', {
         configurable: true,
@@ -625,15 +629,31 @@ suite('Issue 336 CFE manifest base-root resolution', () => {
             },
           } as any,
           pickRightRoot: async () => rightRoot,
-          withCompareProgress: async (_title, task) => task(),
+          showCompareLoading: () => ({
+            panel: {} as unknown as vscode.WebviewPanel,
+            beginGeneration: () => ({
+              id: 1,
+              token: {
+                isCancellationRequested: false,
+                onCancellationRequested: () => ({ dispose: () => undefined }),
+              },
+              report: () => undefined,
+              complete: (workspace: unknown) => {
+                completedWorkspaces.push(workspace);
+              },
+              fail: (error: unknown) => assert.fail(`Unexpected compare failure: ${String(error)}`),
+              isCurrent: () => true,
+            }),
+            setRetryHandler: () => undefined,
+            dispose: () => undefined,
+          }),
           buildCompare: async (input) => {
             buildInputs.push(input);
             return {
               projection: { root: { children: [] }, stats: { total: 0, different: 0, mergeable: 0 } },
-              workspace: { id: 'test' },
+              workspace: { id: 'test', dispose: () => undefined },
             } as any;
           },
-          showCompare: () => undefined as any,
         });
       } finally {
         if (workspaceFoldersDescriptor) {
@@ -647,6 +667,8 @@ suite('Issue 336 CFE manifest base-root resolution', () => {
       assert.deepStrictEqual((buildInputs[0] as any).extensionBaseRoots, {
         left: await fs.realpath(baseRoot),
       });
+      assert.strictEqual(completedWorkspaces.length, 1);
+      assert.strictEqual((completedWorkspaces[0] as { id: string }).id, 'test');
     } finally {
       await fs.rm(temporaryRoot, { recursive: true, force: true });
     }

@@ -1,4 +1,5 @@
 import * as fs from 'fs/promises';
+import { performance } from 'perf_hooks';
 
 import { parseBslRoutines } from '../../bsl/routineRangeProvider';
 import type { BslRoutineDiagnostic, BslRoutineInfo, BslTextRange } from '../../bsl/bslRoutineTypes';
@@ -15,6 +16,9 @@ import {
   throwIfCompareCancelled,
 } from '../compareCancellation';
 
+const BSL_MODULE_INDEX_YIELD_BATCH = 64;
+const BSL_MODULE_INDEX_YIELD_INTERVAL_MS = 8;
+
 export type SupportedBslModuleKind = 'Object' | 'Manager' | 'CommonModule' | 'Form' | 'Command';
 
 export type BslModuleDiagnosticCode =
@@ -23,7 +27,8 @@ export type BslModuleDiagnosticCode =
   | 'BSL_MODULE_PARSE_ERROR'
   | 'BSL_MODULE_READ_FAILED'
   | 'BSL_MODULE_UNSUPPORTED_KIND'
-  | 'BSL_MODULE_UNSUPPORTED_PATH';
+  | 'BSL_MODULE_UNSUPPORTED_PATH'
+  | 'BSL_MODULE_ANALYSIS_REQUIRED';
 
 export interface BslModuleIdentity {
   sourceId: string;
@@ -57,6 +62,8 @@ export interface BslModuleIndexEntry {
   identity: BslModuleIdentity;
   routines: BslRoutineInfo[];
   diagnostics: BslModuleDiagnostic[];
+  /** Omitted means complete for compatibility with existing index entries. */
+  analysisState?: 'complete' | 'deferred';
 }
 
 export interface BslModuleIndexResult {
@@ -83,13 +90,24 @@ export async function buildBslModuleIndex(
 ): Promise<BslModuleIndexResult> {
   const modules: BslModuleIndexEntry[] = [];
   const diagnostics: BslModuleDiagnostic[] = [];
+  let completedSinceYield = 0;
+  let lastYieldAt: number | undefined;
 
   for (const input of inputs) {
     throwIfCompareCancelled(cancellation);
+    lastYieldAt ??= performance.now();
     const result = await indexBslModuleFile(input);
     throwIfCompareCancelled(cancellation);
     diagnostics.push(...result.diagnostics);
     modules.push(...result.modules);
+    completedSinceYield += 1;
+    if (completedSinceYield >= BSL_MODULE_INDEX_YIELD_BATCH
+      || performance.now() - lastYieldAt >= BSL_MODULE_INDEX_YIELD_INTERVAL_MS) {
+      completedSinceYield = 0;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      throwIfCompareCancelled(cancellation);
+      lastYieldAt = performance.now();
+    }
   }
 
   return { modules, diagnostics };

@@ -8,10 +8,12 @@ import {
   type ConfigurationCompareInput,
   type ConfigurationCompareResult,
 } from '../../../src/compareMerge/configurationCompareService';
+import { toWebviewPayload } from '../../../src/compareMerge/configCompareProvider';
 import { pairedXmlSidecars } from '../../../src/compareMerge/extensions/extensionSemanticProjection';
 import { indexExtensionMetadataRoot, type ExtensionIndexedObject, type ExtensionMetadataIndex } from '../../../src/compareMerge/extensions/extensionMetadataIndex';
 import { analyzeExtensionTransfers } from '../../../src/compareMerge/extensions/extensionTransfer';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
+import type { CompareDisplayNode } from '../../../src/compareMerge/projection/compareDisplayTree';
 import { elementChildren, parseXmlDocument, textContent, type XmlElement } from '../../../src/compareMerge/xml/xmlDom';
 import { namespaceUriForName } from '../../../src/compareMerge/adapters/semanticXml/semanticXmlIdentity';
 import { METADATA_TYPE_DESCRIPTORS } from '../../../src/constants/metadataTypeDescriptors';
@@ -835,6 +837,33 @@ suite('Extension-aware configuration compare', () => {
         extensionBaseRoots: { left: base },
       });
       try {
+        const webviewPayload = toWebviewPayload(
+          compare.result.workspace.payload,
+          compare.result.workspace.listMergeableNodeIds(),
+          'Сравнение расширений'
+        );
+        const canonicalRows = collectNodes(compare.result.workspace.payload.root)
+          .filter((node) => node.kind === 'extensionMetadataObject');
+        const displayNodes = collectDisplayNodes(webviewPayload.root);
+        const canonicalDisplayCounts = new Map<string, number>();
+        for (const node of displayNodes) {
+          for (const canonicalId of node.canonicalNodeIds) {
+            canonicalDisplayCounts.set(canonicalId, (canonicalDisplayCounts.get(canonicalId) ?? 0) + 1);
+          }
+        }
+        assert.ok(canonicalRows.length > 0, 'the real CFE service projection should contain metadata object rows');
+        for (const row of canonicalRows) {
+          assert.strictEqual(canonicalDisplayCounts.get(row.id), 1, `${row.id} should appear exactly once in the display tree`);
+        }
+        const adoptedDisplayRow = displayNodes.find((node) =>
+          node.canonicalNodeIds.some((id) => canonicalRows.some((row) => row.id === id && row.label === 'CommonModule.Shared'))
+        );
+        assert.ok(adoptedDisplayRow, 'the actual adopted CommonModule should remain visible');
+        assert.ok(adoptedDisplayRow.identities.some((identity) =>
+          identity.side === 'left' && identity.ownership === 'adopted'
+          && identity.uuid === UUID.commonModuleLocal && identity.sourceUuid === UUID.commonModule
+        ), 'the display details should retain the target-local UUID, base UUID and ownership');
+
         const nodeId = onlyMergeableNodeId(compare.result);
         const preview = await createPreview(compare.result, [nodeId]);
         await execute(compare.result, preview.previewId);
@@ -3523,6 +3552,10 @@ function assertBlocked(result: ConfigurationCompareResult, context: string): voi
 
 function collectNodes(root: CompareTreeNode): CompareTreeNode[] {
   return [root, ...root.children.flatMap(collectNodes)];
+}
+
+function collectDisplayNodes(root: CompareDisplayNode): CompareDisplayNode[] {
+  return [root, ...root.children.flatMap(collectDisplayNodes)];
 }
 
 function metadataChildSnapshot(xml: string, ownerType: string): {

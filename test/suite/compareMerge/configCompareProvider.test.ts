@@ -6,7 +6,9 @@ import {
   renderConfigCompareWebviewHtml,
 } from '../../../src/compareMerge/configCompareProvider';
 import type { ConfigCompareHostToWebviewMessage } from '../../../src/compareMerge/configCompareMessages';
+import type { CompareBuildOptions, CompareBuildProgress } from '../../../src/compareMerge/compareProgress';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
+import type { CompareTreeProjection } from '../../../src/compareMerge/projection/compareTreeProjection';
 import type {
   ConfigCompareWebviewPayload,
   WorkspaceApprovalResult,
@@ -183,6 +185,229 @@ suite('ConfigCompareProvider', () => {
     const finalState = panel.posts[panel.posts.length - 1];
     assert.ok(finalState?.type === 'state');
     assert.strictEqual(finalState.busy, false);
+  });
+
+  test('rejects refresh and strategy changes while preview creation is pending', async () => {
+    const panel = makePanel();
+    const baseWorkspace = makeWorkspace({ deferPreview: true });
+    const workspace = Object.assign(baseWorkspace, {
+      setStrategy: async () => {
+        baseWorkspace.calls.push('strategy');
+        return { ok: true as const, payload: baseWorkspace.payload, diagnostics: [] as [] };
+      },
+    });
+    workspace.refresh = async () => {
+      baseWorkspace.calls.push('refresh');
+      return { ok: true, payload: baseWorkspace.payload, locked: false, diagnostics: [] };
+    };
+
+    bindConfigurationCompareWebview(panel as any, workspace, 'Compare');
+    const previewRequest = panel.send({
+      type: 'createPreview',
+      nodeIds: ['bsl:routine:Catalog.Products.Object:run'],
+    });
+    await panel.waitForPost((message) => message.type === 'state' && message.busy);
+
+    await panel.send({ type: 'refresh' });
+    await panel.send({ type: 'setStrategy', strategy: 'full' });
+
+    assert.deepStrictEqual(
+      workspace.calls.filter((call) => call === 'refresh' || call === 'strategy'),
+      []
+    );
+    workspace.releasePreview();
+    await previewRequest;
+  });
+
+  test('rejects refresh and strategy changes while merge execution is pending', async () => {
+    const panel = makePanel();
+    const baseWorkspace = makeWorkspace();
+    const workspace = Object.assign(baseWorkspace, {
+      setStrategy: async () => {
+        baseWorkspace.calls.push('strategy');
+        return { ok: true as const, payload: baseWorkspace.payload, diagnostics: [] as [] };
+      },
+    });
+    workspace.refresh = async () => {
+      baseWorkspace.calls.push('refresh');
+      return { ok: true, payload: baseWorkspace.payload, locked: false, diagnostics: [] };
+    };
+    const execute = workspace.executeApprovedPreview;
+    let releaseExecution!: () => void;
+    let markExecutionStarted!: () => void;
+    const executionStarted = new Promise<void>((resolve) => {
+      markExecutionStarted = resolve;
+    });
+    const executionGate = new Promise<void>((resolve) => {
+      releaseExecution = resolve;
+    });
+    workspace.executeApprovedPreview = async (previewId) => {
+      markExecutionStarted();
+      await executionGate;
+      return execute(previewId);
+    };
+
+    bindConfigurationCompareWebview(panel as any, workspace, 'Compare');
+    await panel.send({
+      type: 'createPreview',
+      nodeIds: ['bsl:routine:Catalog.Products.Object:run'],
+    });
+    await panel.send({ type: 'approvePreview', previewId: 'preview-1' });
+    const executionRequest = panel.send({ type: 'executeMerge', previewId: 'preview-1' });
+    await executionStarted;
+
+    await panel.send({ type: 'refresh' });
+    await panel.send({ type: 'setStrategy', strategy: 'full' });
+
+    assert.deepStrictEqual(
+      workspace.calls.filter((call) => call === 'refresh' || call === 'strategy'),
+      []
+    );
+    releaseExecution();
+    await executionRequest;
+  });
+
+  test('preserves surviving canonical selection on refresh and keeps all candidates in ready payload', async () => {
+    const panel = makePanel();
+    const workspace = makeWorkspace();
+    const firstId = 'bsl:routine:Catalog.Products.Object:first';
+    const survivingId = 'bsl:routine:Catalog.Products.Object:survives';
+    const addedId = 'bsl:routine:Catalog.Products.Object:added';
+    let mergeableIds = [firstId, survivingId];
+    workspace.listMergeableNodeIds = () => [...mergeableIds];
+    workspace.selectNodeIds = (nodeIds: readonly string[]): WorkspaceSelectionState => {
+      workspace.calls.push(`select:${nodeIds.join(',')}`);
+      return {
+        selectedNodeIds: [...nodeIds],
+        executableNodeIds: nodeIds.filter((nodeId) => nodeId === survivingId),
+        canCreatePreview: nodeIds.includes(survivingId),
+        diagnostics: [],
+      };
+    };
+    workspace.refresh = async () => {
+      workspace.calls.push('refresh');
+      mergeableIds = [survivingId, addedId];
+      return { ok: true, payload: workspace.payload, locked: false, diagnostics: [] };
+    };
+
+    bindConfigurationCompareWebview(panel as any, workspace, 'Compare');
+    await panel.send({ type: 'selectionChanged', nodeIds: [firstId, survivingId] });
+    await panel.send({ type: 'refresh' });
+
+    const readyMessage = [...panel.posts].reverse().find(
+      (message) => message.type === 'loadState' && message.status === 'ready'
+    );
+    assert.ok(readyMessage?.type === 'loadState');
+    assert.deepStrictEqual(readyMessage.payload?.executableNodeIds, [survivingId, addedId]);
+    assert.ok(
+      panel.posts.some((message) =>
+        message.type === 'state' &&
+        message.selectedNodeIds.length === 1 &&
+        message.selectedNodeIds[0] === survivingId
+      )
+    );
+    assert.deepStrictEqual(workspace.calls.filter((call) => call.startsWith('select:')), [
+      `select:${firstId},${survivingId}`,
+      `select:${survivingId}`,
+    ]);
+  });
+
+  test('keeps throttled partial projection through phase-only refresh progress updates', async () => {
+    const panel = makePanel();
+    const workspace = makeWorkspace();
+    let report!: (progress: CompareBuildProgress) => void;
+    let markStarted!: () => void;
+    let releaseRefresh!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+    workspace.refresh = async (options?: CompareBuildOptions): Promise<WorkspaceRefreshResult> => {
+      workspace.calls.push('refresh');
+      report = options?.onProgress ?? (() => undefined);
+      report({
+        phase: 'metadata',
+        completed: 1,
+        total: 3,
+        projection: makePartialProjection('Catalog.Partial'),
+      });
+      report({ phase: 'inventory', completed: 2, total: 5 });
+      markStarted();
+      await refreshGate;
+      return { ok: true, payload: workspace.payload, locked: false, diagnostics: [] };
+    };
+
+    bindConfigurationCompareWebview(panel as any, workspace, 'Compare');
+    const refreshRequest = panel.send({ type: 'refresh' });
+    await started;
+    await panel.waitForPost((message) => message.type === 'loadState' && message.status === 'loading' && message.phase === 'inventory');
+
+    let progress = [...panel.posts].reverse().find((message) =>
+      message.type === 'loadState' && message.status === 'loading' && message.phase === 'inventory'
+    );
+    assert.ok(progress?.type === 'loadState');
+    assert.strictEqual(progress.partial, true);
+    assert.match(JSON.stringify(progress.payload), /Partial/);
+
+    const firstProgressPostCount = panel.posts.filter((message) => message.type === 'loadState' && message.status === 'loading').length;
+    report({ phase: 'bsl', completed: 1, total: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const loadingPosts = panel.posts.filter((message) => message.type === 'loadState' && message.status === 'loading');
+    assert.ok(loadingPosts.length > firstProgressPostCount);
+    progress = loadingPosts[loadingPosts.length - 1];
+    assert.ok(progress?.type === 'loadState');
+    assert.strictEqual(progress.phase, 'bsl');
+    assert.strictEqual(progress.partial, true);
+    assert.match(JSON.stringify(progress.payload), /Partial/);
+
+    releaseRefresh();
+    await refreshRequest;
+  });
+
+  test('superseding refreshes discard the old timer and publish only the new generation projection', async () => {
+    const panel = makePanel();
+    const workspace = makeWorkspace();
+    const reports: Array<(progress: CompareBuildProgress) => void> = [];
+    const releases: Array<() => void> = [];
+    const startResolvers: Array<() => void> = [];
+    workspace.refresh = async (options?: CompareBuildOptions): Promise<WorkspaceRefreshResult> => {
+      reports.push(options?.onProgress ?? (() => undefined));
+      startResolvers.shift()?.();
+      await new Promise<void>((resolve) => { releases.push(resolve); });
+      return { ok: true, payload: workspace.payload, locked: false, diagnostics: [] };
+    };
+    const firstStarted = new Promise<void>((resolve) => { startResolvers.push(resolve); });
+    const secondStarted = new Promise<void>((resolve) => { startResolvers.push(resolve); });
+
+    bindConfigurationCompareWebview(panel as any, workspace, 'Compare');
+    const firstRefresh = panel.send({ type: 'refresh' });
+    await firstStarted;
+    reports[0]!({
+      phase: 'metadata',
+      completed: 1,
+      total: 2,
+      projection: makePartialProjection('Catalog.OldGeneration'),
+    });
+
+    const secondRefresh = panel.send({ type: 'refresh' });
+    await secondStarted;
+    reports[1]!({
+      phase: 'inventory',
+      completed: 2,
+      total: 4,
+      projection: makePartialProjection('Catalog.NewGeneration'),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const progressPosts = panel.posts.filter((message) => message.type === 'loadState' && message.status === 'loading');
+    const latest = progressPosts[progressPosts.length - 1];
+    assert.ok(latest?.type === 'loadState');
+    assert.strictEqual(latest.phase, 'inventory');
+    assert.strictEqual(latest.partial, true);
+    assert.match(JSON.stringify(latest.payload), /NewGeneration/);
+    assert.doesNotMatch(JSON.stringify(latest.payload), /OldGeneration/);
+
+    releases.splice(0).forEach((release) => release());
+    await Promise.all([firstRefresh, secondRefresh]);
   });
 
   test('ignores invalid and forged messages without executing workspace actions', async () => {
@@ -453,6 +678,40 @@ function makeTree(destructiveRoutine = false): CompareTreeNode {
         children: [],
       },
     ],
+  };
+}
+
+function makePartialProjection(qualifiedName: string): CompareTreeProjection {
+  const owner: CompareTreeNode = {
+    id: `metadata:${qualifiedName}`,
+    label: qualifiedName,
+    kind: 'metadataObject',
+    status: 'changed',
+    mergeable: false,
+    presentation: {
+      ownerKey: `Catalog:name:${qualifiedName}`,
+      ownerAliases: [`Catalog:name:${qualifiedName}`],
+      metadataType: 'Catalog',
+      qualifiedName,
+      identities: [{ side: 'left', qualifiedName }],
+    },
+    children: [],
+  };
+  return {
+    root: {
+      id: 'configCompare',
+      label: 'Compare',
+      kind: 'configCompare',
+      status: 'changed',
+      children: [{
+        id: 'metadata',
+        label: 'Metadata',
+        kind: 'metadataGroup',
+        status: 'changed',
+        children: [owner],
+      }],
+    },
+    stats: { total: 1, different: 1, mergeable: 0 },
   };
 }
 

@@ -14,6 +14,27 @@ export interface CompareTreeConflict {
   message: string;
 }
 
+export interface CompareTreeIdentityPresentation {
+  side: 'left' | 'right';
+  qualifiedName: string;
+  uuid?: string;
+  filePath?: string;
+  ownership?: 'own' | 'adopted';
+  sourceUuid?: string;
+}
+
+/** Optional display hints. They never participate in candidate IDs or merge validation. */
+export interface CompareTreeNodePresentation {
+  ownerKey?: string;
+  ownerAliases?: string[];
+  metadataType?: string;
+  moduleKind?: string;
+  qualifiedName?: string;
+  identityConflict?: boolean;
+  ambiguousIdentitySet?: boolean;
+  identities?: CompareTreeIdentityPresentation[];
+}
+
 export interface CompareTreeNode {
   id: string;
   label: string;
@@ -26,6 +47,7 @@ export interface CompareTreeNode {
   payloadRef?: string;
   conflict?: CompareTreeConflict;
   mergeState?: CompareTreeMergeState;
+  presentation?: CompareTreeNodePresentation;
   children: CompareTreeNode[];
 }
 

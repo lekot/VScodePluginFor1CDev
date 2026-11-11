@@ -291,10 +291,35 @@ export function buildXmlAdapterResult(
       label: options.rootLabel,
       kind: options.rootKind,
       status: children.some((child) => child.status !== 'equal') ? 'changed' : 'equal',
+      presentation: xmlOwnerPresentation(input),
       children,
     }],
     candidateFactories: factories,
     diagnostics,
+  };
+}
+
+function xmlOwnerPresentation(input: AdapterCompareInput): CompareTreeNode['presentation'] {
+  const left = input.match.leftIdentity ?? input.match.identity?.left;
+  const right = input.match.rightIdentity ?? input.match.identity?.right;
+  const identities = [left, right].filter((identity): identity is NonNullable<typeof identity> => Boolean(identity));
+  if (identities.length === 0) {return undefined;}
+  const aliases = new Set<string>();
+  for (const identity of identities) {
+    aliases.add(`${identity.metadataType}:name:${identity.qualifiedName}`);
+    if (identity.uuid) {aliases.add(`${identity.metadataType}:uuid:${identity.uuid}`);}
+  }
+  const owner = right ?? left!;
+  return {
+    ownerAliases: [...aliases],
+    metadataType: owner.metadataType,
+    qualifiedName: owner.qualifiedName,
+    identities: identities.map((identity) => ({
+      side: identity.side,
+      qualifiedName: identity.qualifiedName,
+      uuid: identity.uuid,
+      filePath: identity.filePath,
+    })),
   };
 }
 

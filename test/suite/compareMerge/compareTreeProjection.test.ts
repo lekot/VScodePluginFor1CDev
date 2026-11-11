@@ -4,6 +4,7 @@ import * as path from 'path';
 import type { BslRoutineInfo } from '../../../src/bsl/bslRoutineTypes';
 import type { BslModuleDiagnostic, BslModuleIdentity } from '../../../src/compareMerge/bsl/bslModuleIndexer';
 import type { BslRoutineDiffResult, BslRoutineDiffStatus } from '../../../src/compareMerge/bsl/bslRoutineDiff';
+import type { CompareDisplayNode } from '../../../src/compareMerge/projection/compareDisplayTree';
 import type {
   CompareMessage,
   IdentityConflict,
@@ -11,6 +12,7 @@ import type {
   MetadataMatchDiagnostic,
   MetadataIdentity,
 } from '../../../src/compareMerge/domain/compareContracts';
+import { buildCompareDisplayTree } from '../../../src/compareMerge/projection/compareDisplayTree';
 import { buildCompareTreeProjection } from '../../../src/compareMerge/projection/compareTreeProjection';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 
@@ -107,6 +109,78 @@ suite('CompareTreeProjection', () => {
       ['deletedRoutine', 'leftOnly', true, 'ready'],
       ['reorderedRoutine', 'changed', false, 'readOnly'],
     ]);
+  });
+
+  test('nests BSL modules under their proven Form owners without merging sibling forms', () => {
+    const formNames = ['Edit', 'Print'];
+    const metadataNames = [
+      { metadataType: 'Catalog', qualifiedName: 'Catalog.Products' },
+      ...formNames.map((formName) => ({
+        metadataType: 'Form',
+        qualifiedName: `Catalog.Products.Form.${formName}`,
+      })),
+    ];
+    const metadata = matchResult({
+      matches: metadataNames.map(({ metadataType, qualifiedName }) => ({
+        left: typedMetadataIdentity('left', metadataType, qualifiedName),
+        right: typedMetadataIdentity('right', metadataType, qualifiedName),
+        matchKind: 'uuid',
+        confidence: 'strong',
+      })),
+    });
+    const projection = buildCompareTreeProjection({
+      metadata,
+      bsl: formNames.map((formName) => ({ diff: formModuleDiff(formName) })),
+    });
+    const display = buildCompareDisplayTree(projection.root).root;
+    const nodes = flattenDisplay(display);
+    const catalogOwner = nodes.find((node) =>
+      node.kind === 'metadataOwner' && node.qualifiedNames?.includes('Catalog.Products')
+    );
+    const formOwners = nodes.filter((node) => node.kind === 'metadataOwner' && node.metadataType === 'Form');
+
+    assert.ok(catalogOwner, 'the catalog metadata owner should remain visible');
+    assert.deepStrictEqual(
+      formOwners.map((node) => node.qualifiedNames?.[0]).sort(),
+      ['Catalog.Products.Form.Edit', 'Catalog.Products.Form.Print']
+    );
+    for (const formName of formNames) {
+      const owner = formOwners.find((node) => node.qualifiedNames?.includes(`Catalog.Products.Form.${formName}`));
+      assert.ok(owner, `${formName} should have its own metadata owner`);
+      assert.ok(
+        owner.children.some((child) => child.key === `bsl:module:Catalog.Products.Form.${formName}.FormModule`),
+        `${formName} module should be attached to its exact form owner`
+      );
+    }
+    assert.ok(
+      catalogOwner.children.some((child) => child.label === 'Формы'),
+      'nested forms should appear in the Catalog Forms hierarchy'
+    );
+    assert.ok(!nodes.some((node) => node.label === 'Процедуры и функции'));
+  });
+
+  test('keeps a CommonForm module attached to the CommonForm identity', () => {
+    const identity = {
+      ...bslIdentity('left'),
+      metadataType: 'CommonForm',
+      objectName: 'Chooser',
+      moduleKind: 'Form' as const,
+      formName: 'Chooser',
+      moduleId: 'CommonForm.Chooser.FormModule',
+      displayName: 'CommonForm.Chooser.FormModule',
+    };
+    const tree = buildCompareTreeProjection({
+      bsl: [{ diff: {
+        ...bslDiff([['OnOpen', 'changed']]),
+        moduleId: identity.moduleId,
+        leftIdentity: identity,
+        rightIdentity: { ...identity, side: 'right', sourceId: 'right-source' },
+      } }],
+    });
+    const module = requireNode(tree.root, 'bsl:module:CommonForm.Chooser.FormModule');
+
+    assert.strictEqual(module.presentation?.metadataType, 'CommonForm');
+    assert.deepStrictEqual(module.presentation?.ownerAliases, ['CommonForm:name:CommonForm.Chooser']);
   });
 
   test('keeps added and deleted BSL routines read-only without registered factory', () => {
@@ -650,6 +724,44 @@ function metadataIdentity(side: 'left' | 'right', qualifiedName: string, uuid: s
     uuidSource: 'xmlAttribute',
     confidence: 'strong',
   };
+}
+
+function typedMetadataIdentity(
+  side: 'left' | 'right',
+  metadataType: string,
+  qualifiedName: string
+): MetadataIdentity {
+  return {
+    ...metadataIdentity(side, qualifiedName, `${side}-${qualifiedName}`),
+    metadataType,
+    qualifiedName,
+    objectPath: `${side}/${qualifiedName.replace(/\./gu, '/')}`,
+  };
+}
+
+function formModuleDiff(formName: string): BslRoutineDiffResult {
+  const diff = bslDiff([['OnOpen', 'changed']]);
+  const moduleId = `Catalog.Products.Form.${formName}.FormModule`;
+  const identity = (side: 'left' | 'right'): BslModuleIdentity => ({
+    ...bslIdentity(side),
+    moduleKind: 'Form',
+    formName,
+    moduleId,
+    displayName: moduleId,
+    filePath: path.join(side, 'Catalogs', 'Products', 'Forms', formName, 'Ext', 'Form', 'Module.bsl'),
+  });
+  return {
+    ...diff,
+    moduleId,
+    leftIdentity: identity('left'),
+    rightIdentity: identity('right'),
+  };
+}
+
+function flattenDisplay(
+  root: CompareDisplayNode
+): CompareDisplayNode[] {
+  return [root, ...root.children.flatMap((child) => flattenDisplay(child))];
 }
 
 function bslDiff(

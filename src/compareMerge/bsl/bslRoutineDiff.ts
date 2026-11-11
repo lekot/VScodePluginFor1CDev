@@ -46,9 +46,17 @@ export function diffBslModules(input: BslRoutineDiffInput): BslRoutineDiffResult
   if (identityDiagnostic) {
     diagnostics.push(identityDiagnostic);
   }
+  if (input.left.analysisState === 'deferred') {
+    diagnostics.push(analysisRequiredDiagnostic(input.left.identity));
+  }
+  if (input.right.analysisState === 'deferred') {
+    diagnostics.push(analysisRequiredDiagnostic(input.right.identity));
+  }
 
   const blocksAutoMatch =
     Boolean(identityDiagnostic) ||
+    input.left.analysisState === 'deferred' ||
+    input.right.analysisState === 'deferred' ||
     diagnostics.some(
       (diagnostic) =>
         diagnostic.blocking ||
@@ -62,6 +70,19 @@ export function diffBslModules(input: BslRoutineDiffInput): BslRoutineDiffResult
 
   const routines = diffRoutines(input.left.routines, input.right.routines);
   return createResult(input, routines, diagnostics, true);
+}
+
+function analysisRequiredDiagnostic(identity: BslModuleIdentity): BslModuleDiagnostic {
+  return {
+    severity: 'error',
+    code: 'BSL_MODULE_ANALYSIS_REQUIRED',
+    blocking: true,
+    message: `Полный анализ процедур модуля ${identity.moduleId} не выполнен; автоматическое сравнение заблокировано.`,
+    sourceId: identity.sourceId,
+    side: identity.side,
+    filePath: identity.filePath,
+    moduleId: identity.moduleId,
+  };
 }
 
 function diffRoutines(

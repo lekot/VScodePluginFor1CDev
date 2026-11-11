@@ -51,6 +51,7 @@ import {
   projectAdoptedTemplateCompareResult,
 } from './extensionAdoptedTemplateProjectionBinder';
 import { toExtensionSemanticInventory } from './extensionSemanticInventory';
+import { extensionSemanticRowNode } from './extensionSemanticRowProjection';
 
 export { pairedXmlSidecars };
 
@@ -103,7 +104,7 @@ export async function projectExtensionSemanticNodes(
   for (const row of input.rows) {
     throwIfCompareCancelled(input.cancellation);
     if (!row.target || !row.incoming || !row.target.descriptorRelativePath || !row.incoming.descriptorRelativePath) {
-      nodes.push(rowNode(row, []));
+      nodes.push(extensionSemanticRowNode(row, []));
       continue;
     }
     const linkedIndex = await indexExtensionLinkedDesignerPackages({
@@ -455,7 +456,7 @@ export async function projectExtensionSemanticNodes(
         childNodes, diagnostics, linkedRoutineSelections, linkedFormModules, linkedEventDependencies,
       });
     }
-    nodes.push(rowNode(row, childNodes));
+    nodes.push(extensionSemanticRowNode(row, childNodes));
     if (row.mergeable) {mergeableNodeIds.push(row.id);}
     if (allowed) {
       for (const child of childNodes) {
@@ -850,23 +851,6 @@ function adoptedIssuesOnlyNode(
     conflict: { kind: 'unsupported', blocking: true, message: firstReason },
     mergeState: { state: 'blocked', reason: firstReason, targetFilePath: relativePath },
     children: issues.map((issue) => adoptedProjectionIssueNode(row, kind, relativePath, issue)),
-  };
-}
-
-function rowNode(row: ExtensionTransferRow, children: readonly CompareTreeNode[]): CompareTreeNode {
-  return {
-    id: row.id,
-    label: row.qualifiedName,
-    kind: 'extensionMetadataObject',
-    status: row.status,
-    leftValue: row.target?.descriptorRelativePath,
-    rightValue: row.incoming?.descriptorRelativePath,
-    mergeable: row.mergeable,
-    ...(row.reason ? { conflict: { kind: 'unsupported' as const, message: row.reason, blocking: true } } : {}),
-    mergeState: row.mergeable
-      ? { state: 'ready', targetFilePath: row.target?.descriptorRelativePath ?? row.incoming?.descriptorRelativePath }
-      : { state: 'blocked', reason: row.reason ?? 'Объект не отличается или перенос не предусмотрен.' },
-    children: [...children],
   };
 }
 

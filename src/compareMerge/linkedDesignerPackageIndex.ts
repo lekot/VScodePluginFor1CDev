@@ -5,13 +5,11 @@ import { MISSING_TARGET_HASH } from './merge/mergePreview';
 import { parseXmlDocument, elementChildren, textContent } from './xml/xmlDom';
 import type { CompareMessage, MetadataIdentity, MatchResult } from './domain/compareContracts';
 import type { ConfigurationInventory, MetadataObjectUnit, ArtifactUnit } from './inventory/configurationInventory';
-import type { AdapterCompareResult } from './adapters/mergeAdapter';
 import { namespaceUriForName } from './adapters/semanticXml/semanticXmlIdentity';
-import type { CompareTreeNode } from './compareTreeTypes';
 import { blocked, canonicalRelativePath, finalName, normalizeAbsolutePath, normalizePath, stripHash } from './linkedDesignerUtils';
-import type { LinkedDesignerCompareIndex, LinkedDesignerKind, LinkedDesignerPackageRecipe, LinkedDesignerPackageMember, IndexedPackageObject, LinkedDesignerRootConfigurationSnapshot, LinkedOwnerDescriptorSnapshot } from './linkedDesignerTypes';
+import type { LinkedDesignerCompareIndex, LinkedDesignerKind, LinkedDesignerPackageRecipe, LinkedDesignerPackageMember, IndexedPackageObject, LinkedDesignerRootConfigurationSnapshot, LinkedOwnerDescriptorSnapshot, LinkedRootObjectCopyRecipe } from './linkedDesignerTypes';
 import { requiredLinkedDesignerBodyPath } from './linkedDesignerPackageRules';
-import { findInventoryObjectByDescriptor } from './metadataObjectLookup';
+import { findInventoryObjectByDescriptor, metadataIdentityToObjectUnit } from './metadataObjectLookup';
 
 const DESIGNER_TYPES = new Map<string, LinkedDesignerKind>([
   ['Form', 'Form'],
@@ -228,7 +226,8 @@ export async function buildLinkedDesignerCompareIndex(input: {
     blockedPresenceNodeIds.delete(presenceNodeId);
   }
 
-  const rootConfiguration = await captureRootConfigurationSnapshot(input.leftRootPath, input.rightRootPath);
+  const rootConfigurationCapture = await captureRootConfigurationSnapshot(input.leftRootPath, input.rightRootPath);
+  const rootConfiguration = rootConfigurationCapture.snapshot;
   for (const recipe of packages) {
     if (recipe.rootRegistration && !rootRegistrationIsAvailable(recipe, rootConfiguration)) {
       diagnostics.push(blocked(`Root Configuration.xml не подтверждает регистрацию пакета ${recipe.qualifiedName}.`, 'right-source', recipe.qualifiedName));
@@ -241,84 +240,26 @@ export async function buildLinkedDesignerCompareIndex(input: {
     blockedPresenceNodeIds.set(nodeId, 'Root Configuration.xml не подтверждает регистрацию Designer-пакета.');
     return false;
   });
-  return { packages: validPackages, diagnostics, blockedPresenceNodeIds, ...(rootConfiguration ? { rootConfiguration } : {}) };
+  const wholeObjectCopiesByNodeId = await buildWholeObjectCopyRecipes({
+    strategy: input.strategy,
+    metadata: input.metadata,
+    rightInventory: input.rightInventory,
+    rootConfiguration,
+    rootConfigurationCapture,
+    identityCounts,
+    diagnostics,
+    blockedPresenceNodeIds,
+  });
+  return {
+    packages: validPackages,
+    diagnostics,
+    blockedPresenceNodeIds,
+    ...(rootConfiguration ? { rootConfiguration } : {}),
+    ...(wholeObjectCopiesByNodeId.size > 0 ? { wholeObjectCopiesByNodeId } : {}),
+  };
 }
 
-/** Associates enabled registration or object-presence nodes with their host-owned package recipes. */
-export function bindLinkedDesignerPackageNodes(input: {
-  readonly results: readonly AdapterCompareResult[];
-  readonly packages: readonly LinkedDesignerPackageRecipe[];
-  readonly blockedPresenceNodeIds?: ReadonlyMap<string, string>;
-}): { packagesByNodeId: ReadonlyMap<string, LinkedDesignerPackageRecipe>; results: readonly AdapterCompareResult[] } {
-  const packagesByNodeId = new Map<string, LinkedDesignerPackageRecipe>();
-  const byOwnerAndRegistration = new Map<string, LinkedDesignerPackageRecipe[]>();
-  for (const recipe of input.packages) {
-    if (recipe.rootRegistration) {continue;}
-    const key = `${normalizePath(recipe.ownerTargetRelativePath ?? '')}\0${recipe.kind}\0${finalName(recipe.qualifiedName).normalize('NFC').toLocaleLowerCase('en-US')}`;
-    byOwnerAndRegistration.set(key, [...(byOwnerAndRegistration.get(key) ?? []), recipe]);
-  }
-
-  const nextResults = input.results.map((result) => ({
-    ...result,
-    nodes: [...result.nodes],
-    candidateFactories: new Map(result.candidateFactories),
-  }));
-  for (const recipe of input.packages) {
-    if (recipe.rootRegistration) {
-      const status = recipe.action === 'copy' ? 'rightOnly' : 'leftOnly';
-      const nodeId = `fileObject:${status}:${encodeURIComponent(recipe.qualifiedName)}`;
-      const result = nextResults.find((item) => item.candidateFactories.has(nodeId) || findNode(item.nodes, nodeId));
-      if (result && findNode(result.nodes, nodeId)) {
-        packagesByNodeId.set(nodeId, recipe);
-        recipe.registrationNodeId = nodeId;
-      }
-      continue;
-    }
-    const ownerRelative = recipe.ownerTargetRelativePath ?? '';
-    const ownerKey = `${normalizePath(ownerRelative)}\0${recipe.kind}\0${finalName(recipe.qualifiedName).normalize('NFC').toLocaleLowerCase('en-US')}`;
-    const candidate = nextResults
-      .flatMap((result) => collectNodes(result.nodes))
-      .find((node) => {
-        if (!node.mergeable || node.kind !== 'xmlElement' || node.status !== (recipe.action === 'copy' ? 'rightOnly' : 'leftOnly')) {return false;}
-        const xml = recipe.action === 'copy' ? node.rightValue : node.leftValue;
-        const registration = readRegistration(xml, node.label, recipe.kind);
-        const targetPath = node.mergeState?.targetFilePath;
-        const relative = targetPath ? relativePathFromPackagePath(targetPath, recipe.ownerTargetRelativePath) : undefined;
-        return registration?.kind === recipe.kind && registration.name.normalize('NFC').toLocaleLowerCase('en-US') === finalName(recipe.qualifiedName).normalize('NFC').toLocaleLowerCase('en-US') && relative !== undefined && normalizePath(relative) === normalizePath(ownerRelative);
-      });
-    if (candidate) {
-      const duplicate = byOwnerAndRegistration.get(ownerKey) ?? [];
-      if (duplicate.length === 1) {
-        packagesByNodeId.set(candidate.id, recipe);
-        recipe.registrationNodeId = candidate.id;
-      }
-    }
-  }
-
-  for (const result of nextResults) {
-    result.nodes = result.nodes.filter((node) => {
-      const recipe = input.packages.find((item) => !item.rootRegistration && (item.action === 'copy' ? node.id === fileObjectNodeId(item, 'rightOnly') : node.id === fileObjectNodeId(item, 'leftOnly')));
-      if (!recipe) {return true;}
-      result.candidateFactories.delete(node.id);
-      return false;
-    });
-  }
-  for (const [nodeId, reason] of input.blockedPresenceNodeIds ?? []) {
-    for (const result of nextResults) {
-      if (!findNode(result.nodes, nodeId)) {continue;}
-      result.candidateFactories.delete(nodeId);
-      result.nodes = result.nodes.map((node) => disableNode(node, nodeId, reason));
-    }
-  }
-  return { packagesByNodeId, results: nextResults };
-}
-
-function disableNode(node: CompareTreeNode, id: string, reason: string): CompareTreeNode {
-  if (node.id === id) {
-    return { ...node, mergeable: false, conflict: { kind: 'unsupported', message: reason, blocking: true }, mergeState: { state: 'blocked', reason }, children: [] };
-  }
-  return { ...node, children: node.children.map((child) => disableNode(child, id, reason)) };
-}
+export { bindLinkedDesignerPackageNodes } from './linkedDesignerPackageBinding';
 
 function fileObjectNodeIdForIdentity(identity: MetadataIdentity, action: 'copy' | 'delete'): string {
   return `fileObject:${action === 'copy' ? 'rightOnly' : 'leftOnly'}:${encodeURIComponent(identity.qualifiedName)}`;
@@ -400,86 +341,136 @@ function packageIdFor(kind: LinkedDesignerKind, qualifiedName: string): string {
   return `designer:${kind}:${encodeURIComponent(qualifiedName)}`;
 }
 
-function collectNodes(nodes: readonly CompareTreeNode[]): CompareTreeNode[] {
-  const result: CompareTreeNode[] = [];
-  for (const node of nodes) {
-    result.push(node, ...collectNodes(node.children));
-  }
-  return result;
-}
-
-function findNode(nodes: readonly CompareTreeNode[], nodeId: string): CompareTreeNode | undefined {
-  for (const node of nodes) {
-    if (node.id === nodeId) {return node;}
-    const nested = findNode(node.children, nodeId);
-    if (nested) {return nested;}
-  }
-  return undefined;
-}
-
-function readRegistration(xml: string | undefined, label: string, expectedKind: LinkedDesignerKind): { kind: LinkedDesignerKind; name: string } | undefined {
-  if (xml) {
-    try {
-      const root = parseXmlDocument(xml).root;
-      const kind = root.localName;
-      if (kind === 'Form' || kind === 'Template' || kind === 'Command') {
-        return { kind, name: textContent(root).trim() };
-      }
-    } catch {
-      // Some host projections expose only scalar text instead of the captured subtree.
-    }
-  }
-  const kindMatch = /^(Form|Template|Command)\s*:\s*(.+)$/u.exec(label.trim());
-  if (kindMatch) {return { kind: kindMatch[1] as LinkedDesignerKind, name: kindMatch[2]!.trim() };}
-  // Semantic XML tree labels contain the exact metadata Name value; the package recipe
-  // supplies the registration kind while this fallback binds by owner path and name.
-  return label.trim() ? { kind: expectedKind, name: label.trim() } : undefined;
-}
-
-function relativePathFromPackagePath(targetPath: string, ownerRelativePath: string | undefined): string | undefined {
-  if (!ownerRelativePath) {return undefined;}
-  const normalizedTarget = normalizePath(targetPath);
-  const normalizedOwner = normalizePath(ownerRelativePath);
-  return normalizedTarget.endsWith(normalizedOwner) ? ownerRelativePath : undefined;
-}
-
-function fileObjectNodeId(recipe: LinkedDesignerPackageRecipe, status: 'leftOnly' | 'rightOnly'): string {
-  return `fileObject:${status}:${encodeURIComponent(recipe.qualifiedName)}`;
-}
-
 async function captureRootConfigurationSnapshot(
   leftRootPath: string,
   rightRootPath: string,
-): Promise<LinkedDesignerRootConfigurationSnapshot | undefined> {
+): Promise<RootConfigurationCapture> {
   const [target, source] = await Promise.all([
     captureMergePath(path.join(leftRootPath, 'Configuration.xml'), { retainContent: true }),
     captureMergePath(path.join(rightRootPath, 'Configuration.xml'), { retainContent: true }),
   ]);
-  if (target.state !== 'file' || source.state !== 'file' || !target.contentBase64 || !source.contentBase64) {return undefined;}
+  const targetState = rootConfigurationFileState(target.state);
+  const sourceState = rootConfigurationFileState(source.state);
+  if (target.state !== 'file' || source.state !== 'file' || !target.contentBase64 || !source.contentBase64) {
+    return { targetState, sourceState };
+  }
   const targetContent = Buffer.from(target.contentBase64, 'base64');
   const sourceContent = Buffer.from(source.contentBase64, 'base64');
+  const targetRegistrations = readRootRegistrations(targetContent);
+  const sourceRegistrations = readRootRegistrations(sourceContent);
   return {
-    targetHash: target.hash,
-    targetContent,
-    sourceHash: source.hash,
-    sourceContent,
-    targetHasRegistrations: readRootRegistrations(targetContent),
-    sourceHasRegistrations: readRootRegistrations(sourceContent),
+    targetState,
+    sourceState,
+    snapshot: {
+      targetHash: target.hash,
+      targetContent,
+      sourceHash: source.hash,
+      sourceContent,
+      targetHasRegistrations: targetRegistrations.registrations,
+      sourceHasRegistrations: sourceRegistrations.registrations,
+      targetValid: targetRegistrations.valid,
+      sourceValid: sourceRegistrations.valid,
+    },
   };
 }
 
-function readRootRegistrations(content: Buffer): Set<string> {
+type RootConfigurationFileState = 'file' | 'missing' | 'unavailable';
+
+interface RootConfigurationCapture {
+  readonly targetState: RootConfigurationFileState;
+  readonly sourceState: RootConfigurationFileState;
+  readonly snapshot?: LinkedDesignerRootConfigurationSnapshot;
+}
+
+function rootConfigurationFileState(state: 'file' | 'directory' | 'missing'): RootConfigurationFileState {
+  return state === 'file' ? 'file' : state === 'missing' ? 'missing' : 'unavailable';
+}
+
+async function buildWholeObjectCopyRecipes(input: {
+  strategy: 'left' | 'right' | 'full';
+  metadata: MatchResult;
+  rightInventory: ConfigurationInventory;
+  rootConfiguration?: LinkedDesignerRootConfigurationSnapshot;
+  rootConfigurationCapture: RootConfigurationCapture;
+  identityCounts: ReadonlyMap<string, number>;
+  diagnostics: CompareMessage[];
+  blockedPresenceNodeIds: Map<string, string>;
+}): Promise<Map<string, LinkedRootObjectCopyRecipe>> {
+  const recipes = new Map<string, LinkedRootObjectCopyRecipe>();
+  if (input.strategy === 'left') {return recipes;}
+  const supportedRootTypes = new Set(['Catalog', 'Document', 'CommonModule']);
+  for (const identity of input.metadata.unmatchedRight) {
+    if (!supportedRootTypes.has(identity.metadataType)) {continue;}
+    const parts = identity.qualifiedName.split('.');
+    if (parts.length !== 2 || parts[0] !== identity.metadataType || !parts[1]) {continue;}
+    const nodeId = fileObjectNodeIdForIdentity(identity, 'copy');
+    const fail = (message: string): void => {
+      input.diagnostics.push(blocked(message, identity.sourceId, identity.qualifiedName));
+      input.blockedPresenceNodeIds.set(nodeId, message);
+    };
+    const identityKey = `${identity.sourceId}\0${identity.qualifiedName.normalize('NFC').toLocaleLowerCase('en-US')}`;
+    if (input.identityCounts.get(identityKey) !== 1) {
+      fail('Имя переносимого корневого объекта неоднозначно; устраните дубликаты и повторите сравнение.');
+      continue;
+    }
+    const indexed = findIndexedPackageObject(identity, input.rightInventory);
+    const object = indexed?.object ?? metadataIdentityToObjectUnit(identity);
+    const descriptor = indexed && artifactsFor(indexed.inventory, indexed.object)
+      .find((artifact) => artifact.kind === 'metadataXml' && samePath(artifact.filePath, identity.filePath));
+    const descriptorRelativePath = canonicalRelativePath(input.rightInventory.rootPath, identity.filePath);
+    const containerRelativePath = canonicalRelativePath(input.rightInventory.rootPath, object.containerPath);
+    if (!descriptorRelativePath || !containerRelativePath
+      || (descriptor && !samePath(descriptor.filePath, identity.filePath))) {
+      fail('Дескриптор или каталог корневого объекта не ограничены корнем source.');
+      continue;
+    }
+
+    let configurationMode: 'registered' | 'legacyLoose';
+    const capture = input.rootConfigurationCapture;
+    if (capture.targetState === 'missing' && capture.sourceState === 'missing') {
+      configurationMode = 'legacyLoose';
+    } else {
+      const rootRegistration = { rootTag: identity.metadataType, objectName: parts[1] };
+      if (capture.targetState !== 'file' || capture.sourceState !== 'file'
+        || !input.rootConfiguration
+        || !rootRegistrationIsAvailable({ action: 'copy', rootRegistration }, input.rootConfiguration)) {
+        fail('Корневую регистрацию объекта нельзя безопасно добавить: обе Configuration.xml должны подтверждать только source-регистрацию.');
+        continue;
+      }
+      configurationMode = 'registered';
+    }
+
+    const relativeDescriptorFromContainer = path.relative(object.containerPath, identity.filePath);
+    const descriptorInContainer = relativeDescriptorFromContainer === ''
+      || (!relativeDescriptorFromContainer.startsWith('..') && !path.isAbsolute(relativeDescriptorFromContainer));
+    recipes.set(nodeId, {
+      nodeId,
+      action: 'copy',
+      qualifiedName: identity.qualifiedName,
+      rootRegistration: { rootTag: identity.metadataType, objectName: parts[1] },
+      registrationNodeId: nodeId,
+      configurationMode,
+      sourceContainerPath: object.containerPath,
+      sourceDescriptorRelativePath: descriptorRelativePath,
+      ...(descriptor ? { sourceDescriptorHash: stripHash(descriptor.contentHash) } : {}),
+      ...(identity.uuid ? { sourceUuid: identity.uuid } : {}),
+      sourceDescriptorInContainer: descriptorInContainer,
+    });
+  }
+  return recipes;
+}
+
+function readRootRegistrations(content: Buffer): { valid: boolean; registrations: Set<string> } {
   try {
     const root = parseXmlDocument(content.toString('utf8')).root;
     const metadataNamespace = 'http://v8.1c.ru/8.3/MDClasses';
-    if (root.localName !== 'MetaDataObject' || namespaceUriForName(root) !== metadataNamespace) {return new Set();}
+    if (root.localName !== 'MetaDataObject' || namespaceUriForName(root) !== metadataNamespace) {return invalidRootRegistrations();}
     const owners = elementChildren(root);
-    if (owners.length !== 1 || owners[0]!.localName !== 'Configuration' || namespaceUriForName(owners[0]!) !== metadataNamespace) {return new Set();}
+    if (owners.length !== 1 || owners[0]!.localName !== 'Configuration' || namespaceUriForName(owners[0]!) !== metadataNamespace) {return invalidRootRegistrations();}
     const childContainers = elementChildren(owners[0]!).filter((element) => element.localName === 'ChildObjects' && namespaceUriForName(element) === metadataNamespace);
-    if (childContainers.length !== 1) {return new Set();}
-    const childObjects = childContainers[0]!;
+    if (childContainers.length > 1) {return invalidRootRegistrations();}
     const result = new Set<string>();
-    for (const parent of childObjects ? elementChildren(childObjects) : []) {
+    for (const parent of childContainers[0] ? elementChildren(childContainers[0]) : []) {
       if (namespaceUriForName(parent) !== metadataNamespace) {continue;}
       for (const item of elementChildren(parent)) {
         if (namespaceUriForName(item) !== metadataNamespace) {continue;}
@@ -491,17 +482,21 @@ function readRootRegistrations(content: Buffer): Set<string> {
         if (value) {result.add(`${parent.localName}\0${value}`);}
       }
     }
-    return result;
+    return { valid: true, registrations: result };
   } catch {
-    return new Set();
+    return invalidRootRegistrations();
   }
 }
 
+function invalidRootRegistrations(): { valid: false; registrations: Set<string> } {
+  return { valid: false, registrations: new Set() };
+}
+
 export function rootRegistrationIsAvailable(
-  recipe: LinkedDesignerPackageRecipe,
+  recipe: Pick<LinkedDesignerPackageRecipe, 'action' | 'rootRegistration'>,
   snapshot: LinkedDesignerRootConfigurationSnapshot | undefined,
 ): boolean {
-  if (!snapshot || !recipe.rootRegistration) {return false;}
+  if (!snapshot || !snapshot.sourceValid || !snapshot.targetValid || !recipe.rootRegistration) {return false;}
   const key = `${recipe.rootRegistration.rootTag}\0${recipe.rootRegistration.objectName}`;
   return recipe.action === 'copy'
     ? snapshot.sourceHasRegistrations.has(key) && !snapshot.targetHasRegistrations.has(key)

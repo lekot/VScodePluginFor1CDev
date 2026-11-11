@@ -1,4 +1,5 @@
-import type { CompareTreeNode, CompareTreeStats } from './compareTreeTypes';
+import type { CompareTreeStats } from './compareTreeTypes';
+import type { CompareDisplayNode } from './projection/compareDisplayTree';
 import type { CompareMessage } from './domain/compareContracts';
 import type {
   CompareJoinStrategy,
@@ -10,6 +11,9 @@ import type { MutationFailureProjection } from '../services/configurationSession
 
 export type ConfigCompareWebviewToHostMessage =
   | { type: 'ready' }
+  | { type: 'cancel' }
+  | { type: 'retry' }
+  | { type: 'close' }
   | { type: 'setStrategy'; strategy: CompareJoinStrategy }
   | { type: 'selectionChanged'; nodeIds: string[] }
   | { type: 'createPreview'; nodeIds: string[] }
@@ -19,7 +23,9 @@ export type ConfigCompareWebviewToHostMessage =
 
 export interface ConfigCompareWebviewPayloadDto {
   title: string;
-  root: CompareTreeNode;
+  targetLabel: string;
+  sourceLabel: string;
+  root: CompareDisplayNode;
   stats: CompareTreeStats;
   locked: boolean;
   strategy: CompareJoinStrategy;
@@ -45,6 +51,18 @@ export interface ConfigCompareAppliedOperationDto {
 }
 
 export type ConfigCompareHostToWebviewMessage =
+  | {
+      type: 'loadState';
+      generation: number;
+      status: 'loading' | 'ready' | 'cancelled' | 'error';
+      phase?: 'detecting' | 'metadata' | 'inventory' | 'bsl' | 'comparing' | 'projecting';
+      completed?: number;
+      total?: number;
+      partial?: boolean;
+      payload?: ConfigCompareWebviewPayloadDto;
+      error?: string;
+      retryAvailable?: boolean;
+    }
   | {
       type: 'state';
       payload: ConfigCompareWebviewPayloadDto;
