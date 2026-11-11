@@ -1,8 +1,10 @@
 import * as assert from 'assert';
+import * as fsNative from 'fs';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { vscodeTestState, resetVscodeTestState } from '../helpers/vscodeModuleStub';
+import { cleanupTempDir } from '../helpers/testHelpers';
 import { registerCfCommands } from '../../src/commands/cfCommands';
 import { MetadataType, type TreeNode } from '../../src/models/treeNode';
 
@@ -77,16 +79,12 @@ suite('cfCommands', () => {
       );
       await assert.rejects(fs.stat(path.dirname(calls[0].outDir)));
     } finally {
-      if (calls[0]?.outDir) {
-        await fs.rm(path.dirname(calls[0].outDir), { recursive: true, force: true });
-      }
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await cleanupTempDir(tempRoot);
     }
   });
 
   test('decompose removes staging after error and cancelled service results', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), '1cviewer-cf-result-cleanup-'));
-    const stagingOutDirs: string[] = [];
     try {
       const cfPath = path.join(tempRoot, '1Cv8.cf');
       await fs.writeFile(cfPath, Buffer.from([1]));
@@ -100,7 +98,6 @@ suite('cfCommands', () => {
           service: {
             decomposeCfToXmlDirectory: async (params) => {
               stagingOutDir = params.outDir;
-              stagingOutDirs.push(params.outDir);
               return { status, userMessage: status, logExcerpt: '', exitCode: status === 'inDoubt' ? null : 1 };
             },
             buildCfFromXmlConfiguration: async () => {
@@ -122,10 +119,7 @@ suite('cfCommands', () => {
         }
       }
     } finally {
-      for (const stagingOutDir of stagingOutDirs) {
-        await fs.rm(path.dirname(stagingOutDir), { recursive: true, force: true });
-      }
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await cleanupTempDir(tempRoot);
     }
   });
 
@@ -161,10 +155,7 @@ suite('cfCommands', () => {
       assert.match(vscodeTestState.errorLog[0] ?? '', /service failed/);
       assert.doesNotMatch(vscodeTestState.errorLog[0] ?? '', /Staging/);
     } finally {
-      if (stagingOutDir) {
-        await fs.rm(path.dirname(stagingOutDir), { recursive: true, force: true });
-      }
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await cleanupTempDir(tempRoot);
     }
   });
 
@@ -208,10 +199,7 @@ suite('cfCommands', () => {
       assert.match(vscodeTestState.errorLog[0] ?? '', /copy failed/);
       assert.ok((vscodeTestState.errorLog[0] ?? '').includes(stagingOutDir));
     } finally {
-      if (stagingOutDir) {
-        await fs.rm(path.dirname(stagingOutDir), { recursive: true, force: true });
-      }
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await cleanupTempDir(tempRoot);
     }
   });
 
@@ -249,45 +237,83 @@ suite('cfCommands', () => {
       await assert.rejects(fs.stat(path.dirname(stagingOutDir)));
       assert.strictEqual(await fs.readFile(path.join(outDir, 'keep.txt'), 'utf-8'), 'keep');
     } finally {
-      if (stagingOutDir) {
-        await fs.rm(path.dirname(stagingOutDir), { recursive: true, force: true });
-      }
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await cleanupTempDir(tempRoot);
     }
   });
 
   test('build command resolves configuration root and picked cf output file', async () => {
     const calls: Array<{ configRoot: string; outFile: string }> = [];
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), '1cviewer-cf-command-'));
-    const configRoot = path.join(tempRoot, 'empty_conf');
-    const outFile = path.join(tempRoot, 'build', '1Cv8.cf');
-    await fs.mkdir(configRoot, { recursive: true });
-    await fs.writeFile(path.join(configRoot, 'Configuration.xml'), '<Configuration/>', 'utf-8');
+    try {
+      const configRoot = path.join(tempRoot, 'empty_conf');
+      const outFile = path.join(tempRoot, 'build', '1Cv8.cf');
+      await fs.mkdir(configRoot, { recursive: true });
+      await fs.writeFile(path.join(configRoot, 'Configuration.xml'), '<Configuration/>', 'utf-8');
 
-    vscodeTestState.saveDialogQueue.push({ fsPath: outFile, scheme: 'file' });
+      vscodeTestState.saveDialogQueue.push({ fsPath: outFile, scheme: 'file' });
 
-    registerCfCommands({
-      state: {
-        treeDataProvider: {
-          getConfigPathForNode: () => configRoot,
-          getConfigPath: () => undefined,
+      registerCfCommands({
+        state: {
+          treeDataProvider: {
+            getConfigPathForNode: () => configRoot,
+            getConfigPath: () => undefined,
+          },
+        } as any,
+        service: {
+          decomposeCfToXmlDirectory: async () => {
+            throw new Error('not expected');
+          },
+          buildCfFromXmlConfiguration: async (params) => {
+            calls.push({ configRoot: params.configRoot, outFile: params.outFile });
+            return { status: 'success', userMessage: 'ok', logExcerpt: '', exitCode: 0 };
+          },
         },
-      } as any,
-      service: {
-        decomposeCfToXmlDirectory: async () => {
-          throw new Error('not expected');
-        },
-        buildCfFromXmlConfiguration: async (params) => {
-          calls.push({ configRoot: params.configRoot, outFile: params.outFile });
-          return { status: 'success', userMessage: 'ok', logExcerpt: '', exitCode: 0 };
-        },
-      },
-    });
+      });
 
-    const node = makeNode({ type: MetadataType.Configuration });
-    const handler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.cf.buildFromConfiguration');
-    await handler?.(node);
+      const node = makeNode({ type: MetadataType.Configuration });
+      const handler = vscodeTestState.registeredCommandHandlers.get(
+        '1c-metadata-tree.cf.buildFromConfiguration'
+      );
+      await handler?.(node);
 
-    assert.deepStrictEqual(calls, [{ configRoot, outFile }]);
+      assert.deepStrictEqual(calls, [{ configRoot, outFile }]);
+    } finally {
+      await cleanupTempDir(tempRoot);
+    }
+  });
+
+  test('cleanupTempDir refuses directories outside the owned temp root', async () => {
+    const outsideRoot = await fs.mkdtemp(path.join(process.cwd(), '.tmp-cleanup-outside-'));
+    const marker = path.join(outsideRoot, 'keep.txt');
+    try {
+      await fs.writeFile(marker, 'keep');
+
+      await assert.rejects(cleanupTempDir(outsideRoot), /inside os\.tmpdir/);
+      assert.strictEqual(await fs.readFile(marker, 'utf-8'), 'keep');
+    } finally {
+      await fs.rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('cleanupTempDir surfaces persistent removal failures', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), '1cviewer-cf-cleanup-failure-'));
+    const fsPromises = fsNative.promises as { rm: typeof fsNative.promises.rm };
+    const originalRm = fsPromises.rm.bind(fsNative.promises);
+    const failure = Object.assign(new Error('persistent cleanup failure'), { code: 'EACCES' });
+    let attempts = 0;
+
+    try {
+      fsPromises.rm = async () => {
+        attempts++;
+        throw failure;
+      };
+
+      await assert.rejects(cleanupTempDir(tempRoot), (error) => error === failure);
+
+      assert.strictEqual(attempts, 1);
+    } finally {
+      fsPromises.rm = originalRm;
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
   });
 });

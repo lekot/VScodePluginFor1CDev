@@ -23,15 +23,47 @@ export async function createTempDir(prefix: string = '1cviewer-test-'): Promise<
 }
 
 /**
- * Removes a temporary directory and all its contents
+ * Removes an owned temporary directory, retrying transient filesystem errors.
+ * Persistent cleanup errors are rethrown so failed cleanup cannot go unnoticed.
  * @param tmpDir Path to the temporary directory
  */
 export async function cleanupTempDir(tmpDir: string): Promise<void> {
+  const tempRoot = path.resolve(os.tmpdir());
+  const realTempRoot = path.resolve(await fs.promises.realpath(tempRoot));
+  const resolvedTmpDir = path.resolve(tmpDir);
+
+  const assertIsOwnedTempChild = (root: string, candidate: string): void => {
+    const relative = path.relative(root, candidate);
+    if (
+      relative === '' ||
+      relative === '..' ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    ) {
+      throw new Error('cleanupTempDir only removes directories inside os.tmpdir().');
+    }
+  };
+
+  assertIsOwnedTempChild(tempRoot, resolvedTmpDir);
+
+  let realTmpDir: string;
   try {
-    await fs.promises.rm(tmpDir, { recursive: true, force: true });
-  } catch {
-    // Ignore cleanup errors
+    realTmpDir = await fs.promises.realpath(resolvedTmpDir);
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
+      return;
+    }
+    throw error;
   }
+
+  assertIsOwnedTempChild(realTempRoot, path.resolve(realTmpDir));
+
+  await fs.promises.rm(resolvedTmpDir, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
 }
 
 // ---------------------------------------------------------------------------
