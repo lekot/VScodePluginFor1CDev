@@ -79,8 +79,7 @@ function metadataObjectOperationMap(
   for (const node of results.flatMap((result) => result.nodes)) {
     if (
       node.kind === 'metadataObject' &&
-      (node.status === 'leftOnly' || node.status === 'rightOnly') &&
-      node.mergeable
+      (node.status === 'leftOnly' || node.status === 'rightOnly')
     ) {
       operations.set(metadataObjectOperationKey(node.label, node.status), node);
     }

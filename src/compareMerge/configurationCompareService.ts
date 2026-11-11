@@ -444,6 +444,7 @@ async function buildConfigurationCompareState(
       session,
       candidateFactories,
       packagesByNodeId: bound.packagesByNodeId,
+      wholeObjectCopiesByNodeId: linkedDesignerIndex.wholeObjectCopiesByNodeId,
       rootConfiguration: linkedDesignerIndex.rootConfiguration,
       formModules: linkedModules.filter((module) => module.moduleId.includes('.Form.') || module.moduleId.startsWith('CommonForm.')),
       modulesByTargetPath,

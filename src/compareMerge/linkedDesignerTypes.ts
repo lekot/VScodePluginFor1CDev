@@ -29,6 +29,21 @@ export interface LinkedDesignerPackageRecipe {
   readonly members: readonly LinkedDesignerPackageMember[];
 }
 
+/** Internal compare-time capture for copying a whole supported root metadata object. */
+export interface LinkedRootObjectCopyRecipe {
+  readonly nodeId: string;
+  readonly action: 'copy';
+  readonly qualifiedName: string;
+  readonly rootRegistration: { readonly rootTag: string; readonly objectName: string };
+  readonly registrationNodeId: string;
+  readonly configurationMode: 'registered' | 'legacyLoose';
+  readonly sourceContainerPath: string;
+  readonly sourceDescriptorRelativePath: string;
+  readonly sourceDescriptorHash?: string;
+  readonly sourceUuid?: string;
+  readonly sourceDescriptorInContainer: boolean;
+}
+
 /** Compare-time capture for an explicitly selected matched TemplateType/body transition. */
 export interface LinkedTemplateTypeTransition {
   readonly transitionId: string;
@@ -127,11 +142,14 @@ export interface LinkedDesignerRootConfigurationSnapshot {
   readonly sourceContent?: Buffer;
   readonly sourceHasRegistrations: ReadonlySet<string>;
   readonly targetHasRegistrations: ReadonlySet<string>;
+  readonly sourceValid: boolean;
+  readonly targetValid: boolean;
 }
 
 export interface LinkedDesignerCompareIndex {
   readonly packages: readonly LinkedDesignerPackageRecipe[];
   readonly diagnostics: readonly CompareMessage[];
+  readonly wholeObjectCopiesByNodeId?: ReadonlyMap<string, LinkedRootObjectCopyRecipe>;
   /** Legacy whole-object candidates disabled because their linked package could not be proven. */
   readonly blockedPresenceNodeIds?: ReadonlyMap<string, string>;
   readonly rootConfiguration?: LinkedDesignerRootConfigurationSnapshot;
@@ -147,6 +165,7 @@ export interface LinkedDesignerMaterializerContext {
   readonly session: CompareSession;
   readonly candidateFactories: ReadonlyMap<string, ExecutableCandidateFactory>;
   readonly packagesByNodeId: ReadonlyMap<string, LinkedDesignerPackageRecipe>;
+  readonly wholeObjectCopiesByNodeId?: ReadonlyMap<string, LinkedRootObjectCopyRecipe>;
   readonly fileWritesByNodeId?: ReadonlyMap<string, LinkedDesignerFileWriteMember>;
   readonly rootConfiguration?: LinkedDesignerRootConfigurationSnapshot;
   readonly formModules?: readonly LinkedFormModuleSnapshot[];

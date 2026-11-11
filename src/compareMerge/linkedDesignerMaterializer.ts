@@ -15,7 +15,7 @@ import { blocked, LINKED_FORM_REFERENCE_PROPERTIES, normalizeAbsolutePath, norma
 import { formXmlReferencesHandler } from './linkedDesignerContext';
 import { materializeLinkedTemplateTypeTransition } from './linkedDesignerTemplateTransitions';
 import { elementChildren, parseXmlDocument, textContent } from './xml/xmlDom';
-import type { LinkedDesignerMaterializerContext, LinkedDesignerMaterializationResult, LinkedDesignerPackageRecipe } from './linkedDesignerTypes';
+import type { LinkedDesignerMaterializerContext, LinkedDesignerMaterializationResult, LinkedDesignerPackageRecipe, LinkedRootObjectCopyRecipe } from './linkedDesignerTypes';
 
 const MDCLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
 
@@ -29,6 +29,7 @@ export async function materializeLinkedDesignerSelection(
 ): Promise<LinkedDesignerMaterializationResult> {
   const diagnostics: CompareMessage[] = [];
   const selectedPackages = new Map<string, LinkedDesignerPackageRecipe>();
+  const selectedRootObjectCopies = new Map<string, LinkedRootObjectCopyRecipe>();
   const selectedCandidates: MergeCandidate[] = [];
   const rootMutations: RootObjectConfigurationMutation[] = [];
   const sourceRoots = new Set(input.session.state.sources.map((source) => source.sourceId));
@@ -104,6 +105,21 @@ export async function materializeLinkedDesignerSelection(
       continue;
     }
 
+    const wholeObjectCopy = input.wholeObjectCopiesByNodeId?.get(nodeId);
+    if (wholeObjectCopy) {
+      const materialized = await materializeWholeObjectCopy(input, wholeObjectCopy);
+      if ('diagnostic' in materialized) {
+        diagnostics.push(materialized.diagnostic);
+      } else {
+        selectedRootObjectCopies.set(nodeId, wholeObjectCopy);
+        selectedCandidates.push(...materialized.candidates);
+        if (wholeObjectCopy.configurationMode === 'registered') {
+          rootMutations.push({ type: 'add', ...wholeObjectCopy.rootRegistration });
+        }
+      }
+      continue;
+    }
+
     const factory = input.candidateFactories.get(nodeId);
     if (!factory) {
       diagnostics.push(blocked('Выбранный узел отсутствует в текущем host-side сравнении.', input.sourceId, nodeId));
@@ -162,7 +178,11 @@ export async function materializeLinkedDesignerSelection(
       })));
 
   if (rootMutations.length > 0) {
-    const rootWrite = await materializeRootConfigurationWrite(input, rootMutations, [...selectedPackages.values()]);
+    const rootWrite = await materializeRootConfigurationWrite(
+      input,
+      rootMutations,
+      [...selectedPackages.values(), ...selectedRootObjectCopies.values()],
+    );
     if ('diagnostic' in rootWrite) {return { ok: false, diagnostics: [rootWrite.diagnostic] };}
     packageWrites.push({
       ...rootWrite.candidate,
@@ -220,6 +240,118 @@ export async function materializeLinkedDesignerSelection(
   const witnessDiagnostics = await verifyLinkedCandidateWitnesses(input, candidates);
   if (witnessDiagnostics.length > 0) {return { ok: false, diagnostics: witnessDiagnostics};}
   return { ok: true, candidates };
+}
+
+async function materializeWholeObjectCopy(
+  input: LinkedDesignerMaterializerContext,
+  recipe: LinkedRootObjectCopyRecipe,
+): Promise<{ candidates: MergeCandidate[] } | { diagnostic: CompareMessage }> {
+  const factory = input.candidateFactories.get(recipe.nodeId);
+  if (!factory) {
+    return { diagnostic: blocked('Кандидат копирования корневого объекта отсутствует в текущем сравнении.', input.sourceId, recipe.nodeId) };
+  }
+  const result = await factory();
+  if (!result.ok) {return { diagnostic: result.diagnostics[0] ?? blocked('Не удалось подготовить копирование корневого объекта.', input.sourceId, recipe.nodeId) };}
+  const candidate = result.candidate;
+  const operation = candidate.fileOperation;
+  const expectedDescriptorPath = path.resolve(input.sourceRootPath, ...recipe.sourceDescriptorRelativePath.split('/'));
+  const descriptorSnapshot = await captureMergePath(expectedDescriptorPath, { retainContent: true }).catch(() => undefined);
+  if (descriptorSnapshot?.state !== 'file'
+    || descriptorSnapshot.contentBase64 === undefined
+    || (recipe.sourceDescriptorHash !== undefined && descriptorSnapshot.hash !== stripHash(recipe.sourceDescriptorHash))
+    || (recipe.sourceDescriptorHash === undefined
+      && !matchesRootObjectDescriptor(Buffer.from(descriptorSnapshot.contentBase64, 'base64'), recipe))) {
+    return { diagnostic: blocked('Дескриптор корневого объекта изменился после сравнения.', input.sourceId, recipe.nodeId) };
+  }
+  if (!operation || (operation.kind !== 'folderCopy' && operation.kind !== 'fileCopy')
+    || candidate.kind !== operation.kind
+    || candidate.expectedOldHash !== MISSING_TARGET_HASH
+    || operation.expectedOldHash !== MISSING_TARGET_HASH
+    || !operation.sourcePath
+    || !operation.sourceHash) {
+    return { diagnostic: blocked('Кандидат корневого объекта не содержит проверяемое копирование с целевой защитой.', input.sourceId, recipe.nodeId) };
+  }
+
+  const normalizedSourcePath = normalizeAbsolutePath(operation.sourcePath);
+  const descriptorWitness: MergeFileWitness = {
+    sourceId: input.sourceId,
+    relativePath: recipe.sourceDescriptorRelativePath,
+    expectedHash: descriptorSnapshot.hash,
+    kind: 'file',
+  };
+  const looseRootConfigurationWitnesses: MergeFileWitness[] = recipe.configurationMode === 'legacyLoose'
+    ? [
+        {
+          sourceId: input.targetSourceId,
+          relativePath: 'Configuration.xml',
+          expectedHash: MISSING_TARGET_HASH,
+          kind: 'file',
+        },
+        {
+          sourceId: input.sourceId,
+          relativePath: 'Configuration.xml',
+          expectedHash: MISSING_TARGET_HASH,
+          kind: 'file',
+        },
+      ]
+    : [];
+  const candidates: MergeCandidate[] = [{
+    ...candidate,
+    sourceWitnesses: uniqueWitnesses([
+      ...(candidate.sourceWitnesses ?? []),
+      descriptorWitness,
+      ...looseRootConfigurationWitnesses,
+    ]),
+  }];
+
+  if (operation.kind === 'fileCopy') {
+    if (normalizedSourcePath !== normalizeAbsolutePath(expectedDescriptorPath)
+      || operation.sourceHash !== descriptorSnapshot.hash) {
+      return { diagnostic: blocked('Плоский fileCopy не совпадает с захваченным дескриптором корневого объекта.', input.sourceId, recipe.nodeId) };
+    }
+    return { candidates };
+  }
+
+  if (normalizedSourcePath !== normalizeAbsolutePath(recipe.sourceContainerPath)) {
+    return { diagnostic: blocked('folderCopy не совпадает с каталогом захваченного корневого объекта.', input.sourceId, recipe.nodeId) };
+  }
+  if (recipe.sourceDescriptorInContainer) {return { candidates };}
+
+  const descriptorWrite = await createCapturedWriteCandidate(input, {
+    nodeId: `${recipe.nodeId}:descriptor`,
+    targetRelativePath: recipe.sourceDescriptorRelativePath,
+    expectedTargetHash: MISSING_TARGET_HASH,
+    sourceRelativePath: recipe.sourceDescriptorRelativePath,
+    sourceHash: descriptorSnapshot.hash,
+    content: Buffer.from(descriptorSnapshot.contentBase64, 'base64'),
+  });
+  if ('diagnostic' in descriptorWrite) {return { diagnostic: descriptorWrite.diagnostic };}
+  candidates.push(descriptorWrite);
+  return { candidates };
+}
+
+function matchesRootObjectDescriptor(content: Buffer, recipe: LinkedRootObjectCopyRecipe): boolean {
+  try {
+    const root = parseXmlDocument(content.toString('utf8')).root;
+    if (root.localName !== 'MetaDataObject' || namespaceUriForName(root) !== MDCLASSES_NAMESPACE) {return false;}
+    const owners = elementChildren(root);
+    if (owners.length !== 1
+      || owners[0]!.localName !== recipe.rootRegistration.rootTag
+      || namespaceUriForName(owners[0]!) !== MDCLASSES_NAMESPACE) {return false;}
+    const owner = owners[0]!;
+    if (recipe.sourceUuid) {
+      const uuid = owner.attributes.find((attribute) => attribute.localName === 'uuid')?.value;
+      if (uuid?.toLocaleLowerCase('en-US') !== recipe.sourceUuid.toLocaleLowerCase('en-US')) {return false;}
+    }
+    const properties = elementChildren(owner).filter((element) =>
+      element.localName === 'Properties' && namespaceUriForName(element) === MDCLASSES_NAMESPACE);
+    if (properties.length !== 1) {return false;}
+    const names = elementChildren(properties[0]!).filter((element) =>
+      element.localName === 'Name' && namespaceUriForName(element) === MDCLASSES_NAMESPACE);
+    return names.length === 1 && textContent(names[0]!).trim() === recipe.rootRegistration.objectName;
+  } catch {
+    return false;
+  }
 }
 
 async function verifyLinkedCandidateWitnesses(

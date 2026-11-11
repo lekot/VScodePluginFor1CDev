@@ -722,7 +722,7 @@ suite('ConfigurationCompareService', () => {
       await writeCatalogDescriptor(rightRoot, 'Products', 'catalog-products', 'Products');
       await writeCatalogDescriptor(leftRoot, 'Unrelated', 'left-unrelated', 'Unrelated');
 
-      result = await buildConfigurationCompare({
+      result = await buildConfigurationCompareWithoutMutationRuntime({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
         backupRootPath: backupRoot,
@@ -756,7 +756,7 @@ suite('ConfigurationCompareService', () => {
       await writeCatalogDescriptor(leftRoot, 'LeftOnly', 'left-only', 'Left only');
       await writeCatalogDescriptor(rightRoot, 'RightOnly', 'right-only', 'Right only');
 
-      result = await buildConfigurationCompare({
+      result = await buildConfigurationCompareWithoutMutationRuntime({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
         backupRootPath: path.join(tempRoot, 'backups'),
@@ -808,7 +808,7 @@ suite('ConfigurationCompareService', () => {
       const fullRows = metadataRows(result.workspace.payload.root);
       assert.deepStrictEqual(fullRows, expectedMetadataRows);
 
-      const reversed = await buildConfigurationCompare({
+      const reversed = await buildConfigurationCompareWithoutMutationRuntime({
         leftRootPath: rightRoot,
         rightRootPath: leftRoot,
         backupRootPath: path.join(tempRoot, 'reverse-backups'),
@@ -911,7 +911,7 @@ suite('ConfigurationCompareService', () => {
       await fs.mkdir(leftRoot, { recursive: true });
       await writeCatalog(rightRoot, 'Products', 'catalog-products');
 
-      const result = await buildConfigurationCompare({
+      const result = await buildConfigurationCompareWithoutMutationRuntime({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
         backupRootPath: backupRoot,
@@ -1882,8 +1882,16 @@ suite('ConfigurationCompareService', () => {
 
     try {
       await fs.mkdir(leftRoot, { recursive: true });
+      await writeFile(
+        path.join(leftRoot, 'Configuration.xml'),
+        configurationXml('Target', '11111111-1111-1111-1111-111111111111', [])
+      );
       await writeFileBytes(rightLogoPath, rightBytes);
       await writeCatalogDescriptor(rightRoot, 'Products', 'catalog-products', 'Products');
+      await writeFile(
+        path.join(rightRoot, 'Configuration.xml'),
+        configurationXml('Source', '22222222-2222-2222-2222-222222222222', ['Products'])
+      );
 
       const result = await buildConfigurationCompare({
         leftRootPath: leftRoot,
@@ -1917,6 +1925,269 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
+  test('workspace copies a flat catalog descriptor and folder sidecars while preserving target registrations', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-flat-object-copy-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const leftConfigurationPath = path.join(leftRoot, 'Configuration.xml');
+    const leftDescriptorPath = path.join(leftRoot, 'Catalogs', 'Products.xml');
+    const leftSidecarPath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const descriptor = [
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">',
+      '  <Catalog uuid="33333333-3333-3333-3333-333333333333">',
+      '    <Properties><Name>Products</Name></Properties>',
+      '    <ChildObjects/>',
+      '  </Catalog>',
+      '</MetaDataObject>',
+    ].join('\n');
+    const sidecarBytes = Buffer.from([1, 2, 3]);
+    const targetConfiguration = [
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">',
+      '  <Configuration uuid="11111111-1111-1111-1111-111111111111">',
+      '    <Properties><Name>Target</Name></Properties>',
+      '    <ChildObjects><Catalog>Existing</Catalog></ChildObjects>',
+      '  </Configuration>',
+      '</MetaDataObject>',
+    ].join('\n');
+    const incomingConfiguration = [
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">',
+      '  <Configuration uuid="22222222-2222-2222-2222-222222222222">',
+      '    <Properties><Name>Source</Name></Properties>',
+      '    <ChildObjects><Catalog>Products</Catalog></ChildObjects>',
+      '  </Configuration>',
+      '</MetaDataObject>',
+    ].join('\n');
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+
+    try {
+      await writeFile(leftConfigurationPath, targetConfiguration);
+      await writeFile(path.join(rightRoot, 'Configuration.xml'), incomingConfiguration);
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), descriptor);
+      await writeFileBytes(path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin'), sidecarBytes);
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      workspace = result.workspace;
+
+      const objectId = workspace.listMergeableNodeIds().find(
+        (id) => id === 'fileObject:rightOnly:Catalog.Products'
+      );
+      assert.ok(objectId, 'expected the unmatched catalog object to be selectable');
+
+      const preview = await workspace.createPreviewForNodeIds([objectId]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      const approval = workspace.approvePreview(preview.preview.previewId);
+      assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+      const execution = await workspace.executeApprovedPreview(preview.preview.previewId, {
+        destructiveConfirmed: true,
+      });
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+
+      const descriptorCopied = await fs.readFile(leftDescriptorPath, 'utf-8').then(
+        () => true,
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') {
+            return false;
+          }
+          throw error;
+        }
+      );
+      const sidecarCopied = await fs.readFile(leftSidecarPath).then(
+        (bytes) => bytes.equals(sidecarBytes),
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') {
+            return false;
+          }
+          throw error;
+        }
+      );
+      const updatedConfiguration = await fs.readFile(leftConfigurationPath, 'utf-8');
+      const catalogRegistrations = [...updatedConfiguration.matchAll(/<Catalog>([^<]+)<\/Catalog>/gu)]
+        .map((match) => match[1])
+        .sort();
+      assert.deepStrictEqual(
+        {
+          descriptorCopied,
+          sidecarCopied,
+          rootRegistrationAdded: catalogRegistrations.includes('Products'),
+          existingRegistrationPreserved: catalogRegistrations.includes('Existing'),
+        },
+        {
+          descriptorCopied: true,
+          sidecarCopied: true,
+          rootRegistrationAdded: true,
+          existingRegistrationPreserved: true,
+        }
+      );
+    } finally {
+      workspace?.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('refuses flat object copy when only the incoming Configuration.xml exists and leaves target untouched', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-mixed-root-copy-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const leftConfigurationPath = path.join(leftRoot, 'Configuration.xml');
+    const leftDescriptorPath = path.join(leftRoot, 'Catalogs', 'Products.xml');
+    const leftSidecarPath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const sidecarBytes = Buffer.from([4, 5, 6]);
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+
+    try {
+      await fs.mkdir(leftRoot, { recursive: true });
+      await writeFile(path.join(rightRoot, 'Configuration.xml'), configurationXml('Source', '22222222-2222-2222-2222-222222222222', ['Products']));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), flatCatalogDescriptor());
+      await writeFileBytes(path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin'), sidecarBytes);
+
+      const result = await buildConfigurationCompareWithoutMutationRuntime({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      workspace = result.workspace;
+      const products = collectNodes(
+        result.projection.root,
+        (node) => node.kind === 'metadataObject' && node.label === 'Catalog.Products' && node.status === 'rightOnly'
+      );
+      assert.ok(products.length > 0, 'incoming-only catalog remains visible in the compare');
+      const mergeableIds = new Set(workspace.listMergeableNodeIds());
+      assert.ok(products.every((product) => !mergeableIds.has(product.id)));
+      const canonicalCopyId = 'fileObject:rightOnly:Catalog.Products';
+      assert.ok(!mergeableIds.has(canonicalCopyId));
+      const preview = await workspace.createPreviewForNodeIds([canonicalCopyId]);
+      assert.strictEqual(preview.ok, false, JSON.stringify(preview));
+
+      assert.deepStrictEqual(
+        {
+          descriptorPresent: await pathExists(leftDescriptorPath),
+          sidecarPresent: await pathExists(leftSidecarPath),
+          targetConfigurationPresent: await pathExists(leftConfigurationPath),
+        },
+        {
+          descriptorPresent: false,
+          sidecarPresent: false,
+          targetConfigurationPresent: false,
+        }
+      );
+    } finally {
+      workspace?.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('blocks a loose flat package if a root Configuration.xml appears after approval', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-loose-flat-copy-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const leftConfigurationPath = path.join(leftRoot, 'Configuration.xml');
+    const leftDescriptorPath = path.join(leftRoot, 'Catalogs', 'Products.xml');
+    const leftSidecarPath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const descriptor = flatCatalogDescriptor();
+    const sidecarBytes = Buffer.from([7, 8, 9]);
+    let mutationRuntime: Awaited<ReturnType<typeof createMergeMutationTestRuntime>> | undefined;
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+
+    try {
+      await fs.mkdir(leftRoot, { recursive: true });
+      mutationRuntime = await createMergeMutationTestRuntime(leftRoot);
+      const configurationBeforeCompare = await fs.readFile(leftConfigurationPath);
+      await fs.rm(leftConfigurationPath);
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), descriptor);
+      await writeFileBytes(path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin'), sidecarBytes);
+
+      const result = await buildConfigurationCompareWithoutMutationRuntime({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        mutationEngine: mutationRuntime.engine,
+        configurationId: mutationRuntime.configurationId,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      workspace = result.workspace;
+      const objectId = workspace.listMergeableNodeIds().find(
+        (id) => id === 'fileObject:rightOnly:Catalog.Products'
+      );
+      assert.ok(objectId, 'flat catalog should remain selectable without root Configuration.xml files');
+
+      const preview = await workspace.createPreviewForNodeIds([objectId]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      const approval = workspace.approvePreview(preview.preview.previewId);
+      assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+
+      await fs.writeFile(leftConfigurationPath, configurationBeforeCompare);
+      const execution = await workspace.executeApprovedPreview(preview.preview.previewId);
+      assert.strictEqual(execution.ok, false, JSON.stringify(execution));
+      assert.strictEqual(execution.result?.applied.length ?? 0, 0);
+
+      assert.strictEqual(await pathExists(leftDescriptorPath), false);
+      assert.strictEqual(await pathExists(leftSidecarPath), false);
+      assert.deepStrictEqual(await fs.readFile(leftConfigurationPath), configurationBeforeCompare);
+      assert.strictEqual(await pathExists(path.join(rightRoot, 'Configuration.xml')), false);
+    } finally {
+      workspace?.dispose();
+      await mutationRuntime?.coordinator.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('blocks loose flat package preview when source Configuration.xml appears after compare', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-late-source-root-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const leftConfigurationPath = path.join(leftRoot, 'Configuration.xml');
+    const rightConfigurationPath = path.join(rightRoot, 'Configuration.xml');
+    const leftDescriptorPath = path.join(leftRoot, 'Catalogs', 'Products.xml');
+    const leftSidecarPath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const sidecarBytes = Buffer.from([10, 11, 12]);
+    let mutationRuntime: Awaited<ReturnType<typeof createMergeMutationTestRuntime>> | undefined;
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+
+    try {
+      await fs.mkdir(leftRoot, { recursive: true });
+      mutationRuntime = await createMergeMutationTestRuntime(leftRoot);
+      await fs.rm(leftConfigurationPath);
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), flatCatalogDescriptor());
+      await writeFileBytes(path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin'), sidecarBytes);
+
+      const result = await buildConfigurationCompareWithoutMutationRuntime({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        mutationEngine: mutationRuntime.engine,
+        configurationId: mutationRuntime.configurationId,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      workspace = result.workspace;
+      assert.strictEqual(await pathExists(leftConfigurationPath), false);
+      assert.strictEqual(await pathExists(rightConfigurationPath), false);
+      const objectId = workspace.listMergeableNodeIds().find(
+        (id) => id === 'fileObject:rightOnly:Catalog.Products'
+      );
+      assert.ok(objectId, 'loose package should be selectable while both root files are absent');
+
+      const sourceConfiguration = configurationXml('Source', '22222222-2222-2222-2222-222222222222', ['Products']);
+      await writeFile(rightConfigurationPath, sourceConfiguration);
+      const preview = await workspace.createPreviewForNodeIds([objectId]);
+
+      assert.strictEqual(preview.ok, false, JSON.stringify(preview));
+      assert.strictEqual(await pathExists(leftDescriptorPath), false);
+      assert.strictEqual(await pathExists(leftSidecarPath), false);
+      assert.strictEqual(await pathExists(leftConfigurationPath), false);
+      assert.strictEqual(await fs.readFile(rightConfigurationPath, 'utf-8'), sourceConfiguration);
+    } finally {
+      workspace?.dispose();
+      await mutationRuntime?.coordinator.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   test('full strategy keeps unmatched object copy selectable without indexing its internals', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
@@ -1931,7 +2202,7 @@ suite('ConfigurationCompareService', () => {
       await writeFileBytes(rightLogoPath, Buffer.from([0xde, 0xad, 0xbe, 0xef]));
       await writeFile(rightModulePath, 'Procedure RightOnly()\nEndProcedure');
 
-      const result = await buildConfigurationCompare({
+      const result = await buildConfigurationCompareWithoutMutationRuntime({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
         backupRootPath: backupRoot,
@@ -2073,6 +2344,40 @@ async function buildConfigurationCompare(input: ConfigurationCompareInput) {
     mutationEngine: runtime.engine,
     configurationId: input.configurationId ?? runtime.configurationId,
   });
+}
+
+function configurationXml(name: string, uuid: string, catalogNames: readonly string[]): string {
+  return [
+    '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">',
+    `  <Configuration uuid="${uuid}">`,
+    `    <Properties><Name>${name}</Name></Properties>`,
+    `    <ChildObjects>${catalogNames.map((catalog) => `<Catalog>${catalog}</Catalog>`).join('')}</ChildObjects>`,
+    '  </Configuration>',
+    '</MetaDataObject>',
+  ].join('\n');
+}
+
+function flatCatalogDescriptor(): string {
+  return [
+    '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">',
+    '  <Catalog uuid="33333333-3333-3333-3333-333333333333">',
+    '    <Properties><Name>Products</Name></Properties>',
+    '    <ChildObjects/>',
+    '  </Catalog>',
+    '</MetaDataObject>',
+  ].join('\n');
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function writeCatalog(root: string, name: string, uuid: string): Promise<void> {
