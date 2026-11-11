@@ -150,6 +150,57 @@ suite('Linked Designer package binding', () => {
     assert.strictEqual(command.registrationNodeId, 'command-registration');
   });
 
+  test('preserves typed-label regex whitespace, line-terminator, colon, and fallback semantics', () => {
+    const whitespaceLabel = '\tForm \t:\n\u2028 \tCafé\t ';
+    const whitespaceRecipe = packageRecipe({
+      qualifiedName: 'Catalog.Products.Form.Café',
+    });
+    const whitespaceBound = bindLabel(whitespaceLabel, [whitespaceRecipe]);
+    assert.strictEqual(whitespaceBound.packagesByNodeId.get('registration'), whitespaceRecipe);
+
+    const lineTerminators = ['\n', '\r', '\u2028', '\u2029'];
+    for (let index = 0; index < lineTerminators.length; index += 1) {
+      const terminator = lineTerminators[index]!;
+      const typedName = `After${index}`;
+      const typedRecipe = packageRecipe({
+        qualifiedName: `Catalog.Products.Form.${typedName}`,
+      });
+      const typedBound = bindLabel(`Form:${terminator}${typedName}`, [typedRecipe]);
+      assert.strictEqual(typedBound.packagesByNodeId.get('registration'), typedRecipe, `separator ${index}`);
+
+      const fallbackLabel = `Form: Before${terminator}After`;
+      const fallbackRecipes = (['Form', 'Template', 'Command'] as const).map((kind) =>
+        packageRecipe({
+          packageId: `fallback-${index}-${kind}`,
+          kind,
+          qualifiedName: `Catalog.Products.${kind}.${fallbackLabel}`,
+        })
+      );
+      bindLabel(fallbackLabel, fallbackRecipes);
+      assert.ok(
+        fallbackRecipes.every((recipe) => recipe.registrationNodeId === 'registration'),
+        `an internal line terminator must reject typed parsing and use the full-label fallback (separator ${index})`,
+      );
+    }
+
+    const extraColonRecipe = packageRecipe({ qualifiedName: 'Catalog.Products.Form.Section:Main' });
+    assert.strictEqual(
+      bindLabel('Form: Section:Main', [extraColonRecipe]).packagesByNodeId.get('registration'),
+      extraColonRecipe,
+    );
+
+    const whitespaceOnlyLabel = 'Form: \t\r\n\u2028\u2029';
+    const trimmedFallbackRecipes = (['Form', 'Template', 'Command'] as const).map((kind) =>
+      packageRecipe({
+        packageId: `trimmed-fallback-${kind}`,
+        kind,
+        qualifiedName: `Catalog.Products.${kind}.Form:`,
+      })
+    );
+    bindLabel(whitespaceOnlyLabel, trimmedFallbackRecipes);
+    assert.ok(trimmedFallbackRecipes.every((recipe) => recipe.registrationNodeId === 'registration'));
+  });
+
   test('keeps earliest DFS selection when owner paths have overlapping suffixes', () => {
     const nestedOwner = packageRecipe({
       packageId: 'nested-owner',
@@ -354,6 +405,13 @@ function packageRecipe(overrides: Partial<LinkedDesignerPackageRecipe> = {}): Li
     members: [],
     ...overrides,
   };
+}
+
+function bindLabel(label: string, packages: readonly LinkedDesignerPackageRecipe[]) {
+  return bindLinkedDesignerPackageNodes({
+    results: [adapterResult([treeNode('registration', { label, rightValue: undefined })])],
+    packages,
+  });
 }
 
 function treeNode(id: string, overrides: Partial<CompareTreeNode> = {}): CompareTreeNode {

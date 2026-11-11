@@ -202,9 +202,40 @@ function readRegistrations(xml: string | undefined, label: string): Registration
     }
   }
   const trimmedLabel = label.trim();
-  const kindMatch = /^(Form|Template|Command)\s*:\s*(.+)$/u.exec(trimmedLabel);
-  if (kindMatch) {return [{ kind: kindMatch[1] as LinkedDesignerKind, name: kindMatch[2]!.trim() }];}
+  const typedRegistration = typedRegistrationFromLabel(trimmedLabel);
+  if (typedRegistration) {return [typedRegistration];}
   return trimmedLabel ? REGISTRATION_KINDS.map((kind) => ({ kind, name: trimmedLabel })) : [];
+}
+
+function typedRegistrationFromLabel(label: string): Registration | undefined {
+  let kind: LinkedDesignerKind | undefined;
+  let index = 0;
+  for (const candidate of REGISTRATION_KINDS) {
+    if (!label.startsWith(candidate)) {continue;}
+    kind = candidate;
+    index = candidate.length;
+    break;
+  }
+  if (!kind) {return undefined;}
+
+  while (index < label.length && isWhitespace(label.charAt(index))) {index += 1;}
+  if (label.charAt(index) !== ':') {return undefined;}
+  index += 1;
+  while (index < label.length && isWhitespace(label.charAt(index))) {index += 1;}
+  if (index === label.length) {return undefined;}
+
+  for (let cursor = index; cursor < label.length; cursor += 1) {
+    if (isJavaScriptLineTerminator(label.charCodeAt(cursor))) {return undefined;}
+  }
+  return { kind, name: label.slice(index).trim() };
+}
+
+function isWhitespace(value: string): boolean {
+  return value.trim().length === 0;
+}
+
+function isJavaScriptLineTerminator(value: number): boolean {
+  return value === 0x000a || value === 0x000d || value === 0x2028 || value === 0x2029;
 }
 
 function insertCandidate(root: RegistrationPathIndex, path: string, candidate: CompareTreeNode): void {

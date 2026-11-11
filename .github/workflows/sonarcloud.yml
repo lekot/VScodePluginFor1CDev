@@ -11,6 +11,10 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: sonarcloud-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   sonarcloud:
     name: SonarQube Cloud Scan
@@ -33,8 +37,23 @@ jobs:
       - name: Run tests with coverage
         run: npm run test:coverage
 
+      - name: Test PR Sonar issue guard
+        run: bash scripts/test-sonar-pr-issues.sh
+
       - name: SonarQube Cloud Scan
         uses: SonarSource/sonarqube-scan-action@v5.0.0
+        with:
+          args: >
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=600
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Reject unresolved SonarQube Cloud issues
+        if: github.event_name == 'pull_request'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PR_NUMBER: ${{ github.event.pull_request.number }}
+          SONAR_EXPECTED_PR_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/check-sonar-pr-issues.sh

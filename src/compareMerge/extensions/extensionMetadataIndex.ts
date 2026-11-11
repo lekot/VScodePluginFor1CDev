@@ -799,8 +799,15 @@ function hash(content: Buffer): string {
 }
 
 function normalizeRootPath(value: string): string {
-  const normalized = path.resolve(value).replace(/[\\/]+$/u, '');
+  const resolved = path.resolve(value);
+  let end = resolved.length;
+  while (end > 0 && isPathSeparator(resolved.charAt(end - 1))) {end -= 1;}
+  const normalized = resolved.slice(0, end);
   return process.platform === 'win32' ? normalized.toLocaleLowerCase() : normalized;
+}
+
+function isPathSeparator(value: string): boolean {
+  return value === '/' || value === '\\';
 }
 
 function errorMessage(error: unknown): string {
