@@ -18,7 +18,11 @@ import {
   scanBslRoutineLogicalOutline,
   splitSourceLines,
 } from './bsl/bslRoutineLogicalScanner';
-import { diffBslModules, type BslRoutineDiffItem } from './bsl/bslRoutineDiff';
+import {
+  diffBslModules,
+  type BslRoutineDiffItem,
+  type BslRoutineDiffResult,
+} from './bsl/bslRoutineDiff';
 import type {
   BslRoutineLogicalAnchor,
   BslRoutineLogicalMergePlan,
@@ -552,10 +556,12 @@ function buildBslProjectionInputs(input: {
     if (leftMatches.length === 1 && rightMatches.length === 1) {
       const left = leftMatches[0];
       const right = rightMatches[0];
+      const diff = diffBslModules({ left, right });
       const candidateFactoriesForModule = new Map<string, ExecutableCandidateFactory>();
-      registerExecutableRoutineCandidates({
+      const blockedRoutineReasons = registerExecutableRoutineCandidates({
         left,
         right,
+        diff,
         leftSource: input.leftSources.get(left.identity.filePath),
         rightSource: input.rightSources.get(right.identity.filePath),
         rightSnapshotId: input.rightSnapshotId,
@@ -565,9 +571,10 @@ function buildBslProjectionInputs(input: {
         candidateFactories.set(nodeId, factory)
       );
       projections.push({
-        diff: diffBslModules({ left, right }),
+        diff,
         targetFilePath: left.identity.filePath,
         mergeableRoutineIds: [...candidateFactoriesForModule.keys()],
+        blockedRoutineReasons,
       });
       left.diagnostics.forEach((diagnostic) => matchedDiagnostics.add(diagnostic));
       right.diagnostics.forEach((diagnostic) => matchedDiagnostics.add(diagnostic));
@@ -599,12 +606,14 @@ function groupModulesById(
 function registerExecutableRoutineCandidates(input: {
   left: BslModuleIndexEntry;
   right: BslModuleIndexEntry;
+  diff: BslRoutineDiffResult;
   leftSource: string | undefined;
   rightSource: string | undefined;
   rightSnapshotId: string;
   candidateFactories: Map<string, ExecutableCandidateFactory>;
-}): void {
-  const diff = diffBslModules({ left: input.left, right: input.right });
+}): Map<string, string> {
+  const blockedRoutineReasons = new Map<string, string>();
+  const diff = input.diff;
   const blockingDiagnostics = [
     ...input.left.diagnostics,
     ...input.right.diagnostics,
@@ -612,7 +621,7 @@ function registerExecutableRoutineCandidates(input: {
   ].filter((diagnostic) => diagnostic.blocking);
 
   if (blockingDiagnostics.length > 0 || input.leftSource === undefined || input.rightSource === undefined) {
-    return;
+    return blockedRoutineReasons;
   }
 
   for (const routine of diff.routines) {
@@ -639,6 +648,12 @@ function registerExecutableRoutineCandidates(input: {
       continue;
     }
     if (!isExecutableRoutineDiff(routine)) {
+      if (routine.status === 'changed') {
+        blockedRoutineReasons.set(
+          nodeId,
+          'Не удалось подтвердить соответствие процедуры между версиями; проверьте её идентичность и объедините изменения вручную.'
+        );
+      }
       continue;
     }
 
@@ -657,6 +672,7 @@ function registerExecutableRoutineCandidates(input: {
       incoming,
     });
     if (plan.status !== 'auto') {
+      blockedRoutineReasons.set(nodeId, describeManualBslRoutineMergeReason(plan));
       continue;
     }
     input.candidateFactories.set(nodeId, async () => {
@@ -735,6 +751,37 @@ function registerExecutableRoutineCandidates(input: {
       };
     });
   }
+
+  return blockedRoutineReasons;
+}
+
+function describeManualBslRoutineMergeReason(plan: BslRoutineLogicalMergePlan): string {
+  const reasons = new Set(plan.diagnostics.map((diagnostic) => diagnostic.reason));
+  if (reasons.has('routine-identity-changed')) {
+    return 'Сигнатура или идентичность процедуры различается между версиями; сопоставьте объявление и объедините изменения вручную.';
+  }
+  if (reasons.has('scanner-diagnostic')) {
+    return 'Не удалось безопасно разобрать процедуру для автоматического слияния; проверьте её структуру и объедините изменения вручную.';
+  }
+  if (reasons.has('changed-existing-node')) {
+    return 'Изменена существующая логика процедуры; автоматическое слияние поддерживает только безопасные вставки. Объедините изменения вручную.';
+  }
+  if (reasons.has('unsupported-inserted-node') || reasons.has('statement-group-anchor')) {
+    return 'В процедуре есть конструкции, которые автоматический перенос не поддерживает; объедините её изменения вручную.';
+  }
+  if (reasons.has('no-logical-insertion')) {
+    return 'Изменение процедуры требует замены или удаления логики, которые не сливаются автоматически. Объедините изменения вручную.';
+  }
+  if (
+    reasons.has('ambiguous-anchor') ||
+    reasons.has('anchor-changed') ||
+    reasons.has('interval-material-changed') ||
+    reasons.has('missing-anchor') ||
+    reasons.has('anchor-order-changed')
+  ) {
+    return 'Не удалось подтвердить безопасные границы изменения процедуры; проверьте изменения и объедините их вручную.';
+  }
+  return 'Изменения процедуры не удалось безопасно объединить автоматически; сопоставьте версии и выполните слияние вручную.';
 }
 
 function registerAddedRoutineCandidate(input: {

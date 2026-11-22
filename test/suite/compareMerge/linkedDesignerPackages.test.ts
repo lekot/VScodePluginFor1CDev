@@ -183,10 +183,14 @@ suite('Linked Designer packages', () => {
       await writeFile(path.join(rightRoot, newBodyRelative), '<html><body>incoming</body></html>');
       await writeFile(path.join(leftRoot, targetOnlyRelative), 'preserve');
 
+      const runtime = await createMergeMutationTestRuntime(leftRoot);
+      mutationCoordinators.push(runtime.coordinator);
       result = await buildConfigurationCompare({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
         backupRootPath: path.join(tempRoot, 'backups'),
+        mutationEngine: runtime.engine,
+        configurationId: runtime.configurationId,
       });
       const strategy = await result.workspace.setStrategy('full');
       assert.strictEqual(strategy.ok, true, JSON.stringify(strategy));
@@ -242,10 +246,14 @@ suite('Linked Designer packages', () => {
       await writeFile(path.join(leftRoot, bodyRelative), '<document><spreadsheet/></document>');
       await writeFile(path.join(rightRoot, bodyRelative), incomingBody);
 
+      const runtime = await createMergeMutationTestRuntime(leftRoot);
+      mutationCoordinators.push(runtime.coordinator);
       result = await buildConfigurationCompare({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
         backupRootPath: path.join(tempRoot, 'backups'),
+        mutationEngine: runtime.engine,
+        configurationId: runtime.configurationId,
       });
       const transition = collectNodes(result.workspace.payload.root, (node) =>
         node.label === 'Тип макета и содержимое: SpreadsheetDocument → DataCompositionSchema'
@@ -677,10 +685,14 @@ suite('Linked Designer packages', () => {
       await writeFile(path.join(leftRoot, 'Constants', 'Reader.xml'), constantDescriptor('Reader', 'CommonForm.Shared'));
       await writeFile(path.join(rightRoot, 'Constants', 'Reader.xml'), constantDescriptor('Reader', ''));
 
+      const runtime = await createMergeMutationTestRuntime(leftRoot);
+      mutationCoordinators.push(runtime.coordinator);
       result = await buildConfigurationCompare({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
         backupRootPath: path.join(tempRoot, 'backups'),
+        mutationEngine: runtime.engine,
+        configurationId: runtime.configurationId,
       });
       const full = await result.workspace.setStrategy('full');
       assert.strictEqual(full.ok, true, JSON.stringify(full));
@@ -734,10 +746,14 @@ suite('Linked Designer packages', () => {
       await writeFile(path.join(leftRoot, moduleRelative), '');
       await writeFile(path.join(rightRoot, moduleRelative), routineWithDirective('OnChange'));
 
+      const runtime = await createMergeMutationTestRuntime(leftRoot);
+      mutationCoordinators.push(runtime.coordinator);
       result = await buildConfigurationCompare({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
         backupRootPath: path.join(tempRoot, 'backups'),
+        mutationEngine: runtime.engine,
+        configurationId: runtime.configurationId,
       });
       const handler = collectNodes(result.workspace.payload.root, (node) => node.id === 'bsl:routine:Catalog.Products.Form.Main.FormModule:onchange')[0];
       const event = collectNodes(result.workspace.payload.root, (node) => /Event(?:%5B|\[)/iu.test(node.payloadRef ?? '') && node.rightValue?.includes('OnChange') === true)[0];
@@ -775,10 +791,14 @@ suite('Linked Designer packages', () => {
       await writeFile(path.join(rightRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml'), formXml(handlerName));
       await writeFile(path.join(rightRoot, moduleRelative), handlerSource);
 
+      const runtime = await createMergeMutationTestRuntime(leftRoot);
+      mutationCoordinators.push(runtime.coordinator);
       result = await buildConfigurationCompare({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
         backupRootPath: path.join(tempRoot, 'backups'),
+        mutationEngine: runtime.engine,
+        configurationId: runtime.configurationId,
       });
       const handler = collectNodes(result.workspace.payload.root, (node) =>
         node.id.toLocaleLowerCase('ru-RU').includes(':обработчикоткрытия')
@@ -822,7 +842,15 @@ suite('Linked Designer packages', () => {
       await writeFile(path.join(leftRoot, moduleRelative), routine('OnChange'));
       await writeFile(path.join(rightRoot, moduleRelative), routine('Shared'));
 
-      result = await buildConfigurationCompare({ leftRootPath: leftRoot, rightRootPath: rightRoot, backupRootPath: path.join(tempRoot, 'backups') });
+      const runtime = await createMergeMutationTestRuntime(leftRoot);
+      mutationCoordinators.push(runtime.coordinator);
+      result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        mutationEngine: runtime.engine,
+        configurationId: runtime.configurationId,
+      });
       const strategy = await result.workspace.setStrategy('full');
       assert.strictEqual(strategy.ok, true, JSON.stringify(strategy));
       const handler = collectNodes(result.workspace.payload.root, (node) => node.id === 'bsl:routine:Catalog.Products.Form.Main.FormModule:onchange')[0];

@@ -27,6 +27,7 @@ export interface BslRoutineDiffProjectionInput {
   targetFilePath?: string;
   targetAmbiguous?: boolean;
   mergeableRoutineIds?: readonly string[];
+  blockedRoutineReasons?: ReadonlyMap<string, string>;
 }
 
 export interface CompareTreeProjectionInput {
@@ -351,8 +352,21 @@ function projectBslDiff(input: BslRoutineDiffProjectionInput): CompareTreeNode {
   );
   const moduleChildren: CompareTreeNode[] = [
     ...diff.routines.map((routine) => {
-      const mergeState = createBslMergeState(input, blockingDiagnostics);
       const nodeId = `bsl:routine:${diff.moduleId}:${routine.normalizedName}`;
+      const blockedReason =
+        routine.status === 'changed' &&
+        blockingDiagnostics.length === 0 &&
+        Boolean(input.targetFilePath) &&
+        !input.targetAmbiguous
+          ? input.blockedRoutineReasons?.get(nodeId)
+          : undefined;
+      const mergeState: CompareTreeMergeState = blockedReason
+        ? {
+            state: 'blocked',
+            reason: blockedReason,
+            ...(input.targetFilePath ? { targetFilePath: input.targetFilePath } : {}),
+          }
+        : createBslMergeState(input, blockingDiagnostics);
       const mergeable = isBslRoutineMergeable(
         routine.status,
         mergeState,
@@ -369,6 +383,15 @@ function projectBslDiff(input: BslRoutineDiffProjectionInput): CompareTreeNode {
         mergeable,
         payloadRef: `bslRoutine:${diff.moduleId}:${routine.normalizedName}`,
         mergeState: mergeable ? mergeState : nonMergeableState(mergeState, routine.status),
+        ...(blockedReason
+          ? {
+              conflict: {
+                kind: 'bslLogicalConflict',
+                blocking: true,
+                message: blockedReason,
+              },
+            }
+          : {}),
       });
     }),
     ...diff.diagnostics.map((diagnostic) => projectBslDiagnostic(diagnostic)),

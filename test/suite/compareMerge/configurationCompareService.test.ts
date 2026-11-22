@@ -20,6 +20,12 @@ import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes
 import { createMergeMutationTestRuntime } from './mergeMutationTestSupport';
 
 const mutationCoordinators: Array<{ dispose(): Promise<void> }> = [];
+const bslModuleIndexerRuntime = require('../../../src/compareMerge/bsl/bslModuleIndexer') as typeof import('../../../src/compareMerge/bsl/bslModuleIndexer');
+
+type FutureConfigCompareWebviewPayloadDto = ReturnType<typeof toWebviewPayload> & {
+  deletionNodeIds?: string[];
+  unresolvedConflictCount?: number;
+};
 
 suite('ConfigurationCompareService', () => {
   suiteTeardown(async () => {
@@ -1584,6 +1590,277 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
+  test('selecting every non-delete merge checkbox unions top-level and nested metadata attributes', async () => {
+    for (const strategy of ['right', 'full'] as const) {
+      const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `configuration-compare-union-${strategy}-`));
+      const leftRoot = path.join(tempRoot, 'target');
+      const rightRoot = path.join(tempRoot, 'incoming');
+      const leftDescriptorPath = catalogDescriptorPath(leftRoot, UNION_CATALOG_NAME);
+      const rightDescriptorPath = catalogDescriptorPath(rightRoot, UNION_CATALOG_NAME);
+      let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+
+      try {
+        await writeFile(leftDescriptorPath, unionCatalogDescriptor(true));
+        await writeFile(rightDescriptorPath, unionCatalogDescriptor(false));
+        const originalTargetXml = await readText(leftDescriptorPath);
+        const originalIncomingXml = await readText(rightDescriptorPath);
+
+        const result = await buildConfigurationCompare({
+          leftRootPath: leftRoot,
+          rightRootPath: rightRoot,
+          backupRootPath: path.join(tempRoot, 'backups'),
+          createdAt: new Date('2026-11-22T10:00:00.000Z'),
+        });
+        workspace = result.workspace;
+        if (strategy === 'full') {
+          const strategyResult = await workspace.setStrategy('full');
+          assert.strictEqual(strategyResult.ok, true, JSON.stringify(strategyResult));
+        }
+
+        const availableNodeIds = workspace.listMergeableNodeIds();
+        const payload = toWebviewPayload(workspace.payload, availableNodeIds, 'Сравнение') as FutureConfigCompareWebviewPayloadDto;
+        const deletionNodeIds = payload.deletionNodeIds ?? [];
+        const deletionIdSet = new Set(deletionNodeIds);
+        const selectedNodeIds = payload.executableNodeIds.filter((nodeId) => !deletionIdSet.has(nodeId));
+
+        assert.ok(selectedNodeIds.length > 0, `${strategy}: expected incoming attributes to be selectable`);
+        let targetOnlyDeletionNodes: CompareTreeNode[] = [];
+
+        if (strategy === 'full') {
+          targetOnlyDeletionNodes = collectNodes(
+            workspace.payload.root,
+            (node) => node.status === 'leftOnly' && node.destructive === true && node.mergeable === true
+          );
+          assert.strictEqual(targetOnlyDeletionNodes.length, 2, 'both target-only attributes should remain explicit delete candidates');
+          assert.ok(
+            targetOnlyDeletionNodes.every((node) => availableNodeIds.includes(node.id)),
+            'the existing workspace API must keep explicit delete candidates available'
+          );
+          const explicitDeletePreview = await workspace.createPreviewForNodeIds([targetOnlyDeletionNodes[0]!.id]);
+          assert.strictEqual(explicitDeletePreview.ok, true, JSON.stringify(explicitDeletePreview));
+          assert.ok(explicitDeletePreview.preview.destructiveCount > 0, 'the explicit delete action should still produce a destructive preview');
+        }
+
+        const selection = workspace.selectNodeIds(selectedNodeIds);
+        assert.strictEqual(selection.canCreatePreview, true, `${strategy}: all non-delete checkboxes should be executable`);
+        const preview = await workspace.createPreviewForNodeIds(selectedNodeIds);
+        assert.strictEqual(preview.ok, true, `${strategy}: ${JSON.stringify(preview)}`);
+        assert.ok(preview.preview.operationCount > 0);
+
+        const approval = workspace.approvePreview(preview.preview.previewId);
+        assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+        const execution = await workspace.executeApprovedPreview(preview.preview.previewId, {
+          destructiveConfirmed: true,
+        });
+        assert.strictEqual(execution.ok, true, `${strategy}: ${JSON.stringify(execution)}`);
+
+        const mergedTargetXml = await readText(leftDescriptorPath);
+        assert.notStrictEqual(mergedTargetXml, originalTargetXml, `${strategy}: incoming attribute definitions should change the target descriptor`);
+        assert.strictEqual(countXmlUuid(mergedTargetXml, UNION_CATALOG_UUID), 1, `${strategy}: preserve the target catalog UUID exactly once`);
+        assert.strictEqual(countXmlName(mergedTargetXml, UNION_CATALOG_NAME), 1, `${strategy}: preserve the target catalog name exactly once`);
+        for (const [uuid, name] of UNION_ATTRIBUTE_IDENTITIES) {
+          assert.strictEqual(countXmlUuid(mergedTargetXml, uuid), 1, `${strategy}: preserve ${name} UUID exactly once`);
+          assert.strictEqual(countXmlName(mergedTargetXml, name), 1, `${strategy}: preserve ${name} name exactly once`);
+        }
+        assert.strictEqual(countXmlUuid(mergedTargetXml, UNION_TABULAR_SECTION_UUID), 1, `${strategy}: preserve the shared tabular section UUID exactly once`);
+        assert.strictEqual(countXmlName(mergedTargetXml, UNION_TABULAR_SECTION_NAME), 1, `${strategy}: preserve the shared tabular section name exactly once`);
+        assert.ok(mergedTargetXml.includes('<Synonym>Справка &amp; значение</Synonym>'), `${strategy}: preserve escaped target property text`);
+        assert.strictEqual(await readText(rightDescriptorPath), originalIncomingXml, `${strategy}: the incoming source descriptor must stay unchanged`);
+
+        if (strategy === 'full') {
+          assert.deepStrictEqual(
+            [...deletionNodeIds].sort(),
+            targetOnlyDeletionNodes.map((node) => node.id).sort(),
+            'the webview should mark both target-only attributes as delete actions for bulk-checkbox filtering'
+          );
+          assert.ok(
+            preview.preview.items.every((item) => !deletionIdSet.has(item.nodeId)),
+            'a bulk merge preview must omit every delete action'
+          );
+          assert.strictEqual(preview.preview.destructiveCount, 0, 'bulk merge should not contain destructive operations');
+        }
+      } finally {
+        workspace?.dispose();
+        await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
+    }
+  });
+
+  test('deeply analyzes every paired ordinary BSL module, including unchanged pairs', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-paired-bsl-analysis-'));
+    const leftRoot = path.join(tempRoot, 'target');
+    const rightRoot = path.join(tempRoot, 'incoming');
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+    const originalIndexer = bslModuleIndexerRuntime.indexBslModuleSource;
+    const indexedModules: Array<{ side: string; filePath: string; source: string }> = [];
+
+    bslModuleIndexerRuntime.indexBslModuleSource = (input) => {
+      indexedModules.push({ side: input.identity.side, filePath: input.identity.filePath, source: input.source });
+      return originalIndexer(input);
+    };
+
+    try {
+      for (const objectName of ['Identical', 'Changed']) {
+        await writeCatalogDescriptor(leftRoot, objectName, `catalog-${objectName}`, objectName);
+        await writeCatalogDescriptor(rightRoot, objectName, `catalog-${objectName}`, objectName);
+      }
+
+      const identicalSource = [
+        'Procedure Shared()',
+        '  Value = 1;',
+        'EndProcedure',
+      ].join('\n');
+      const changedLeftSource = [
+        'Procedure ChangedValue()',
+        '  Value = 1;',
+        'EndProcedure',
+      ].join('\n');
+      const changedRightSource = [
+        'Procedure ChangedValue()',
+        '  Value = 2;',
+        'EndProcedure',
+      ].join('\n');
+      const moduleSources = [
+        { objectName: 'Identical', left: identicalSource, right: identicalSource },
+        { objectName: 'Changed', left: changedLeftSource, right: changedRightSource },
+      ];
+      for (const item of moduleSources) {
+        await writeFile(path.join(leftRoot, 'Catalogs', item.objectName, 'Ext', 'ObjectModule.bsl'), item.left);
+        await writeFile(path.join(rightRoot, 'Catalogs', item.objectName, 'Ext', 'ObjectModule.bsl'), item.right);
+      }
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-11-22T10:05:00.000Z'),
+      });
+      workspace = result.workspace;
+
+      assert.strictEqual(indexedModules.length, 4, 'each side of both paired modules must go through the routine parser');
+      for (const item of moduleSources) {
+        const pairCalls = indexedModules.filter((entry) => entry.filePath.includes(path.join('Catalogs', item.objectName)));
+        assert.strictEqual(pairCalls.length, 2, `${item.objectName}: both paired sides should be parsed`);
+        assert.deepStrictEqual(new Set(pairCalls.map((entry) => entry.side)), new Set(['left', 'right']));
+        assert.ok(pairCalls.every((entry) => entry.source.length > 0), `${item.objectName}: parsed source should be captured`);
+      }
+      assert.ok(indexedModules.some((entry) => entry.filePath.includes(path.join('Catalogs', 'Identical')) && entry.source === identicalSource));
+      assert.ok(indexedModules.some((entry) => entry.filePath.includes(path.join('Catalogs', 'Changed')) && entry.source === changedLeftSource));
+      assert.ok(indexedModules.some((entry) => entry.filePath.includes(path.join('Catalogs', 'Changed')) && entry.source === changedRightSource));
+    } finally {
+      bslModuleIndexerRuntime.indexBslModuleSource = originalIndexer;
+      workspace?.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('copies unpaired ordinary BSL as an exact fileArtifact without deep parsing', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-unpaired-bsl-copy-'));
+    const leftRoot = path.join(tempRoot, 'target');
+    const rightRoot = path.join(tempRoot, 'incoming');
+    const leftModulePath = path.join(leftRoot, 'Catalogs', UNION_CATALOG_NAME, 'Ext', 'ObjectModule.bsl');
+    const rightModulePath = path.join(rightRoot, 'Catalogs', UNION_CATALOG_NAME, 'Ext', 'ObjectModule.bsl');
+    const moduleBytes = Buffer.from(['// source', 'Procedure Imported()', '  Value = 42;', 'EndProcedure', ''].join(String.fromCharCode(13, 10)), 'utf8');
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+    const originalIndexer = bslModuleIndexerRuntime.indexBslModuleSource;
+    const indexedPaths: string[] = [];
+
+    bslModuleIndexerRuntime.indexBslModuleSource = (input) => {
+      indexedPaths.push(input.identity.filePath);
+      return originalIndexer(input);
+    };
+
+    try {
+      await writeCatalogDescriptor(leftRoot, UNION_CATALOG_NAME, UNION_CATALOG_UUID, UNION_CATALOG_NAME);
+      await writeCatalogDescriptor(rightRoot, UNION_CATALOG_NAME, UNION_CATALOG_UUID, UNION_CATALOG_NAME);
+      await writeFileBytes(rightModulePath, moduleBytes);
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-11-22T10:10:00.000Z'),
+      });
+      workspace = result.workspace;
+      assert.deepStrictEqual(indexedPaths, [], 'an unpaired ordinary module should not invoke the BSL routine parser');
+
+      const moduleNode = requireSingleNode(
+        workspace.payload.root,
+        (node) => node.kind === 'fileArtifact' && node.label === 'ObjectModule.bsl' && node.status === 'rightOnly'
+      );
+      assert.ok(workspace.listMergeableNodeIds().includes(moduleNode.id));
+      const preview = await workspace.createPreviewForNodeIds([moduleNode.id]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      assert.strictEqual(preview.preview.operationCount, 1);
+      assert.strictEqual(preview.preview.items[0]?.kind, 'fileArtifact', 'the unmatched module should use the fileArtifact copy action');
+      const approval = workspace.approvePreview(preview.preview.previewId);
+      assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+      const execution = await workspace.executeApprovedPreview(preview.preview.previewId, {
+        destructiveConfirmed: true,
+      });
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+      assert.deepStrictEqual(await fs.readFile(leftModulePath), moduleBytes, 'the whole BSL file must be copied byte-for-byte');
+    } finally {
+      bslModuleIndexerRuntime.indexBslModuleSource = originalIndexer;
+      workspace?.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('exposes a blocking reason for paired BSL conflicts without blocking a healthy added routine', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-paired-bsl-conflict-'));
+    const leftRoot = path.join(tempRoot, 'target');
+    const rightRoot = path.join(tempRoot, 'incoming');
+    const leftModulePath = path.join(leftRoot, 'Catalogs', 'Conflicted', 'Ext', 'ObjectModule.bsl');
+    const rightModulePath = path.join(rightRoot, 'Catalogs', 'Conflicted', 'Ext', 'ObjectModule.bsl');
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'Conflicted', 'conflicted-catalog', 'Conflicted');
+      await writeCatalogDescriptor(rightRoot, 'Conflicted', 'conflicted-catalog', 'Conflicted');
+      await writeFile(leftModulePath, logicalBaseRoutine());
+      await writeFile(rightModulePath, [
+        logicalManualRoutine(),
+        '',
+        'Procedure HealthyAddition()',
+        '  Value = 42;',
+        'EndProcedure',
+      ].join('\n'));
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-11-22T10:15:00.000Z'),
+      });
+      workspace = result.workspace;
+
+      const runNode = requireNode(workspace.payload.root, 'bsl:routine:Catalog.Conflicted.Object:run');
+      const healthyRoutineId = 'bsl:routine:Catalog.Conflicted.Object:healthyaddition';
+      const payload = toWebviewPayload(
+        workspace.payload,
+        workspace.listMergeableNodeIds(),
+        'Сравнение'
+      ) as FutureConfigCompareWebviewPayloadDto;
+
+      assert.strictEqual(runNode.mergeable, false, 'the same-routine manual edit must not be auto-selected');
+      assert.strictEqual(runNode.conflict?.blocking, true, 'the changed routine should expose an explicit blocking conflict');
+      assert.ok(runNode.conflict?.message, 'the conflict should explain why automatic merge is blocked');
+      assert.strictEqual(runNode.mergeState?.state, 'blocked');
+      assert.ok(runNode.mergeState?.reason, 'the canonical node should retain its actionable block reason');
+      assert.ok((payload.unresolvedConflictCount ?? 0) > 0, 'the webview payload should surface at least one unresolved routine conflict');
+      assert.ok(payload.executableNodeIds.includes(healthyRoutineId), 'an independent right-only routine should stay selectable');
+      assert.ok(!payload.executableNodeIds.includes(runNode.id), 'the conflicting routine must stay out of executable checkbox IDs');
+
+      const healthyPreview = await workspace.createPreviewForNodeIds([healthyRoutineId]);
+      assert.strictEqual(healthyPreview.ok, true, JSON.stringify(healthyPreview));
+      assert.strictEqual(healthyPreview.preview.items[0]?.nodeId, healthyRoutineId);
+    } finally {
+      workspace?.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   test('pairs multiple nested Form.xml artifacts by owner-relative path and executes each file once', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-multiple-forms-'));
     const leftRoot = path.join(tempRoot, 'left');
@@ -2344,6 +2621,76 @@ async function buildConfigurationCompare(input: ConfigurationCompareInput) {
     mutationEngine: runtime.engine,
     configurationId: input.configurationId ?? runtime.configurationId,
   });
+}
+
+const UNION_CATALOG_NAME = 'Спр1';
+const UNION_CATALOG_UUID = '11111111-1111-4111-8111-111111111111';
+const UNION_TABULAR_SECTION_NAME = 'Строки';
+const UNION_TABULAR_SECTION_UUID = '22222222-2222-4222-8222-222222222222';
+const UNION_ATTRIBUTE_IDENTITIES = [
+  ['33333333-3333-4333-8333-333333333333', 'Рекв1'],
+  ['44444444-4444-4444-8444-444444444444', 'Рекв2'],
+  ['55555555-5555-4555-8555-555555555555', 'РеквСтроки1'],
+  ['66666666-6666-4666-8666-666666666666', 'РеквСтроки2'],
+] as const;
+
+function catalogDescriptorPath(root: string, name: string): string {
+  return path.join(root, 'Catalogs', name, `${name}.xml`);
+}
+
+function unionCatalogDescriptor(isTarget: boolean): string {
+  const targetAttribute = metadataAttributeXml(
+    UNION_ATTRIBUTE_IDENTITIES[0][0],
+    UNION_ATTRIBUTE_IDENTITIES[0][1]
+  );
+  const incomingAttribute = metadataAttributeXml(
+    UNION_ATTRIBUTE_IDENTITIES[1][0],
+    UNION_ATTRIBUTE_IDENTITIES[1][1]
+  );
+  const nestedTargetAttribute = metadataAttributeXml(
+    UNION_ATTRIBUTE_IDENTITIES[2][0],
+    UNION_ATTRIBUTE_IDENTITIES[2][1]
+  );
+  const nestedIncomingAttribute = metadataAttributeXml(
+    UNION_ATTRIBUTE_IDENTITIES[3][0],
+    UNION_ATTRIBUTE_IDENTITIES[3][1]
+  );
+  const topAttributeXml = isTarget ? targetAttribute : incomingAttribute;
+  const nestedAttributeXml = isTarget ? nestedTargetAttribute : nestedIncomingAttribute;
+
+  return [
+    '<MetaDataObject>',
+    `  <Catalog uuid="${UNION_CATALOG_UUID}">`,
+    '    <Properties>',
+    `      <Name>${UNION_CATALOG_NAME}</Name>`,
+    '      <Synonym>Справка &amp; значение</Synonym>',
+    '    </Properties>',
+    '    <ChildObjects>',
+    `      ${topAttributeXml}`,
+    `      <TabularSection uuid="${UNION_TABULAR_SECTION_UUID}">`,
+    '        <Properties>',
+    `          <Name>${UNION_TABULAR_SECTION_NAME}</Name>`,
+    '        </Properties>',
+    '        <ChildObjects>',
+    `          ${nestedAttributeXml}`,
+    '        </ChildObjects>',
+    '      </TabularSection>',
+    '    </ChildObjects>',
+    '  </Catalog>',
+    '</MetaDataObject>',
+  ].join('\n');
+}
+
+function metadataAttributeXml(uuid: string, name: string): string {
+  return `<Attribute uuid="${uuid}"><Properties><Name>${name}</Name></Properties></Attribute>`;
+}
+
+function countXmlUuid(xml: string, uuid: string): number {
+  return xml.split(`uuid="${uuid}"`).length - 1;
+}
+
+function countXmlName(xml: string, name: string): number {
+  return xml.split(`<Name>${name}</Name>`).length - 1;
 }
 
 function configurationXml(name: string, uuid: string, catalogNames: readonly string[]): string {

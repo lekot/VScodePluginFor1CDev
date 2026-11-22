@@ -89,6 +89,7 @@
     .disclosure { min-height: 0; padding: 0; border: 0; color: var(--vscode-foreground); background: transparent; }
     .disclosure:hover { background: var(--vscode-toolbar-hoverBackground); }
     .row-check { flex: 0 0 auto; margin: 0 2px 0 0; }
+    .delete-selection-action { flex: 0 0 auto; min-height: 20px; padding: 1px 5px; font-size: .82em; white-space: nowrap; }
     .row-label { min-width: 0; overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
     .row-status { flex: 0 0 auto; max-width: 150px; overflow: hidden; margin-left: auto; color: var(--vscode-descriptionForeground); font-size: .9em; text-overflow: ellipsis; white-space: nowrap; }
     .row-status.blocked { color: var(--vscode-errorForeground); }
@@ -104,10 +105,14 @@
     .failure-list { overflow-wrap: anywhere; }
 
     @media (max-width: 760px) {
-      :root { --name-column: minmax(220px, 1.4fr); --side-column: minmax(125px, 1fr); }
+      :root { --name-column: minmax(300px, 2fr); --side-column: minmax(125px, 1fr); }
       .toolbar, .actionbar { padding-right: 10px; padding-left: 10px; }
       header { padding-right: 10px; padding-left: 10px; }
       .content { padding-right: 10px; padding-left: 10px; }
+      .name-cell { gap: 3px; padding-left: calc(6px + var(--depth, 0) * 11px); }
+      .disclosure, .disclosure-spacer { flex-basis: 14px; width: 14px; }
+      .row-status { flex: 0 1 60px; max-width: 60px; min-width: 0; }
+      .delete-selection-action { max-width: 128px; overflow: hidden; padding-right: 3px; padding-left: 3px; font-size: .76em; text-overflow: ellipsis; }
     }
   </style>
 </head>
@@ -121,6 +126,7 @@
       </div>
       <div class="load-line" id="loadLine" role="status" aria-live="polite"></div>
       <div class="stats" id="stats"></div>
+      <div class="notice conflict-summary hidden" id="unresolvedConflictBanner" role="status" aria-live="polite"></div>
       <div class="comparison-info hidden" id="comparisonInfo"></div>
     </header>
     <section class="toolbar" aria-label="Фильтры и выбор">
@@ -191,6 +197,7 @@
       selectedNodeIds: [],
       selectedIds: new Set(),
       executableIds: new Set(window.__configCompareData?.executableNodeIds ?? []),
+      deletionIds: new Set(),
       busy: false,
       locked: Boolean(window.__configCompareData?.locked),
       preview: undefined,
@@ -217,6 +224,7 @@
       sourceHeading: document.getElementById('sourceHeading'),
       loadLine: document.getElementById('loadLine'),
       stats: document.getElementById('stats'),
+      unresolvedConflictBanner: document.getElementById('unresolvedConflictBanner'),
       comparisonInfo: document.getElementById('comparisonInfo'),
       strategyControls: document.getElementById('strategyControls'),
       strategyButtons: [...document.querySelectorAll('[data-strategy]')],
@@ -256,10 +264,14 @@
       renderToolbar();
     });
     elements.selectVisibleButton.addEventListener('click', () => {
-      const selected = state.visibleCandidateIds;
-      if (selected.length) vscode.postMessage({ type: 'selectionChanged', nodeIds: selected });
+      if (!isInteractive()) return;
+      const selectedDeletes = state.selectedNodeIds.filter((id) => state.deletionIds.has(id));
+      const selected = unique([...selectedDeletes, ...state.visibleCandidateIds]);
+      if (selected.length) setSelection(selected);
     });
-    elements.clearSelectionButton.addEventListener('click', () => vscode.postMessage({ type: 'selectionChanged', nodeIds: [] }));
+    elements.clearSelectionButton.addEventListener('click', () => {
+      if (isInteractive()) setSelection([]);
+    });
     elements.previewButton.addEventListener('click', () => {
       if (isInteractive()) vscode.postMessage({ type: 'createPreview', nodeIds: selectedExecutableIds() });
     });
@@ -361,6 +373,7 @@
     function setPayload(payload) {
       state.payload = payload;
       state.executableIds = new Set(payload?.executableNodeIds ?? []);
+      state.deletionIds = deletionIdsForPayload(payload);
       state.nodesByKey.clear();
       if (!payload?.root) return;
       const stack = [payload.root];
@@ -373,6 +386,53 @@
       }
       if (state.detailKey && !state.nodesByKey.has(state.detailKey)) state.detailKey = undefined;
       state.initialized = true;
+    }
+
+    function deletionIdsForPayload(payload) {
+      if (Array.isArray(payload?.deletionNodeIds)) {
+        return new Set(payload.deletionNodeIds.filter((id) => state.executableIds.has(id)));
+      }
+      const deletionIds = new Set();
+      const stack = payload?.root ? [payload.root] : [];
+      while (stack.length > 0) {
+        const node = stack.pop();
+        if (node.status === 'leftOnly' && (node.destructive === true || node.kind === 'bslRoutine')) {
+          for (const id of node.candidateNodeIds ?? []) {
+            if (state.executableIds.has(id)) deletionIds.add(id);
+          }
+        }
+        for (let index = (node.children ?? []).length - 1; index >= 0; index -= 1) {
+          stack.push(node.children[index]);
+        }
+      }
+      return deletionIds;
+    }
+
+    function unresolvedConflictCount(payload) {
+      if (Number.isFinite(payload?.unresolvedConflictCount)) {
+        return Math.max(0, Math.floor(payload.unresolvedConflictCount));
+      }
+      const conflictIds = new Set();
+      const stack = payload?.root ? [payload.root] : [];
+      while (stack.length > 0) {
+        const node = stack.pop();
+        if (node.conflict?.blocking === true) {
+          const canonicalIds = node.canonicalNodeIds?.length ? node.canonicalNodeIds : [node.key];
+          for (const id of canonicalIds) conflictIds.add(id);
+        }
+        for (let index = (node.children ?? []).length - 1; index >= 0; index -= 1) {
+          stack.push(node.children[index]);
+        }
+      }
+      return conflictIds.size;
+    }
+
+    function renderConflictSummary() {
+      const count = unresolvedConflictCount(state.payload);
+      elements.unresolvedConflictBanner.classList.toggle('hidden', count === 0);
+      elements.unresolvedConflictBanner.textContent = count === 1
+        ? 'Есть 1 неразрешённый конфликт. Пакетный выбор не разрешает конфликт автоматически.'
+        : `Есть неразрешённые конфликты: ${count}. Пакетный выбор не разрешает конфликты автоматически.`;
     }
 
     function shouldExpandByDefault(node) {
@@ -389,6 +449,18 @@
       return state.selectedNodeIds.filter((id) => executable.has(id));
     }
 
+    function mergeableCandidateIds(node) {
+      return (node.candidateNodeIds ?? []).filter(
+        (id) => state.executableIds.has(id) && !state.deletionIds.has(id)
+      );
+    }
+
+    function deletionCandidateIds(node) {
+      return (node.candidateNodeIds ?? []).filter(
+        (id) => state.executableIds.has(id) && state.deletionIds.has(id)
+      );
+    }
+
     function render() {
       const payload = state.payload;
       elements.title.textContent = payload?.title ?? 'Сравнение конфигураций';
@@ -403,6 +475,7 @@
       elements.strategyControls.classList.toggle('hidden', payload?.comparisonInfo?.mode === 'extension');
       renderLoadLine();
       renderStats(payload?.stats);
+      renderConflictSummary();
       renderComparisonInfo(payload?.comparisonInfo);
       renderToolbar();
       renderNotice();
@@ -546,7 +619,7 @@
       };
       for (const child of root.children) visit(child, 0);
       state.visibleCandidateIds = unique(state.visibleRows.flatMap((entry) => entry.node.candidateNodeIds ?? []))
-        .filter((id) => state.executableIds.has(id));
+        .filter((id) => state.executableIds.has(id) && !state.deletionIds.has(id));
       renderWindow();
     }
 
@@ -628,17 +701,20 @@
         spacerCell.className = 'disclosure-spacer';
         name.append(spacerCell);
       }
-      const candidates = (node.candidateNodeIds ?? []).filter((id) => state.executableIds.has(id));
+      const candidates = mergeableCandidateIds(node);
       if (candidates.length) {
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.className = 'row-check';
         checkbox.disabled = !isInteractive();
-        const selected = candidates.filter((id) => state.selectedNodeIds.includes(id)).length;
+        const selected = candidates.filter((id) => state.selectedIds.has(id)).length;
         checkbox.checked = selected === candidates.length;
         checkbox.indeterminate = selected > 0 && selected < candidates.length;
         checkbox.setAttribute('aria-label', `Выбрать ${node.label}`);
         checkbox.addEventListener('click', (event) => event.stopPropagation());
+        checkbox.addEventListener('keydown', (event) => {
+          if (event.key === ' ') event.stopPropagation();
+        });
         checkbox.addEventListener('change', () => updateSelection(candidates, checkbox.checked));
         name.append(checkbox);
       }
@@ -647,11 +723,29 @@
       label.textContent = node.label;
       label.title = node.label;
       name.append(label);
+      const deletions = deletionCandidateIds(node);
+      if (deletions.length > 0) {
+        const allDeletesSelected = deletions.every((id) => state.selectedIds.has(id));
+        const deleteAction = document.createElement('button');
+        deleteAction.type = 'button';
+        deleteAction.className = 'secondary delete-selection-action';
+        deleteAction.textContent = `${allDeletesSelected ? 'Отменить' : 'Выбрать'} удаление (${deletions.length})`;
+        deleteAction.setAttribute('aria-label', deleteAction.textContent);
+        deleteAction.disabled = !isInteractive();
+        deleteAction.addEventListener('click', (event) => {
+          event.stopPropagation();
+          updateSelection(deletions, !allDeletesSelected);
+        });
+        deleteAction.addEventListener('keydown', (event) => {
+          if (event.key === ' ' || event.key === 'Enter') event.stopPropagation();
+        });
+        name.append(deleteAction);
+      }
       if (node.conflict || node.mergeState?.state === 'identityConflict') {
         const mark = document.createElement('span');
         mark.className = 'conflict-mark';
         mark.textContent = '⚠';
-        mark.setAttribute('aria-label', 'Конфликт идентичности');
+        mark.setAttribute('aria-label', 'Конфликт');
         name.append(mark);
       }
       const status = document.createElement('span');
@@ -697,10 +791,15 @@
 
     function updateSelection(ids, checked) {
       if (!isInteractive()) return;
-        const selected = new Set(state.selectedIds);
+      const selected = new Set(state.selectedIds);
       for (const id of ids) checked ? selected.add(id) : selected.delete(id);
-      state.selectedNodeIds = [...selected];
-      state.selectedIds = selected;
+      setSelection([...selected]);
+    }
+
+    function setSelection(nodeIds) {
+      const selected = unique(nodeIds.filter((id) => state.executableIds.has(id)));
+      state.selectedNodeIds = selected;
+      state.selectedIds = new Set(selected);
       vscode.postMessage({ type: 'selectionChanged', nodeIds: state.selectedNodeIds });
       renderWindow();
     }
@@ -714,6 +813,7 @@
     }
 
     function onTreeKeyDown(event) {
+      if (event.target?.closest?.('button,input')) return;
       const visible = state.visibleRows;
       if (!visible.length) return;
       const currentIndex = Math.max(0, visible.findIndex((entry) => entry.node.key === state.focusKey));
@@ -751,7 +851,8 @@
         if (next >= 0) focusRow(visible[next].node.key);
       } else if (event.key === ' ' && (current.candidateNodeIds ?? []).length) {
         event.preventDefault();
-        const ids = current.candidateNodeIds.filter((id) => state.executableIds.has(id));
+        const ids = mergeableCandidateIds(current);
+        if (ids.length === 0) return;
         const allSelected = ids.length > 0 && ids.every((id) => state.selectedNodeIds.includes(id));
         updateSelection(ids, !allSelected);
       } else if (event.key === 'Enter') {

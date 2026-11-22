@@ -30,6 +30,8 @@ export interface ConfigCompareWebviewPayloadDto {
   locked: boolean;
   strategy: CompareJoinStrategy;
   executableNodeIds: string[];
+  deletionNodeIds?: string[];
+  unresolvedConflictCount?: number;
   comparisonInfo?: ConfigurationCompareInfo;
 }
 

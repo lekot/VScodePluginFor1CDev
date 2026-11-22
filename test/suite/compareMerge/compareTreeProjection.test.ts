@@ -229,6 +229,56 @@ suite('CompareTreeProjection', () => {
     assert.strictEqual(requireNode(tree.root, 'bsl:routine:Catalog.Products.Object:save').mergeable, false);
   });
 
+  test('preserves target ambiguity and module diagnostics ahead of a routine logical conflict', () => {
+    const nodeId = 'bsl:routine:Catalog.Products.Object:save';
+    const manualReason = 'Сигнатура процедуры различается; объедините изменения вручную.';
+    const ambiguousTree = buildCompareTreeProjection({
+      bsl: [
+        {
+          diff: bslDiff([['Save', 'changed']]),
+          targetFilePath: path.join('left', 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl'),
+          targetAmbiguous: true,
+          mergeableRoutineIds: [],
+          blockedRoutineReasons: new Map([[nodeId, manualReason]]),
+        },
+      ],
+    });
+    const diagnosticTree = buildCompareTreeProjection({
+      bsl: [
+        {
+          diff: bslDiff(
+            [['Save', 'changed']],
+            [
+              bslDiagnostic({
+                code: 'BSL_MODULE_IDENTITY_MISMATCH',
+                blocking: true,
+                message: 'BSL module identity mismatch.',
+              }),
+            ]
+          ),
+          targetFilePath: path.join('left', 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl'),
+          mergeableRoutineIds: [],
+          blockedRoutineReasons: new Map([[nodeId, manualReason]]),
+        },
+      ],
+    });
+    const ambiguousRoutine = requireNode(ambiguousTree.root, nodeId);
+    const diagnosticRoutine = requireNode(diagnosticTree.root, nodeId);
+
+    assert.strictEqual(ambiguousRoutine.mergeable, false);
+    assert.strictEqual(ambiguousRoutine.conflict, undefined);
+    assert.deepStrictEqual(ambiguousRoutine.mergeState, {
+      state: 'blocked',
+      reason: 'Target BSL module file is ambiguous.',
+    });
+    assert.strictEqual(diagnosticRoutine.mergeable, false);
+    assert.strictEqual(diagnosticRoutine.conflict, undefined);
+    assert.deepStrictEqual(diagnosticRoutine.mergeState, {
+      state: 'blocked',
+      reason: 'BSL module identity mismatch.',
+    });
+  });
+
   test('marks BSL routine nodes mergeable only with unambiguous target and no blocking diagnostics', () => {
     const readyTree = buildCompareTreeProjection({
       bsl: [{ diff: bslDiff([['Save', 'changed']]), targetFilePath: 'Catalogs/Products/Ext/ObjectModule.bsl' }],

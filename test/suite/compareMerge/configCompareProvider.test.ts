@@ -4,8 +4,12 @@ import * as path from 'path';
 import {
   bindConfigurationCompareWebview,
   renderConfigCompareWebviewHtml,
+  toWebviewPayload,
 } from '../../../src/compareMerge/configCompareProvider';
-import type { ConfigCompareHostToWebviewMessage } from '../../../src/compareMerge/configCompareMessages';
+import type {
+  ConfigCompareHostToWebviewMessage,
+  ConfigCompareWebviewPayloadDto,
+} from '../../../src/compareMerge/configCompareMessages';
 import type { CompareBuildOptions, CompareBuildProgress } from '../../../src/compareMerge/compareProgress';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 import type { CompareTreeProjection } from '../../../src/compareMerge/projection/compareTreeProjection';
@@ -38,6 +42,20 @@ suite('ConfigCompareProvider', () => {
     assert.doesNotMatch(html, /sha256/);
     assert.doesNotMatch(html, /\bMVP\b/i);
     assert.doesNotMatch(html, /showNotice\(/);
+  });
+
+  test('derives executable deletion IDs and distinct blocking conflicts from the canonical tree', () => {
+    const dto = toWebviewPayload(
+      makeSelectionPayload(),
+      ['bsl:deleted', 'bsl:changed-destructive', 'file:deleted', 'file:replacement'],
+      'Compare'
+    ) as ConfigCompareWebviewPayloadDto & {
+      deletionNodeIds?: string[];
+      unresolvedConflictCount?: number;
+    };
+
+    assert.deepStrictEqual(dto.deletionNodeIds, ['bsl:deleted', 'file:deleted']);
+    assert.strictEqual(dto.unresolvedConflictCount, 2);
   });
 
   test('handles preview approve and execute with redacted workspace messages', async () => {
@@ -679,6 +697,47 @@ function makeTree(destructiveRoutine = false): CompareTreeNode {
       },
     ],
   };
+}
+
+function makeSelectionPayload(): ConfigCompareWebviewPayload {
+  const bsl = [
+    compareNode('bsl:deleted', 'Deleted', 'bslRoutine', 'leftOnly', { mergeable: true }),
+    compareNode('bsl:changed-destructive', 'Changed replacement', 'bslRoutine', 'changed', { mergeable: true, destructive: true }),
+    compareNode('bsl:conflict-a', 'Conflict A', 'bslRoutine', 'changed', { conflict: { kind: 'logical', blocking: true, message: 'Conflict A' } }),
+    compareNode('bsl:conflict-a', 'Conflict A duplicate view', 'bslRoutine', 'changed', { conflict: { kind: 'logical', blocking: true, message: 'Conflict A' } }),
+    compareNode('bsl:conflict-b', 'Conflict B', 'bslRoutine', 'changed', { conflict: { kind: 'identity', blocking: true, message: 'Conflict B' } }),
+    compareNode('bsl:warning', 'Nonblocking warning', 'bslRoutine', 'changed', { conflict: { kind: 'warning', blocking: false, message: 'Warning' } }),
+  ];
+  const files = [
+    compareNode('file:deleted', 'Deleted file', 'binaryFile', 'leftOnly', { mergeable: true, destructive: true }),
+    compareNode('file:replacement', 'Replacement file', 'binaryFile', 'changed', { mergeable: true, destructive: true }),
+    compareNode('file:not-executable', 'Blocked deleted file', 'binaryFile', 'leftOnly', { destructive: true }),
+  ];
+  return {
+    root: {
+      id: 'configCompare',
+      label: 'Compare',
+      kind: 'configCompare',
+      status: 'changed',
+      children: [
+        compareNode('bsl', 'BSL', 'bslGroup', 'changed', { children: bsl }),
+        compareNode('adapter', 'Files', 'adapterGroup', 'changed', { children: files }),
+      ],
+    },
+    stats: { total: 9, different: 9, mergeable: 4 },
+    sourceRoots: { left: 'C:/left', right: 'C:/right' },
+    locked: false,
+  };
+}
+
+function compareNode(
+  id: string,
+  label: string,
+  kind: string,
+  status: CompareTreeNode['status'],
+  extra: Partial<CompareTreeNode> = {}
+): CompareTreeNode {
+  return { id, label, kind, status, children: [], ...extra };
 }
 
 function makePartialProjection(qualifiedName: string): CompareTreeProjection {

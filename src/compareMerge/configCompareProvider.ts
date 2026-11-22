@@ -27,6 +27,13 @@ import type {
   WorkspaceStrategyResult,
   CompareJoinStrategy,
 } from './configurationCompareWorkspace';
+import {
+  redactCompareDisplayLabel,
+  redactSafeText,
+  redactTreeNode,
+  safeRootLabel,
+  summarizeCanonicalSelection,
+} from './configCompareTreePayload';
 
 export interface ConfigCompareWebviewRenderInput {
   webview: Pick<vscode.Webview, 'cspSource'>;
@@ -686,6 +693,7 @@ export function toWebviewPayload(
     locked: lockedOverride ?? payload.locked,
     strategy: payload.strategy ?? 'right',
     executableNodeIds: [...executableNodeIds],
+    ...summarizeCanonicalSelection(payload.root, executableNodeIds),
     comparisonInfo: payload.comparisonInfo
       ? {
           ...payload.comparisonInfo,
@@ -697,76 +705,6 @@ export function toWebviewPayload(
   };
 }
 
-function redactTreeNode(node: CompareTreeNode): CompareTreeNode {
-  return {
-    id: node.id,
-    label: node.label,
-    kind: node.kind,
-    status: node.status,
-    leftValue: redactTreeValue(node.leftValue),
-    rightValue: redactTreeValue(node.rightValue),
-    mergeable: node.mergeable,
-    destructive: node.destructive,
-    conflict: node.conflict
-      ? { ...node.conflict, message: redactSafeText(node.conflict.message) ?? node.conflict.message }
-      : undefined,
-    mergeState: node.mergeState
-      ? {
-          state: node.mergeState.state,
-          reason: redactSafeText(node.mergeState.reason),
-        }
-      : undefined,
-    presentation: node.presentation
-      ? {
-          ownerKey: node.presentation.ownerKey,
-          ownerAliases: node.presentation.ownerAliases ? [...node.presentation.ownerAliases] : undefined,
-          metadataType: node.presentation.metadataType,
-          moduleKind: node.presentation.moduleKind,
-          qualifiedName: node.presentation.qualifiedName,
-          identityConflict: node.presentation.identityConflict,
-          ambiguousIdentitySet: node.presentation.ambiguousIdentitySet,
-          identities: node.presentation.identities?.map((identity) => ({
-            side: identity.side,
-            qualifiedName: identity.qualifiedName,
-            uuid: identity.uuid,
-            filePath: redactIdentityPath(identity.filePath),
-            ownership: identity.ownership,
-            sourceUuid: identity.sourceUuid,
-          })),
-        }
-      : undefined,
-    children: node.children.map(redactTreeNode),
-  };
-}
-
-function redactTreeValue(value: string | undefined): string | undefined {
-  if (
-    !value ||
-    /^sha256[:\w-]*/i.test(value) ||
-    /^[a-zA-Z]:[\\/]/.test(value) ||
-    /^\/(?!\/)[^\s]*/.test(value)
-  ) {
-    return undefined;
-  }
-
-  return value;
-}
-function safeRootLabel(value: string | undefined): string {
-  if (!value) {
-    return 'Конфигурация';
-  }
-  const basename = path.win32.basename(value.replace(/\//g, '\\')) || path.posix.basename(value);
-  return basename && basename !== '.' && basename !== '\\' ? basename : 'Конфигурация';
-}
-function redactSafeText(value: string | undefined): string | undefined {
-  if (!value) {
-    return value;
-  }
-  return value.replace(/(?:[A-Za-z]:[\\/]|(?<![\w:])\/)[^\s"'<>]*/g, (match) => {
-    const basename = safeRootLabel(match);
-    return basename === 'Конфигурация' ? '[путь]' : `…/${basename}`;
-  });
-}
 export function safeErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return redactSafeText(message) ?? 'Неизвестная ошибка сравнения.';
@@ -822,15 +760,6 @@ function isPreviewItemDestructive(
   );
 }
 
-function redactCompareDisplayLabel(value: string): string {
-  return value &&
-    !path.isAbsolute(value) &&
-    !path.win32.isAbsolute(value) &&
-    !path.posix.isAbsolute(value)
-    ? value
-    : 'Конфигурация';
-}
-
 function redactPreviewPath(value: string | undefined): string | undefined {
   if (
     !value ||
@@ -844,19 +773,6 @@ function redactPreviewPath(value: string | undefined): string | undefined {
   return normalized.split('/').some((segment) => segment === '..' || segment === '.')
     ? undefined
     : normalized;
-}
-
-function redactIdentityPath(value: string | undefined): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  if (!path.isAbsolute(value) && !path.win32.isAbsolute(value) && !path.posix.isAbsolute(value)) {
-    const normalized = value.replace(/\\/g, '/');
-    if (!normalized.split('/').some((segment) => segment === '..' || segment === '.')) {
-      return normalized;
-    }
-  }
-  return safeRootLabel(value);
 }
 
 function previewRequiresDestructiveConfirmation(
