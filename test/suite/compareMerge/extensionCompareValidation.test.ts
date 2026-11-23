@@ -190,31 +190,63 @@ suite('Extension compare validation', () => {
       assert.strictEqual(uncancelledSnapshot.mutationFingerprint, ordinarySnapshot.mutationFingerprint);
 
       const mutableFs = fsPromises;
-      const originalReadFile = mutableFs.readFile;
+      const originalOpen = mutableFs.open;
+      const originalOpenDescriptor = Object.getOwnPropertyDescriptor(mutableFs, 'open')!;
       let cancelled = false;
-      let reads = 0;
       let activeReads = 0;
-      const instrumentedReadFile = (async (...args: Parameters<typeof originalReadFile>) => {
-        reads += 1;
-        activeReads += 1;
-        try {
-          const content = await Reflect.apply(originalReadFile, mutableFs, args);
-          cancelled = true;
-          return content;
-        } finally {
-          activeReads -= 1;
+      const openRequests: string[] = [];
+      const openedHandles: string[] = [];
+      const streamedReads: string[] = [];
+      const closedHandles: string[] = [];
+      const instrumentedOpen = (async (...args: Parameters<typeof originalOpen>) => {
+        const requestedPath = path.resolve(String(args[0]));
+        const relativePath = path.relative(sidecarPath, requestedPath);
+        const isSidecarFile = relativePath !== '' && relativePath !== '..' && !relativePath.startsWith(`..${path.sep}`);
+        if (!isSidecarFile) {
+          return Reflect.apply(originalOpen, mutableFs, args);
         }
-      }) as typeof originalReadFile;
-      Object.defineProperty(mutableFs, 'readFile', { configurable: true, value: instrumentedReadFile });
+        const name = path.basename(requestedPath);
+        openRequests.push(name);
+        const handle = await Reflect.apply(originalOpen, mutableFs, args);
+        openedHandles.push(name);
+        return new Proxy(handle, {
+          get(target, property, receiver) {
+            if (property === 'read') {
+              return async (buffer: Buffer, offset: number, length: number, position: number | null) => {
+                activeReads += 1;
+                try {
+                  const result = await target.read(buffer, offset, length, position);
+                  streamedReads.push(name);
+                  cancelled = true;
+                  return result;
+                } finally {
+                  activeReads -= 1;
+                }
+              };
+            }
+            if (property === 'close') {
+              return async () => {
+                closedHandles.push(name);
+                return target.close();
+              };
+            }
+            return Reflect.get(target, property, receiver) as unknown;
+          },
+        });
+      }) as typeof originalOpen;
+      Object.defineProperty(mutableFs, 'open', { configurable: true, value: instrumentedOpen });
       try {
         await assert.rejects(
           captureMergePath(sidecarPath, { retainContent: false, cancellation: { get isCancellationRequested() { return cancelled; } } }),
           (error: unknown) => (error as { code?: string }).code === 'CONFIGURATION_COMPARE_CANCELLED',
         );
-        assert.strictEqual(reads, 1, 'the cancelled snapshot must stop before the next sibling file');
-        assert.strictEqual(activeReads, 0, 'the cancellation must wait for the in-flight filesystem read to finish');
+        assert.deepStrictEqual(openRequests.sort(), ['01.bin', '02.bin'], 'only the initial two-file batch may open');
+        assert.ok(streamedReads.length > 0, 'cancellation must follow an actual streamed read');
+        assert.ok(streamedReads.every((name) => name === '01.bin' || name === '02.bin'));
+        assert.deepStrictEqual(closedHandles.sort(), openedHandles.slice().sort(), 'all opened batch handles must close');
+        assert.strictEqual(activeReads, 0, 'the cancelled snapshot must drain all in-flight filesystem reads');
       } finally {
-        Object.defineProperty(mutableFs, 'readFile', { configurable: true, value: originalReadFile });
+        Object.defineProperty(mutableFs, 'open', originalOpenDescriptor);
       }
     });
   });
