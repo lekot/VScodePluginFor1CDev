@@ -6,7 +6,7 @@ import type { CompareTreeNode } from './compareTreeTypes';
 import type { BslModuleIndexEntry } from './bsl/bslModuleIndexer';
 import type { MetadataObjectMatch, AdapterCompareInput, ExecutableCandidateFactory } from './adapters/mergeAdapter';
 import type { ConfigurationInventory } from './inventory/configurationInventory';
-import type { LinkedDesignerPackageRecipe, LinkedFormModuleSnapshot, LinkedDefaultFormDependency } from './linkedDesignerMaterializer';
+import type { LinkedDesignerPackageRecipe, LinkedDesignerPackageReference, LinkedFormModuleSnapshot, LinkedDefaultFormDependency } from './linkedDesignerMaterializer';
 import type { MatchResult } from './domain/compareContracts';
 import type { MetadataIdentity } from './domain/compareContracts';
 import type { CompareJoinStrategy } from './configurationCompareWorkspace';
@@ -232,7 +232,7 @@ export function buildLinkedDesignerAdapterContext(input: {
   readonly leftSnapshot: string;
   readonly rightSnapshot: string;
   readonly leftInventory: ConfigurationInventory;
-  readonly packages: readonly LinkedDesignerPackageRecipe[];
+  readonly packages: readonly (LinkedDesignerPackageRecipe | LinkedDesignerPackageReference)[];
   readonly modules: readonly LinkedFormModuleSnapshot[];
 }): NonNullable<AdapterCompareInput['linkedDesignerContext']> {
   const ownerQualifiedName = input.match.right?.qualifiedName ?? input.match.left?.qualifiedName ?? '';

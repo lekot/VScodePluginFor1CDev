@@ -1,13 +1,407 @@
 import * as assert from 'assert';
 import { createHash } from 'crypto';
 import * as fs from 'fs/promises';
+import fsPromises = require('fs/promises');
 import * as os from 'os';
 import * as path from 'path';
 
-import { buildConfigurationInventory } from '../../../src/compareMerge/inventory/configurationInventory';
+import {
+  appendHashedBslArtifacts,
+  buildConfigurationInventory,
+} from '../../../src/compareMerge/inventory/configurationInventory';
 import { createArtifactUnit } from '../../../src/compareMerge/inventory/configurationArtifacts';
+import { buildConfigurationFileManifest } from '../../../src/compareMerge/inventory/configurationFileManifest';
+import { hydrateConfigurationInventoryFromManifest } from '../../../src/compareMerge/inventory/configurationInventory';
+import { findInventoryObjectByDescriptor, metadataDescriptorPathKey } from '../../../src/compareMerge/metadataObjectLookup';
+import type { MetadataIdentity } from '../../../src/compareMerge/domain/compareContracts';
 
 suite('ConfigurationInventory', () => {
+  test('appends only explicitly hashed BSL paths and keeps the default all-path contract strict', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-inventory-bsl-hash-scope-'));
+    const descriptorPath = path.join(tempRoot, 'Catalogs', 'Products.xml');
+    const bslPath = path.join(tempRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
+    const bslBytes = Buffer.from('Procedure ObjectModule()\nEndProcedure');
+    try {
+      await writeFile(descriptorPath, '<MetaDataObject><Catalog uuid="products" /></MetaDataObject>');
+      await fs.mkdir(path.dirname(bslPath), { recursive: true });
+      await fs.writeFile(bslPath, bslBytes);
+      const manifest = await buildConfigurationFileManifest(tempRoot, {
+        identities: [inventoryIdentity(tempRoot, 'Catalog', 'Catalog.Products', descriptorPath, 'products')],
+      });
+      const ownerId = manifest.objects[0]!.objectId;
+      const inventory = await hydrateConfigurationInventoryFromManifest({
+        manifest,
+        matchedOwnerObjectIds: new Set(),
+      });
+      const rawHash = `sha256:${createHash('sha256').update(bslBytes).digest('hex')}`;
+      const selected = appendHashedBslArtifacts({
+        inventory,
+        manifest,
+        rawFileHashes: new Map([[bslPath, rawHash]]),
+        includedPaths: new Set([bslPath]),
+      });
+      assert.strictEqual(selected.artifactsByObjectId.get(ownerId)?.filter((artifact) => artifact.kind === 'bslModule').length, 1);
+
+      const deferred = appendHashedBslArtifacts({
+        inventory,
+        manifest,
+        rawFileHashes: new Map(),
+        includedPaths: new Set(),
+      });
+      assert.strictEqual(deferred.artifactsByObjectId.get(ownerId)?.some((artifact) => artifact.kind === 'bslModule'), false);
+      assert.throws(() => appendHashedBslArtifacts({ inventory, manifest, rawFileHashes: new Map() }), /Raw BSL file hash was not collected/u);
+      assert.throws(() => appendHashedBslArtifacts({
+        inventory,
+        manifest,
+        rawFileHashes: new Map(),
+        includedPaths: new Set([path.join(tempRoot, 'Catalogs', 'Products', 'Ext', 'Missing.bsl')]),
+      }), /not present in the configuration manifest/u);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('keeps manifest and inventory descriptor lookups consistent with Linux path casing', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-descriptor-key-portability-'));
+    const descriptorPath = path.join(tempRoot, 'Catalogs', 'Products.xml');
+    const identity = inventoryIdentity(tempRoot, 'Catalog', 'Catalog.Products', descriptorPath, 'products');
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    assert.ok(originalPlatform?.configurable, 'process.platform must be restorable for this isolated path lookup test');
+    try {
+      await writeFile(descriptorPath, '<MetaDataObject><Catalog uuid="products" /></MetaDataObject>');
+      const [manifest, inventory] = await Promise.all([
+        buildConfigurationFileManifest(tempRoot, { identities: [identity] }),
+        buildConfigurationInventory(tempRoot, { identities: [identity] }),
+      ]);
+
+      Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
+      const lookupPath = metadataDescriptorPathKey(descriptorPath);
+      assert.ok(manifest.objectsByDescriptorPath.get(lookupPath), 'manifest consumer lookup should resolve the producer entry');
+      assert.ok(inventory.objectsByDescriptorPath.get(lookupPath), 'inventory consumer lookup should resolve the producer entry');
+      assert.ok(findInventoryObjectByDescriptor(inventory, descriptorPath), 'the existing inventory lookup API remains available');
+    } finally {
+      Object.defineProperty(process, 'platform', originalPlatform);
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('builds a symmetric path-only manifest and hydrates descriptors plus matched-owner non-BSL files only', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-file-manifest-'));
+    const catalogDescriptor = path.join(tempRoot, 'Catalogs', 'Products.xml');
+    const logoPath = path.join(tempRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const formDescriptor = path.join(tempRoot, 'Catalogs', 'Products', 'Forms', 'Main.xml');
+    const formXml = path.join(tempRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml');
+    const formModule = path.join(tempRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form', 'Module.bsl');
+    const unrelatedPath = path.join(tempRoot, '.git', 'objects', 'large.dat');
+    try {
+      await writeFile(catalogDescriptor, '<MetaDataObject><Catalog uuid="products" /></MetaDataObject>');
+      await writeFile(logoPath, 'logo');
+      await writeFile(formDescriptor, '<MetaDataObject><Form uuid="main" /></MetaDataObject>');
+      await writeFile(formXml, '<Form/>');
+      await writeFile(formModule, 'Procedure Main()\nEndProcedure');
+      await writeFile(unrelatedPath, 'must not be traversed');
+      await writeFile(path.join(tempRoot, 'Logs', 'viewer.log'), 'must not be traversed');
+
+      const identities = [
+        inventoryIdentity(tempRoot, 'Catalog', 'Catalog.Products', catalogDescriptor, 'products'),
+        inventoryIdentity(tempRoot, 'Form', 'Catalog.Products.Form.Main', formDescriptor, 'main'),
+      ];
+      const mutableFs = fsPromises;
+      const originalReaddir = mutableFs.readdir;
+      const enumerated = new Set<string>();
+      const instrumentedReaddir = (async (...args: Parameters<typeof originalReaddir>) => {
+        if (typeof args[0] === 'string') {enumerated.add(path.resolve(args[0]).toLowerCase());}
+        return Reflect.apply(originalReaddir, mutableFs, args);
+      }) as typeof originalReaddir;
+      Object.defineProperty(mutableFs, 'readdir', { configurable: true, value: instrumentedReaddir });
+      let manifest: Awaited<ReturnType<typeof buildConfigurationFileManifest>>;
+      try {
+        manifest = await buildConfigurationFileManifest(tempRoot, { identities });
+      } finally {
+        Object.defineProperty(mutableFs, 'readdir', { configurable: true, value: originalReaddir });
+      }
+
+      assert.strictEqual(enumerated.has(path.join(tempRoot, '.git').toLowerCase()), false);
+      assert.strictEqual(enumerated.has(path.join(tempRoot, 'Logs').toLowerCase()), false);
+      assert.ok(manifest.entries.some((entry) => entry.filePath === formXml));
+      assert.ok(manifest.entries.some((entry) => entry.filePath === formModule));
+      assert.ok(manifest.subtreeFileCountsByDirectory.get(path.join('Catalogs', 'Products').toLowerCase().replace(/\\/gu, '/'))! >= 4);
+
+      const matchedCatalogId = manifest.objects.find((object) => object.qualifiedName === 'Catalog.Products')!.objectId;
+      const hydrated = await hydrateConfigurationInventoryFromManifest({
+        manifest,
+        matchedOwnerObjectIds: new Set([matchedCatalogId]),
+      });
+      const catalog = hydrated.objects.find((object) => object.qualifiedName === 'Catalog.Products')!;
+      const form = hydrated.objects.find((object) => object.qualifiedName === 'Catalog.Products.Form.Main')!;
+      assert.deepStrictEqual(
+        (hydrated.artifactsByObjectId.get(catalog.objectId) ?? []).map((artifact) => path.basename(artifact.filePath)).sort(),
+        ['Products.xml', 'logo.bin'],
+      );
+      assert.deepStrictEqual(
+        (hydrated.artifactsByObjectId.get(form.objectId) ?? []).map((artifact) => path.basename(artifact.filePath)),
+        ['Main.xml'],
+        'all descriptors remain available while an unmatched Form sidecar is not hydrated',
+      );
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('preserves nested mixed-case Unicode owners and direct-sidecar paths in the manifest', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-manifest-unicode-paths-'));
+    const parentDescriptor = path.join(tempRoot, 'Catalogs', 'MiXeD', 'Пакеты', 'Пакеты.xml');
+    const directSidecar = path.join(path.dirname(parentDescriptor), 'Ext', 'ObjectModule.bsl');
+    const childDescriptor = path.join(path.dirname(parentDescriptor), 'TabularSections', 'Строки.xml');
+    const childSidecar = path.join(path.dirname(childDescriptor), 'Строки', 'Ext', 'Описание.xml');
+    try {
+      await writeFile(parentDescriptor, '<MetaDataObject><Catalog uuid="package" /></MetaDataObject>');
+      await writeFile(directSidecar, 'Procedure ObjectModule()\nEndProcedure');
+      await writeFile(childDescriptor, '<MetaDataObject><TabularSection uuid="rows" /></MetaDataObject>');
+      await writeFile(childSidecar, '<Description/>');
+
+      const manifest = await buildConfigurationFileManifest(tempRoot, {
+        identities: [
+          inventoryIdentity(tempRoot, 'Catalog', 'Catalog.Пакеты', parentDescriptor, 'package'),
+          inventoryIdentity(tempRoot, 'TabularSection', 'Catalog.Пакеты.TabularSection.Строки', childDescriptor, 'rows'),
+        ],
+      });
+      const parent = manifest.objects.find((object) => object.qualifiedName === 'Catalog.Пакеты')!;
+      const child = manifest.objects.find((object) => object.qualifiedName === 'Catalog.Пакеты.TabularSection.Строки')!;
+      const parentEntries = manifest.entriesByOwnerObjectId.get(parent.objectId) ?? [];
+      const childEntries = manifest.entriesByOwnerObjectId.get(child.objectId) ?? [];
+
+      assert.deepStrictEqual(
+        parentEntries.map((entry) => entry.filePath).sort(),
+        [parentDescriptor, directSidecar].map((filePath) => path.normalize(filePath)).sort(),
+      );
+      assert.deepStrictEqual(
+        childEntries.map((entry) => entry.filePath).sort(),
+        [childDescriptor, childSidecar].map((filePath) => path.normalize(filePath)).sort(),
+      );
+      assert.ok(manifest.directoriesByOwnerObjectId.get(child.objectId)?.some((directory) => directory.filePath === path.dirname(childSidecar)));
+      assert.ok(manifest.entriesByRelativePath.get(path.join('catalogs', 'mixed', 'пакеты', 'tabularsections', 'строки', 'ext', 'описание.xml').replace(/\\/gu, '/'))
+        ?.some((entry) => entry.ownerObjectId === child.objectId));
+      assert.ok(manifest.subtreeFileCountsByDirectory.get('catalogs/mixed/пакеты')! >= 4);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('scans overlapping selected object containers once and preserves selected artifact ownership', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-inventory-overlap-'));
+    try {
+      const parentDescriptor = path.join(tempRoot, 'Catalogs', 'Parent', 'Parent.xml');
+      const childDescriptor = path.join(tempRoot, 'Catalogs', 'Parent', 'TabularSections', 'Items.xml');
+      const siblingDescriptor = path.join(tempRoot, 'Catalogs', 'Parent', 'TabularSections', 'Other.xml');
+      const parentBsl = path.join(tempRoot, 'Catalogs', 'Parent', 'Ext', 'ObjectModule.bsl');
+      const childBsl = path.join(tempRoot, 'Catalogs', 'Parent', 'TabularSections', 'Items', 'Ext', 'Module.bsl');
+      const siblingBsl = path.join(tempRoot, 'Catalogs', 'Parent', 'TabularSections', 'Other', 'Ext', 'Module.bsl');
+      await writeFile(parentDescriptor, '<MetaDataObject><Catalog uuid="parent" /></MetaDataObject>');
+      await writeFile(childDescriptor, '<MetaDataObject><TabularSection uuid="items" /></MetaDataObject>');
+      await writeFile(siblingDescriptor, '<MetaDataObject><TabularSection uuid="other" /></MetaDataObject>');
+      await writeFile(parentBsl, 'Procedure Parent()\nEndProcedure');
+      await writeFile(childBsl, 'Procedure Child()\nEndProcedure');
+      await writeFile(siblingBsl, 'Procedure Sibling()\nEndProcedure');
+
+      const identities = [
+        inventoryIdentity(tempRoot, 'Catalog', 'Catalog.Parent', parentDescriptor, 'parent'),
+        inventoryIdentity(tempRoot, 'TabularSection', 'TabularSection.Items', childDescriptor, 'items'),
+        inventoryIdentity(tempRoot, 'TabularSection', 'TabularSection.Other', siblingDescriptor, 'other'),
+      ];
+      const mutableFs = fsPromises;
+      const originalReaddir = mutableFs.readdir;
+      const readdirCounts = new Map<string, number>();
+      let activeReaddirs = 0;
+      let maximumActiveReaddirs = 0;
+      const instrumentedReaddir = (async (...args: Parameters<typeof originalReaddir>) => {
+        const requestedPath = args[0];
+        if (typeof requestedPath === 'string') {
+          const key = path.resolve(requestedPath).toLowerCase();
+          readdirCounts.set(key, (readdirCounts.get(key) ?? 0) + 1);
+        }
+        activeReaddirs += 1;
+        maximumActiveReaddirs = Math.max(maximumActiveReaddirs, activeReaddirs);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 2));
+          return await Reflect.apply(originalReaddir, mutableFs, args);
+        } finally {
+          activeReaddirs -= 1;
+        }
+      }) as typeof originalReaddir;
+      Object.defineProperty(mutableFs, 'readdir', { configurable: true, value: instrumentedReaddir });
+      let inventory: Awaited<ReturnType<typeof buildConfigurationInventory>>;
+      try {
+        inventory = await buildConfigurationInventory(tempRoot, {
+          identities,
+          includeDescriptorPaths: new Set([parentDescriptor, childDescriptor]),
+        });
+      } finally {
+        Object.defineProperty(mutableFs, 'readdir', { configurable: true, value: originalReaddir });
+      }
+
+      assert.ok([...readdirCounts.values()].every((count) => count === 1), 'every overlapping physical directory should be enumerated once');
+      assert.ok(maximumActiveReaddirs > 1, 'independent directory reads should run concurrently');
+      assert.ok(maximumActiveReaddirs <= 8, 'directory reads must respect the bounded worker pool');
+      const parentKey = path.resolve(path.dirname(parentDescriptor)).toLowerCase();
+      const childSidecarKey = path.resolve(path.dirname(childBsl)).toLowerCase();
+      assert.strictEqual(readdirCounts.get(parentKey), 1);
+      assert.strictEqual(readdirCounts.get(childSidecarKey), 1);
+      const parent = inventory.objects.find((object) => object.qualifiedName === 'Catalog.Parent');
+      const child = inventory.objects.find((object) => object.qualifiedName === 'TabularSection.Items');
+      assert.ok(parent);
+      assert.ok(child);
+      const ownedArtifacts = [...inventory.artifactsByObjectId.entries()].flatMap(([ownerId, artifacts]) =>
+        artifacts.map((artifact) => [ownerId, path.relative(tempRoot, artifact.filePath).replace(/\\/gu, '/')]),
+      );
+      assert.deepStrictEqual(ownedArtifacts.sort((left, right) => String(left[1]).localeCompare(String(right[1]))), [
+        [parent.objectId, 'Catalogs/Parent/Ext/ObjectModule.bsl'],
+        [parent.objectId, 'Catalogs/Parent/Parent.xml'],
+        [child.objectId, 'Catalogs/Parent/TabularSections/Items.xml'],
+        [child.objectId, 'Catalogs/Parent/TabularSections/Items/Ext/Module.bsl'],
+      ].sort((left, right) => String(left[1]).localeCompare(String(right[1]))));
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('cancels selected-directory traversal without scheduling child reads or leaving reads active', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-inventory-cancel-dir-'));
+    try {
+      const descriptorPath = path.join(tempRoot, 'Catalogs', 'Parent', 'Parent.xml');
+      await writeFile(descriptorPath, '<MetaDataObject><Catalog uuid="parent" /></MetaDataObject>');
+      for (let index = 0; index < 20; index += 1) {
+        await writeFile(path.join(tempRoot, 'Catalogs', 'Parent', `Nested${index}`, 'Ext', 'Module.bsl'), 'Procedure Test()\nEndProcedure');
+      }
+      const identity = inventoryIdentity(tempRoot, 'Catalog', 'Catalog.Parent', descriptorPath, 'parent');
+      const mutableFs = fsPromises;
+      const originalReaddir = mutableFs.readdir;
+      let cancelled = false;
+      let reads = 0;
+      let activeReads = 0;
+      const instrumentedReaddir = (async (...args: Parameters<typeof originalReaddir>) => {
+        reads += 1;
+        activeReads += 1;
+        try {
+          const entries = await Reflect.apply(originalReaddir, mutableFs, args);
+          cancelled = true;
+          return entries;
+        } finally {
+          activeReads -= 1;
+        }
+      }) as typeof originalReaddir;
+      Object.defineProperty(mutableFs, 'readdir', { configurable: true, value: instrumentedReaddir });
+      try {
+        await assert.rejects(
+          buildConfigurationInventory(tempRoot, {
+            identities: [identity],
+            includeDescriptorPaths: new Set([descriptorPath]),
+            cancellation: { get isCancellationRequested() { return cancelled; } },
+          }),
+          (error: unknown) => (error as { code?: string }).code === 'CONFIGURATION_COMPARE_CANCELLED',
+        );
+        assert.strictEqual(reads, 1, 'cancellation after the current directory read must prevent queueing its child directories');
+        assert.strictEqual(activeReads, 0, 'the traversal must await the in-flight directory read before rejecting');
+      } finally {
+        Object.defineProperty(mutableFs, 'readdir', { configurable: true, value: originalReaddir });
+      }
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('drains in-flight artifact reads after cancellation and does not start more work', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-inventory-cancel-artifacts-'));
+    try {
+      const descriptorPath = path.join(tempRoot, 'Catalogs', 'Parent', 'Parent.xml');
+      await writeFile(descriptorPath, '<MetaDataObject><Catalog uuid="parent" /></MetaDataObject>');
+      for (let index = 0; index < 8; index += 1) {
+        await writeFile(path.join(tempRoot, 'Catalogs', 'Parent', 'Ext', `Module${index}.bsl`), 'Procedure Test()\nEndProcedure');
+      }
+      const identity = inventoryIdentity(tempRoot, 'Catalog', 'Catalog.Parent', descriptorPath, 'parent');
+      const mutableFs = fsPromises;
+      const originalOpen = mutableFs.open;
+      let cancelled = false;
+      let openCount = 0;
+      let activeOpenCalls = 0;
+      let releaseBarrier: (() => void) | undefined;
+      const barrier = new Promise<void>((resolve) => {releaseBarrier = resolve;});
+      const instrumentedOpen = (async (...args: Parameters<typeof originalOpen>) => {
+        const handle = await Reflect.apply(originalOpen, mutableFs, args);
+        const callIndex = ++openCount;
+        activeOpenCalls += 1;
+        if (callIndex === 3) {
+          cancelled = true;
+          releaseBarrier?.();
+        }
+        await barrier;
+        if (callIndex > 1) {await new Promise((resolve) => setTimeout(resolve, 75));}
+        activeOpenCalls -= 1;
+        return handle;
+      }) as typeof originalOpen;
+      Object.defineProperty(mutableFs, 'open', { configurable: true, value: instrumentedOpen });
+      try {
+        const build = buildConfigurationInventory(tempRoot, {
+          identities: [identity],
+          includeDescriptorPaths: new Set([descriptorPath]),
+          artifactConcurrency: 3,
+          cancellation: { get isCancellationRequested() { return cancelled; } },
+        });
+        await assert.rejects(build, (error: unknown) => (error as { code?: string }).code === 'CONFIGURATION_COMPARE_CANCELLED');
+        const activeAtBuildRejection = activeOpenCalls;
+        const waitForDrain = async (): Promise<void> => {
+          while (activeOpenCalls > 0) {await new Promise((resolve) => setTimeout(resolve, 5));}
+        };
+        await waitForDrain();
+        assert.strictEqual(activeAtBuildRejection, 0, 'the inventory promise must not reject before active artifact opens drain');
+        assert.strictEqual(openCount, 3, 'cancellation must stop scheduling additional artifact reads');
+      } finally {
+        Object.defineProperty(mutableFs, 'open', { configurable: true, value: originalOpen });
+      }
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('preserves full-root ENOENT failures while ignoring a missing selected object container', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-inventory-missing-'));
+    try {
+      const descriptorPath = path.join(tempRoot, 'Catalogs', 'Parent.xml');
+      await writeFile(descriptorPath, '<MetaDataObject><Catalog uuid="parent" /></MetaDataObject>');
+      const identity = inventoryIdentity(tempRoot, 'Catalog', 'Catalog.Parent', descriptorPath, 'parent');
+      const mutableFs = fsPromises;
+      const originalReaddir = mutableFs.readdir;
+      const missingDirectory = path.join(tempRoot, 'Catalogs');
+      const missingError = Object.assign(new Error('simulated directory disappearance'), { code: 'ENOENT' });
+      const instrumentedReaddir = (async (...args: Parameters<typeof originalReaddir>) => {
+        if (typeof args[0] === 'string' && path.resolve(args[0]) === path.resolve(missingDirectory)) {throw missingError;}
+        return Reflect.apply(originalReaddir, mutableFs, args);
+      }) as typeof originalReaddir;
+      Object.defineProperty(mutableFs, 'readdir', { configurable: true, value: instrumentedReaddir });
+      try {
+        await assert.rejects(
+          buildConfigurationInventory(tempRoot, { identities: [identity] }),
+          (error: unknown) => error === missingError,
+        );
+      } finally {
+        Object.defineProperty(mutableFs, 'readdir', { configurable: true, value: originalReaddir });
+      }
+
+      const selected = await buildConfigurationInventory(tempRoot, {
+        identities: [identity],
+        includeDescriptorPaths: new Set([descriptorPath]),
+      });
+      const object = selected.objects[0];
+      assert.ok(object);
+      assert.deepStrictEqual(
+        (selected.artifactsByObjectId.get(object.objectId) ?? []).map((artifact) => artifact.relativePath),
+        [path.relative(tempRoot, descriptorPath)],
+      );
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   test('indexes metadata descriptor with Ext XML, BSL module and opaque artifacts', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-inventory-'));
     const catalogRoot = path.join(tempRoot, 'Catalogs', 'Products');
@@ -225,4 +619,27 @@ async function writeDescriptor(
 async function writeFile(filePath: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, content, 'utf-8');
+}
+
+function inventoryIdentity(
+  rootPath: string,
+  metadataType: string,
+  qualifiedName: string,
+  filePath: string,
+  uuid: string,
+): MetadataIdentity {
+  const normalizedPath = path.normalize(filePath);
+  return {
+    sourceId: 'inventory-test',
+    side: 'left',
+    metadataType,
+    qualifiedName,
+    uuid,
+    filePath: normalizedPath,
+    containerPath: path.dirname(normalizedPath),
+    objectPath: path.relative(rootPath, normalizedPath),
+    nameSource: 'fileName',
+    uuidSource: 'xmlAttribute',
+    confidence: 'strong',
+  };
 }

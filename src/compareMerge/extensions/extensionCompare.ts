@@ -2,25 +2,34 @@ import * as path from 'path';
 import { createHash, randomUUID } from 'crypto';
 import { pathToFileURL } from 'url';
 
+import { compareCodeUnits } from '../../utils/compareCodeUnits';
 import type { CompareMessage, CompareSide, CompareSnapshot, CompareSource } from '../domain/compareContracts';
 import { CompareSession } from '../domain/compareSession';
 import type { CompareTreeNode, CompareTreeStats, CompareTreeStatus } from '../compareTreeTypes';
+import {
+  createBslModuleComparisonReference,
+  type BslModuleComparisonReference,
+} from '../bsl/bslModuleComparison';
 import type { CompareTreeProjection } from '../projection/compareTreeProjection';
-import type { CompareCancellationToken } from '../compareCancellation';
 import { throwIfCompareCancelled } from '../compareCancellation';
+import {
+  createReadOnlyCompareProjection,
+  publishCompareBuildProgress,
+  type CompareBuildOptions,
+} from '../compareProgress';
 import type { CompareJoinStrategy, ConfigurationCompareInfo, ConfigurationCompareWorkspaceState } from '../configurationCompareWorkspace';
-import { indexExtensionMetadataRoot, SUPPORTED_EXTENSION_FORMATS, type ExtensionIndexDiagnostic, type ExtensionMetadataIndex } from './extensionMetadataIndex';
+import { indexExtensionMetadataRoot, probeExtensionMetadataRoot, SUPPORTED_EXTENSION_FORMATS, type ExtensionIndexDiagnostic, type ExtensionMetadataIndex } from './extensionMetadataIndex';
 import { analyzeExtensionTransfers, materializeExtensionSelection, type ExtensionTransferRow } from './extensionTransfer';
 import { projectExtensionSemanticNodes } from './extensionSemanticProjection';
+import type { LinkedFormModuleSnapshot } from '../linkedDesignerTypes';
 
 const LEFT_SOURCE_ID = 'left-source';
 const RIGHT_SOURCE_ID = 'right-source';
 
-export interface ExtensionCompareInput {
+export interface ExtensionCompareInput extends CompareBuildOptions {
   readonly leftRootPath: string;
   readonly rightRootPath: string;
   readonly createdAt?: Date;
-  readonly cancellation?: CompareCancellationToken;
   readonly extensionBaseRoots?: Readonly<Partial<Record<CompareSide, string>>>;
 }
 
@@ -37,19 +46,36 @@ export async function tryBuildExtensionCompareState(
   const createdAt = input.createdAt ?? new Date();
   const explicitLeftBasePath = input.extensionBaseRoots?.left;
   const explicitRightBasePath = input.extensionBaseRoots?.right;
+  publishCompareBuildProgress(input, { phase: 'detecting' });
 
-  const [left, right] = await Promise.all([
-    indexExtensionMetadataRoot({ rootPath: leftRootPath, sourceId: LEFT_SOURCE_ID, side: 'left', cancellation: input.cancellation }),
-    indexExtensionMetadataRoot({ rootPath: rightRootPath, sourceId: RIGHT_SOURCE_ID, side: 'right', cancellation: input.cancellation }),
-  ]);
+  let anyCfeEvidence = Boolean(explicitLeftBasePath) || Boolean(explicitRightBasePath);
+  let leftRootProbe: Awaited<ReturnType<typeof probeExtensionMetadataRoot>> | undefined;
+  let rightRootProbe: Awaited<ReturnType<typeof probeExtensionMetadataRoot>> | undefined;
+  if (!anyCfeEvidence) {
+    [leftRootProbe, rightRootProbe] = await settlePair(
+      probeExtensionMetadataRoot({ rootPath: leftRootPath, cancellation: input.cancellation }),
+      probeExtensionMetadataRoot({ rootPath: rightRootPath, cancellation: input.cancellation }),
+    );
+    throwIfCompareCancelled(input.cancellation);
+    anyCfeEvidence = leftRootProbe.cfeMarkerSeen || rightRootProbe.cfeMarkerSeen;
+  }
+  if (!anyCfeEvidence) {return undefined;}
+
+  publishCompareBuildProgress(input, { phase: 'metadata', completed: 0 });
+  let completedMetadataObjects = 0;
+  const onIndexedObject = (): void => {
+    completedMetadataObjects += 1;
+    publishCompareBuildProgress(input, { phase: 'metadata', completed: completedMetadataObjects });
+  };
+  const [left, right] = await settlePair(
+    indexExtensionMetadataRoot({ rootPath: leftRootPath, sourceId: LEFT_SOURCE_ID, side: 'left', cancellation: input.cancellation, onProgress: onIndexedObject, rootEvidence: leftRootProbe }),
+    indexExtensionMetadataRoot({ rootPath: rightRootPath, sourceId: RIGHT_SOURCE_ID, side: 'right', cancellation: input.cancellation, onProgress: onIndexedObject, rootEvidence: rightRootProbe }),
+  );
   throwIfCompareCancelled(input.cancellation);
 
   // The ordinary CF compare route remains authoritative until a CFE marker or explicit
   // manifest relation identifies extension semantics. Legacy roots can be partial Designer
   // fixtures, so one missing Configuration.xml does not by itself imply malformed CFE.
-  const anyCfeEvidence = left.cfeMarkerSeen || right.cfeMarkerSeen || Boolean(explicitLeftBasePath) || Boolean(explicitRightBasePath);
-  if (!anyCfeEvidence) {return undefined;}
-
   const baseIndexes: Partial<Record<CompareSide, ExtensionMetadataIndex>> = {};
   const baseInputs = [
     { side: 'left' as const, pathValue: explicitLeftBasePath, sourceId: 'left-base-source' },
@@ -64,6 +90,7 @@ export async function tryBuildExtensionCompareState(
       sourceId: item.sourceId,
       side: item.side,
       cancellation: input.cancellation,
+      onProgress: onIndexedObject,
     });
     baseIndexes[item.side] = base;
   }
@@ -172,10 +199,13 @@ export async function tryBuildExtensionCompareState(
   const session = CompareSession.create({ sessionId, createdAt: createdAt.toISOString(), sources });
   const leftSnapshotId = `${sessionId}-left`;
   const rightSnapshotId = `${sessionId}-right`;
+  let returnedState = false;
+  try {
   session.registerSnapshot(createSnapshot(left, leftSnapshotId, createdAt, false));
   session.registerSnapshot(createSnapshot(right, rightSnapshotId, createdAt, true));
   for (const message of diagnostics) {session.addMessage(message);}
 
+  publishCompareBuildProgress(input, { phase: 'comparing' });
   const analysis = await analyzeExtensionTransfers({
     target: left,
     incoming: right,
@@ -201,7 +231,22 @@ export async function tryBuildExtensionCompareState(
   for (const message of semanticDiagnostics) {session.addMessage(message);}
 
   const rootDiagnostics = collectVisibleDiagnostics([left, right, ...Object.values(baseIndexes).filter(isDefined)]);
-  const projection = buildExtensionProjection(semanticProjection.nodes, rootDiagnostics, semanticProjection.rootPurposeNode, semanticDiagnostics);
+  const linkedBsl = buildLinkedFormModuleNodes({
+    nodes: semanticProjection.nodes,
+    snapshots: semanticProjection.linkedFormModules,
+    targetRootPath: left.canonicalRootPath ?? leftRootPath,
+    sourceRootPath: right.canonicalRootPath ?? rightRootPath,
+  });
+  const projection = buildExtensionProjection(
+    linkedBsl.objectNodes,
+    rootDiagnostics,
+    semanticProjection.rootPurposeNode,
+    semanticDiagnostics,
+    linkedBsl.moduleNodes
+  );
+  if (input.onProgress) {
+    publishCompareBuildProgress(input, { phase: 'projecting', projection: createReadOnlyCompareProjection(projection) });
+  }
   const comparisonInfo: ConfigurationCompareInfo = {
     mode: 'extension',
     targetLabel: safeBasename(leftRootPath),
@@ -214,12 +259,13 @@ export async function tryBuildExtensionCompareState(
   };
 
   const rows: readonly ExtensionTransferRow[] = analysis.rows;
-  return {
+  const result: ConfigurationCompareWorkspaceState = {
     session,
     projection,
     candidateFactories: new Map(),
     mergeableNodeIds: [...analysis.mergeableNodeIds, ...semanticProjection.mergeableNodeIds.filter((id) => !analysis.mergeableNodeIds.includes(id))],
     comparisonInfo,
+    bslModuleComparisons: linkedBsl.references,
     materializeSelection: (nodeIds) => materializeExtensionSelection({
       target: left,
       incoming: right,
@@ -236,6 +282,11 @@ export async function tryBuildExtensionCompareState(
       cancellation: input.cancellation,
     }, nodeIds),
   };
+  returnedState = true;
+  return result;
+  } finally {
+    if (!returnedState) {session.dispose();}
+  }
 }
 
 function comparisonSource(index: ExtensionMetadataIndex, side: CompareSide, writable: boolean): CompareSource {
@@ -298,10 +349,12 @@ function buildExtensionProjection(
   diagnostics: readonly { readonly sourceId: string; readonly diagnostic: ExtensionIndexDiagnostic }[],
   rootPurposeNode?: CompareTreeNode,
   semanticDiagnostics: readonly CompareMessage[] = [],
+  linkedBslModuleNodes: readonly CompareTreeNode[] = [],
 ): CompareTreeProjection {
   const groups: CompareTreeNode[] = [];
   if (rootPurposeNode) {groups.push(branch('extensionRootProperties', 'Свойства расширения', 'extensionRootPropertyGroup', [rootPurposeNode]));}
   if (objectNodes.length > 0) {groups.push(branch('extensionObjects', 'Объекты', 'extensionObjectGroup', [...objectNodes]));}
+  if (linkedBslModuleNodes.length > 0) {groups.push(branch('extensionBslModules', 'BSL modules', 'bslGroup', [...linkedBslModuleNodes]));}
   if (diagnostics.length > 0 || semanticDiagnostics.length > 0) {
     const diagnosticNodes = [
       ...diagnostics.map(({ sourceId, diagnostic }, index) => diagnosticNode(sourceId, diagnostic, index)),
@@ -319,6 +372,137 @@ function buildExtensionProjection(
   };
   visit(root);
   return { root, stats };
+}
+
+function buildLinkedFormModuleNodes(input: {
+  readonly nodes: readonly CompareTreeNode[];
+  readonly snapshots: readonly LinkedFormModuleSnapshot[];
+  readonly targetRootPath: string;
+  readonly sourceRootPath: string;
+}): {
+  objectNodes: CompareTreeNode[];
+  moduleNodes: CompareTreeNode[];
+  references: ReadonlyMap<string, BslModuleComparisonReference>;
+} {
+  const snapshotsByModuleId = new Map<string, LinkedFormModuleSnapshot[]>();
+  const candidateModuleIdByNodeId = new Map<string, string>();
+  for (const snapshot of input.snapshots) {
+    const snapshots = snapshotsByModuleId.get(snapshot.moduleId) ?? [];
+    snapshots.push(snapshot);
+    snapshotsByModuleId.set(snapshot.moduleId, snapshots);
+    for (const candidateId of snapshot.routineCandidateIds.values()) {
+      candidateModuleIdByNodeId.set(candidateId, snapshot.moduleId);
+    }
+  }
+
+  const moduleIds = [...snapshotsByModuleId.keys()].sort(compareCodeUnits);
+  const moduleIdSet = new Set(moduleIds);
+  const routinesByModuleId = new Map<string, Map<string, CompareTreeNode>>();
+  const stripLinkedRoutineNodes = (nodes: readonly CompareTreeNode[]): CompareTreeNode[] => {
+    const retained: CompareTreeNode[] = [];
+    for (const node of nodes) {
+      const moduleId = linkedFormModuleIdForNode(node, moduleIdSet, candidateModuleIdByNodeId);
+      if (moduleId) {
+        const routines = routinesByModuleId.get(moduleId) ?? new Map<string, CompareTreeNode>();
+        routines.set(node.id, node);
+        routinesByModuleId.set(moduleId, routines);
+        continue;
+      }
+      node.children = stripLinkedRoutineNodes(node.children);
+      retained.push(node);
+    }
+    return retained;
+  };
+  const objectNodes = stripLinkedRoutineNodes(input.nodes);
+  const references = new Map<string, BslModuleComparisonReference>();
+  const moduleNodes: CompareTreeNode[] = [];
+
+  for (const moduleId of moduleIds) {
+    const snapshots = snapshotsByModuleId.get(moduleId)!;
+    const snapshot = snapshots.length === 1 ? snapshots[0] : undefined;
+    const targetFilePath = snapshot
+      ? path.resolve(input.targetRootPath, snapshot.targetRelativePath)
+      : undefined;
+    const sourceFilePath = snapshot?.sourceRelativePath
+      ? path.resolve(input.sourceRootPath, snapshot.sourceRelativePath)
+      : undefined;
+    const canOpenDiff = Boolean(
+      snapshot && !snapshot.targetMissing && targetFilePath && sourceFilePath &&
+      snapshot.targetContent !== undefined && snapshot.sourceContent !== undefined
+    );
+    const nodeId = `bsl:module:${moduleId}`;
+    if (canOpenDiff && snapshot && targetFilePath && sourceFilePath) {
+      references.set(nodeId, createBslModuleComparisonReference({
+        nodeId,
+        moduleLabel: extensionBslModuleLabel(moduleId),
+        leftFilePath: targetFilePath,
+        rightFilePath: sourceFilePath,
+        leftText: snapshot.targetContent!,
+        rightText: snapshot.sourceContent!,
+      }));
+    }
+
+    const reason = 'Полный состав процедур и функций BSL в сравнении CFE не анализировался; автоматически доступны только ранее проверенные связанные обработчики.';
+    const unavailableReason = snapshots.length !== 1
+      ? 'Связанный снимок модуля неоднозначен; обновите сравнение.'
+      : snapshot?.targetMissing
+        ? 'Файл модуля отсутствует в приёмнике; нативный diff недоступен.'
+        : !canOpenDiff
+          ? 'Проверенный снимок модуля недоступен; обновите сравнение.'
+          : undefined;
+    const children = [...(routinesByModuleId.get(moduleId)?.values() ?? [])]
+      .sort((left, right) => compareCodeUnits(left.id, right.id));
+    const identities = [
+      ...(!snapshot?.targetMissing && targetFilePath
+        ? [{ side: 'left' as const, qualifiedName: moduleId, filePath: targetFilePath }]
+        : []),
+      ...(sourceFilePath
+        ? [{ side: 'right' as const, qualifiedName: moduleId, filePath: sourceFilePath }]
+        : []),
+    ];
+    moduleNodes.push({
+      id: nodeId,
+      label: extensionBslModuleLabel(moduleId),
+      kind: 'bslModule',
+      // CFE's linked Form path does not perform full module routine analysis. Keep every row
+      // visible for manual review instead of claiming that an unanalysed module is equal.
+      status: 'changed',
+      leftValue: snapshot?.targetMissing ? 'Нет' : 'Есть',
+      rightValue: sourceFilePath ? 'Есть' : 'Нет',
+      mergeState: { state: 'readOnly', reason: unavailableReason ? `${reason} ${unavailableReason}` : reason },
+      presentation: {
+        metadataType: 'Form',
+        qualifiedName: moduleId,
+        bslRoutineAnalysis: 'partial',
+        identities,
+      },
+      children,
+    });
+  }
+
+  return { objectNodes, moduleNodes, references };
+}
+
+function linkedFormModuleIdForNode(
+  node: CompareTreeNode,
+  moduleIds: ReadonlySet<string>,
+  candidateModuleIdByNodeId: ReadonlyMap<string, string>
+): string | undefined {
+  const candidateModuleId = candidateModuleIdByNodeId.get(node.id);
+  if (candidateModuleId) {return candidateModuleId;}
+  if (node.kind !== 'bslRoutine' && node.kind !== 'bslModuleContent' && node.kind !== 'diagnostic') {
+    return undefined;
+  }
+  const explicitQualifiedName = node.presentation?.qualifiedName;
+  if (explicitQualifiedName && moduleIds.has(explicitQualifiedName)) {
+    return explicitQualifiedName;
+  }
+  return undefined;
+}
+
+function extensionBslModuleLabel(moduleId: string): string {
+  const name = moduleId.endsWith('.FormModule') ? moduleId.slice(0, -'.FormModule'.length) : moduleId;
+  return `Модуль формы: ${name}`;
 }
 
 function diagnosticNode(sourceId: string, diagnostic: ExtensionIndexDiagnostic, index: number): CompareTreeNode {
@@ -428,6 +612,16 @@ function normalizeComparisonPath(value: string): string {
 
 function safeBasename(rootPath: string): string {
   return path.basename(rootPath) || 'корень';
+}
+
+async function settlePair<TLeft, TRight>(
+  left: Promise<TLeft>,
+  right: Promise<TRight>,
+): Promise<[TLeft, TRight]> {
+  const [leftResult, rightResult] = await Promise.allSettled([left, right]);
+  if (leftResult.status === 'rejected') {throw leftResult.reason;}
+  if (rightResult.status === 'rejected') {throw rightResult.reason;}
+  return [leftResult.value, rightResult.value];
 }
 
 function isDefined<T>(value: T | undefined): value is T {

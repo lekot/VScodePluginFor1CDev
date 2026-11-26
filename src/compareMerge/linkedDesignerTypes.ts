@@ -3,8 +3,42 @@ import type { CompareMessage, MetadataIdentity } from './domain/compareContracts
 import type { CompareSession } from './domain/compareSession';
 import type { ConfigurationInventory } from './inventory/configurationInventory';
 import type { ExecutableCandidateFactory } from './adapters/mergeAdapter';
+import type { ConfigurationArtifactKindHint, ConfigurationFileManifest } from './inventory/configurationFileManifest';
 
 export type LinkedDesignerKind = 'Form' | 'Template' | 'Command';
+
+export interface LinkedDesignerPackageMemberReference {
+  readonly relativePath: string;
+  readonly artifactKindHint: ConfigurationArtifactKindHint;
+  readonly sourceHashAtCompare?: string;
+  readonly targetHashAtCompare?: string;
+  readonly targetPresentAtCompare: boolean;
+  readonly required: boolean;
+}
+
+/** A path-only compare record. It never owns or implies captured member bytes. */
+export interface LinkedDesignerPackageReference {
+  readonly packageId: string;
+  readonly action: 'copy' | 'delete';
+  readonly kind: LinkedDesignerKind;
+  readonly qualifiedName: string;
+  readonly sourceObjectId: string;
+  readonly sourceContainerRelativePath: string;
+  readonly sourceContainerFileCount: number;
+  readonly sourceContainerDirectoryCount: number;
+  readonly sourceDescriptorRelativePath: string;
+  readonly sourceDescriptorHash: string;
+  readonly ownerQualifiedName?: string;
+  readonly ownerTargetRelativePath?: string;
+  readonly ownerDescriptorReference?: {
+    readonly targetRelativePath: string;
+    readonly targetHash: string;
+  };
+  readonly rootRegistration?: { readonly rootTag: string; readonly objectName: string };
+  registrationNodeId?: string;
+  readonly targetDirectoryWitness?: MergeFileWitness;
+  readonly memberReferences: readonly LinkedDesignerPackageMemberReference[];
+}
 
 export interface LinkedDesignerPackageMember {
   readonly targetRelativePath: string;
@@ -27,6 +61,21 @@ export interface LinkedDesignerPackageRecipe {
   readonly targetDirectoryWitness?: MergeFileWitness;
   readonly ownerDescriptorSnapshot?: LinkedOwnerDescriptorSnapshot;
   readonly members: readonly LinkedDesignerPackageMember[];
+}
+
+/** Internal compare-time capture for copying a whole supported root metadata object. */
+export interface LinkedRootObjectCopyRecipe {
+  readonly nodeId: string;
+  readonly action: 'copy';
+  readonly qualifiedName: string;
+  readonly rootRegistration: { readonly rootTag: string; readonly objectName: string };
+  readonly registrationNodeId: string;
+  readonly configurationMode: 'registered' | 'legacyLoose';
+  readonly sourceContainerPath: string;
+  readonly sourceDescriptorRelativePath: string;
+  readonly sourceDescriptorHash?: string;
+  readonly sourceUuid?: string;
+  readonly sourceDescriptorInContainer: boolean;
 }
 
 /** Compare-time capture for an explicitly selected matched TemplateType/body transition. */
@@ -114,6 +163,20 @@ export interface LinkedFormReferenceOwnerSnapshot {
   readonly targetContent: string;
 }
 
+/** A hash-only target owner descriptor reference retained at compare time. */
+export interface LinkedFormReferenceOwnerReference {
+  readonly metadataType: string;
+  readonly qualifiedName: string;
+  readonly targetRelativePath: string;
+  readonly targetHash: string;
+}
+
+/** Compact parsed owner state; it never retains owner XML text or a parsed tree. */
+export interface LinkedFormReferenceOwnerState extends LinkedFormReferenceOwnerReference {
+  readonly baselineReferences: readonly { readonly propertyName: string; readonly value: string }[];
+  readonly baselineRegisteredForms: readonly string[];
+}
+
 export interface LinkedDefaultFormDependency {
   readonly targetFormComplete: boolean;
   readonly packageId?: string;
@@ -127,15 +190,34 @@ export interface LinkedDesignerRootConfigurationSnapshot {
   readonly sourceContent?: Buffer;
   readonly sourceHasRegistrations: ReadonlySet<string>;
   readonly targetHasRegistrations: ReadonlySet<string>;
+  readonly sourceValid: boolean;
+  readonly targetValid: boolean;
 }
 
 export interface LinkedDesignerCompareIndex {
   readonly packages: readonly LinkedDesignerPackageRecipe[];
   readonly diagnostics: readonly CompareMessage[];
+  readonly wholeObjectCopiesByNodeId?: ReadonlyMap<string, LinkedRootObjectCopyRecipe>;
   /** Legacy whole-object candidates disabled because their linked package could not be proven. */
   readonly blockedPresenceNodeIds?: ReadonlyMap<string, string>;
   readonly rootConfiguration?: LinkedDesignerRootConfigurationSnapshot;
+  readonly rootConfigurationStates?: {
+    readonly target: 'file' | 'missing' | 'unavailable';
+    readonly source: 'file' | 'missing' | 'unavailable';
+  };
   readonly templateTypeTransitions?: readonly LinkedTemplateTypeTransitionCandidate[];
+}
+
+export interface LinkedDesignerPackageReferenceIndex {
+  readonly packageReferences: readonly LinkedDesignerPackageReference[];
+  readonly diagnostics: readonly CompareMessage[];
+  readonly wholeObjectCopiesByNodeId?: ReadonlyMap<string, LinkedRootObjectCopyRecipe>;
+  readonly blockedPresenceNodeIds?: ReadonlyMap<string, string>;
+  readonly rootConfiguration?: LinkedDesignerRootConfigurationSnapshot;
+  readonly rootConfigurationStates: {
+    readonly target: 'file' | 'missing' | 'unavailable';
+    readonly source: 'file' | 'missing' | 'unavailable';
+  };
 }
 
 export interface LinkedDesignerMaterializerContext {
@@ -146,7 +228,18 @@ export interface LinkedDesignerMaterializerContext {
   readonly rightSnapshotId: string;
   readonly session: CompareSession;
   readonly candidateFactories: ReadonlyMap<string, ExecutableCandidateFactory>;
-  readonly packagesByNodeId: ReadonlyMap<string, LinkedDesignerPackageRecipe>;
+  readonly packageReferencesByNodeId?: ReadonlyMap<string, LinkedDesignerPackageReference>;
+  /** Legacy extension path; ordinary CF compare uses path-only references above. */
+  readonly packagesByNodeId?: ReadonlyMap<string, LinkedDesignerPackageRecipe>;
+  readonly packageManifests?: {
+    readonly target: ConfigurationFileManifest;
+    readonly source: ConfigurationFileManifest;
+  };
+  readonly rootConfigurationStates?: {
+    readonly target: 'file' | 'missing' | 'unavailable';
+    readonly source: 'file' | 'missing' | 'unavailable';
+  };
+  readonly wholeObjectCopiesByNodeId?: ReadonlyMap<string, LinkedRootObjectCopyRecipe>;
   readonly fileWritesByNodeId?: ReadonlyMap<string, LinkedDesignerFileWriteMember>;
   readonly rootConfiguration?: LinkedDesignerRootConfigurationSnapshot;
   readonly formModules?: readonly LinkedFormModuleSnapshot[];
@@ -155,6 +248,8 @@ export interface LinkedDesignerMaterializerContext {
   readonly formXmlSnapshotIssues?: readonly string[];
   readonly formReferenceOwnerSnapshots?: readonly LinkedFormReferenceOwnerSnapshot[];
   readonly formReferenceOwnerSnapshotIssues?: readonly string[];
+  readonly formReferenceOwnerReferences?: readonly LinkedFormReferenceOwnerReference[];
+  readonly formReferenceOwnerReferenceIssues?: readonly string[];
   readonly formXmlModuleByTargetPath?: ReadonlyMap<string, string>;
   readonly eventRoutineDependencies?: ReadonlyMap<string, LinkedEventDependency>;
   readonly defaultFormDependencies?: ReadonlyMap<string, LinkedDefaultFormDependency>;
@@ -218,11 +313,12 @@ export type LinkedBslCompositionResult =
 
 export interface LinkedDesignerBindingInput {
   readonly results: readonly import('./adapters/mergeAdapter').AdapterCompareResult[];
-  readonly packages: readonly LinkedDesignerPackageRecipe[];
+  readonly packages: readonly (LinkedDesignerPackageRecipe | LinkedDesignerPackageReference)[];
 }
 
 export interface LinkedDesignerBindingResult {
   readonly packagesByNodeId: ReadonlyMap<string, LinkedDesignerPackageRecipe>;
+  readonly packageReferencesByNodeId: ReadonlyMap<string, LinkedDesignerPackageReference>;
   readonly results: readonly import('./adapters/mergeAdapter').AdapterCompareResult[];
 }
 

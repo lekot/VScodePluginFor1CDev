@@ -1,26 +1,30 @@
 import type { RootObjectConfigurationMutation } from '../services/configurationXmlUpdater';
+import * as fs from 'fs/promises';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import type { CompareMessage } from './domain/compareContracts';
 import { MISSING_TARGET_HASH, type MergeCandidate, type MergeFileWitness } from './merge/mergePreview';
 import { captureMergePath, mergeSnapshotHash } from './merge/mergeSnapshot';
 import { assertNoSymlinkSegments, assertPathWithinRoot } from '../services/configurationSession/pathBoundary';
+import { isPathInside } from '../services/configurationSession/pathBoundary';
 import { validateMergeFileWitnesses } from './merge/capturedFileWrite';
 import { createCapturedWriteCandidate, materializePackageMembers, materializeRootConfigurationWrite } from './linkedDesignerPackageWrites';
 import { composeBslCandidates } from './linkedDesignerBslMaterializer';
 import { composeXmlCandidates } from './linkedDesignerXmlMaterializer';
 import { validateFinalLinkedDesignerState } from './linkedDesignerValidation';
 import { namespaceUriForName } from './adapters/semanticXml/semanticXmlIdentity';
-import { blocked, LINKED_FORM_REFERENCE_PROPERTIES, normalizeAbsolutePath, normalizePath, stripHash, uniqueWitnesses } from './linkedDesignerUtils';
+import { blocked, normalizeAbsolutePath, normalizePath, stripHash, uniqueWitnesses } from './linkedDesignerUtils';
 import { formXmlReferencesHandler } from './linkedDesignerContext';
 import { materializeLinkedTemplateTypeTransition } from './linkedDesignerTemplateTransitions';
+import { resolveSelectedLinkedDesignerPackages } from './linkedDesignerPackageHydration';
+import { captureSelectedFormReferenceOwnerStates } from './linkedDesignerReferenceOwners';
 import { elementChildren, parseXmlDocument, textContent } from './xml/xmlDom';
-import type { LinkedDesignerMaterializerContext, LinkedDesignerMaterializationResult, LinkedDesignerPackageRecipe } from './linkedDesignerTypes';
+import type { LinkedDesignerMaterializerContext, LinkedDesignerMaterializationResult, LinkedDesignerPackageRecipe, LinkedRootObjectCopyRecipe } from './linkedDesignerTypes';
 
 const MDCLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
 
-export { type LinkedDesignerKind, type LinkedDesignerPackageMember, type LinkedDesignerPackageRecipe, type LinkedDesignerFileWriteMember, type LinkedFormModuleSnapshot, type LinkedFormXmlSnapshot, type LinkedDefaultFormDependency, type LinkedDesignerRootConfigurationSnapshot, type LinkedDesignerCompareIndex, type LinkedDesignerMaterializerContext, type LinkedDesignerMaterializationResult } from './linkedDesignerTypes';
-export { buildLinkedDesignerCompareIndex, bindLinkedDesignerPackageNodes } from './linkedDesignerPackageIndex';
+export { type LinkedDesignerKind, type LinkedDesignerPackageMember, type LinkedDesignerPackageRecipe, type LinkedDesignerPackageReference, type LinkedDesignerPackageReferenceIndex, type LinkedDesignerFileWriteMember, type LinkedFormModuleSnapshot, type LinkedFormXmlSnapshot, type LinkedDefaultFormDependency, type LinkedDesignerRootConfigurationSnapshot, type LinkedDesignerCompareIndex, type LinkedDesignerMaterializerContext, type LinkedDesignerMaterializationResult } from './linkedDesignerTypes';
+export { buildLinkedDesignerCompareIndex, buildLinkedDesignerPackageReferenceIndex, bindLinkedDesignerPackageNodes, captureLinkedRootConfiguration } from './linkedDesignerPackageIndex';
 
 /** Materializes linked packages and selected XML/BSL changes as captured writes per target file. */
 export async function materializeLinkedDesignerSelection(
@@ -29,11 +33,26 @@ export async function materializeLinkedDesignerSelection(
 ): Promise<LinkedDesignerMaterializationResult> {
   const diagnostics: CompareMessage[] = [];
   const selectedPackages = new Map<string, LinkedDesignerPackageRecipe>();
+  const selectedRootObjectCopies = new Map<string, LinkedRootObjectCopyRecipe>();
   const selectedCandidates: MergeCandidate[] = [];
   const rootMutations: RootObjectConfigurationMutation[] = [];
   const sourceRoots = new Set(input.session.state.sources.map((source) => source.sourceId));
 
   if (nodeIds.length === 0) {return { ok: false, diagnostics: [blocked('Выберите хотя бы одно поддерживаемое изменение.', input.sourceId)] };}
+  const selectedReferencesByPackageId = new Map<string, import('./linkedDesignerTypes').LinkedDesignerPackageReference>();
+  for (const nodeId of nodeIds) {
+    const reference = input.packageReferencesByNodeId?.get(nodeId);
+    if (reference) {selectedReferencesByPackageId.set(reference.packageId, reference);}
+  }
+  const selectedReferenceRecipes = new Map<string, LinkedDesignerPackageRecipe>();
+  if (selectedReferencesByPackageId.size > 0) {
+    const resolved = await resolveSelectedLinkedDesignerPackages({
+      context: input,
+      references: [...selectedReferencesByPackageId.values()],
+    });
+    if (resolved.diagnostics.length > 0) {return { ok: false, diagnostics: [...resolved.diagnostics] };}
+    for (const [nodeId, recipe] of resolved.recipesByNodeId) {selectedReferenceRecipes.set(nodeId, recipe);}
+  }
   for (const nodeId of nodeIds) {
     const templateTransition = input.templateTypeTransitionsByNodeId?.get(nodeId);
     if (templateTransition) {
@@ -53,7 +72,7 @@ export async function materializeLinkedDesignerSelection(
       else {selectedCandidates.push(...materialized.candidates);}
       continue;
     }
-    const recipe = input.packagesByNodeId.get(nodeId);
+    const recipe = selectedReferenceRecipes.get(nodeId) ?? input.packagesByNodeId?.get(nodeId);
     if (recipe) {
       if (recipe.action === 'delete' && !recipe.targetDirectoryWitness) {
         diagnostics.push(blocked('Удаляемый Designer-пакет не содержит witness каталога sidecar.', input.targetSourceId, nodeId));
@@ -104,6 +123,21 @@ export async function materializeLinkedDesignerSelection(
       continue;
     }
 
+    const wholeObjectCopy = input.wholeObjectCopiesByNodeId?.get(nodeId);
+    if (wholeObjectCopy) {
+      const materialized = await materializeWholeObjectCopy(input, wholeObjectCopy);
+      if ('diagnostic' in materialized) {
+        diagnostics.push(materialized.diagnostic);
+      } else {
+        selectedRootObjectCopies.set(nodeId, wholeObjectCopy);
+        selectedCandidates.push(...materialized.candidates);
+        if (wholeObjectCopy.configurationMode === 'registered') {
+          rootMutations.push({ type: 'add', ...wholeObjectCopy.rootRegistration });
+        }
+      }
+      continue;
+    }
+
     const factory = input.candidateFactories.get(nodeId);
     if (!factory) {
       diagnostics.push(blocked('Выбранный узел отсутствует в текущем host-side сравнении.', input.sourceId, nodeId));
@@ -114,6 +148,13 @@ export async function materializeLinkedDesignerSelection(
     else {selectedCandidates.push(result.candidate);}
   }
   if (diagnostics.length > 0) {return { ok: false, diagnostics };}
+
+  const selectedXmlTargets = await selectedXmlTargetPaths(input.targetRootPath, selectedCandidates);
+  const referenceOwnerCapture = await captureSelectedFormReferenceOwnerStates(input, selectedPackages, selectedXmlTargets.paths);
+  if (referenceOwnerCapture.diagnostics.length > 0) {
+    return { ok: false, diagnostics: [...referenceOwnerCapture.diagnostics] };
+  }
+  const deletedFormReferenceWitnesses = referenceOwnerCapture.witnesses;
 
   for (let index = 0; index < selectedCandidates.length; index += 1) {
     const candidate = selectedCandidates[index]!;
@@ -149,27 +190,15 @@ export async function materializeLinkedDesignerSelection(
     packageWrites.push(...memberResults.candidates);
   }
   if (diagnostics.length > 0) {return { ok: false, diagnostics };}
-
-  const deletedFormReferenceWitnesses = [...selectedPackages.values()]
-    .filter((recipe) => recipe.action === 'delete' && recipe.kind === 'Form')
-    .flatMap((recipe) => (input.formReferenceOwnerSnapshots ?? [])
-      .filter((snapshot) => descriptorReferencesForm(snapshot.targetContent, snapshot.qualifiedName, recipe.qualifiedName))
-      .map((snapshot) => ({
-        sourceId: input.targetSourceId,
-        relativePath: snapshot.targetRelativePath,
-        expectedHash: snapshot.targetHash,
-        kind: 'file' as const,
-      })));
-
   if (rootMutations.length > 0) {
-    const rootWrite = await materializeRootConfigurationWrite(input, rootMutations, [...selectedPackages.values()]);
+    const rootWrite = await materializeRootConfigurationWrite(
+      input,
+      rootMutations,
+      [...selectedPackages.values(), ...selectedRootObjectCopies.values()],
+    );
     if ('diagnostic' in rootWrite) {return { ok: false, diagnostics: [rootWrite.diagnostic] };}
     packageWrites.push({
       ...rootWrite.candidate,
-      fileWrite: rootWrite.candidate.fileWrite ? {
-        ...rootWrite.candidate.fileWrite,
-        witnesses: uniqueWitnesses([...rootWrite.candidate.fileWrite.witnesses, ...deletedFormReferenceWitnesses]),
-      } : undefined,
     });
   }
 
@@ -179,8 +208,30 @@ export async function materializeLinkedDesignerSelection(
     deletionWitnessesByOwner.set(recipe.ownerTargetRelativePath, [
       ...(deletionWitnessesByOwner.get(recipe.ownerTargetRelativePath) ?? []),
       recipe.targetDirectoryWitness,
-      ...deletedFormReferenceWitnesses,
     ]);
+  }
+  const deletionOwnerPathKeys = new Map([...deletionWitnessesByOwner.keys()].map((relativePath) => [normalizePath(relativePath), relativePath]));
+  for (const state of referenceOwnerCapture.states) {
+    const witness: MergeFileWitness = {
+      sourceId: input.targetSourceId,
+      relativePath: state.targetRelativePath,
+      expectedHash: state.targetHash,
+      kind: 'file',
+    };
+    const deletionPath = deletionOwnerPathKeys.get(normalizePath(state.targetRelativePath));
+    if (deletionPath) {
+      deletionWitnessesByOwner.set(deletionPath, [...deletionWitnessesByOwner.get(deletionPath)!, witness]);
+      continue;
+    }
+    const targetPath = normalizeAbsolutePath(path.resolve(selectedXmlTargets.canonicalRootPath, ...state.targetRelativePath.split('/')));
+    const candidateIndex = selectedXmlTargets.candidateIndexesByPath.get(targetPath)?.[0];
+    if (candidateIndex !== undefined) {
+      const candidate = selectedCandidates[candidateIndex]!;
+      selectedCandidates[candidateIndex] = {
+        ...candidate,
+        sourceWitnesses: uniqueWitnesses([...(candidate.sourceWitnesses ?? []), witness]),
+      };
+    }
   }
   const xmlResult = await composeXmlCandidates(input, selectedCandidates, deletionWitnessesByOwner);
   if ('diagnostics' in xmlResult) {return { ok: false, diagnostics: xmlResult.diagnostics};}
@@ -199,8 +250,17 @@ export async function materializeLinkedDesignerSelection(
     ...bslResult.candidates,
     ...selectedCandidates.filter((candidate) => !candidate.xmlPatch && !candidate.bslRoutine && candidate.kind !== 'bslLogicalRoutineMerge'),
   ];
+  const witnessCarrierFailure = attachFormDeleteWitnessCarrier(input, candidates, selectedPackages, deletedFormReferenceWitnesses);
+  if (witnessCarrierFailure) {return { ok: false, diagnostics: [witnessCarrierFailure] };}
 
-  const linkedStateDiagnostics = await validateFinalLinkedDesignerState(input, selectedPackages, selectedCandidates, bslResult.outputs, xmlResult.outputs);
+  const linkedStateDiagnostics = await validateFinalLinkedDesignerState(
+    input,
+    selectedPackages,
+    selectedCandidates,
+    bslResult.outputs,
+    xmlResult.outputs,
+    referenceOwnerCapture.states,
+  );
   if (linkedStateDiagnostics.length > 0) {return { ok: false, diagnostics: linkedStateDiagnostics};}
 
   for (const candidate of candidates) {
@@ -220,6 +280,118 @@ export async function materializeLinkedDesignerSelection(
   const witnessDiagnostics = await verifyLinkedCandidateWitnesses(input, candidates);
   if (witnessDiagnostics.length > 0) {return { ok: false, diagnostics: witnessDiagnostics};}
   return { ok: true, candidates };
+}
+
+async function materializeWholeObjectCopy(
+  input: LinkedDesignerMaterializerContext,
+  recipe: LinkedRootObjectCopyRecipe,
+): Promise<{ candidates: MergeCandidate[] } | { diagnostic: CompareMessage }> {
+  const factory = input.candidateFactories.get(recipe.nodeId);
+  if (!factory) {
+    return { diagnostic: blocked('Кандидат копирования корневого объекта отсутствует в текущем сравнении.', input.sourceId, recipe.nodeId) };
+  }
+  const result = await factory();
+  if (!result.ok) {return { diagnostic: result.diagnostics[0] ?? blocked('Не удалось подготовить копирование корневого объекта.', input.sourceId, recipe.nodeId) };}
+  const candidate = result.candidate;
+  const operation = candidate.fileOperation;
+  const expectedDescriptorPath = path.resolve(input.sourceRootPath, ...recipe.sourceDescriptorRelativePath.split('/'));
+  const descriptorSnapshot = await captureMergePath(expectedDescriptorPath, { retainContent: true }).catch(() => undefined);
+  if (descriptorSnapshot?.state !== 'file'
+    || descriptorSnapshot.contentBase64 === undefined
+    || (recipe.sourceDescriptorHash !== undefined && descriptorSnapshot.hash !== stripHash(recipe.sourceDescriptorHash))
+    || (recipe.sourceDescriptorHash === undefined
+      && !matchesRootObjectDescriptor(Buffer.from(descriptorSnapshot.contentBase64, 'base64'), recipe))) {
+    return { diagnostic: blocked('Дескриптор корневого объекта изменился после сравнения.', input.sourceId, recipe.nodeId) };
+  }
+  if (!operation || (operation.kind !== 'folderCopy' && operation.kind !== 'fileCopy')
+    || candidate.kind !== operation.kind
+    || candidate.expectedOldHash !== MISSING_TARGET_HASH
+    || operation.expectedOldHash !== MISSING_TARGET_HASH
+    || !operation.sourcePath
+    || !operation.sourceHash) {
+    return { diagnostic: blocked('Кандидат корневого объекта не содержит проверяемое копирование с целевой защитой.', input.sourceId, recipe.nodeId) };
+  }
+
+  const normalizedSourcePath = normalizeAbsolutePath(operation.sourcePath);
+  const descriptorWitness: MergeFileWitness = {
+    sourceId: input.sourceId,
+    relativePath: recipe.sourceDescriptorRelativePath,
+    expectedHash: descriptorSnapshot.hash,
+    kind: 'file',
+  };
+  const looseRootConfigurationWitnesses: MergeFileWitness[] = recipe.configurationMode === 'legacyLoose'
+    ? [
+        {
+          sourceId: input.targetSourceId,
+          relativePath: 'Configuration.xml',
+          expectedHash: MISSING_TARGET_HASH,
+          kind: 'file',
+        },
+        {
+          sourceId: input.sourceId,
+          relativePath: 'Configuration.xml',
+          expectedHash: MISSING_TARGET_HASH,
+          kind: 'file',
+        },
+      ]
+    : [];
+  const candidates: MergeCandidate[] = [{
+    ...candidate,
+    sourceWitnesses: uniqueWitnesses([
+      ...(candidate.sourceWitnesses ?? []),
+      descriptorWitness,
+      ...looseRootConfigurationWitnesses,
+    ]),
+  }];
+
+  if (operation.kind === 'fileCopy') {
+    if (normalizedSourcePath !== normalizeAbsolutePath(expectedDescriptorPath)
+      || operation.sourceHash !== descriptorSnapshot.hash) {
+      return { diagnostic: blocked('Плоский fileCopy не совпадает с захваченным дескриптором корневого объекта.', input.sourceId, recipe.nodeId) };
+    }
+    return { candidates };
+  }
+
+  if (normalizedSourcePath !== normalizeAbsolutePath(recipe.sourceContainerPath)) {
+    return { diagnostic: blocked('folderCopy не совпадает с каталогом захваченного корневого объекта.', input.sourceId, recipe.nodeId) };
+  }
+  if (recipe.sourceDescriptorInContainer) {return { candidates };}
+
+  const descriptorWrite = await createCapturedWriteCandidate(input, {
+    nodeId: `${recipe.nodeId}:descriptor`,
+    targetRelativePath: recipe.sourceDescriptorRelativePath,
+    expectedTargetHash: MISSING_TARGET_HASH,
+    sourceRelativePath: recipe.sourceDescriptorRelativePath,
+    sourceHash: descriptorSnapshot.hash,
+    content: Buffer.from(descriptorSnapshot.contentBase64, 'base64'),
+  });
+  if ('diagnostic' in descriptorWrite) {return { diagnostic: descriptorWrite.diagnostic };}
+  candidates.push(descriptorWrite);
+  return { candidates };
+}
+
+function matchesRootObjectDescriptor(content: Buffer, recipe: LinkedRootObjectCopyRecipe): boolean {
+  try {
+    const root = parseXmlDocument(content.toString('utf8')).root;
+    if (root.localName !== 'MetaDataObject' || namespaceUriForName(root) !== MDCLASSES_NAMESPACE) {return false;}
+    const owners = elementChildren(root);
+    if (owners.length !== 1
+      || owners[0]!.localName !== recipe.rootRegistration.rootTag
+      || namespaceUriForName(owners[0]!) !== MDCLASSES_NAMESPACE) {return false;}
+    const owner = owners[0]!;
+    if (recipe.sourceUuid) {
+      const uuid = owner.attributes.find((attribute) => attribute.localName === 'uuid')?.value;
+      if (uuid?.toLocaleLowerCase('en-US') !== recipe.sourceUuid.toLocaleLowerCase('en-US')) {return false;}
+    }
+    const properties = elementChildren(owner).filter((element) =>
+      element.localName === 'Properties' && namespaceUriForName(element) === MDCLASSES_NAMESPACE);
+    if (properties.length !== 1) {return false;}
+    const names = elementChildren(properties[0]!).filter((element) =>
+      element.localName === 'Name' && namespaceUriForName(element) === MDCLASSES_NAMESPACE);
+    return names.length === 1 && textContent(names[0]!).trim() === recipe.rootRegistration.objectName;
+  } catch {
+    return false;
+  }
 }
 
 async function verifyLinkedCandidateWitnesses(
@@ -275,38 +447,58 @@ function targetPathForXmlCandidate(candidate: MergeCandidate): string {
   catch {return normalizeAbsolutePath(value);}
 }
 
+interface SelectedXmlTargetIndex {
+  readonly canonicalRootPath: string;
+  readonly paths: ReadonlySet<string>;
+  readonly candidateIndexesByPath: ReadonlyMap<string, readonly number[]>;
+}
+
+async function selectedXmlTargetPaths(rootPath: string, candidates: readonly MergeCandidate[]): Promise<SelectedXmlTargetIndex> {
+  const xmlCandidates = candidates.filter((candidate) => candidate.xmlPatch);
+  if (xmlCandidates.length === 0) {
+    return { canonicalRootPath: path.resolve(rootPath), paths: new Set(), candidateIndexesByPath: new Map() };
+  }
+  const canonicalRoot = await fs.realpath(rootPath);
+  const paths = new Set<string>();
+  const candidateIndexesByPath = new Map<string, number[]>();
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index]!;
+    if (!candidate.xmlPatch) {continue;}
+    const target = targetPathForXmlCandidate(candidate);
+    try {
+      const canonicalTarget = await fs.realpath(target);
+      if (!isPathInside(canonicalRoot, canonicalTarget)) {continue;}
+      const key = normalizeAbsolutePath(canonicalTarget);
+      paths.add(key);
+      candidateIndexesByPath.set(key, [...(candidateIndexesByPath.get(key) ?? []), index]);
+    } catch {continue;}
+  }
+  return { canonicalRootPath: canonicalRoot, paths, candidateIndexesByPath };
+}
+
+function attachFormDeleteWitnessCarrier(
+  input: LinkedDesignerMaterializerContext,
+  candidates: MergeCandidate[],
+  selectedPackages: ReadonlyMap<string, LinkedDesignerPackageRecipe>,
+  witnesses: readonly MergeFileWitness[],
+): import('./domain/compareContracts').CompareMessage | undefined {
+  if (witnesses.length === 0) {return undefined;}
+  const deletedForms = [...selectedPackages.values()].filter((recipe) => recipe.kind === 'Form' && recipe.action === 'delete');
+  if (deletedForms.length === 0) {return undefined;}
+  const deleteNodeIds = new Set(deletedForms.map((recipe) => recipe.registrationNodeId ?? recipe.packageId));
+  let carrier = candidates.findIndex((candidate) => deleteNodeIds.has(candidate.nodeId) && candidate.fileOperation?.kind === 'fileDelete');
+  if (carrier < 0) {carrier = candidates.findIndex((candidate) => candidate.fileWrite || candidate.fileOperation || candidate.xmlPatch || candidate.bslRoutine);}
+  if (carrier < 0) {return blocked('Удаление формы не содержит кандидата для защиты owner witnesses.', input.targetSourceId);}
+  const candidate = candidates[carrier]!;
+  candidates[carrier] = {
+    ...candidate,
+    sourceWitnesses: uniqueWitnesses([...(candidate.sourceWitnesses ?? []), ...witnesses]),
+  };
+  return undefined;
+}
+
 function targetPathForCandidate(candidate: MergeCandidate): string {
   const value = candidate.targetUri ?? '';
   try {return normalizeAbsolutePath(fileURLToPath(value));}
   catch {return normalizeAbsolutePath(value);}
-}
-
-function descriptorReferencesForm(xml: string, ownerName: string, formName: string): boolean {
-  try {
-    const root = parseXmlDocument(xml).root;
-    if (root.localName !== 'MetaDataObject' || namespaceUriForName(root) !== MDCLASSES_NAMESPACE) {return false;}
-    const owners = elementChildren(root);
-    if (owners.length !== 1 || namespaceUriForName(owners[0]!) !== MDCLASSES_NAMESPACE) {return false;}
-    const owner = owners[0]!;
-    const ownerNamespace = namespaceUriForName(owner);
-    const properties = elementChildren(owner).filter((element) =>
-      element.localName === 'Properties' && namespaceUriForName(element) === ownerNamespace
-    );
-    if (properties.length !== 1) {return false;}
-    return elementChildren(properties[0]!).some((element) =>
-      LINKED_FORM_REFERENCE_PROPERTIES.includes(element.localName as typeof LINKED_FORM_REFERENCE_PROPERTIES[number])
-      && namespaceUriForName(element) === ownerNamespace
-      && resolveFormReference(textContent(element).trim(), ownerName) === canonicalName(formName)
-    );
-  } catch {
-    return false;
-  }
-}
-
-function resolveFormReference(value: string, ownerName: string): string {
-  return canonicalName(value.includes('.') ? value : `${ownerName}.Form.${value}`);
-}
-
-function canonicalName(value: string): string {
-  return value.normalize('NFC').toLocaleLowerCase('en-US');
 }

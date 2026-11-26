@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as metadataFileLocatorModule from '../../src/services/metadataFileLocator';
 import { locateMetadataFile, MetadataLocation } from '../../src/services/metadataFileLocator';
 
 // Normalise to native separators — the locator accepts any absolute path.
@@ -444,6 +445,76 @@ suite('metadataFileLocator', () => {
     const result = locateMetadataFile(p(root, 'Catalogs/Товары.xml'), roots);
     assert.ok(result);
     assert.strictEqual(result.extensionName, undefined);
+  });
+
+  test('generic locator still performs filesystem-aware path canonicalization', () => {
+    const originalRealpath = fs.realpathSync.native;
+    let realpathCalls = 0;
+    Reflect.set(fs.realpathSync, 'native', new Proxy(originalRealpath, {
+      apply(target, thisArg, args) {
+        realpathCalls += 1;
+        return Reflect.apply(target, thisArg, args);
+      },
+    }));
+
+    try {
+      const result = locateMetadataFile(p(root, 'CommonModules/Helper/Ext/Module.bsl'), roots);
+      assert.ok(result);
+      assert.ok(realpathCalls > 0, 'generic locator must keep canonical filesystem root selection');
+    } finally {
+      Reflect.set(fs.realpathSync, 'native', originalRealpath);
+    }
+  });
+
+  test('within-root locator maps a large manifest batch without filesystem calls', () => {
+    const locateWithinRoot = (
+      metadataFileLocatorModule as unknown as {
+        locateMetadataFileWithinRoot?: (filePath: string, configRoot: string) => MetadataLocation | null;
+      }
+    ).locateMetadataFileWithinRoot;
+    assert.strictEqual(typeof locateWithinRoot, 'function', 'pure within-root locator export is required');
+    if (typeof locateWithinRoot !== 'function') {
+      return;
+    }
+
+    const files = [
+      p(root, 'Catalogs/Товары/Ext/ObjectModule.bsl'),
+      p(root, 'Documents/Заказ/Ext/ManagerModule.bsl'),
+      p(root, 'CommonModules/ОбщийСервис/Ext/Module.bsl'),
+      p(root, 'Catalogs/Товары/Forms/ФормаЭлемента/Ext/Form/Module.bsl'),
+      p(root, 'CommonCommands/ОткрытьПанель/Ext/CommandModule.bsl'),
+      p(root, 'Subsystems/Продажи/Subsystems/Розница.xml'),
+      p(root, 'ConfigurationExtensions/МоеРасширение/Catalogs/Товары/Ext/ObjectModule.bsl'),
+    ];
+    const originalRealpath = fs.realpathSync.native;
+    let realpathCalls = 0;
+    Reflect.set(fs.realpathSync, 'native', new Proxy(originalRealpath, {
+      apply(target, thisArg, args) {
+        realpathCalls += 1;
+        return Reflect.apply(target, thisArg, args);
+      },
+    }));
+
+    try {
+      const expected = files.map((filePath) => locateMetadataFile(filePath, roots));
+      assert.ok(realpathCalls > 0, 'generic locator calls realpath while selecting roots');
+      realpathCalls = 0;
+      for (let index = 0; index < 1000; index += 1) {
+        const fileIndex = index % files.length;
+        assert.deepStrictEqual(locateWithinRoot(files[fileIndex]!, root), expected[fileIndex]);
+      }
+      assert.strictEqual(realpathCalls, 0, 'within-root mapping must not inspect the filesystem');
+      assert.strictEqual(locateWithinRoot(root, root), null, 'the root itself is not a metadata file');
+      assert.strictEqual(
+        locateWithinRoot(p(root, '..', 'main-sibling', 'Catalogs/Goods.xml'), root),
+        null,
+        'a sibling root must be rejected at the path segment boundary'
+      );
+      assert.strictEqual(locateWithinRoot(p(root, 'README.md'), root), null);
+      assert.strictEqual(realpathCalls, 0, 'boundary checks must remain lexical');
+    } finally {
+      Reflect.set(fs.realpathSync, 'native', originalRealpath);
+    }
   });
 
   test('Windows: locates metadata file across 8.3 short-name aliases (#328)', function () {

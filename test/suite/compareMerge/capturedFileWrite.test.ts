@@ -6,7 +6,7 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 
 import { CompareSession } from '../../../src/compareMerge/domain/compareSession';
-import { captureMergePath, mergeSnapshotHash } from '../../../src/compareMerge/merge/mergeSnapshot';
+import { captureMergePath, mergeSnapshotHash, mutationFingerprint } from '../../../src/compareMerge/merge/mergeSnapshot';
 import { executeBslMergePreview } from '../../../src/compareMerge/merge/mergeExecutor';
 import {
   createMergePreview,
@@ -53,6 +53,10 @@ interface ApprovedFixture extends Fixture {
 }
 
 const TEST_SNAPSHOT_TIME = '2026-10-27T00:00:00.000Z';
+const mutableFsPromises = require('fs/promises') as {
+  open: typeof fs.open;
+  readFile: typeof fs.readFile;
+};
 
 suite('Captured file-write merge mutation engine (#336)', () => {
   const tempDirs: string[] = [];
@@ -877,4 +881,349 @@ function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
+}
+
+suite('Hash-only merge snapshots', () => {
+  const tempDirs: string[] = [];
+
+  teardown(async () => {
+    await Promise.all(tempDirs.splice(0).map((directory) =>
+      fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),
+    ));
+  });
+
+  test('streams raw bytes for large, empty, and binary files without readFile', async () => {
+    const rootPath = await createSnapshotWorkspace(tempDirs);
+    const largeBytes = Buffer.alloc(2 * 64 * 1024 + 37);
+    for (let index = 0; index < largeBytes.length; index += 1) {
+      largeBytes[index] = (index * 47 + 13) & 0xff;
+    }
+    largeBytes.set([0xef, 0xbb, 0xbf, 0x00, 0xff, 0x80], 31);
+    const largePath = path.join(rootPath, 'large.bin');
+    const emptyPath = path.join(rootPath, 'empty.bin');
+    await Promise.all([fs.writeFile(largePath, largeBytes), fs.writeFile(emptyPath, Buffer.alloc(0))]);
+
+    const fsWithReadFile = mutableFsPromises;
+    const originalReadFile = fsWithReadFile.readFile;
+    fsWithReadFile.readFile = (async () => { throw new Error('readFile used by hash-only capture'); }) as typeof fs.readFile;
+    try {
+      const [large, empty] = await Promise.all([
+        captureMergePath(largePath, { retainContent: false }),
+        captureMergePath(emptyPath, { retainContent: false }),
+      ]);
+
+      assert.strictEqual(large.state, 'file');
+      assert.strictEqual(large.hash, createHash('sha256').update(largeBytes).digest('hex'));
+      assert.strictEqual(large.contentBase64, undefined);
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(large, 'contentBase64'), true);
+      assert.strictEqual(empty.state, 'file');
+      assert.strictEqual(empty.hash, createHash('sha256').update(Buffer.alloc(0)).digest('hex'));
+      assert.strictEqual(empty.contentBase64, undefined);
+    } finally {
+      fsWithReadFile.readFile = originalReadFile;
+    }
+  });
+
+  test('probes the XML prefix after short reads split a UTF-8 character', async () => {
+    const rootPath = await createSnapshotWorkspace(tempDirs);
+    const filePath = path.join(rootPath, 'rights.xml');
+    const bytes = Buffer.from(`<!--x😀y--><Rights xmlns="urn:test"/>${' '.repeat(2 * 64 * 1024)}`, 'utf8');
+    await fs.writeFile(filePath, bytes);
+    const emojiOffset = bytes.indexOf(Buffer.from('😀', 'utf8'));
+    const shortReadSizes = [emojiOffset + 1, 1, 1, 1, 7];
+    let readCount = 0;
+    let maxReadSize = 0;
+    const restore = interceptSnapshotOpen((absolutePath, handle) => absolutePath === filePath
+      ? wrapSnapshotHandle(handle, {
+          read: (buffer, offset, length, position) => {
+            maxReadSize = Math.max(maxReadSize, length);
+            const nextSize = shortReadSizes[readCount++] ?? 4096;
+            return handle.read(buffer, offset, Math.min(length, nextSize), position);
+          },
+        })
+      : handle);
+    try {
+      const snapshot = await captureMergePath(filePath, { retainContent: false, probeXmlRootNames: true });
+
+      assert.strictEqual(snapshot.state, 'file');
+      assert.strictEqual(snapshot.rootExpandedName, '{urn:test}Rights');
+      assert.ok(readCount > shortReadSizes.length, 'capture continued reading through the complete file');
+      assert.ok(maxReadSize <= 64 * 1024, 'each stream read is bounded to one chunk');
+      assert.strictEqual(snapshot.hash, createHash('sha256').update(bytes).digest('hex'));
+
+      const boundaryPath = path.join(rootPath, 'template.xml');
+      await fs.writeFile(boundaryPath, Buffer.from(`<!--${'x'.repeat(64 * 1024)}--><Template/>`, 'utf8'));
+      const boundarySnapshot = await captureMergePath(boundaryPath, { retainContent: false, probeXmlRootNames: true });
+      assert.strictEqual(boundarySnapshot.state, 'file');
+      assert.strictEqual(boundarySnapshot.rootExpandedName, undefined, 'XML probe stops at the first 64 KiB');
+    } finally {
+      restore();
+    }
+  });
+
+  test('retains legacy base64 and sequential ordering by default', async () => {
+    const rootPath = await createSnapshotWorkspace(tempDirs);
+    const contents = new Map([
+      ['a.bin', Buffer.from([0xef, 0xbb, 0xbf, 0x00, 0xff])],
+      ['b.bin', Buffer.from('second')],
+      ['c.bin', Buffer.alloc(0)],
+    ]);
+    await Promise.all([...contents].map(([name, bytes]) => fs.writeFile(path.join(rootPath, name), bytes)));
+    const fsWithReadFile = mutableFsPromises;
+    const originalReadFile = fsWithReadFile.readFile;
+    const readOrder: string[] = [];
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    fsWithReadFile.readFile = (async (...args: Parameters<typeof fs.readFile>) => {
+      const inputPath = String(args[0]);
+      readOrder.push(path.basename(inputPath));
+      activeReads += 1;
+      maxActiveReads = Math.max(maxActiveReads, activeReads);
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        return await originalReadFile(...args);
+      } finally {
+        activeReads -= 1;
+      }
+    }) as typeof fs.readFile;
+    try {
+      const snapshot = await captureMergePath(rootPath);
+
+      assert.strictEqual(snapshot.state, 'directory');
+      assert.deepStrictEqual(snapshot.children.map((entry) => path.basename(entry.relativePath)), ['a.bin', 'b.bin', 'c.bin']);
+      assert.deepStrictEqual(snapshot.children.map((entry) => entry.type === 'file' ? entry.contentBase64 : undefined), [...contents.values()].map((bytes) => bytes.toString('base64')));
+      assert.deepStrictEqual(readOrder, ['a.bin', 'b.bin', 'c.bin']);
+      assert.strictEqual(maxActiveReads, 1);
+
+      fsWithReadFile.readFile = originalReadFile;
+      const hashOnly = await captureMergePath(rootPath, { retainContent: false });
+      assert.strictEqual(mergeSnapshotHash(hashOnly), mergeSnapshotHash(snapshot));
+      assert.strictEqual(mutationFingerprint(hashOnly), mutationFingerprint(snapshot));
+    } finally {
+      fsWithReadFile.readFile = originalReadFile;
+    }
+  });
+
+  test('reads adjacent files in pairs and drains each pair before serial recursion', async () => {
+    const rootPath = await createSnapshotWorkspace(tempDirs);
+    await fs.writeFile(path.join(rootPath, 'a.bin'), 'a');
+    await fs.writeFile(path.join(rootPath, 'b.bin'), 'b');
+    await fs.mkdir(path.join(rootPath, 'm-nested'));
+    await fs.writeFile(path.join(rootPath, 'm-nested', 'nested.bin'), 'nested');
+    await fs.writeFile(path.join(rootPath, 'z1.bin'), 'z1');
+    await fs.writeFile(path.join(rootPath, 'z2.bin'), 'z2');
+
+    const pairGate = deferred<void>();
+    const pairReadsStarted = deferred<void>();
+    const events: string[] = [];
+    let firstPairReads = 0;
+    let activeHandles = 0;
+    let maxActiveHandles = 0;
+    const restore = interceptSnapshotOpen((absolutePath, handle) => {
+      const relativePath = path.relative(rootPath, absolutePath).replace(/\\/gu, '/');
+      events.push(`open:${relativePath}`);
+      activeHandles += 1;
+      maxActiveHandles = Math.max(maxActiveHandles, activeHandles);
+      let firstRead = true;
+      return wrapSnapshotHandle(handle, {
+        read: async (buffer, offset, length, position) => {
+          if (firstRead) {
+            firstRead = false;
+            if (relativePath === 'a.bin' || relativePath === 'b.bin') {
+              firstPairReads += 1;
+              if (firstPairReads === 2) { pairReadsStarted.resolve(); }
+              await pairGate.promise;
+            }
+          }
+          return handle.read(buffer, offset, length, position);
+        },
+        close: async () => {
+          events.push(`close:${relativePath}`);
+          activeHandles -= 1;
+          await handle.close();
+        },
+      });
+    });
+    const capture = captureMergePath(rootPath, { retainContent: false });
+    try {
+      const pairStarted = await Promise.race([
+        pairReadsStarted.promise.then(() => true),
+        capture.then(() => false),
+      ]);
+      assert.strictEqual(pairStarted, true, 'the first two neighboring files were opened together');
+      assert.deepStrictEqual(events.filter((event) => event.startsWith('open:')).slice(0, 2).sort(), ['open:a.bin', 'open:b.bin']);
+      assert.strictEqual(events.some((event) => event.startsWith('open:m-nested/')), false);
+      pairGate.resolve();
+      const snapshot = await capture;
+
+      assert.strictEqual(snapshot.state, 'directory');
+      assert.deepStrictEqual(snapshot.children.map((entry) => path.basename(entry.relativePath)), ['a.bin', 'b.bin', 'm-nested', 'z1.bin', 'z2.bin']);
+      assert.ok(maxActiveHandles <= 2);
+      assert.ok(events.indexOf('open:m-nested/nested.bin') > events.indexOf('close:a.bin'));
+      assert.ok(events.indexOf('open:m-nested/nested.bin') > events.indexOf('close:b.bin'));
+      assert.ok(events.indexOf('open:z1.bin') > events.indexOf('close:m-nested/nested.bin'));
+      assert.strictEqual(mergeSnapshotHash(snapshot), mergeSnapshotHash(await captureMergePath(rootPath)));
+    } finally {
+      pairGate.resolve();
+      restore();
+      await capture.catch(() => undefined);
+    }
+  });
+
+  test('drains a batch, closes handles, and chooses the first input path error', async () => {
+    const rootPath = await createSnapshotWorkspace(tempDirs);
+    await fs.writeFile(path.join(rootPath, 'a.bin'), 'a');
+    await fs.writeFile(path.join(rootPath, 'b.bin'), 'b');
+    const releaseA = deferred<void>();
+    const releaseB = deferred<void>();
+    const bothStarted = deferred<void>();
+    const bFailed = deferred<void>();
+    const closed: string[] = [];
+    let started = 0;
+    const restore = interceptSnapshotOpen((absolutePath, handle) => {
+      const name = path.basename(absolutePath);
+      let firstRead = true;
+      return wrapSnapshotHandle(handle, {
+        read: async () => {
+          if (firstRead) {
+            firstRead = false;
+            started += 1;
+            if (started === 2) { bothStarted.resolve(); }
+            await (name === 'a.bin' ? releaseA.promise : releaseB.promise);
+            if (name === 'b.bin') {
+              bFailed.resolve();
+              throw new Error('error from b');
+            }
+            throw new Error('error from a');
+          }
+          throw new Error('unexpected read');
+        },
+        close: async () => {
+          closed.push(name);
+          await handle.close();
+        },
+      });
+    });
+    const capture = captureMergePath(rootPath, { retainContent: false });
+    try {
+      const bothStartedOrDone = await Promise.race([bothStarted.promise.then(() => true), capture.then(() => false, () => false)]);
+      assert.strictEqual(bothStartedOrDone, true);
+      releaseB.resolve();
+      await bFailed.promise;
+      releaseA.resolve();
+      await assert.rejects(capture, /error from a/u);
+      assert.deepStrictEqual(closed.sort(), ['a.bin', 'b.bin']);
+    } finally {
+      releaseA.resolve();
+      releaseB.resolve();
+      restore();
+      await capture.catch(() => undefined);
+    }
+  });
+
+  test('drains and closes a batch before reporting cancellation', async () => {
+    const rootPath = await createSnapshotWorkspace(tempDirs);
+    await fs.writeFile(path.join(rootPath, 'a.bin'), 'a');
+    await fs.writeFile(path.join(rootPath, 'b.bin'), 'b');
+    const readGate = deferred<void>();
+    const bothStarted = deferred<void>();
+    const closed: string[] = [];
+    let cancelled = false;
+    let started = 0;
+    const restore = interceptSnapshotOpen((absolutePath, handle) => {
+      const name = path.basename(absolutePath);
+      let firstRead = true;
+      return wrapSnapshotHandle(handle, {
+        read: async (buffer, offset, length, position) => {
+          if (firstRead) {
+            firstRead = false;
+            started += 1;
+            if (started === 2) { bothStarted.resolve(); }
+            await readGate.promise;
+          }
+          return handle.read(buffer, offset, length, position);
+        },
+        close: async () => {
+          closed.push(name);
+          await handle.close();
+        },
+      });
+    });
+    const capture = captureMergePath(rootPath, {
+      retainContent: false,
+      cancellation: { get isCancellationRequested() { return cancelled; } },
+    });
+    try {
+      const bothStartedOrDone = await Promise.race([bothStarted.promise.then(() => true), capture.then(() => false, () => false)]);
+      assert.strictEqual(bothStartedOrDone, true);
+      cancelled = true;
+      readGate.resolve();
+      await assert.rejects(capture, /comparison cancelled/iu);
+      assert.deepStrictEqual(closed.sort(), ['a.bin', 'b.bin']);
+    } finally {
+      readGate.resolve();
+      restore();
+      await capture.catch(() => undefined);
+    }
+  });
+
+  test('reports cancellation requested while closing a direct hash-only file', async () => {
+    const rootPath = await createSnapshotWorkspace(tempDirs);
+    const filePath = path.join(rootPath, 'a.bin');
+    await fs.writeFile(filePath, 'a');
+    let cancelled = false;
+    const restore = interceptSnapshotOpen((absolutePath, handle) => absolutePath === filePath
+      ? wrapSnapshotHandle(handle, {
+          close: async () => {
+            cancelled = true;
+            await handle.close();
+          },
+        })
+      : handle);
+    try {
+      await assert.rejects(
+        captureMergePath(filePath, { retainContent: false, cancellation: { get isCancellationRequested() { return cancelled; } } }),
+        /comparison cancelled/iu,
+      );
+    } finally {
+      restore();
+    }
+  });
+});
+
+type SnapshotHandle = Awaited<ReturnType<typeof fs.open>>;
+
+function interceptSnapshotOpen(
+  wrap: (filePath: string, handle: SnapshotHandle) => SnapshotHandle | Promise<SnapshotHandle>,
+): () => void {
+  const fsWithOpen = mutableFsPromises;
+  const originalOpen = fsWithOpen.open;
+  fsWithOpen.open = (async (...args: Parameters<typeof fs.open>) => {
+    const filePath = String(args[0]);
+    const handle = await originalOpen(...args);
+    return wrap(filePath, handle);
+  }) as typeof fs.open;
+  return () => { fsWithOpen.open = originalOpen; };
+}
+
+function wrapSnapshotHandle(
+  handle: SnapshotHandle,
+  hooks: {
+    readonly read?: (buffer: Buffer, offset: number, length: number, position: number | null) => Promise<{ bytesRead: number; buffer: Buffer }>;
+    readonly close?: () => Promise<void>;
+  },
+): SnapshotHandle {
+  return new Proxy(handle, {
+    get(target, property, receiver) {
+      if (property === 'read' && hooks.read) { return hooks.read; }
+      if (property === 'close' && hooks.close) { return hooks.close; }
+      return Reflect.get(target, property, receiver) as unknown;
+    },
+  });
+}
+
+async function createSnapshotWorkspace(tempDirs: string[]): Promise<string> {
+  const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-snapshot-'));
+  tempDirs.push(rootPath);
+  return rootPath;
 }

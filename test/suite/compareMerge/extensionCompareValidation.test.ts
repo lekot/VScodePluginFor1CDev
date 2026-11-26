@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import * as fs from 'fs/promises';
+import fsPromises = require('fs/promises');
 import * as path from 'path';
 
 import {
@@ -7,6 +8,9 @@ import {
   type ConfigurationCompareInput,
   type ConfigurationCompareResult,
 } from '../../../src/compareMerge/configurationCompareService';
+import { tryBuildExtensionCompareState } from '../../../src/compareMerge/extensions/extensionCompare';
+import { indexExtensionMetadataRoot, probeExtensionMetadataRoot } from '../../../src/compareMerge/extensions/extensionMetadataIndex';
+import { captureMergePath } from '../../../src/compareMerge/merge/mergeSnapshot';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 import {
   createExtensionCompareTempRoot,
@@ -86,6 +90,167 @@ const BASE_CONFIGURATION_CASES = [
 ] as const;
 
 suite('Extension compare validation', () => {
+  test('returns before reading registered sidecars when neither root has CFE evidence', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-cf');
+      const object: ExtensionCompareObjectFixture = { type: 'Catalog', name: 'Products', uuid: UUID.ownObject };
+      await writeDesignerConfiguration(target, { objects: [object] });
+      await writeDesignerConfiguration(source, { objects: [object] });
+      const targetSidecar = path.join(target, 'Catalogs', 'Products', 'Ext', 'Module.bsl');
+      const sourceSidecar = path.join(source, 'Catalogs', 'Products', 'Ext', 'Module.bsl');
+      await writeCompareBytes(target, path.relative(target, targetSidecar), Buffer.alloc(256 * 1024, 0x41));
+      await writeCompareBytes(source, path.relative(source, sourceSidecar), Buffer.alloc(256 * 1024, 0x42));
+
+      const mutableFs = fsPromises;
+      const originalReadFile = mutableFs.readFile;
+      const sidecarReads: string[] = [];
+      const instrumentedReadFile = ((...args: Parameters<typeof originalReadFile>) => {
+        const requestedPath = args[0];
+        if (typeof requestedPath === 'string' && requestedPath.endsWith(path.join('Catalogs', 'Products', 'Ext', 'Module.bsl'))) {
+          sidecarReads.push(path.resolve(requestedPath));
+        }
+        return Reflect.apply(originalReadFile, mutableFs, args);
+      }) as typeof originalReadFile;
+      Object.defineProperty(mutableFs, 'readFile', { configurable: true, value: instrumentedReadFile });
+      try {
+        const result = await tryBuildExtensionCompareState({ leftRootPath: target, rightRootPath: source }, 'right');
+        assert.strictEqual(result, undefined, 'ordinary CF roots should remain on the generic compare route');
+        assert.deepStrictEqual(sidecarReads, [], 'the extension probe must not read registered sidecar contents');
+      } finally {
+        Object.defineProperty(mutableFs, 'readFile', { configurable: true, value: originalReadFile });
+      }
+    });
+  });
+
+  test('routes unregistered malformed descriptor markers with a missing root manifest into fail-closed CFE compare', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cf');
+      const source = path.join(tempRoot, 'source-missing-config');
+      await writeDesignerConfiguration(target);
+      await fs.mkdir(path.join(source, 'Catalogs'), { recursive: true });
+      await writeCompareBytes(source, 'Catalogs/Unregistered.xml', '<MetaDataObject><Catalog><Properties><ObjectBelonging>Adopted</ObjectBelonging></Properties><ExtendedConfigurationObject');
+
+      const result = await tryBuildExtensionCompareState({ leftRootPath: target, rightRootPath: source }, 'right');
+
+      assert.ok(result, 'an unregistered object marker must prevent CF fallback');
+      assert.strictEqual(result.comparisonInfo?.mode, 'extension');
+      assert.deepStrictEqual(result.mergeableNodeIds ?? [], [], 'the incomplete CFE root must remain blocked');
+    });
+  });
+
+  test('detects an object marker after a long UTF-8 BOM-prefixed descriptor preamble', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const rootPath = path.join(tempRoot, 'long-marker-root');
+      await writeDesignerConfiguration(rootPath);
+      const preamble = Buffer.from(`\uFEFF<!--${'x'.repeat(96 * 1024)}-->`, 'utf8');
+      const descriptor = Buffer.from('<MetaDataObject><Catalog><Properties><ExtendedConfigurationObject>anchor</ExtendedConfigurationObject></Properties></Catalog></MetaDataObject>', 'utf8');
+      await writeCompareBytes(rootPath, 'Catalogs/Unregistered.xml', Buffer.concat([preamble, descriptor]));
+
+      const index = await indexExtensionMetadataRoot({ rootPath, sourceId: 'probe-source', side: 'right' });
+
+      assert.strictEqual(index.rootKind, 'cfe');
+      assert.strictEqual(index.cfeMarkerSeen, true);
+    });
+  });
+
+  test('binds reusable root evidence to its canonical root and refreshes it when Configuration.xml changes', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const rootPath = path.join(tempRoot, 'probed-root');
+      const otherRootPath = path.join(tempRoot, 'other-root');
+      await writeDesignerConfiguration(rootPath);
+      await writeDesignerConfiguration(otherRootPath);
+      const evidence = await probeExtensionMetadataRoot({ rootPath });
+
+      await assert.rejects(
+        indexExtensionMetadataRoot({ rootPath: otherRootPath, sourceId: 'other-source', side: 'right', rootEvidence: evidence }),
+        /belongs to a different root/u,
+      );
+
+      const configurationPath = path.join(rootPath, 'Configuration.xml');
+      const configurationXml = await fs.readFile(configurationPath, 'utf8');
+      await fs.writeFile(configurationPath, configurationXml.replace('<Properties></Properties>', '<Properties><ObjectBelonging>Adopted</ObjectBelonging></Properties>'), 'utf8');
+      const refreshed = await indexExtensionMetadataRoot({ rootPath, sourceId: 'probe-source', side: 'right', rootEvidence: evidence });
+      assert.strictEqual(refreshed.rootKind, 'cfe', 'a changed root manifest must be re-probed before index reuse');
+    });
+  });
+
+  test('cancels a sidecar snapshot after the in-flight file read and leaves no read pending', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const sidecarPath = path.join(tempRoot, 'sidecar');
+      for (const name of ['01.bin', '02.bin', '03.bin']) {
+        await writeCompareBytes(tempRoot, path.join('sidecar', name), Buffer.alloc(1024, name.charCodeAt(1)));
+      }
+      const ordinarySnapshot = await captureMergePath(sidecarPath, { retainContent: false });
+      const uncancelledSnapshot = await captureMergePath(sidecarPath, { retainContent: false, cancellation: { isCancellationRequested: false } });
+      assert.strictEqual(ordinarySnapshot.state, 'directory');
+      assert.strictEqual(uncancelledSnapshot.state, 'directory');
+      if (ordinarySnapshot.state !== 'directory' || uncancelledSnapshot.state !== 'directory') {return;}
+      assert.strictEqual(uncancelledSnapshot.mergeHash, ordinarySnapshot.mergeHash);
+      assert.strictEqual(uncancelledSnapshot.mutationFingerprint, ordinarySnapshot.mutationFingerprint);
+
+      const mutableFs = fsPromises;
+      const originalOpen = mutableFs.open;
+      const originalOpenDescriptor = Object.getOwnPropertyDescriptor(mutableFs, 'open')!;
+      let cancelled = false;
+      let activeReads = 0;
+      const openRequests: string[] = [];
+      const openedHandles: string[] = [];
+      const streamedReads: string[] = [];
+      const closedHandles: string[] = [];
+      const instrumentedOpen = (async (...args: Parameters<typeof originalOpen>) => {
+        const requestedPath = path.resolve(String(args[0]));
+        const relativePath = path.relative(sidecarPath, requestedPath);
+        const isSidecarFile = relativePath !== '' && relativePath !== '..' && !relativePath.startsWith(`..${path.sep}`);
+        if (!isSidecarFile) {
+          return Reflect.apply(originalOpen, mutableFs, args);
+        }
+        const name = path.basename(requestedPath);
+        openRequests.push(name);
+        const handle = await Reflect.apply(originalOpen, mutableFs, args);
+        openedHandles.push(name);
+        return new Proxy(handle, {
+          get(target, property, receiver) {
+            if (property === 'read') {
+              return async (buffer: Buffer, offset: number, length: number, position: number | null) => {
+                activeReads += 1;
+                try {
+                  const result = await target.read(buffer, offset, length, position);
+                  streamedReads.push(name);
+                  cancelled = true;
+                  return result;
+                } finally {
+                  activeReads -= 1;
+                }
+              };
+            }
+            if (property === 'close') {
+              return async () => {
+                closedHandles.push(name);
+                return target.close();
+              };
+            }
+            return Reflect.get(target, property, receiver) as unknown;
+          },
+        });
+      }) as typeof originalOpen;
+      Object.defineProperty(mutableFs, 'open', { configurable: true, value: instrumentedOpen });
+      try {
+        await assert.rejects(
+          captureMergePath(sidecarPath, { retainContent: false, cancellation: { get isCancellationRequested() { return cancelled; } } }),
+          (error: unknown) => (error as { code?: string }).code === 'CONFIGURATION_COMPARE_CANCELLED',
+        );
+        assert.deepStrictEqual(openRequests.sort(), ['01.bin', '02.bin'], 'only the initial two-file batch may open');
+        assert.ok(streamedReads.length > 0, 'cancellation must follow an actual streamed read');
+        assert.ok(streamedReads.every((name) => name === '01.bin' || name === '02.bin'));
+        assert.deepStrictEqual(closedHandles.sort(), openedHandles.slice().sort(), 'all opened batch handles must close');
+        assert.strictEqual(activeReads, 0, 'the cancelled snapshot must drain all in-flight filesystem reads');
+      } finally {
+        Object.defineProperty(mutableFs, 'open', originalOpenDescriptor);
+      }
+    });
+  });
+
   test('blocks a CFE target with duplicate direct root ChildObjects before a valid own transfer', async () => {
     await withTempRoot(async (tempRoot) => {
       const target = path.join(tempRoot, 'target-cfe');

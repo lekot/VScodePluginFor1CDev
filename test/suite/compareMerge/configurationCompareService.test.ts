@@ -2,16 +2,30 @@ import * as assert from 'assert';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { performance } from 'perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'url';
 
+import { discoverConfigurationCompareManifest } from '../../../src/compareMerge/configurationCompareManifest';
+import metadataIndexerRuntime = require('../../../src/compareMerge/metadata/metadataIndexer');
 import {
   buildConfigurationCompare as buildConfigurationCompareWithoutMutationRuntime,
   type ConfigurationCompareInput,
 } from '../../../src/compareMerge/configurationCompareService';
+import type { MetadataIdentity } from '../../../src/compareMerge/domain/compareContracts';
+import { toWebviewPayload } from '../../../src/compareMerge/configCompareProvider';
+import type { CompareBuildProgress } from '../../../src/compareMerge/compareProgress';
+import type { CompareDisplayNode } from '../../../src/compareMerge/projection/compareDisplayTree';
+import { awaitAllSettled, createCompareProgressThrottle, mapLimit } from '../../../src/compareMerge/compareBuildPipeline';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 import { createMergeMutationTestRuntime } from './mergeMutationTestSupport';
+import bslModuleIndexerRuntime = require('../../../src/compareMerge/bsl/bslModuleIndexer');
 
 const mutationCoordinators: Array<{ dispose(): Promise<void> }> = [];
+
+type FutureConfigCompareWebviewPayloadDto = ReturnType<typeof toWebviewPayload> & {
+  deletionNodeIds?: string[];
+  unresolvedConflictCount?: number;
+};
 
 suite('ConfigurationCompareService', () => {
   suiteTeardown(async () => {
@@ -29,6 +43,554 @@ suite('ConfigurationCompareService', () => {
       (error: unknown) =>
         (error as { code?: unknown }).code === 'CONFIGURATION_COMPARE_CANCELLED'
     );
+  });
+
+  test('manifest discovery treats only an explicitly allowed exact missing root as empty', async () => {
+    const originalIndexMetadataFolder = metadataIndexerRuntime.indexMetadataFolder;
+    const leftRoot = path.join(os.tmpdir(), 'configuration-compare-allowed-missing-left');
+    const missingRootError = Object.assign(new Error('left root is missing'), {
+      code: 'ENOENT',
+      path: leftRoot,
+    });
+
+    metadataIndexerRuntime.indexMetadataFolder = async (input) => {
+      if (input.side === 'left') {
+        throw missingRootError;
+      }
+      return [];
+    };
+
+    try {
+      const allowed = await discoverConfigurationCompareManifest({
+        left: { sourceId: 'left-source', rootPath: leftRoot, allowMissingRoot: true },
+        right: { sourceId: 'right-source', rootPath: path.join(os.tmpdir(), 'right-root') },
+        metadataReadConcurrency: 2,
+        directoryReadConcurrency: 2,
+      });
+      assert.deepStrictEqual(allowed.leftMetadata, []);
+
+      await assert.rejects(
+        discoverConfigurationCompareManifest({
+          left: { sourceId: 'left-source', rootPath: leftRoot },
+          right: { sourceId: 'right-source', rootPath: path.join(os.tmpdir(), 'right-root') },
+          metadataReadConcurrency: 2,
+          directoryReadConcurrency: 2,
+        }),
+        (error: unknown) => error === missingRootError
+      );
+    } finally {
+      metadataIndexerRuntime.indexMetadataFolder = originalIndexMetadataFolder;
+    }
+  });
+
+  test('manifest discovery rethrows non-root-missing errors unchanged when a root is optional', async () => {
+    const originalIndexMetadataFolder = metadataIndexerRuntime.indexMetadataFolder;
+    const leftRoot = path.join(os.tmpdir(), 'configuration-compare-optional-left');
+    const errors = [
+      Object.assign(new Error('nested folder is missing'), {
+        code: 'ENOENT',
+        path: path.join(leftRoot, 'Catalogs'),
+      }),
+      Object.assign(new Error('missing path is unspecified'), { code: 'ENOENT' }),
+      Object.assign(new Error('access denied'), { code: 'EACCES', path: leftRoot }),
+    ];
+
+    try {
+      for (const expectedError of errors) {
+        metadataIndexerRuntime.indexMetadataFolder = async (input) => {
+          if (input.side === 'left') {
+            throw expectedError;
+          }
+          return [];
+        };
+
+        await assert.rejects(
+          discoverConfigurationCompareManifest({
+            left: { sourceId: 'left-source', rootPath: leftRoot, allowMissingRoot: true },
+            right: { sourceId: 'right-source', rootPath: path.join(os.tmpdir(), 'right-root') },
+            metadataReadConcurrency: 2,
+            directoryReadConcurrency: 2,
+          }),
+          (error: unknown) => error === expectedError
+        );
+      }
+    } finally {
+      metadataIndexerRuntime.indexMetadataFolder = originalIndexMetadataFolder;
+    }
+  });
+
+  test('manifest discovery drains the other side before propagating an indexing failure', async () => {
+    const originalIndexMetadataFolder = metadataIndexerRuntime.indexMetadataFolder;
+    const leftError = new Error('left metadata indexing failed');
+    let rightStarted = false;
+    let releaseRight!: (identities: MetadataIdentity[]) => void;
+    let settled = false;
+    const rightPending = new Promise<MetadataIdentity[]>((resolve) => {
+      releaseRight = resolve;
+    });
+
+    metadataIndexerRuntime.indexMetadataFolder = async (input) => {
+      if (input.side === 'left') {
+        throw leftError;
+      }
+      rightStarted = true;
+      return rightPending;
+    };
+
+    try {
+      const discovery = discoverConfigurationCompareManifest({
+        left: { sourceId: 'left-source', rootPath: path.join(os.tmpdir(), 'left-root') },
+        right: { sourceId: 'right-source', rootPath: path.join(os.tmpdir(), 'right-root') },
+        metadataReadConcurrency: 2,
+        directoryReadConcurrency: 2,
+      }).then(
+        () => {
+          settled = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          settled = true;
+          return error;
+        }
+      );
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(rightStarted, true, 'both metadata sides should start before failure propagation');
+      assert.strictEqual(settled, false, 'discovery must await the still-pending side');
+
+      releaseRight([]);
+      assert.strictEqual(await discovery, leftError);
+      assert.strictEqual(settled, true);
+    } finally {
+      releaseRight([]);
+      metadataIndexerRuntime.indexMetadataFolder = originalIndexMetadataFolder;
+    }
+  });
+
+  test('throttles progress on a deterministic monotonic clock while keeping first and final results', () => {
+    let now = 0;
+    const shouldPublish = createCompareProgressThrottle(() => now);
+
+    assert.strictEqual(shouldPublish(1, 100), true);
+    assert.strictEqual(shouldPublish(2, 100), false);
+    now = 99;
+    assert.strictEqual(shouldPublish(50, 100), false);
+    now = 100;
+    assert.strictEqual(shouldPublish(51, 100), true);
+    assert.strictEqual(shouldPublish(100, 100), true);
+  });
+
+  test('applies the minimum cooldown after publication completes', () => {
+    let now = 0;
+    const shouldPublish = createCompareProgressThrottle(() => now);
+
+    assert.strictEqual(shouldPublish(1, 10), true);
+    now = 5;
+    shouldPublish.publicationFinished(0);
+    now = 104;
+    assert.strictEqual(shouldPublish(2, 10), false);
+    now = 105;
+    assert.strictEqual(shouldPublish(3, 10), true);
+  });
+
+  test('sets cooldown to publication end plus nine times its duration when longer', () => {
+    let now = 0;
+    const shouldPublish = createCompareProgressThrottle(() => now);
+
+    assert.strictEqual(shouldPublish(1, 10), true);
+    now = 20;
+    shouldPublish.publicationFinished(0);
+    now = 199;
+    assert.strictEqual(shouldPublish(2, 10), false);
+    now = 200;
+    assert.strictEqual(shouldPublish(3, 10), true);
+  });
+
+  test('cools progress from publication completion when observers consume the interval', async () => {
+    const originalNow = performance.now;
+    const items = Array.from({ length: 1024 }, (_, index) => index);
+    const publications: Array<{ completed: number; total: number; results: number[] }> = [];
+    let now = 0;
+    performance.now = () => now;
+
+    try {
+      const results = await mapLimit(
+        items,
+        4,
+        async (item) => {
+          await Promise.resolve();
+          if (item % 7 === 0) {
+            await Promise.resolve();
+          }
+          return item;
+        },
+        undefined,
+        (completed, total, completedResults) => {
+          publications.push({ completed, total, results: [...completedResults] });
+          now += 1000;
+        }
+      );
+
+      assert.deepStrictEqual(results, items);
+      assert.deepStrictEqual(publications.map((publication) => publication.completed), [1, items.length]);
+      assert.ok(publications.every((publication) => publication.results.length === publication.completed));
+      assert.ok(publications.every((publication) =>
+        publication.results.every((value, index, values) => index === 0 || values[index - 1]! < value)
+      ));
+      assert.ok(publications.every((publication) => publication.total === items.length));
+    } finally {
+      performance.now = originalNow;
+    }
+  });
+
+  test('keeps observer exceptions advisory while still applying publication cooldown', async () => {
+    const originalNow = performance.now;
+    const items = Array.from({ length: 32 }, (_, index) => index);
+    const publicationCounts: number[] = [];
+    let now = 0;
+    performance.now = () => now;
+
+    try {
+      const results = await mapLimit(items, 4, async (item) => item, undefined, (completed) => {
+        publicationCounts.push(completed);
+        now += 1000;
+        throw new Error('advisory observer failure');
+      });
+
+      assert.deepStrictEqual(results, items);
+      assert.deepStrictEqual(publicationCounts, [1, items.length]);
+    } finally {
+      performance.now = originalNow;
+    }
+  });
+
+  test('does not read the progress clock when no observer is registered', async () => {
+    const originalNow = performance.now;
+    let clockReads = 0;
+    performance.now = () => {
+      clockReads += 1;
+      return clockReads;
+    };
+
+    try {
+      const items = Array.from({ length: 128 }, (_, index) => index);
+      assert.deepStrictEqual(await mapLimit(items, 4, async (item) => item), items);
+      assert.strictEqual(clockReads, 0);
+    } finally {
+      performance.now = originalNow;
+    }
+  });
+
+  test('publishes read-only metadata presence before inventory and preserves it in later partial projections', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-early-metadata-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const progress: CompareBuildProgress[] = [];
+    let result: Awaited<ReturnType<typeof buildConfigurationCompareWithoutMutationRuntime>> | undefined;
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'Products', 'same-products', 'Products');
+      await writeCatalogDescriptor(rightRoot, 'Products', 'same-products', 'Products');
+      await writeCatalogDescriptor(leftRoot, 'Conflict', 'left-conflict', 'Conflict left');
+      await writeCatalogDescriptor(rightRoot, 'Conflict', 'right-conflict', 'Conflict right');
+      await writeCatalogDescriptor(leftRoot, 'LeftOnly', 'left-only', 'Left only');
+      await writeCatalogDescriptor(rightRoot, 'RightOnly', 'right-only', 'Right only');
+
+      result = await buildConfigurationCompareWithoutMutationRuntime({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      const strategyResult = await result.workspace.setStrategy('full', {
+        onProgress: (update) => progress.push(update),
+      });
+      assert.strictEqual(strategyResult.ok, true, JSON.stringify(strategyResult));
+
+      const metadataIndex = progress.findIndex(
+        (update) => update.phase === 'metadata' && update.projection !== undefined
+      );
+      const inventoryIndex = progress.findIndex((update) => update.phase === 'inventory');
+      assert.ok(metadataIndex >= 0, 'expected a metadata projection before inventory starts');
+      assert.ok(inventoryIndex > metadataIndex, 'metadata presence must be published before inventory');
+
+      const metadataProjection = progress[metadataIndex]!.projection!;
+      assertPartialMetadataProjection(metadataProjection);
+      const metadataNodes = collectNodes(metadataProjection.root, () => true);
+      assert.ok(metadataNodes.some((node) => node.kind === 'metadataObject' && node.label === 'Catalog.LeftOnly'));
+      assert.ok(metadataNodes.some((node) => node.kind === 'metadataObject' && node.label === 'Catalog.RightOnly'));
+      assert.ok(
+        metadataNodes.some(
+          (node) => node.kind === 'metadataConflict' && node.conflict?.kind === 'sameNameDifferentUuid'
+        )
+      );
+
+      const bslProjection = progress.find(
+        (update) => update.phase === 'bsl' && update.projection !== undefined
+      )?.projection;
+      assert.ok(bslProjection, 'expected a BSL partial projection');
+      assertPartialMetadataProjection(bslProjection!);
+      const comparingProjection = progress.find(
+        (update) => update.phase === 'comparing' && update.projection !== undefined && (update.completed ?? 0) > 0
+      )?.projection;
+      assert.ok(comparingProjection, 'expected a partial adapter comparison projection');
+      assertPartialMetadataProjection(comparingProjection!);
+
+      const finalMetadataMatches = collectNodes(
+        result.workspace.payload.root,
+        (node) => node.kind === 'metadataMatch'
+      );
+      assert.ok(finalMetadataMatches.length > 0, 'complete metadata matches belong in the final projection');
+    } finally {
+      result?.workspace.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('publishes cumulative read-only compare progress and scopes callbacks to each refresh', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-progress-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const progress: CompareBuildProgress[] = [];
+    const refreshProgress: CompareBuildProgress[] = [];
+    const partialMetadataObjectLabels: string[][] = [];
+    let result: Awaited<ReturnType<typeof buildConfigurationCompareWithoutMutationRuntime>> | undefined;
+    let mutatedSnapshotCount = 0;
+    let mutatedPresentationCount = 0;
+
+    try {
+      for (let index = 0; index < 3; index += 1) {
+        await writeCatalog(rightRoot, `Incoming${index}`, `incoming-${index}`);
+      }
+
+      result = await buildConfigurationCompareWithoutMutationRuntime({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        onProgress: (update) => {
+          progress.push(update);
+          if (update.phase === 'comparing' && update.projection && (update.completed ?? 0) > 0) {
+            partialMetadataObjectLabels.push(
+              collectNodes(update.projection.root, (node) => node.kind === 'metadataObject')
+                .map((node) => node.label)
+            );
+          }
+          if ((update.phase === 'comparing' || update.phase === 'projecting') && update.projection) {
+            const firstObject = collectNodes(update.projection.root, (node) => node.kind === 'metadataObject')[0];
+            if (firstObject) {
+              firstObject.label = 'Tampered by progress consumer';
+              const firstIdentity = firstObject.presentation?.identities?.[0];
+              if (firstIdentity) {
+                firstIdentity.qualifiedName = 'Tampered identity';
+                mutatedPresentationCount += 1;
+              }
+              if (firstObject.presentation?.ownerAliases) {
+                firstObject.presentation.ownerAliases[0] = 'Tampered alias';
+              }
+              mutatedSnapshotCount += 1;
+            }
+          }
+        },
+      });
+
+      const partialUpdates = progress.filter(
+        (update) => update.phase === 'comparing' && update.projection && (update.completed ?? 0) > 0
+      );
+      assert.ok(partialUpdates.length >= 2, 'expected a first partial result and a cumulative update');
+      const firstProjection = partialUpdates[0].projection!;
+      const finalCompareUpdate = partialUpdates.find((update) => update.completed === update.total)!;
+      assert.ok(finalCompareUpdate);
+      const firstObjectLabels = partialMetadataObjectLabels[0];
+      const finalObjectLabels = collectNodes(result.projection.root, (node) => node.kind === 'metadataObject')
+        .map((node) => node.label);
+      assert.ok(firstObjectLabels.length > 0);
+      assert.deepStrictEqual(
+        firstObjectLabels,
+        finalObjectLabels,
+        'the first partial projection should already include all proven unmatched metadata rows'
+      );
+      assert.deepStrictEqual(
+        partialMetadataObjectLabels[partialMetadataObjectLabels.length - 1],
+        finalObjectLabels,
+        'the cumulative partial should retain the proven unmatched metadata rows'
+      );
+      assert.ok(
+        partialUpdates[0]!.completed! < finalCompareUpdate.completed!,
+        'cumulative comparison progress should advance before its final update'
+      );
+      assert.ok(mutatedSnapshotCount >= 2);
+      assert.ok(mutatedPresentationCount >= 1);
+      assert.ok(!finalObjectLabels.includes('Tampered by progress consumer'));
+      const canonicalMetadataObject = collectNodes(result.projection.root, (node) => node.kind === 'metadataObject')[0];
+      assert.ok(canonicalMetadataObject);
+      assert.ok(canonicalMetadataObject.presentation?.identities?.[0]);
+      assert.strictEqual(
+        canonicalMetadataObject.presentation.identities[0].qualifiedName,
+        canonicalMetadataObject.label
+      );
+      assert.ok(canonicalMetadataObject.presentation.ownerAliases?.[0]?.includes(canonicalMetadataObject.label));
+      assert.strictEqual(firstProjection.stats.mergeable, 0);
+      assert.strictEqual(
+        collectNodes(firstProjection.root, (node) => node.mergeable === true).length,
+        0,
+        'partial rows must not advertise executable merge candidates'
+      );
+      assert.strictEqual(result.projection.stats.mergeable, 3);
+      assert.strictEqual(result.workspace.listMergeableNodeIds().length, 3);
+
+      const initialCallbackCount = progress.length;
+      const refreshed = await result.workspace.refresh({
+        onProgress: (update) => refreshProgress.push(update),
+      });
+      assert.strictEqual(refreshed.ok, true);
+      assert.ok(refreshProgress.length > 0);
+      assert.strictEqual(progress.length, initialCallbackCount, 'refresh must not reuse the initial callback');
+    } finally {
+      result?.workspace.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('yields to the event loop while processing immediately resolving bounded work', async () => {
+    const itemCount = 1024;
+    const items = Array.from({ length: itemCount }, (_, index) => index);
+    const cancellation = { isCancellationRequested: false };
+    let completed = 0;
+    const cancellationImmediate = setImmediate(() => {
+      cancellation.isCancellationRequested = true;
+    });
+
+    try {
+      await assert.rejects(
+        mapLimit(items, 4, async () => ++completed, cancellation),
+        (error: unknown) =>
+          (error as { code?: unknown }).code === 'CONFIGURATION_COMPARE_CANCELLED'
+      );
+      assert.ok(completed < itemCount, `expected cancellation before all ${itemCount} items completed`);
+    } finally {
+      clearImmediate(cancellationImmediate);
+    }
+  });
+
+  test('waits for every parallel build side to settle before propagating a failure', async () => {
+    const failure = new Error('left side failed');
+    let releaseRight!: () => void;
+    let rightSettled = false;
+    const right = new Promise<string>((resolve) => {
+      releaseRight = () => {
+        rightSettled = true;
+        resolve('right complete');
+      };
+    });
+    const result = awaitAllSettled([Promise.reject(failure), right]);
+    let rejected = false;
+    void result.catch(() => { rejected = true; });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.strictEqual(rejected, false);
+    assert.strictEqual(rightSettled, false);
+    releaseRight();
+    await assert.rejects(result, (error: unknown) => error === failure);
+    assert.strictEqual(rightSettled, true);
+  });
+
+  test('ignores progress callback exceptions', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-progress-callback-'));
+    try {
+      await fs.mkdir(path.join(tempRoot, 'left'), { recursive: true });
+      await fs.mkdir(path.join(tempRoot, 'right'), { recursive: true });
+      const result = await buildConfigurationCompareWithoutMutationRuntime({
+        leftRootPath: path.join(tempRoot, 'left'),
+        rightRootPath: path.join(tempRoot, 'right'),
+        backupRootPath: path.join(tempRoot, 'backups'),
+        onProgress: () => {
+          throw new Error('UI callback failed');
+        },
+      });
+      result.workspace.dispose();
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('waits for in-flight compare reads to settle after cancellation', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-cancel-drain-'));
+    const rightRoot = path.join(tempRoot, 'right');
+    let cancellationRequested = false;
+    let cancellationObservedResolve!: () => void;
+    const cancellationObserved = new Promise<void>((resolve) => {
+      cancellationObservedResolve = resolve;
+    });
+    const cancellation = {
+      get isCancellationRequested(): boolean {
+        if (cancellationRequested) {
+          cancellationObservedResolve();
+          return true;
+        }
+        return false;
+      },
+    };
+    let secondReadStartedResolve!: () => void;
+    const secondReadStarted = new Promise<void>((resolve) => {
+      secondReadStartedResolve = resolve;
+    });
+    let releaseSecondRead!: () => void;
+    const secondReadGate = new Promise<void>((resolve) => {
+      releaseSecondRead = resolve;
+    });
+    let readCalls = 0;
+    let settled = false;
+
+    try {
+      for (const name of ['First', 'Second']) {
+        await writeCatalog(path.join(tempRoot, 'left'), name, `cancel-${name}`);
+        await writeCatalog(rightRoot, name, `cancel-${name}`);
+        await writeFile(
+          path.join(rightRoot, 'Catalogs', name, 'Ext', 'ObjectModule.bsl'),
+          `Procedure ${name}()\nEndProcedure`
+        );
+      }
+
+      const compare = buildConfigurationCompareWithoutMutationRuntime({
+        leftRootPath: path.join(tempRoot, 'left'),
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        cancellation,
+        limits: { bslReadConcurrency: 2 },
+        io: {
+          readTextFile: async (filePath) => {
+            readCalls += 1;
+            if (readCalls === 1) {
+              const content = await fs.readFile(filePath, 'utf-8');
+              cancellationRequested = true;
+              return content;
+            }
+            if (readCalls === 2) {
+              secondReadStartedResolve();
+              await secondReadGate;
+            }
+            return fs.readFile(filePath, 'utf-8');
+          },
+        },
+      }).finally(() => {
+        settled = true;
+      });
+
+      await secondReadStarted;
+      await cancellationObserved;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(settled, false, 'compare must still own its in-flight read');
+      releaseSecondRead();
+      await assert.rejects(
+        compare,
+        (error: unknown) =>
+          (error as { code?: unknown }).code === 'CONFIGURATION_COMPARE_CANCELLED'
+      );
+      assert.strictEqual(settled, true);
+    } finally {
+      releaseSecondRead?.();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
   });
 
   test('shows an explicit unsupported diagnostic for EDT roots instead of an empty Designer compare', async () => {
@@ -155,21 +717,19 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
-  test('default right strategy indexes only matching left descriptors for small incoming config', async () => {
+  test('default right strategy discovers unrelated left descriptors without creating candidates', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
     const rightRoot = path.join(tempRoot, 'right');
     const backupRoot = path.join(tempRoot, 'backups');
+    let result: Awaited<ReturnType<typeof buildConfigurationCompare>> | undefined;
 
     try {
-      await writeCatalog(leftRoot, 'Products', 'catalog-products');
-      await writeCatalog(rightRoot, 'Products', 'catalog-products');
-      await writeFile(
-        path.join(leftRoot, 'Catalogs', 'Unrelated.xml'),
-        '<MetaDataObject><Catalog>'
-      );
+      await writeCatalogDescriptor(leftRoot, 'Products', 'catalog-products', 'Products');
+      await writeCatalogDescriptor(rightRoot, 'Products', 'catalog-products', 'Products');
+      await writeCatalogDescriptor(leftRoot, 'Unrelated', 'left-unrelated', 'Unrelated');
 
-      const result = await buildConfigurationCompare({
+      result = await buildConfigurationCompareWithoutMutationRuntime({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
         backupRootPath: backupRoot,
@@ -177,11 +737,173 @@ suite('ConfigurationCompareService', () => {
       });
 
       assert.strictEqual(result.projection.stats.total > 0, true);
-      assert.strictEqual(
-        collectNodes(result.projection.root, (node) => node.label.includes('Unrelated')).length,
-        0
+      const unrelated = requireSingleNode(
+        result.projection.root,
+        (node) => node.kind === 'metadataObject' && node.label === 'Catalog.Unrelated'
+      );
+      assert.strictEqual(unrelated.status, 'leftOnly');
+      assert.strictEqual(unrelated.mergeable, false);
+      assert.strictEqual(unrelated.mergeState?.state, 'blocked');
+      assert.ok(!result.workspace.listMergeableNodeIds().includes(unrelated.id));
+    } finally {
+      result?.workspace.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('discovers the same metadata universe across right, left, and full strategies without changing candidate direction', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-metadata-strategies-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    let result: Awaited<ReturnType<typeof buildConfigurationCompare>> | undefined;
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'Products', 'shared-products', 'Products');
+      await writeCatalogDescriptor(rightRoot, 'Products', 'shared-products', 'Products');
+      await writeCatalogDescriptor(leftRoot, 'LeftOnly', 'left-only', 'Left only');
+      await writeCatalogDescriptor(rightRoot, 'RightOnly', 'right-only', 'Right only');
+
+      result = await buildConfigurationCompareWithoutMutationRuntime({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+
+      const expectedMetadataRows = [
+        { qualifiedName: 'Catalog.LeftOnly', kind: 'metadataObject', status: 'leftOnly' },
+        { qualifiedName: 'Catalog.Products', kind: 'metadataMatch', status: 'equal' },
+        { qualifiedName: 'Catalog.RightOnly', kind: 'metadataObject', status: 'rightOnly' },
+      ];
+      const rightRows = metadataRows(result.workspace.payload.root);
+      assert.deepStrictEqual(rightRows, expectedMetadataRows);
+
+      const rightLeftOnly = requireSingleNode(
+        result.workspace.payload.root,
+        (node) => node.kind === 'metadataObject' && node.label === 'Catalog.LeftOnly'
+      );
+      const rightRightOnly = requireSingleNode(
+        result.workspace.payload.root,
+        (node) => node.kind === 'metadataObject' && node.label === 'Catalog.RightOnly'
+      );
+      const rightCandidates = result.workspace.listMergeableNodeIds();
+      assert.strictEqual(rightLeftOnly.mergeable, false, 'default right strategy must not delete left-only metadata');
+      assert.ok(!rightCandidates.includes(rightLeftOnly.id));
+      assert.strictEqual(rightRightOnly.mergeable, true, 'default right strategy keeps right-only copy candidates');
+      assert.ok(rightCandidates.includes(rightRightOnly.id));
+
+      const leftStrategy = await result.workspace.setStrategy('left');
+      assert.strictEqual(leftStrategy.ok, true, JSON.stringify(leftStrategy));
+      assert.deepStrictEqual(metadataRows(result.workspace.payload.root), expectedMetadataRows);
+
+      const leftLeftOnly = requireSingleNode(
+        result.workspace.payload.root,
+        (node) => node.kind === 'metadataObject' && node.label === 'Catalog.LeftOnly'
+      );
+      const leftRightOnly = requireSingleNode(
+        result.workspace.payload.root,
+        (node) => node.kind === 'metadataObject' && node.label === 'Catalog.RightOnly'
+      );
+      const leftCandidates = result.workspace.listMergeableNodeIds();
+      assert.strictEqual(leftLeftOnly.mergeable, true, 'left strategy retains its existing left-only candidate direction');
+      assert.ok(leftCandidates.includes(leftLeftOnly.id));
+      assert.strictEqual(leftRightOnly.mergeable, false, 'left strategy must not copy right-only metadata');
+      assert.ok(!leftCandidates.includes(leftRightOnly.id));
+
+      const fullStrategy = await result.workspace.setStrategy('full');
+      assert.strictEqual(fullStrategy.ok, true, JSON.stringify(fullStrategy));
+      const fullRows = metadataRows(result.workspace.payload.root);
+      assert.deepStrictEqual(fullRows, expectedMetadataRows);
+
+      const reversed = await buildConfigurationCompareWithoutMutationRuntime({
+        leftRootPath: rightRoot,
+        rightRootPath: leftRoot,
+        backupRootPath: path.join(tempRoot, 'reverse-backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      try {
+        const reversedRows = metadataRows(reversed.workspace.payload.root);
+        assert.deepStrictEqual(
+          reversedRows.map((row) => row.qualifiedName),
+          fullRows.map((row) => row.qualifiedName),
+          'swapping roots must preserve the metadata qualified-name universe'
+        );
+        const reversedByName = new Map(reversedRows.map((row) => [row.qualifiedName, row]));
+        for (const row of fullRows) {
+          const mirroredStatus = row.status === 'leftOnly'
+            ? 'rightOnly'
+            : row.status === 'rightOnly'
+              ? 'leftOnly'
+              : row.status;
+          assert.strictEqual(
+            reversedByName.get(row.qualifiedName)?.status,
+            mirroredStatus,
+            `swapping roots must mirror the status for ${row.qualifiedName}`
+          );
+        }
+      } finally {
+        reversed.workspace.dispose();
+      }
+    } finally {
+      result?.workspace.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('rejects a missing right root instead of treating all left metadata as unmatched', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-missing-right-root-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'Products', 'left-products', 'Products');
+      await assert.rejects(
+        buildConfigurationCompare({
+          leftRootPath: leftRoot,
+          rightRootPath: rightRoot,
+          backupRootPath: path.join(tempRoot, 'backups'),
+          createdAt: new Date('2026-05-30T10:00:00.000Z'),
+        }),
+        (error: unknown) => {
+          const fsError = error as { code?: unknown; path?: string };
+          return fsError.code === 'ENOENT' && path.resolve(fsError.path ?? '') === path.resolve(rightRoot);
+        }
       );
     } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('default right strategy preserves duplicate-UUID diagnostics in unrelated left metadata', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-unrelated-duplicate-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    let result: Awaited<ReturnType<typeof buildConfigurationCompare>> | undefined;
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'DuplicateA', 'duplicate-left-uuid', 'Duplicate A');
+      await writeCatalogDescriptor(leftRoot, 'DuplicateB', 'duplicate-left-uuid', 'Duplicate B');
+      await writeCatalogDescriptor(rightRoot, 'Products', 'right-products', 'Products');
+
+      result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+
+      const duplicateConflict = requireSingleNode(
+        result.workspace.payload.root,
+        (node) => node.kind === 'metadataConflict' && node.conflict?.kind === 'duplicateUuid'
+      );
+      assert.strictEqual(duplicateConflict.mergeable, false);
+      assert.strictEqual(duplicateConflict.conflict?.blocking, true);
+      assert.deepStrictEqual(
+        duplicateConflict.presentation?.identities?.map((identity) => identity.qualifiedName).sort(),
+        ['Catalog.DuplicateA', 'Catalog.DuplicateB']
+      );
+    } finally {
+      result?.workspace.dispose();
       await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
@@ -196,7 +918,7 @@ suite('ConfigurationCompareService', () => {
       await fs.mkdir(leftRoot, { recursive: true });
       await writeCatalog(rightRoot, 'Products', 'catalog-products');
 
-      const result = await buildConfigurationCompare({
+      const result = await buildConfigurationCompareWithoutMutationRuntime({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
         backupRootPath: backupRoot,
@@ -218,7 +940,7 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
-  test('default right strategy preserves same-uuid different-name conflict with targeted indexing', async () => {
+  test('default right strategy preserves same-uuid different-name conflict with symmetric discovery', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
     const rightRoot = path.join(tempRoot, 'right');
@@ -805,6 +1527,476 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
+  test('shows actual XML property and BSL changes beneath the matched metadata owner', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-display-owner-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'Products', 'catalog-products', 'Old goods');
+      await writeCatalogDescriptor(rightRoot, 'Products', 'catalog-products', 'New goods');
+      await writeFile(
+        path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl'),
+        logicalBaseRoutine()
+      );
+      await writeFile(
+        path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl'),
+        logicalIncomingRoutine()
+      );
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+      });
+      workspace = result.workspace;
+      const payload = toWebviewPayload(
+        result.workspace.payload,
+        result.workspace.listMergeableNodeIds(),
+        'Сравнение'
+      );
+      const displayNodes = collectDisplayNodes(payload.root);
+      const catalogOwner = displayNodes.find((node) =>
+        node.kind === 'metadataOwner' && node.qualifiedNames?.includes('Catalog.Products')
+      );
+
+      assert.ok(catalogOwner, 'the real metadata match should become a display owner');
+      assert.strictEqual(catalogOwner.status, 'changed', 'descendant edits should aggregate into the owner status');
+      assert.ok(
+        collectDisplayNodes(catalogOwner).some((node) =>
+          node.kind === 'xmlProperty' && node.status === 'changed'
+        ),
+        'the changed Synonym property should remain beneath the Catalog owner'
+      );
+      assert.ok(
+        collectDisplayNodes(catalogOwner).some((node) =>
+          node.kind === 'bslModule' &&
+          node.key === 'bsl:module:Catalog.Products.Object' &&
+          node.label === 'Модуль объекта'
+        ),
+        'the actual ObjectModule diff should remain beneath the Catalog owner with a distinct artifact label'
+      );
+      assert.ok(
+        collectDisplayNodes(catalogOwner).some((node) =>
+          node.kind === 'metadataXml' && node.label === 'Свойства'
+        ),
+        'the actual descriptor diff should remain beneath the Catalog owner with a distinct artifact label'
+      );
+      assert.ok(payload.executableNodeIds.includes('bsl:routine:Catalog.Products.Object:run'));
+      assert.ok(!displayNodes.some((node) => node.label === 'Процедуры и функции'));
+    } finally {
+      workspace?.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('selecting every non-delete merge checkbox unions top-level and nested metadata attributes', async () => {
+    for (const strategy of ['right', 'full'] as const) {
+      const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `configuration-compare-union-${strategy}-`));
+      const leftRoot = path.join(tempRoot, 'target');
+      const rightRoot = path.join(tempRoot, 'incoming');
+      const leftDescriptorPath = catalogDescriptorPath(leftRoot, UNION_CATALOG_NAME);
+      const rightDescriptorPath = catalogDescriptorPath(rightRoot, UNION_CATALOG_NAME);
+      let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+
+      try {
+        await writeFile(leftDescriptorPath, unionCatalogDescriptor(true));
+        await writeFile(rightDescriptorPath, unionCatalogDescriptor(false));
+        const originalTargetXml = await readText(leftDescriptorPath);
+        const originalIncomingXml = await readText(rightDescriptorPath);
+
+        const result = await buildConfigurationCompare({
+          leftRootPath: leftRoot,
+          rightRootPath: rightRoot,
+          backupRootPath: path.join(tempRoot, 'backups'),
+          createdAt: new Date('2026-11-22T10:00:00.000Z'),
+        });
+        workspace = result.workspace;
+        if (strategy === 'full') {
+          const strategyResult = await workspace.setStrategy('full');
+          assert.strictEqual(strategyResult.ok, true, JSON.stringify(strategyResult));
+        }
+
+        const availableNodeIds = workspace.listMergeableNodeIds();
+        const payload = toWebviewPayload(workspace.payload, availableNodeIds, 'Сравнение') as FutureConfigCompareWebviewPayloadDto;
+        const deletionNodeIds = payload.deletionNodeIds ?? [];
+        const deletionIdSet = new Set(deletionNodeIds);
+        const selectedNodeIds = payload.executableNodeIds.filter((nodeId) => !deletionIdSet.has(nodeId));
+
+        assert.ok(selectedNodeIds.length > 0, `${strategy}: expected incoming attributes to be selectable`);
+        let targetOnlyDeletionNodes: CompareTreeNode[] = [];
+
+        if (strategy === 'full') {
+          targetOnlyDeletionNodes = collectNodes(
+            workspace.payload.root,
+            (node) => node.status === 'leftOnly' && node.destructive === true && node.mergeable === true
+          );
+          assert.strictEqual(targetOnlyDeletionNodes.length, 2, 'both target-only attributes should remain explicit delete candidates');
+          assert.ok(
+            targetOnlyDeletionNodes.every((node) => availableNodeIds.includes(node.id)),
+            'the existing workspace API must keep explicit delete candidates available'
+          );
+          const explicitDeletePreview = await workspace.createPreviewForNodeIds([targetOnlyDeletionNodes[0]!.id]);
+          assert.strictEqual(explicitDeletePreview.ok, true, JSON.stringify(explicitDeletePreview));
+          assert.ok(explicitDeletePreview.preview.destructiveCount > 0, 'the explicit delete action should still produce a destructive preview');
+        }
+
+        const selection = workspace.selectNodeIds(selectedNodeIds);
+        assert.strictEqual(selection.canCreatePreview, true, `${strategy}: all non-delete checkboxes should be executable`);
+        const preview = await workspace.createPreviewForNodeIds(selectedNodeIds);
+        assert.strictEqual(preview.ok, true, `${strategy}: ${JSON.stringify(preview)}`);
+        assert.ok(preview.preview.operationCount > 0);
+
+        const approval = workspace.approvePreview(preview.preview.previewId);
+        assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+        const execution = await workspace.executeApprovedPreview(preview.preview.previewId, {
+          destructiveConfirmed: true,
+        });
+        assert.strictEqual(execution.ok, true, `${strategy}: ${JSON.stringify(execution)}`);
+
+        const mergedTargetXml = await readText(leftDescriptorPath);
+        assert.notStrictEqual(mergedTargetXml, originalTargetXml, `${strategy}: incoming attribute definitions should change the target descriptor`);
+        assert.strictEqual(countXmlUuid(mergedTargetXml, UNION_CATALOG_UUID), 1, `${strategy}: preserve the target catalog UUID exactly once`);
+        assert.strictEqual(countXmlName(mergedTargetXml, UNION_CATALOG_NAME), 1, `${strategy}: preserve the target catalog name exactly once`);
+        for (const [uuid, name] of UNION_ATTRIBUTE_IDENTITIES) {
+          assert.strictEqual(countXmlUuid(mergedTargetXml, uuid), 1, `${strategy}: preserve ${name} UUID exactly once`);
+          assert.strictEqual(countXmlName(mergedTargetXml, name), 1, `${strategy}: preserve ${name} name exactly once`);
+        }
+        assert.strictEqual(countXmlUuid(mergedTargetXml, UNION_TABULAR_SECTION_UUID), 1, `${strategy}: preserve the shared tabular section UUID exactly once`);
+        assert.strictEqual(countXmlName(mergedTargetXml, UNION_TABULAR_SECTION_NAME), 1, `${strategy}: preserve the shared tabular section name exactly once`);
+        assert.ok(mergedTargetXml.includes('<Synonym>Справка &amp; значение</Synonym>'), `${strategy}: preserve escaped target property text`);
+        assert.strictEqual(await readText(rightDescriptorPath), originalIncomingXml, `${strategy}: the incoming source descriptor must stay unchanged`);
+
+        if (strategy === 'full') {
+          assert.deepStrictEqual(
+            [...deletionNodeIds].sort(),
+            targetOnlyDeletionNodes.map((node) => node.id).sort(),
+            'the webview should mark both target-only attributes as delete actions for bulk-checkbox filtering'
+          );
+          assert.ok(
+            preview.preview.items.every((item) => !deletionIdSet.has(item.nodeId)),
+            'a bulk merge preview must omit every delete action'
+          );
+          assert.strictEqual(preview.preview.destructiveCount, 0, 'bulk merge should not contain destructive operations');
+        }
+      } finally {
+        workspace?.dispose();
+        await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
+    }
+  });
+
+  test('deeply analyzes every paired ordinary BSL module, including unchanged pairs', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-paired-bsl-analysis-'));
+    const leftRoot = path.join(tempRoot, 'target');
+    const rightRoot = path.join(tempRoot, 'incoming');
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+    const originalIndexer = bslModuleIndexerRuntime.indexBslModuleSource;
+    const indexedModules: Array<{ side: string; filePath: string; source: string }> = [];
+
+    bslModuleIndexerRuntime.indexBslModuleSource = (input) => {
+      indexedModules.push({ side: input.identity.side, filePath: input.identity.filePath, source: input.source });
+      return originalIndexer(input);
+    };
+
+    try {
+      for (const objectName of ['Identical', 'Changed']) {
+        await writeCatalogDescriptor(leftRoot, objectName, `catalog-${objectName}`, objectName);
+        await writeCatalogDescriptor(rightRoot, objectName, `catalog-${objectName}`, objectName);
+      }
+
+      const identicalSource = [
+        'Procedure Shared()',
+        '  Value = 1;',
+        'EndProcedure',
+      ].join('\n');
+      const changedLeftSource = [
+        'Procedure ChangedValue()',
+        '  Value = 1;',
+        'EndProcedure',
+      ].join('\n');
+      const changedRightSource = [
+        'Procedure ChangedValue()',
+        '  Value = 2;',
+        'EndProcedure',
+      ].join('\n');
+      const moduleSources = [
+        { objectName: 'Identical', left: identicalSource, right: identicalSource },
+        { objectName: 'Changed', left: changedLeftSource, right: changedRightSource },
+      ];
+      for (const item of moduleSources) {
+        await writeFile(path.join(leftRoot, 'Catalogs', item.objectName, 'Ext', 'ObjectModule.bsl'), item.left);
+        await writeFile(path.join(rightRoot, 'Catalogs', item.objectName, 'Ext', 'ObjectModule.bsl'), item.right);
+      }
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-11-22T10:05:00.000Z'),
+      });
+      workspace = result.workspace;
+
+      assert.strictEqual(indexedModules.length, 4, 'each side of both paired modules must go through the routine parser');
+      for (const item of moduleSources) {
+        const pairCalls = indexedModules.filter((entry) => entry.filePath.includes(path.join('Catalogs', item.objectName)));
+        assert.strictEqual(pairCalls.length, 2, `${item.objectName}: both paired sides should be parsed`);
+        assert.deepStrictEqual(new Set(pairCalls.map((entry) => entry.side)), new Set(['left', 'right']));
+        assert.ok(pairCalls.every((entry) => entry.source.length > 0), `${item.objectName}: parsed source should be captured`);
+      }
+      assert.ok(indexedModules.some((entry) => entry.filePath.includes(path.join('Catalogs', 'Identical')) && entry.source === identicalSource));
+      assert.ok(indexedModules.some((entry) => entry.filePath.includes(path.join('Catalogs', 'Changed')) && entry.source === changedLeftSource));
+      assert.ok(indexedModules.some((entry) => entry.filePath.includes(path.join('Catalogs', 'Changed')) && entry.source === changedRightSource));
+    } finally {
+      bslModuleIndexerRuntime.indexBslModuleSource = originalIndexer;
+      workspace?.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('deeply compares all canonical standard modules and executes only healthy additions', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-standard-bsl-modules-'));
+    const leftRoot = path.join(tempRoot, 'target');
+    const rightRoot = path.join(tempRoot, 'incoming');
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+    const originalIndexer = bslModuleIndexerRuntime.indexBslModuleSource;
+    const indexedModules: Array<{ moduleId: string; side: string; routineCount: number }> = [];
+    const moduleCases = [
+      {
+        metadataType: 'InformationRegister',
+        folder: 'InformationRegisters',
+        name: 'Stock',
+        fileName: 'RecordSetModule.bsl',
+        moduleId: 'InformationRegister.Stock.RecordSet',
+      },
+      {
+        metadataType: 'Constant',
+        folder: 'Constants',
+        name: 'ExchangeRate',
+        fileName: 'ValueManagerModule.bsl',
+        moduleId: 'Constant.ExchangeRate.ValueManager',
+      },
+      {
+        metadataType: 'DataProcessor',
+        folder: 'DataProcessors',
+        name: 'ImportData',
+        fileName: 'ObjectModule.bsl',
+        moduleId: 'DataProcessor.ImportData.Object',
+      },
+      {
+        metadataType: 'Report',
+        folder: 'Reports',
+        name: 'Revenue',
+        fileName: 'ManagerModule.bsl',
+        moduleId: 'Report.Revenue.Manager',
+      },
+    ] as const;
+
+    bslModuleIndexerRuntime.indexBslModuleSource = (input) => {
+      const entry = originalIndexer(input);
+      indexedModules.push({
+        moduleId: input.identity.moduleId,
+        side: input.identity.side,
+        routineCount: entry.routines.length,
+      });
+      return entry;
+    };
+
+    try {
+      for (const [index, moduleCase] of moduleCases.entries()) {
+        const descriptorPath = (rootPath: string): string =>
+          path.join(rootPath, moduleCase.folder, `${moduleCase.name}.xml`);
+        const modulePath = (rootPath: string): string =>
+          path.join(rootPath, moduleCase.folder, moduleCase.name, 'Ext', moduleCase.fileName);
+        const descriptorXml = `<MetaDataObject><${moduleCase.metadataType} uuid="standard-module-${index}"><Properties><Name>${moduleCase.name}</Name></Properties></${moduleCase.metadataType}></MetaDataObject>`;
+        const targetSource = [
+          'Procedure ManualConflict()',
+          '  Value = 1;',
+          'EndProcedure',
+        ].join('\n');
+        const incomingSource = [
+          'Procedure ManualConflict()',
+          '  Value = 2;',
+          'EndProcedure',
+          '',
+          'Procedure HealthyAddition()',
+          '  Value = 3;',
+          'EndProcedure',
+        ].join('\n');
+        await writeFile(descriptorPath(leftRoot), descriptorXml);
+        await writeFile(descriptorPath(rightRoot), descriptorXml);
+        await writeFile(modulePath(leftRoot), targetSource);
+        await writeFile(modulePath(rightRoot), incomingSource);
+      }
+
+      const sourceModuleBytes = await Promise.all(moduleCases.map(async (moduleCase) => ({
+        moduleId: moduleCase.moduleId,
+        bytes: await fs.readFile(path.join(rightRoot, moduleCase.folder, moduleCase.name, 'Ext', moduleCase.fileName)),
+      })));
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-11-24T10:00:00.000Z'),
+      });
+      workspace = result.workspace;
+
+      assert.strictEqual(indexedModules.length, moduleCases.length * 2,
+        'each side of every matched standard module must be deeply parsed exactly once');
+      for (const moduleCase of moduleCases) {
+        const moduleCalls = indexedModules.filter((entry) => entry.moduleId === moduleCase.moduleId);
+        assert.strictEqual(moduleCalls.length, 2, `${moduleCase.moduleId}: both paired sides must be parsed`);
+        assert.deepStrictEqual(moduleCalls.map((entry) => entry.side).sort(), ['left', 'right']);
+        assert.deepStrictEqual(moduleCalls.map((entry) => entry.routineCount).sort(), [1, 2]);
+      }
+
+      const healthyIds: string[] = [];
+      for (const moduleCase of moduleCases) {
+        const manual = requireNode(result.projection.root, `bsl:routine:${moduleCase.moduleId}:manualconflict`);
+        const healthyId = `bsl:routine:${moduleCase.moduleId}:healthyaddition`;
+        const healthy = requireNode(result.projection.root, healthyId);
+        assert.strictEqual(manual.mergeable, false, `${moduleCase.moduleId}: the changed routine stays manual`);
+        assert.strictEqual(manual.mergeState?.state, 'blocked');
+        assert.strictEqual(manual.conflict?.blocking, true);
+        assert.strictEqual(healthy.mergeable, true, `${moduleCase.moduleId}: the independent addition stays selectable`);
+        healthyIds.push(healthyId);
+      }
+
+      const preview = await workspace.createPreviewForNodeIds(healthyIds);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      if (!preview.ok) { return; }
+      assert.strictEqual(preview.preview.operationCount, moduleCases.length);
+      const approval = workspace.approvePreview(preview.preview.previewId);
+      assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+      const execution = await workspace.executeApprovedPreview(preview.preview.previewId, { destructiveConfirmed: true });
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+
+      for (const [index, moduleCase] of moduleCases.entries()) {
+        const mergedTarget = await readText(path.join(leftRoot, moduleCase.folder, moduleCase.name, 'Ext', moduleCase.fileName));
+        assert.match(mergedTarget, /Procedure ManualConflict\(\)[\s\S]*Value = 1;/u);
+        assert.doesNotMatch(mergedTarget, /Value = 2;/u);
+        assert.match(mergedTarget, /Procedure HealthyAddition\(\)/u);
+        assert.deepStrictEqual(
+          await fs.readFile(path.join(rightRoot, moduleCase.folder, moduleCase.name, 'Ext', moduleCase.fileName)),
+          sourceModuleBytes[index]!.bytes,
+          `${moduleCase.moduleId}: incoming source bytes remain unchanged`
+        );
+      }
+    } finally {
+      bslModuleIndexerRuntime.indexBslModuleSource = originalIndexer;
+      workspace?.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('copies unpaired ordinary BSL as an exact fileArtifact without deep parsing', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-unpaired-bsl-copy-'));
+    const leftRoot = path.join(tempRoot, 'target');
+    const rightRoot = path.join(tempRoot, 'incoming');
+    const leftModulePath = path.join(leftRoot, 'Catalogs', UNION_CATALOG_NAME, 'Ext', 'ObjectModule.bsl');
+    const rightModulePath = path.join(rightRoot, 'Catalogs', UNION_CATALOG_NAME, 'Ext', 'ObjectModule.bsl');
+    const moduleBytes = Buffer.from(['// source', 'Procedure Imported()', '  Value = 42;', 'EndProcedure', ''].join(String.fromCharCode(13, 10)), 'utf8');
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+    const originalIndexer = bslModuleIndexerRuntime.indexBslModuleSource;
+    const indexedPaths: string[] = [];
+
+    bslModuleIndexerRuntime.indexBslModuleSource = (input) => {
+      indexedPaths.push(input.identity.filePath);
+      return originalIndexer(input);
+    };
+
+    try {
+      await writeCatalogDescriptor(leftRoot, UNION_CATALOG_NAME, UNION_CATALOG_UUID, UNION_CATALOG_NAME);
+      await writeCatalogDescriptor(rightRoot, UNION_CATALOG_NAME, UNION_CATALOG_UUID, UNION_CATALOG_NAME);
+      await writeFileBytes(rightModulePath, moduleBytes);
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-11-22T10:10:00.000Z'),
+      });
+      workspace = result.workspace;
+      assert.deepStrictEqual(indexedPaths, [], 'an unpaired ordinary module should not invoke the BSL routine parser');
+
+      const moduleNode = requireSingleNode(
+        workspace.payload.root,
+        (node) => node.kind === 'fileArtifact' && node.label === 'ObjectModule.bsl' && node.status === 'rightOnly'
+      );
+      assert.ok(workspace.listMergeableNodeIds().includes(moduleNode.id));
+      const preview = await workspace.createPreviewForNodeIds([moduleNode.id]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      assert.strictEqual(preview.preview.operationCount, 1);
+      assert.strictEqual(preview.preview.items[0]?.kind, 'fileArtifact', 'the unmatched module should use the fileArtifact copy action');
+      const approval = workspace.approvePreview(preview.preview.previewId);
+      assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+      const execution = await workspace.executeApprovedPreview(preview.preview.previewId, {
+        destructiveConfirmed: true,
+      });
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+      assert.deepStrictEqual(await fs.readFile(leftModulePath), moduleBytes, 'the whole BSL file must be copied byte-for-byte');
+    } finally {
+      bslModuleIndexerRuntime.indexBslModuleSource = originalIndexer;
+      workspace?.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('exposes a blocking reason for paired BSL conflicts without blocking a healthy added routine', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-paired-bsl-conflict-'));
+    const leftRoot = path.join(tempRoot, 'target');
+    const rightRoot = path.join(tempRoot, 'incoming');
+    const leftModulePath = path.join(leftRoot, 'Catalogs', 'Conflicted', 'Ext', 'ObjectModule.bsl');
+    const rightModulePath = path.join(rightRoot, 'Catalogs', 'Conflicted', 'Ext', 'ObjectModule.bsl');
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'Conflicted', 'conflicted-catalog', 'Conflicted');
+      await writeCatalogDescriptor(rightRoot, 'Conflicted', 'conflicted-catalog', 'Conflicted');
+      await writeFile(leftModulePath, logicalBaseRoutine());
+      await writeFile(rightModulePath, [
+        logicalManualRoutine(),
+        '',
+        'Procedure HealthyAddition()',
+        '  Value = 42;',
+        'EndProcedure',
+      ].join('\n'));
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-11-22T10:15:00.000Z'),
+      });
+      workspace = result.workspace;
+
+      const runNode = requireNode(workspace.payload.root, 'bsl:routine:Catalog.Conflicted.Object:run');
+      const healthyRoutineId = 'bsl:routine:Catalog.Conflicted.Object:healthyaddition';
+      const payload = toWebviewPayload(
+        workspace.payload,
+        workspace.listMergeableNodeIds(),
+        'Сравнение'
+      ) as FutureConfigCompareWebviewPayloadDto;
+
+      assert.strictEqual(runNode.mergeable, false, 'the same-routine manual edit must not be auto-selected');
+      assert.strictEqual(runNode.conflict?.blocking, true, 'the changed routine should expose an explicit blocking conflict');
+      assert.ok(runNode.conflict?.message, 'the conflict should explain why automatic merge is blocked');
+      assert.strictEqual(runNode.mergeState?.state, 'blocked');
+      assert.ok(runNode.mergeState?.reason, 'the canonical node should retain its actionable block reason');
+      assert.ok((payload.unresolvedConflictCount ?? 0) > 0, 'the webview payload should surface at least one unresolved routine conflict');
+      assert.ok(payload.executableNodeIds.includes(healthyRoutineId), 'an independent right-only routine should stay selectable');
+      assert.ok(!payload.executableNodeIds.includes(runNode.id), 'the conflicting routine must stay out of executable checkbox IDs');
+
+      const healthyPreview = await workspace.createPreviewForNodeIds([healthyRoutineId]);
+      assert.strictEqual(healthyPreview.ok, true, JSON.stringify(healthyPreview));
+      assert.strictEqual(healthyPreview.preview.items[0]?.nodeId, healthyRoutineId);
+    } finally {
+      workspace?.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   test('pairs multiple nested Form.xml artifacts by owner-relative path and executes each file once', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-multiple-forms-'));
     const leftRoot = path.join(tempRoot, 'left');
@@ -1103,8 +2295,16 @@ suite('ConfigurationCompareService', () => {
 
     try {
       await fs.mkdir(leftRoot, { recursive: true });
+      await writeFile(
+        path.join(leftRoot, 'Configuration.xml'),
+        configurationXml('Target', '11111111-1111-1111-1111-111111111111', [])
+      );
       await writeFileBytes(rightLogoPath, rightBytes);
       await writeCatalogDescriptor(rightRoot, 'Products', 'catalog-products', 'Products');
+      await writeFile(
+        path.join(rightRoot, 'Configuration.xml'),
+        configurationXml('Source', '22222222-2222-2222-2222-222222222222', ['Products'])
+      );
 
       const result = await buildConfigurationCompare({
         leftRootPath: leftRoot,
@@ -1138,6 +2338,333 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
+  test('workspace copies a flat catalog descriptor and folder sidecars while preserving target registrations', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-flat-object-copy-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const leftConfigurationPath = path.join(leftRoot, 'Configuration.xml');
+    const leftDescriptorPath = path.join(leftRoot, 'Catalogs', 'Products.xml');
+    const leftSidecarPath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const descriptor = [
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">',
+      '  <Catalog uuid="33333333-3333-3333-3333-333333333333">',
+      '    <Properties><Name>Products</Name></Properties>',
+      '    <ChildObjects/>',
+      '  </Catalog>',
+      '</MetaDataObject>',
+    ].join('\n');
+    const sidecarBytes = Buffer.from([1, 2, 3]);
+    const targetConfiguration = [
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">',
+      '  <Configuration uuid="11111111-1111-1111-1111-111111111111">',
+      '    <Properties><Name>Target</Name></Properties>',
+      '    <ChildObjects><Catalog>Existing</Catalog></ChildObjects>',
+      '  </Configuration>',
+      '</MetaDataObject>',
+    ].join('\n');
+    const incomingConfiguration = [
+      '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">',
+      '  <Configuration uuid="22222222-2222-2222-2222-222222222222">',
+      '    <Properties><Name>Source</Name></Properties>',
+      '    <ChildObjects><Catalog>Products</Catalog></ChildObjects>',
+      '  </Configuration>',
+      '</MetaDataObject>',
+    ].join('\n');
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+
+    try {
+      await writeFile(leftConfigurationPath, targetConfiguration);
+      await writeFile(path.join(rightRoot, 'Configuration.xml'), incomingConfiguration);
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), descriptor);
+      await writeFileBytes(path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin'), sidecarBytes);
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      workspace = result.workspace;
+
+      const objectId = workspace.listMergeableNodeIds().find(
+        (id) => id === 'fileObject:rightOnly:Catalog.Products'
+      );
+      assert.ok(objectId, 'expected the unmatched catalog object to be selectable');
+
+      const preview = await workspace.createPreviewForNodeIds([objectId]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      const approval = workspace.approvePreview(preview.preview.previewId);
+      assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+      const execution = await workspace.executeApprovedPreview(preview.preview.previewId, {
+        destructiveConfirmed: true,
+      });
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+
+      const descriptorCopied = await fs.readFile(leftDescriptorPath, 'utf-8').then(
+        () => true,
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') {
+            return false;
+          }
+          throw error;
+        }
+      );
+      const sidecarCopied = await fs.readFile(leftSidecarPath).then(
+        (bytes) => bytes.equals(sidecarBytes),
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') {
+            return false;
+          }
+          throw error;
+        }
+      );
+      const updatedConfiguration = await fs.readFile(leftConfigurationPath, 'utf-8');
+      const catalogRegistrations = [...updatedConfiguration.matchAll(/<Catalog>([^<]+)<\/Catalog>/gu)]
+        .map((match) => match[1])
+        .sort();
+      assert.deepStrictEqual(
+        {
+          descriptorCopied,
+          sidecarCopied,
+          rootRegistrationAdded: catalogRegistrations.includes('Products'),
+          existingRegistrationPreserved: catalogRegistrations.includes('Existing'),
+        },
+        {
+          descriptorCopied: true,
+          sidecarCopied: true,
+          rootRegistrationAdded: true,
+          existingRegistrationPreserved: true,
+        }
+      );
+    } finally {
+      workspace?.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('copies incoming InformationRegister, DataProcessor and Role roots with descriptor, sidecar and root registration', async () => {
+    const metadataCases = [
+      { type: 'InformationRegister', folder: 'InformationRegisters', name: 'Stocks' },
+      { type: 'DataProcessor', folder: 'DataProcessors', name: 'ImportData' },
+      { type: 'Role', folder: 'Roles', name: 'Auditor' },
+    ] as const;
+    for (const metadataCase of metadataCases) {
+      const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `configuration-compare-${metadataCase.type}-copy-`));
+      const leftRoot = path.join(tempRoot, 'left');
+      const rightRoot = path.join(tempRoot, 'right');
+      const descriptorRelativePath = path.join(metadataCase.folder, `${metadataCase.name}.xml`);
+      const targetDescriptorPath = path.join(leftRoot, descriptorRelativePath);
+      const targetSidecarPath = path.join(leftRoot, metadataCase.folder, metadataCase.name, 'Ext', 'payload.bin');
+      const expectedSidecar = Buffer.from(`${metadataCase.type} sidecar`);
+      let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+      let runtime: Awaited<ReturnType<typeof createMergeMutationTestRuntime>> | undefined;
+      try {
+        const configuration = (name: string, includeObject: boolean): string => [
+          '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">',
+          '  <Configuration uuid="01234567-89ab-cdef-0123-456789abcdef">',
+          `    <Properties><Name>${name}</Name></Properties>`,
+          `    <ChildObjects>${includeObject ? `<${metadataCase.type}>${metadataCase.name}</${metadataCase.type}>` : ''}</ChildObjects>`,
+          '  </Configuration>',
+          '</MetaDataObject>',
+        ].join('\n');
+        await writeFile(path.join(leftRoot, 'Configuration.xml'), configuration('Target', false));
+        await writeFile(path.join(rightRoot, 'Configuration.xml'), configuration('Source', true));
+        await writeFile(
+          path.join(rightRoot, descriptorRelativePath),
+          `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><${metadataCase.type} uuid="11234567-89ab-cdef-0123-456789abcdef"><Properties><Name>${metadataCase.name}</Name></Properties></${metadataCase.type}></MetaDataObject>`
+        );
+        await writeFileBytes(path.join(rightRoot, metadataCase.folder, metadataCase.name, 'Ext', 'payload.bin'), expectedSidecar);
+        runtime = await createMergeMutationTestRuntime(leftRoot);
+
+        const result = await buildConfigurationCompare({
+          leftRootPath: leftRoot,
+          rightRootPath: rightRoot,
+          backupRootPath: path.join(tempRoot, 'backups'),
+          mutationEngine: runtime.engine,
+          configurationId: runtime.configurationId,
+        });
+        workspace = result.workspace;
+        const nodeId = `fileObject:rightOnly:${metadataCase.type}.${metadataCase.name}`;
+        assert.ok(workspace.listMergeableNodeIds().includes(nodeId), `${nodeId} should be selectable`);
+        const preview = await workspace.createPreviewForNodeIds([nodeId]);
+        assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+        const approval = workspace.approvePreview(preview.preview.previewId);
+        assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+        const execution = await workspace.executeApprovedPreview(preview.preview.previewId, { destructiveConfirmed: true });
+        assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+
+        const registeredConfiguration = await fs.readFile(path.join(leftRoot, 'Configuration.xml'), 'utf8');
+        assert.match(registeredConfiguration, new RegExp(`<${metadataCase.type}>${metadataCase.name}</${metadataCase.type}>`, 'u'));
+        assert.strictEqual(await fs.readFile(targetDescriptorPath, 'utf8'),
+          `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><${metadataCase.type} uuid="11234567-89ab-cdef-0123-456789abcdef"><Properties><Name>${metadataCase.name}</Name></Properties></${metadataCase.type}></MetaDataObject>`);
+        assert.deepStrictEqual(await fs.readFile(targetSidecarPath), expectedSidecar);
+      } finally {
+        workspace?.dispose();
+        await runtime?.coordinator.dispose();
+        await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
+    }
+  });
+
+  test('refuses flat object copy when only the incoming Configuration.xml exists and leaves target untouched', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-mixed-root-copy-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const leftConfigurationPath = path.join(leftRoot, 'Configuration.xml');
+    const leftDescriptorPath = path.join(leftRoot, 'Catalogs', 'Products.xml');
+    const leftSidecarPath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const sidecarBytes = Buffer.from([4, 5, 6]);
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+
+    try {
+      await fs.mkdir(leftRoot, { recursive: true });
+      await writeFile(path.join(rightRoot, 'Configuration.xml'), configurationXml('Source', '22222222-2222-2222-2222-222222222222', ['Products']));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), flatCatalogDescriptor());
+      await writeFileBytes(path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin'), sidecarBytes);
+
+      const result = await buildConfigurationCompareWithoutMutationRuntime({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      workspace = result.workspace;
+      const products = collectNodes(
+        result.projection.root,
+        (node) => node.kind === 'metadataObject' && node.label === 'Catalog.Products' && node.status === 'rightOnly'
+      );
+      assert.ok(products.length > 0, 'incoming-only catalog remains visible in the compare');
+      const mergeableIds = new Set(workspace.listMergeableNodeIds());
+      assert.ok(products.every((product) => !mergeableIds.has(product.id)));
+      const canonicalCopyId = 'fileObject:rightOnly:Catalog.Products';
+      assert.ok(!mergeableIds.has(canonicalCopyId));
+      const preview = await workspace.createPreviewForNodeIds([canonicalCopyId]);
+      assert.strictEqual(preview.ok, false, JSON.stringify(preview));
+
+      assert.deepStrictEqual(
+        {
+          descriptorPresent: await pathExists(leftDescriptorPath),
+          sidecarPresent: await pathExists(leftSidecarPath),
+          targetConfigurationPresent: await pathExists(leftConfigurationPath),
+        },
+        {
+          descriptorPresent: false,
+          sidecarPresent: false,
+          targetConfigurationPresent: false,
+        }
+      );
+    } finally {
+      workspace?.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('blocks a loose flat package if a root Configuration.xml appears after approval', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-loose-flat-copy-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const leftConfigurationPath = path.join(leftRoot, 'Configuration.xml');
+    const leftDescriptorPath = path.join(leftRoot, 'Catalogs', 'Products.xml');
+    const leftSidecarPath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const descriptor = flatCatalogDescriptor();
+    const sidecarBytes = Buffer.from([7, 8, 9]);
+    let mutationRuntime: Awaited<ReturnType<typeof createMergeMutationTestRuntime>> | undefined;
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+
+    try {
+      await fs.mkdir(leftRoot, { recursive: true });
+      mutationRuntime = await createMergeMutationTestRuntime(leftRoot);
+      const configurationBeforeCompare = await fs.readFile(leftConfigurationPath);
+      await fs.rm(leftConfigurationPath);
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), descriptor);
+      await writeFileBytes(path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin'), sidecarBytes);
+
+      const result = await buildConfigurationCompareWithoutMutationRuntime({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        mutationEngine: mutationRuntime.engine,
+        configurationId: mutationRuntime.configurationId,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      workspace = result.workspace;
+      const objectId = workspace.listMergeableNodeIds().find(
+        (id) => id === 'fileObject:rightOnly:Catalog.Products'
+      );
+      assert.ok(objectId, 'flat catalog should remain selectable without root Configuration.xml files');
+
+      const preview = await workspace.createPreviewForNodeIds([objectId]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      const approval = workspace.approvePreview(preview.preview.previewId);
+      assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+
+      await fs.writeFile(leftConfigurationPath, configurationBeforeCompare);
+      const execution = await workspace.executeApprovedPreview(preview.preview.previewId);
+      assert.strictEqual(execution.ok, false, JSON.stringify(execution));
+      assert.strictEqual(execution.result?.applied.length ?? 0, 0);
+
+      assert.strictEqual(await pathExists(leftDescriptorPath), false);
+      assert.strictEqual(await pathExists(leftSidecarPath), false);
+      assert.deepStrictEqual(await fs.readFile(leftConfigurationPath), configurationBeforeCompare);
+      assert.strictEqual(await pathExists(path.join(rightRoot, 'Configuration.xml')), false);
+    } finally {
+      workspace?.dispose();
+      await mutationRuntime?.coordinator.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('blocks loose flat package preview when source Configuration.xml appears after compare', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-late-source-root-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const leftConfigurationPath = path.join(leftRoot, 'Configuration.xml');
+    const rightConfigurationPath = path.join(rightRoot, 'Configuration.xml');
+    const leftDescriptorPath = path.join(leftRoot, 'Catalogs', 'Products.xml');
+    const leftSidecarPath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const sidecarBytes = Buffer.from([10, 11, 12]);
+    let mutationRuntime: Awaited<ReturnType<typeof createMergeMutationTestRuntime>> | undefined;
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+
+    try {
+      await fs.mkdir(leftRoot, { recursive: true });
+      mutationRuntime = await createMergeMutationTestRuntime(leftRoot);
+      await fs.rm(leftConfigurationPath);
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), flatCatalogDescriptor());
+      await writeFileBytes(path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin'), sidecarBytes);
+
+      const result = await buildConfigurationCompareWithoutMutationRuntime({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        mutationEngine: mutationRuntime.engine,
+        configurationId: mutationRuntime.configurationId,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      workspace = result.workspace;
+      assert.strictEqual(await pathExists(leftConfigurationPath), false);
+      assert.strictEqual(await pathExists(rightConfigurationPath), false);
+      const objectId = workspace.listMergeableNodeIds().find(
+        (id) => id === 'fileObject:rightOnly:Catalog.Products'
+      );
+      assert.ok(objectId, 'loose package should be selectable while both root files are absent');
+
+      const sourceConfiguration = configurationXml('Source', '22222222-2222-2222-2222-222222222222', ['Products']);
+      await writeFile(rightConfigurationPath, sourceConfiguration);
+      const preview = await workspace.createPreviewForNodeIds([objectId]);
+
+      assert.strictEqual(preview.ok, false, JSON.stringify(preview));
+      assert.strictEqual(await pathExists(leftDescriptorPath), false);
+      assert.strictEqual(await pathExists(leftSidecarPath), false);
+      assert.strictEqual(await pathExists(leftConfigurationPath), false);
+      assert.strictEqual(await fs.readFile(rightConfigurationPath, 'utf-8'), sourceConfiguration);
+    } finally {
+      workspace?.dispose();
+      await mutationRuntime?.coordinator.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   test('full strategy keeps unmatched object copy selectable without indexing its internals', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
@@ -1152,7 +2679,7 @@ suite('ConfigurationCompareService', () => {
       await writeFileBytes(rightLogoPath, Buffer.from([0xde, 0xad, 0xbe, 0xef]));
       await writeFile(rightModulePath, 'Procedure RightOnly()\nEndProcedure');
 
-      const result = await buildConfigurationCompare({
+      const result = await buildConfigurationCompareWithoutMutationRuntime({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
         backupRootPath: backupRoot,
@@ -1294,6 +2821,110 @@ async function buildConfigurationCompare(input: ConfigurationCompareInput) {
     mutationEngine: runtime.engine,
     configurationId: input.configurationId ?? runtime.configurationId,
   });
+}
+
+const UNION_CATALOG_NAME = 'Спр1';
+const UNION_CATALOG_UUID = '11111111-1111-4111-8111-111111111111';
+const UNION_TABULAR_SECTION_NAME = 'Строки';
+const UNION_TABULAR_SECTION_UUID = '22222222-2222-4222-8222-222222222222';
+const UNION_ATTRIBUTE_IDENTITIES = [
+  ['33333333-3333-4333-8333-333333333333', 'Рекв1'],
+  ['44444444-4444-4444-8444-444444444444', 'Рекв2'],
+  ['55555555-5555-4555-8555-555555555555', 'РеквСтроки1'],
+  ['66666666-6666-4666-8666-666666666666', 'РеквСтроки2'],
+] as const;
+
+function catalogDescriptorPath(root: string, name: string): string {
+  return path.join(root, 'Catalogs', name, `${name}.xml`);
+}
+
+function unionCatalogDescriptor(isTarget: boolean): string {
+  const targetAttribute = metadataAttributeXml(
+    UNION_ATTRIBUTE_IDENTITIES[0][0],
+    UNION_ATTRIBUTE_IDENTITIES[0][1]
+  );
+  const incomingAttribute = metadataAttributeXml(
+    UNION_ATTRIBUTE_IDENTITIES[1][0],
+    UNION_ATTRIBUTE_IDENTITIES[1][1]
+  );
+  const nestedTargetAttribute = metadataAttributeXml(
+    UNION_ATTRIBUTE_IDENTITIES[2][0],
+    UNION_ATTRIBUTE_IDENTITIES[2][1]
+  );
+  const nestedIncomingAttribute = metadataAttributeXml(
+    UNION_ATTRIBUTE_IDENTITIES[3][0],
+    UNION_ATTRIBUTE_IDENTITIES[3][1]
+  );
+  const topAttributeXml = isTarget ? targetAttribute : incomingAttribute;
+  const nestedAttributeXml = isTarget ? nestedTargetAttribute : nestedIncomingAttribute;
+
+  return [
+    '<MetaDataObject>',
+    `  <Catalog uuid="${UNION_CATALOG_UUID}">`,
+    '    <Properties>',
+    `      <Name>${UNION_CATALOG_NAME}</Name>`,
+    '      <Synonym>Справка &amp; значение</Synonym>',
+    '    </Properties>',
+    '    <ChildObjects>',
+    `      ${topAttributeXml}`,
+    `      <TabularSection uuid="${UNION_TABULAR_SECTION_UUID}">`,
+    '        <Properties>',
+    `          <Name>${UNION_TABULAR_SECTION_NAME}</Name>`,
+    '        </Properties>',
+    '        <ChildObjects>',
+    `          ${nestedAttributeXml}`,
+    '        </ChildObjects>',
+    '      </TabularSection>',
+    '    </ChildObjects>',
+    '  </Catalog>',
+    '</MetaDataObject>',
+  ].join('\n');
+}
+
+function metadataAttributeXml(uuid: string, name: string): string {
+  return `<Attribute uuid="${uuid}"><Properties><Name>${name}</Name></Properties></Attribute>`;
+}
+
+function countXmlUuid(xml: string, uuid: string): number {
+  return xml.split(`uuid="${uuid}"`).length - 1;
+}
+
+function countXmlName(xml: string, name: string): number {
+  return xml.split(`<Name>${name}</Name>`).length - 1;
+}
+
+function configurationXml(name: string, uuid: string, catalogNames: readonly string[]): string {
+  return [
+    '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">',
+    `  <Configuration uuid="${uuid}">`,
+    `    <Properties><Name>${name}</Name></Properties>`,
+    `    <ChildObjects>${catalogNames.map((catalog) => `<Catalog>${catalog}</Catalog>`).join('')}</ChildObjects>`,
+    '  </Configuration>',
+    '</MetaDataObject>',
+  ].join('\n');
+}
+
+function flatCatalogDescriptor(): string {
+  return [
+    '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">',
+    '  <Catalog uuid="33333333-3333-3333-3333-333333333333">',
+    '    <Properties><Name>Products</Name></Properties>',
+    '    <ChildObjects/>',
+    '  </Catalog>',
+    '</MetaDataObject>',
+  ].join('\n');
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function writeCatalog(root: string, name: string, uuid: string): Promise<void> {
@@ -1470,6 +3101,45 @@ function collectNodes(
     }
   });
   return found;
+}
+
+function metadataRows(root: CompareTreeNode): Array<{
+  qualifiedName: string;
+  kind: string;
+  status: CompareTreeNode['status'];
+}> {
+  const metadataGroup = root.children.find((node) => node.kind === 'metadataGroup');
+  assert.ok(metadataGroup, 'expected metadata projection group');
+  return metadataGroup.children
+    .filter(
+      (node) =>
+        node.kind === 'metadataMatch' ||
+        node.kind === 'metadataConflict' ||
+        node.kind === 'metadataObject'
+    )
+    .map((node) => ({
+      qualifiedName: node.presentation?.qualifiedName ?? node.label,
+      kind: node.kind,
+      status: node.status,
+    }))
+    .sort((left, right) => left.qualifiedName.localeCompare(right.qualifiedName));
+}
+
+function assertPartialMetadataProjection(
+  projection: NonNullable<CompareBuildProgress['projection']>
+): void {
+  const nodes = collectNodes(projection.root, () => true);
+  assert.strictEqual(projection.stats.mergeable, 0);
+  assert.ok(nodes.every((node) => node.mergeable !== true));
+  assert.strictEqual(
+    nodes.filter((node) => node.kind === 'metadataMatch').length,
+    0,
+    'equal or matched metadata rows must wait for the complete inventory-backed projection'
+  );
+}
+
+function collectDisplayNodes(root: CompareDisplayNode): CompareDisplayNode[] {
+  return [root, ...root.children.flatMap((child) => collectDisplayNodes(child))];
 }
 
 function requireNodeByLabel(

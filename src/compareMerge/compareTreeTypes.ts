@@ -14,6 +14,28 @@ export interface CompareTreeConflict {
   message: string;
 }
 
+export interface CompareTreeIdentityPresentation {
+  side: 'left' | 'right';
+  qualifiedName: string;
+  uuid?: string;
+  filePath?: string;
+  ownership?: 'own' | 'adopted';
+  sourceUuid?: string;
+}
+
+/** Optional display hints. They never participate in candidate IDs or merge validation. */
+export interface CompareTreeNodePresentation {
+  ownerKey?: string;
+  ownerAliases?: string[];
+  metadataType?: string;
+  moduleKind?: string;
+  bslRoutineAnalysis?: 'complete' | 'partial';
+  qualifiedName?: string;
+  identityConflict?: boolean;
+  ambiguousIdentitySet?: boolean;
+  identities?: CompareTreeIdentityPresentation[];
+}
+
 export interface CompareTreeNode {
   id: string;
   label: string;
@@ -23,9 +45,12 @@ export interface CompareTreeNode {
   rightValue?: string;
   mergeable?: boolean;
   destructive?: boolean;
+  /** A paired CFE metadata object whose full incoming copy replaces an existing target object. */
+  replacement?: boolean;
   payloadRef?: string;
   conflict?: CompareTreeConflict;
   mergeState?: CompareTreeMergeState;
+  presentation?: CompareTreeNodePresentation;
   children: CompareTreeNode[];
 }
 

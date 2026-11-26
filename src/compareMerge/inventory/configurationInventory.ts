@@ -5,10 +5,13 @@ import type { MetadataIdentity } from '../domain/compareContracts';
 import { indexMetadataFolder } from '../metadata/metadataIndexer';
 import {
   createArtifactUnit,
+  createArtifactUnitFromKnownHash,
   type ArtifactKind,
   type ArtifactMergeMode,
   type ArtifactUnit,
 } from './configurationArtifacts';
+import { metadataDescriptorPathKey } from '../metadataObjectLookup';
+import type { ConfigurationFileManifest } from './configurationFileManifest';
 import {
   type CompareCancellationToken,
   throwIfCompareCancelled,
@@ -42,6 +45,8 @@ export interface BuildConfigurationInventoryOptions {
   cancellation?: CompareCancellationToken;
   artifactConcurrency?: number;
 }
+
+const DIRECTORY_READ_CONCURRENCY = 8;
 
 interface ArtifactOwnerIndex {
   exactDescriptorByPath: ReadonlyMap<string, ObjectCandidate>;
@@ -97,7 +102,7 @@ export async function buildConfigurationInventory(
 
   for (const object of objects) {
     artifactsByObjectId.set(object.objectId, []);
-    objectsByDescriptorPath.set(normalizeKey(object.descriptorPath), object);
+    objectsByDescriptorPath.set(metadataDescriptorPathKey(object.descriptorPath), object);
   }
 
   const ownedFiles: { filePath: string; owner: ObjectCandidate }[] = [];
@@ -129,6 +134,7 @@ export async function buildConfigurationInventory(
   for (const artifacts of artifactsByObjectId.values()) {
     artifacts.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
   }
+  throwIfCompareCancelled(options.cancellation);
 
   return {
     rootPath: normalizedRootPath,
@@ -138,28 +144,103 @@ export async function buildConfigurationInventory(
   };
 }
 
+/** Hydrates descriptor hashes and non-BSL artifacts for already matched owners only. */
+export async function hydrateConfigurationInventoryFromManifest(input: {
+  readonly manifest: ConfigurationFileManifest;
+  readonly matchedOwnerObjectIds: ReadonlySet<string>;
+  readonly cancellation?: CompareCancellationToken;
+  readonly artifactConcurrency?: number;
+}): Promise<ConfigurationInventory> {
+  throwIfCompareCancelled(input.cancellation);
+  const objects: MetadataObjectUnit[] = input.manifest.objects.map((object) => ({ ...object }));
+  const objectById = new Map(objects.map((object) => [object.objectId, object]));
+  const artifactsByObjectId = new Map<string, ArtifactUnit[]>();
+  const objectsByDescriptorPath = new Map<string, MetadataObjectUnit>();
+  for (const object of objects) {
+    artifactsByObjectId.set(object.objectId, []);
+    objectsByDescriptorPath.set(metadataDescriptorPathKey(object.descriptorPath), object);
+  }
+
+  const selectedEntries = input.manifest.entries.filter((entry) =>
+    entry.isDescriptor || (input.matchedOwnerObjectIds.has(entry.ownerObjectId) && entry.artifactKindHint !== 'bslModule')
+  );
+  const artifacts = await mapLimit(selectedEntries, input.artifactConcurrency ?? 16, async (entry) => {
+    throwIfCompareCancelled(input.cancellation);
+    const owner = objectById.get(entry.ownerObjectId);
+    if (!owner) {throw new Error(`Configuration manifest owner was not indexed: ${entry.ownerObjectId}`);}
+    const artifact = await createArtifactUnit({
+      rootPath: input.manifest.rootPath,
+      ownerObjectId: entry.ownerObjectId,
+      filePath: entry.filePath,
+      descriptorPath: owner.descriptorPath,
+    });
+    throwIfCompareCancelled(input.cancellation);
+    return artifact;
+  });
+  for (const artifact of artifacts) {
+    if (artifact.ownerObjectId) {artifactsByObjectId.get(artifact.ownerObjectId)?.push(artifact);}
+  }
+  for (const ownedArtifacts of artifactsByObjectId.values()) {
+    ownedArtifacts.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+  }
+  throwIfCompareCancelled(input.cancellation);
+  return {
+    rootPath: input.manifest.rootPath,
+    objects,
+    artifactsByObjectId,
+    objectsByDescriptorPath,
+  };
+}
+
+/** Adds BSL rows using hashes from the same raw-byte collection pass as BSL identity analysis. */
+export function appendHashedBslArtifacts(input: {
+  readonly inventory: ConfigurationInventory;
+  readonly manifest: ConfigurationFileManifest;
+  readonly rawFileHashes: ReadonlyMap<string, string>;
+  /** Optional subset to materialize; omitted preserves the strict all-BSL behavior. */
+  readonly includedPaths?: ReadonlySet<string>;
+}): ConfigurationInventory {
+  const artifactsByObjectId = new Map<string, ArtifactUnit[]>(
+    [...input.inventory.artifactsByObjectId].map(([objectId, artifacts]) => [objectId, [...artifacts]])
+  );
+  const objectById = new Map(input.inventory.objects.map((object) => [object.objectId, object]));
+  const bslEntries = input.manifest.entries.filter((entry) => entry.artifactKindHint === 'bslModule');
+  const allBslPaths = new Set(bslEntries.map((entry) => entry.filePath));
+  const includedPaths = input.includedPaths ?? allBslPaths;
+  for (const filePath of includedPaths) {
+    if (!allBslPaths.has(filePath)) {
+      throw new Error(`Included BSL path is not present in the configuration manifest: ${filePath}`);
+    }
+  }
+  for (const entry of bslEntries) {
+    if (!includedPaths.has(entry.filePath)) {continue;}
+    const contentHash = input.rawFileHashes.get(entry.filePath);
+    if (!contentHash || !/^sha256:[0-9a-f]{64}$/iu.test(contentHash)) {
+      throw new Error(`Raw BSL file hash was not collected: ${entry.filePath}`);
+    }
+    const owner = objectById.get(entry.ownerObjectId);
+    if (!owner) {throw new Error(`Configuration manifest owner was not indexed: ${entry.ownerObjectId}`);}
+    const artifact = createArtifactUnitFromKnownHash({
+      rootPath: input.manifest.rootPath,
+      ownerObjectId: entry.ownerObjectId,
+      filePath: entry.filePath,
+      descriptorPath: owner.descriptorPath,
+    }, contentHash);
+    const ownedArtifacts = artifactsByObjectId.get(entry.ownerObjectId);
+    if (!ownedArtifacts) {throw new Error(`Configuration inventory owner was not hydrated: ${entry.ownerObjectId}`);}
+    ownedArtifacts.push(artifact);
+  }
+  for (const ownedArtifacts of artifactsByObjectId.values()) {
+    ownedArtifacts.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+  }
+  return { ...input.inventory, artifactsByObjectId };
+}
+
 async function collectFiles(
   folderPath: string,
   cancellation?: CompareCancellationToken,
 ): Promise<string[]> {
-  throwIfCompareCancelled(cancellation);
-  const entries = await fs.readdir(folderPath, { withFileTypes: true });
-  throwIfCompareCancelled(cancellation);
-  const files: string[] = [];
-
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    const entryPath = path.join(folderPath, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await collectFiles(entryPath, cancellation)));
-      continue;
-    }
-
-    if (entry.isFile()) {
-      files.push(path.normalize(entryPath));
-    }
-  }
-
-  return files.sort((left, right) => left.localeCompare(right));
+  return collectFilesFromDirectories([folderPath], new Set(), cancellation, false);
 }
 
 async function collectFilesForObjects(
@@ -170,17 +251,99 @@ async function collectFilesForObjects(
   for (const object of objects) {
     throwIfCompareCancelled(cancellation);
     files.add(path.normalize(object.descriptorPath));
-    try {
-      for (const filePath of await collectFiles(object.containerPath, cancellation)) {
-        files.add(path.normalize(filePath));
-      }
-    } catch (error) {
-      if (!isNotFoundError(error)) {
-        throw error;
-      }
-    }
   }
 
+  return collectFilesFromDirectories(objects.map((object) => object.containerPath), files, cancellation, true);
+}
+
+async function collectFilesFromDirectories(
+  initialDirectories: readonly string[],
+  initialFiles: ReadonlySet<string>,
+  cancellation?: CompareCancellationToken,
+  ignoreNotFoundDirectories = false,
+): Promise<string[]> {
+  const files = new Set(initialFiles);
+  const queue: string[] = [];
+  const visitedDirectories = new Set<string>();
+  const waitingWorkers = new Set<() => void>();
+  let nextDirectory = 0;
+  let outstandingDirectories = 0;
+  let failed = false;
+  let failure: unknown;
+
+  const signalWorkers = (): void => {
+    for (const wake of waitingWorkers) {wake();}
+    waitingWorkers.clear();
+  };
+  const enqueueDirectory = (directoryPath: string): void => {
+    const normalizedPath = path.normalize(directoryPath);
+    const key = normalizeDirectoryVisitKey(normalizedPath);
+    if (visitedDirectories.has(key)) {return;}
+    visitedDirectories.add(key);
+    queue.push(normalizedPath);
+    outstandingDirectories += 1;
+    signalWorkers();
+  };
+  const setFailure = (error: unknown): void => {
+    if (!failed) {
+      failure = error;
+      failed = true;
+    }
+    signalWorkers();
+  };
+
+  for (const directoryPath of initialDirectories) {enqueueDirectory(directoryPath);}
+
+  const worker = async (): Promise<void> => {
+    while (!failed) {
+      if (failed) {return;}
+      try {
+        throwIfCompareCancelled(cancellation);
+      } catch (error) {
+        setFailure(error);
+        return;
+      }
+
+      const directoryPath = queue[nextDirectory];
+      if (!directoryPath) {
+        if (outstandingDirectories === 0) {return;}
+        await new Promise<void>((resolve) => waitingWorkers.add(resolve));
+        continue;
+      }
+      nextDirectory += 1;
+
+      try {
+        const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+        throwIfCompareCancelled(cancellation);
+        if (failed) {continue;}
+        entries.sort((left, right) => left.name.localeCompare(right.name));
+        for (const entry of entries) {
+          throwIfCompareCancelled(cancellation);
+          const entryPath = path.join(directoryPath, entry.name);
+          if (entry.isDirectory()) {
+            enqueueDirectory(entryPath);
+          } else if (entry.isFile()) {
+            files.add(path.normalize(entryPath));
+          }
+        }
+      } catch (error) {
+        try {
+          throwIfCompareCancelled(cancellation);
+        } catch (cancelled) {
+          setFailure(cancelled);
+        }
+        if (!failed && (!ignoreNotFoundDirectories || !isNotFoundError(error))) {setFailure(error);}
+      } finally {
+        outstandingDirectories -= 1;
+        signalWorkers();
+      }
+    }
+  };
+
+  const workerCount = initialDirectories.length > 0 ? DIRECTORY_READ_CONCURRENCY : 0;
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  if (failed) {throw failure;}
+  throwIfCompareCancelled(cancellation);
   return [...files].sort((left, right) => left.localeCompare(right));
 }
 
@@ -268,6 +431,11 @@ function normalizeKey(filePath: string): string {
   return path.normalize(filePath).toLowerCase();
 }
 
+function normalizeDirectoryVisitKey(directoryPath: string): string {
+  const absolutePath = path.resolve(directoryPath);
+  return process.platform === 'win32' ? absolutePath.toLowerCase() : absolutePath;
+}
+
 function isNotFoundError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ENOENT';
 }
@@ -280,15 +448,25 @@ async function mapLimit<T, R>(
   const limit = Math.max(1, Math.min(concurrency, items.length || 1));
   const results = new Array<R>(items.length);
   let nextIndex = 0;
+  let failed = false;
+  let failure: unknown;
 
   async function run(): Promise<void> {
-    while (nextIndex < items.length) {
+    while (!failed && nextIndex < items.length) {
       const index = nextIndex;
       nextIndex += 1;
-      results[index] = await worker(items[index]);
+      try {
+        results[index] = await worker(items[index]);
+      } catch (error) {
+        if (!failed) {
+          failure = error;
+          failed = true;
+        }
+      }
     }
   }
 
   await Promise.all(Array.from({ length: limit }, run));
+  if (failed) {throw failure;}
   return results;
 }

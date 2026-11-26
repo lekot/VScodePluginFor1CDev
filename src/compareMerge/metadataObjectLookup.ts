@@ -3,6 +3,18 @@ import * as path from 'path';
 import type { MetadataIdentity } from './domain/compareContracts';
 import type { ConfigurationInventory, MetadataObjectUnit } from './inventory/configurationInventory';
 
+export function metadataDescriptorPathKey(filePath: string): string {
+  // Descriptor map keys are case-folded on every host so producers and consumers share one policy.
+  return path.normalize(filePath).toLowerCase();
+}
+
+export function metadataManifestRelativePathKey(relativePath: string): string {
+  const normalized = relativePath.replace(/\\/gu, '/');
+  let end = normalized.length;
+  while (end > 0 && normalized.charCodeAt(end - 1) === 47) {end -= 1;}
+  return normalized.slice(0, end).toLowerCase();
+}
+
 export function metadataIdentityToObjectUnit(identity: MetadataIdentity): MetadataObjectUnit {
   const descriptorPath = path.normalize(identity.filePath);
   const objectId = identity.uuid ? `uuid:${identity.uuid}` : `name:${identity.qualifiedName}`;
@@ -20,7 +32,7 @@ export function findInventoryObjectByDescriptor(
   inventory: ConfigurationInventory,
   descriptorPath: string,
 ): MetadataObjectUnit | undefined {
-  const normalizedDescriptorPath = path.normalize(descriptorPath).toLowerCase();
+  const normalizedDescriptorPath = metadataDescriptorPathKey(descriptorPath);
   return inventory.objectsByDescriptorPath.get(normalizedDescriptorPath);
 }
 
