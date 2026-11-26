@@ -36,7 +36,16 @@ export async function createArtifactUnit(input: CreateArtifactInput): Promise<Ar
   const rootProbe = !(input.descriptorPath && samePath(input.filePath, input.descriptorPath))
     && ['rights.xml', 'template.xml'].includes(path.basename(input.filePath).toLocaleLowerCase('en-US'));
   const { rootName, contentHash } = await hashFileWithRootProbe(input.filePath, rootProbe);
-  const kind = classifyArtifactKind(input.filePath, input.descriptorPath, rootName);
+  return createArtifactUnitFromKnownHash(input, contentHash, rootName);
+}
+
+/** Builds a normal artifact row from a hash of bytes already read by the caller. */
+export function createArtifactUnitFromKnownHash(
+  input: CreateArtifactInput,
+  contentHash: string,
+  rootExpandedName?: string,
+): ArtifactUnit {
+  const kind = classifyArtifactKind(input.filePath, input.descriptorPath, rootExpandedName);
   const relativePath = path.relative(input.rootPath, input.filePath);
 
   return {

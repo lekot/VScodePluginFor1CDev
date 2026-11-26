@@ -1,5 +1,8 @@
 import * as assert from 'assert';
+import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
+import { createBslModuleDiffController } from '../../../src/compareMerge/configCompareModuleDiff';
 
 import {
   bindConfigurationCompareWebview,
@@ -22,8 +25,175 @@ import type {
   WorkspaceSelectionState,
 } from '../../../src/compareMerge/configurationCompareWorkspace';
 import type { CompareMessage } from '../../../src/compareMerge/domain/compareContracts';
+import { resetVscodeTestState, vscodeTestState } from '../../helpers/vscodeModuleStub';
 
 suite('ConfigCompareProvider', () => {
+  test('opens a captured source snapshot on the left and a live target URI on the right, then disposes source text', async () => {
+    resetVscodeTestState();
+    const controller = createBslModuleDiffController(true);
+    const moduleId = 'bsl:module:Form:Catalog.Products.Edit';
+    const sourceText = 'Procedure OnOpen()\n    Message("captured source");\nEndProcedure';
+    const targetPath = path.join('target', 'Catalogs', 'Products', 'Forms', 'Edit', 'Form', 'Module.bsl');
+    const state = { busy: false };
+    const errors: string[] = [];
+    try {
+      await controller.open({
+        webview: { postMessage: async () => true },
+        workspace: {
+          payload: { locked: false, bslModuleDiffNodeIds: [moduleId] },
+          resolveBslModuleComparison: async () => ({
+            ok: true,
+            snapshot: { label: 'Форма: Catalog.Products.Edit', sourceSnapshotText: sourceText, targetFilePath: targetPath },
+          }),
+        },
+        title: 'Compare',
+        state,
+        nodeId: moduleId,
+        isDisposed: () => false,
+        postState: async () => undefined,
+        postError: async (message) => { errors.push(message); },
+      });
+
+      const command = vscodeTestState.executedCommands[vscodeTestState.executedCommands.length - 1];
+      assert.strictEqual(command?.[0], 'vscode.diff');
+      const sourceUri = command?.[1] as { scheme: string; toString(): string } | undefined;
+      const targetUri = command?.[2] as { scheme: string; fsPath: string } | undefined;
+      assert.ok(sourceUri?.scheme.startsWith('onec-config-compare-bsl-'));
+      assert.strictEqual(targetUri?.scheme, 'file');
+      assert.strictEqual(targetUri?.fsPath, targetPath);
+      assert.match(String(command?.[3]), /Источник → Приёмник/u);
+      assert.strictEqual(controller.contentProvider.snapshotCount, 1);
+      assert.strictEqual(controller.contentProvider.provideTextDocumentContent(sourceUri as any), sourceText);
+      assert.ok(vscodeTestState.informationLog.some((message) => /обновите сравнение/u.test(message)));
+      assert.strictEqual(state.busy, false);
+      assert.deepStrictEqual(errors, []);
+
+      controller.dispose();
+      assert.strictEqual(controller.contentProvider.snapshotCount, 0);
+      assert.strictEqual(controller.contentProvider.provideTextDocumentContent(sourceUri as any), '');
+    } finally {
+      controller.dispose();
+      resetVscodeTestState();
+    }
+  });
+
+  test('matches unsaved target buffers through filesystem path aliases without opening a duplicate diff', async function (this: Mocha.Context) {
+    resetVscodeTestState();
+    const controller = createBslModuleDiffController(true);
+    const moduleId = 'bsl:module:Form:Catalog.Products.Edit';
+    const aliasedTargetPath = path.join(os.tmpdir(), `module-diff-dirty-${Date.now()}-${Math.random().toString(16).slice(2)}.bsl`);
+    const errors: string[] = [];
+    const state = { busy: false };
+    try {
+      await fs.writeFile(aliasedTargetPath, 'Procedure OnOpen() EndProcedure', 'utf8');
+      const canonicalTargetPath = await fs.realpath(aliasedTargetPath);
+      if (path.resolve(aliasedTargetPath) === path.resolve(canonicalTargetPath)) {
+        this.skip();
+      }
+      vscodeTestState.textDocumentsOverride = [{
+        isDirty: true,
+        uri: { scheme: 'file', fsPath: aliasedTargetPath },
+      }];
+
+      await controller.open({
+        webview: { postMessage: async () => true },
+        workspace: {
+          payload: { locked: false, bslModuleDiffNodeIds: [moduleId] },
+          resolveBslModuleComparison: async () => ({
+            ok: true,
+            snapshot: {
+              label: 'Форма: Catalog.Products.Edit',
+              sourceSnapshotText: 'Procedure OnOpen() Message("source"); EndProcedure',
+              targetFilePath: canonicalTargetPath,
+            },
+          }),
+        },
+        title: 'Compare',
+        state,
+        nodeId: moduleId,
+        isDisposed: () => false,
+        postState: async () => undefined,
+        postError: async (message) => { errors.push(message); },
+      });
+
+      assert.ok(errors.some((message) => /несохранённая правка/u.test(message)));
+      assert.strictEqual(state.busy, false);
+      assert.strictEqual(vscodeTestState.executedCommands.some((command) => command[0] === 'vscode.diff'), false);
+      assert.strictEqual(controller.contentProvider.snapshotCount, 0);
+    } finally {
+      controller.dispose();
+      resetVscodeTestState();
+      await fs.rm(aliasedTargetPath, { force: true });
+    }
+  });
+
+  test('keeps a pending diff busy after rejecting an overlapping request and releases busy after resolver rejection', async () => {
+    resetVscodeTestState();
+    const controller = createBslModuleDiffController(true);
+    const moduleId = 'bsl:module:Form:Catalog.Products.Edit';
+    let resolveStarted!: () => void;
+    let releaseResolver!: (value: { ok: true; snapshot: { label: string; sourceSnapshotText: string; targetFilePath: string } }) => void;
+    const started = new Promise<void>((resolve) => { resolveStarted = resolve; });
+    const pending = new Promise<{ ok: true; snapshot: { label: string; sourceSnapshotText: string; targetFilePath: string } }>((resolve) => {
+      releaseResolver = resolve;
+    });
+    let resolverCalls = 0;
+    const state = { busy: false };
+    const errors: string[] = [];
+    const input = {
+      webview: { postMessage: async () => true },
+      workspace: {
+        payload: { locked: false, bslModuleDiffNodeIds: [moduleId] },
+        resolveBslModuleComparison: async () => {
+          resolverCalls += 1;
+          resolveStarted();
+          return pending;
+        },
+      },
+      title: 'Compare',
+      state,
+      nodeId: moduleId,
+      isDisposed: () => false,
+      postState: async () => undefined,
+      postError: async (message: string) => { errors.push(message); },
+    };
+    try {
+      const firstOpen = controller.open(input);
+      await started;
+      assert.strictEqual(state.busy, true);
+      await controller.open(input);
+      assert.strictEqual(state.busy, true, 'a rejected overlapping request must not release the first request busy state');
+      assert.strictEqual(resolverCalls, 1, 'the overlapping request must not start another resolver');
+      assert.ok(errors.some((message) => /уже выполняется/u.test(message)));
+
+      releaseResolver({ ok: true, snapshot: { label: 'Edit', sourceSnapshotText: 'Procedure OnOpen() EndProcedure', targetFilePath: path.join('target', 'Module.bsl') } });
+      await firstOpen;
+      assert.strictEqual(state.busy, false);
+
+      const rejectingController = createBslModuleDiffController(true);
+      const commandsBeforeRejecting = vscodeTestState.executedCommands.length;
+      const rejectingState = { busy: false };
+      const rejectingErrors: string[] = [];
+      await rejectingController.open({
+        ...input,
+        state: rejectingState,
+        workspace: {
+          payload: { locked: false, bslModuleDiffNodeIds: [moduleId] },
+          resolveBslModuleComparison: async () => { throw new Error('reader rejected'); },
+        },
+        postError: async (message) => { rejectingErrors.push(message); },
+      });
+      assert.strictEqual(rejectingState.busy, false, 'a rejected resolver must release its own busy state');
+      assert.ok(rejectingErrors.some((message) => /проверить снимок BSL-модуля/u.test(message)));
+      assert.strictEqual(vscodeTestState.executedCommands.length, commandsBeforeRejecting,
+        'a rejected or stale snapshot must not open another live diff');
+      rejectingController.dispose();
+    } finally {
+      controller.dispose();
+      resetVscodeTestState();
+    }
+  });
+
   test('renders CSP nonce and bootstraps only redacted payload', () => {
     const html = renderConfigCompareWebviewHtml({
       webview: { cspSource: 'vscode-resource:' },
@@ -47,15 +217,36 @@ suite('ConfigCompareProvider', () => {
   test('derives executable deletion IDs and distinct blocking conflicts from the canonical tree', () => {
     const dto = toWebviewPayload(
       makeSelectionPayload(),
-      ['bsl:deleted', 'bsl:changed-destructive', 'file:deleted', 'file:replacement'],
+      ['bsl:deleted', 'bsl:changed-destructive', 'file:deleted', 'file:replacement', 'extension:paired-replacement'],
       'Compare'
     ) as ConfigCompareWebviewPayloadDto & {
       deletionNodeIds?: string[];
+      replacementNodeIds?: string[];
       unresolvedConflictCount?: number;
     };
 
     assert.deepStrictEqual(dto.deletionNodeIds, ['bsl:deleted', 'file:deleted']);
+    assert.deepStrictEqual(dto.replacementNodeIds, ['extension:paired-replacement']);
     assert.strictEqual(dto.unresolvedConflictCount, 2);
+  });
+
+  test('preserves partial BSL analysis through canonical redaction into the display payload', () => {
+    const payload = makePayload();
+    const moduleId = 'bsl:module:Form:Catalog.Products.Edit';
+    payload.root.children.push({
+      id: moduleId,
+      label: 'Форма: Catalog.Products.Edit',
+      kind: 'bslModule',
+      status: 'changed',
+      presentation: { bslRoutineAnalysis: 'partial' },
+      children: [],
+    });
+
+    const dto = toWebviewPayload(payload, [], 'Compare');
+    const serialized = JSON.stringify(dto.root);
+
+    assert.match(serialized, /"bslRoutineAnalysis":"partial"/u);
+    assert.match(serialized, /остальные процедуры не анализировались/u);
   });
 
   test('handles preview approve and execute with redacted workspace messages', async () => {
@@ -125,6 +316,30 @@ suite('ConfigCompareProvider', () => {
     assert.ok(preview);
     assert.strictEqual(preview.destructiveCount, 1);
     assert.strictEqual(preview.items[0].destructive, true);
+  });
+
+  test('rejects module diff webview messages that spoof a path or an unregistered node ID', async () => {
+    resetVscodeTestState();
+    const panel = makePanel();
+    const moduleId = 'bsl:module:Form:Catalog.Products.Edit';
+    let resolverCalls = 0;
+    const workspace = Object.assign(makeWorkspace(), {
+      resolveBslModuleComparison: async () => {
+        resolverCalls += 1;
+        return { ok: false as const, message: 'unavailable' };
+      },
+    });
+    workspace.payload.bslModuleDiffNodeIds = [moduleId];
+    const binding = bindConfigurationCompareWebview(panel as any, workspace, 'Compare');
+    try {
+      await panel.send({ type: 'openBslModuleDiff', nodeId: moduleId, path: 'file:///forged/Module.bsl' });
+      await panel.send({ type: 'openBslModuleDiff', nodeId: 'bsl:module:forged' });
+      assert.strictEqual(resolverCalls, 0);
+      assert.strictEqual(vscodeTestState.executedCommands.some((command) => command[0] === 'vscode.diff'), false);
+    } finally {
+      binding.dispose();
+      resetVscodeTestState();
+    }
   });
 
   test('keeps approved destructive preview bound after selection changes', async () => {
@@ -722,6 +937,11 @@ function makeSelectionPayload(): ConfigCompareWebviewPayload {
       children: [
         compareNode('bsl', 'BSL', 'bslGroup', 'changed', { children: bsl }),
         compareNode('adapter', 'Files', 'adapterGroup', 'changed', { children: files }),
+      compareNode('extension:paired-replacement', 'Catalog.Ext_Item', 'extensionMetadataObject', 'changed', {
+        mergeable: true,
+        replacement: true,
+        destructive: true,
+      }),
       ],
     },
     stats: { total: 9, different: 9, mergeable: 4 },

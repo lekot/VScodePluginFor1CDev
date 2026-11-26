@@ -294,7 +294,7 @@ suite('CompareDisplayTree', () => {
     assert.ok(printOwner);
     assert.ok(printOwner.children.some((child) => child.key === printModule.id));
     assert.ok(nodes.some((candidate) => candidate.key === ambiguousModule.id), 'an ambiguous alias must fall back to the BSL group');
-    assert.ok(nodes.some((candidate) => candidate.label === 'Процедуры и функции'));
+    assert.ok(nodes.some((candidate) => candidate.label === 'Модули BSL'));
     assert.ok(nodes.some((candidate) => candidate.key === editModule.id), 'the shared Form QName must not attach to either duplicate identity');
     assert.strictEqual(
       nodes.find((candidate) => candidate.key === duplicateFormConflict.id)?.label,
@@ -353,6 +353,92 @@ suite('CompareDisplayTree', () => {
         [descriptor.id, 'Свойства'],
       ])
     );
+  });
+
+  test('uses Russian labels for RecordSet and ValueManager modules', () => {
+    const recordSetModule = bslNode(
+      'bsl:module:InformationRegister.Stock.RecordSet',
+      'InformationRegister:name:InformationRegister.Stock',
+      'RecordSet'
+    );
+    const valueManagerModule = bslNode(
+      'bsl:module:Constant.ExchangeRate.ValueManager',
+      'Constant:name:Constant.ExchangeRate',
+      'ValueManager'
+    );
+    const display = buildCompareDisplayTree(root([
+      branch('bsl', 'bslGroup', [recordSetModule, valueManagerModule]),
+    ]));
+    const rows = new Map(flatten(display.root).map((candidate) => [candidate.key, candidate.label]));
+
+    assert.strictEqual(rows.get(recordSetModule.id), 'Модуль набора записей');
+    assert.strictEqual(rows.get(valueManagerModule.id), 'Модуль менеджера значений');
+  });
+
+  test('keeps paired BSL modules as main rows and moves only changed or diagnostic routines to details', () => {
+    const equalRoutine = node({
+      id: 'bsl:routine:Catalog.Products.Object:equal',
+      label: 'EqualRoutine',
+      kind: 'bslRoutine',
+      status: 'equal',
+      mergeable: false,
+    });
+    const changedRoutine = node({
+      id: 'bsl:routine:Catalog.Products.Object:changed',
+      label: 'ChangedRoutine',
+      kind: 'bslRoutine',
+      status: 'changed',
+      mergeable: true,
+    });
+    const deletedRoutine = node({
+      id: 'bsl:routine:Catalog.Products.Object:deleted',
+      label: 'DeletedRoutine',
+      kind: 'bslRoutine',
+      status: 'leftOnly',
+      mergeable: true,
+    });
+    const manualConflict = node({
+      id: 'bsl:routine:Catalog.Products.Object:manual',
+      label: 'ManualRoutine',
+      kind: 'bslRoutine',
+      status: 'changed',
+      mergeState: { state: 'blocked', reason: 'Пересекающиеся правки требуют ручного решения.' },
+      conflict: { kind: 'bslLogicalConflict', blocking: true, message: 'Пересекающиеся правки требуют ручного решения.' },
+    });
+    const diagnostic = node({
+      id: 'bsl:diagnostic:module',
+      label: 'Диагностика модуля',
+      kind: 'diagnostic',
+      status: 'changed',
+      mergeState: { state: 'blocked', reason: 'Не удалось разобрать модуль.' },
+    });
+    const module = node({
+      id: 'bsl:module:Catalog.Products.Object',
+      label: 'ObjectModule',
+      kind: 'bslModule',
+      status: 'changed',
+      presentation: {
+        moduleKind: 'Object',
+        identities: [identity('left', 'Catalog.Products.Object', 'object'), identity('right', 'Catalog.Products.Object', 'object')],
+      },
+      children: [equalRoutine, changedRoutine, deletedRoutine, manualConflict, diagnostic],
+    });
+
+    const display = buildCompareDisplayTree(root([branch('bsl', 'bslGroup', [module])]));
+    const displayedModule = flatten(display.root).find((candidate) => candidate.key === module.id)!;
+
+    assert.ok(displayedModule);
+    assert.deepStrictEqual(displayedModule.children, [], 'routine rows must not expand into the virtualized main tree');
+    assert.deepStrictEqual(displayedModule.candidateNodeIds.sort(), [changedRoutine.id, deletedRoutine.id].sort());
+    assert.deepStrictEqual(
+      displayedModule.detailChildren?.map((child) => child.key).sort(),
+      [changedRoutine.id, deletedRoutine.id, manualConflict.id, diagnostic.id].sort()
+    );
+    assert.strictEqual(displayedModule.detailChildren?.some((child) => child.key === equalRoutine.id), false);
+    assert.strictEqual(displayedModule.conflictCount, 1);
+    assert.match(displayedModule.leftValue ?? '', /Есть · 4 процедур/u);
+    assert.match(displayedModule.rightValue ?? '', /Есть · 3 процедур/u);
+    assert.strictEqual(flatten(display.root).some((candidate) => candidate.key === changedRoutine.id), false);
   });
 
   test('renders each canonical CFE row once and keeps same-base local identities separate', () => {

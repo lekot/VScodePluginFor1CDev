@@ -2,23 +2,108 @@ import * as path from 'path';
 
 import { captureMergePath, mergeSnapshotHash } from './merge/mergeSnapshot';
 import { MISSING_TARGET_HASH } from './merge/mergePreview';
-import { parseXmlDocument, elementChildren, textContent } from './xml/xmlDom';
 import type { CompareMessage, MetadataIdentity, MatchResult } from './domain/compareContracts';
 import type { ConfigurationInventory, MetadataObjectUnit, ArtifactUnit } from './inventory/configurationInventory';
-import { namespaceUriForName } from './adapters/semanticXml/semanticXmlIdentity';
+import type { ConfigurationFileManifest } from './inventory/configurationFileManifest';
 import { blocked, canonicalRelativePath, finalName, normalizeAbsolutePath, normalizePath, stripHash } from './linkedDesignerUtils';
-import type { LinkedDesignerCompareIndex, LinkedDesignerKind, LinkedDesignerPackageRecipe, LinkedDesignerPackageMember, IndexedPackageObject, LinkedDesignerRootConfigurationSnapshot, LinkedOwnerDescriptorSnapshot, LinkedRootObjectCopyRecipe } from './linkedDesignerTypes';
+import type { LinkedDesignerCompareIndex, LinkedDesignerKind, LinkedDesignerPackageMember, LinkedDesignerPackageRecipe, IndexedPackageObject, LinkedDesignerRootConfigurationSnapshot, LinkedOwnerDescriptorSnapshot } from './linkedDesignerTypes';
 import { requiredLinkedDesignerBodyPath } from './linkedDesignerPackageRules';
-import { findInventoryObjectByDescriptor, metadataIdentityToObjectUnit } from './metadataObjectLookup';
+import {
+  type UnmatchedPackageIdentity,
+  DESIGNER_TYPES,
+  artifactsFor,
+  countIdentityNames,
+  fileObjectNodeIdForIdentity,
+  findIndexedPackageObject,
+  findInventoryObject,
+  hasMatchedOwner,
+  nestedOwnerQualifiedName,
+  packageIdFor,
+  samePath,
+  sameRelativePath,
+  unmatchedPackageIdentities,
+} from './linkedDesignerPackageIndexSupport';
+import { buildWholeObjectCopyRecipes } from './linkedDesignerWholeObjectRecipes';
+import { captureRootConfigurationSnapshot, rootRegistrationIsAvailable } from './linkedDesignerRootConfiguration';
 
-const DESIGNER_TYPES = new Map<string, LinkedDesignerKind>([
-  ['Form', 'Form'],
-  ['Template', 'Template'],
-  ['Command', 'Command'],
-  ['CommonForm', 'Form'],
-  ['CommonTemplate', 'Template'],
-  ['CommonCommand', 'Command'],
-]);
+
+
+export interface UnmatchedLinkedDesignerBslPathSet {
+  readonly left: ReadonlySet<string>;
+  readonly right: ReadonlySet<string>;
+}
+
+type CompareIndexInput = Parameters<typeof buildLinkedDesignerCompareIndex>[0];
+
+interface CompareIndexState {
+  readonly input: CompareIndexInput;
+  readonly diagnostics: CompareMessage[];
+  readonly packages: LinkedDesignerPackageRecipe[];
+  readonly blockedPresenceNodeIds: Map<string, string>;
+  readonly seen: Set<string>;
+  readonly ownerDescriptorCache: Map<string, LinkedOwnerDescriptorSnapshot | null>;
+  identityCounts: Map<string, number>;
+}
+
+interface CompareIndexItemContext {
+  readonly state: CompareIndexState;
+  readonly item: UnmatchedPackageIdentity;
+  readonly kind: LinkedDesignerKind;
+  readonly isRootObject: boolean;
+  readonly ownerQualifiedName?: string;
+  readonly presenceNodeId: string;
+}
+
+type CapturedFile = Extract<Awaited<ReturnType<typeof captureMergePath>>, { state: 'file' }>;
+
+interface PreparedCompareIndexPackage {
+  readonly indexed: IndexedPackageObject;
+  readonly targetObject?: MetadataObjectUnit;
+  readonly descriptor: ArtifactUnit;
+  readonly descriptorSnapshot: CapturedFile;
+  readonly sourceArtifacts: ArtifactUnit[];
+  readonly targetArtifacts: ArtifactUnit[];
+  readonly memberArtifacts: ArtifactUnit[];
+  readonly requiredBodyPath: string;
+  readonly targetDirectoryWitness?: import('./merge/mergePreview').MergeFileWitness;
+}
+
+interface CompareIndexPackageBase {
+  readonly indexed: IndexedPackageObject;
+  readonly targetObject?: MetadataObjectUnit;
+  readonly descriptor: ArtifactUnit;
+  readonly sourceArtifacts: ArtifactUnit[];
+  readonly targetArtifacts: ArtifactUnit[];
+  readonly memberArtifacts: ArtifactUnit[];
+}
+
+/** Finds BSL members whose unmatched Designer package owns their first content capture. */
+export function collectUnmatchedLinkedDesignerBslPaths(input: {
+  readonly metadata: MatchResult;
+  readonly leftManifest: ConfigurationFileManifest;
+  readonly rightManifest: ConfigurationFileManifest;
+  readonly strategy: 'left' | 'right' | 'full';
+}): UnmatchedLinkedDesignerBslPathSet {
+  const left = new Set<string>();
+  const right = new Set<string>();
+  const unmatched = [
+    ...input.metadata.unmatchedRight.map((identity) => ({ identity, side: 'right' as const })),
+    ...(input.strategy === 'full'
+      ? input.metadata.unmatchedLeft.map((identity) => ({ identity, side: 'left' as const }))
+      : []),
+  ];
+  for (const item of unmatched) {
+    if (!DESIGNER_TYPES.has(item.identity.metadataType)) {continue;}
+    const manifest = item.side === 'right' ? input.rightManifest : input.leftManifest;
+    const object = manifest.objectsByDescriptorPath.get(normalizeAbsolutePath(item.identity.filePath));
+    if (!object) {continue;}
+    const destination = item.side === 'right' ? right : left;
+    for (const entry of manifest.entriesByOwnerObjectId.get(object.objectId) ?? []) {
+      if (entry.artifactKindHint === 'bslModule') {destination.add(entry.filePath);}
+    }
+  }
+  return { left, right };
+}
 
 /** Builds package links only from uniquely indexed metadata and compare-time inventory hashes. */
 export async function buildLinkedDesignerCompareIndex(input: {
@@ -29,276 +114,356 @@ export async function buildLinkedDesignerCompareIndex(input: {
   readonly rightRootPath: string;
   readonly strategy: 'left' | 'right' | 'full';
 }): Promise<LinkedDesignerCompareIndex> {
-  const diagnostics: CompareMessage[] = [];
-  const packages: LinkedDesignerPackageRecipe[] = [];
-  const blockedPresenceNodeIds = new Map<string, string>();
-  const seen = new Set<string>();
-  const ownerDescriptorCache = new Map<string, LinkedOwnerDescriptorSnapshot | null>();
-  const unmatched = [
-    ...input.metadata.unmatchedRight.map((identity) => ({ identity, action: 'copy' as const })),
-    ...(input.strategy === 'full'
-      ? input.metadata.unmatchedLeft.map((identity) => ({ identity, action: 'delete' as const }))
-      : []),
-  ];
+  const state = createCompareIndexState(input);
+  const unmatched = unmatchedPackageIdentities(input.metadata, input.strategy);
   const allIdentities = [
     ...input.metadata.matches.flatMap((match) => [match.left, match.right]),
     ...input.metadata.unmatchedLeft,
     ...input.metadata.unmatchedRight,
   ];
-  const identityCounts = countIdentityNames(allIdentities);
+  state.identityCounts = countIdentityNames(allIdentities);
+  for (const item of unmatched) {await processCompareIndexItem(state, item);}
+  return finalizeCompareIndex(state);
+}
 
-  for (const item of unmatched) {
-    const kind = DESIGNER_TYPES.get(item.identity.metadataType);
-    if (!kind) {continue;}
-    const isRootObject = item.identity.metadataType.startsWith('Common');
-    const ownerQualifiedName = isRootObject ? undefined : nestedOwnerQualifiedName(item.identity);
-    const presenceNodeId = fileObjectNodeIdForIdentity(item.identity, item.action);
-    const presenceBlock = (message: string): void => { blockedPresenceNodeIds.set(presenceNodeId, message); };
-    if (!isRootObject && (!ownerQualifiedName || !hasMatchedOwner(input.metadata, ownerQualifiedName))) {
-      presenceBlock('Вложенный Designer-объект нельзя переносить отдельно от регистрации владельца.');
-      continue;
-    }
-    presenceBlock('Linked Designer package не прошёл проверку захваченного inventory.');
-    const identityKey = `${item.action}\0${item.identity.qualifiedName.toLocaleLowerCase('en-US')}`;
-    const sourceIdentityKey = `${item.identity.sourceId}\0${item.identity.qualifiedName.normalize('NFC').toLocaleLowerCase('en-US')}`;
-    if (seen.has(identityKey) || identityCounts.get(sourceIdentityKey) !== 1) {
-      const message = 'Имя связанного Designer-пакета неоднозначно; обновите сравнение и устраните дубликаты.';
-      diagnostics.push(blocked(message, item.identity.sourceId, item.identity.qualifiedName));
-      presenceBlock(message);
-      continue;
-    }
-    seen.add(identityKey);
-    const sourceSide = item.action === 'copy' ? 'right' : 'left';
-    const sourceInventory = sourceSide === 'right' ? input.rightInventory : input.leftInventory;
-    const targetInventory = sourceSide === 'right' ? input.leftInventory : input.rightInventory;
-    const indexed = findIndexedPackageObject(item.identity, sourceInventory);
-    if (!indexed) {
-      const message = 'Дескриптор связанного Designer-пакета отсутствует в captured inventory.';
-      diagnostics.push(blocked(message, item.identity.sourceId, item.identity.qualifiedName));
-      presenceBlock(message);
-      continue;
-    }
-    const targetIdentity = item.action === 'copy'
-      ? counterpartIdentity(input.metadata, item.identity.qualifiedName, 'left')
-      : item.identity;
-    if (item.action === 'copy' && targetIdentity?.uuid && item.identity.uuid
-      && targetIdentity.uuid.toLocaleLowerCase('en-US') !== item.identity.uuid.toLocaleLowerCase('en-US')) {
-      const message = 'В target уже существует Designer-объект с тем же именем и другим UUID; связанный перенос заблокирован.';
-      diagnostics.push(blocked(message, item.identity.sourceId, item.identity.qualifiedName));
-      presenceBlock(message);
-      continue;
-    }
-    const targetObject = targetIdentity ? findInventoryObject(targetInventory, targetIdentity.filePath) : undefined;
-    const sourceArtifacts = artifactsFor(indexed.inventory, indexed.object);
-    const descriptor = sourceArtifacts.find((artifact) => artifact.kind === 'metadataXml' && samePath(artifact.filePath, item.identity.filePath));
-    if (!descriptor) {
-      const message = 'Дескриптор linked Designer-пакета отсутствует в captured inventory.';
-      diagnostics.push(blocked(message, item.identity.sourceId, item.identity.qualifiedName));
-      presenceBlock(message);
-      continue;
-    }
-    const targetArtifacts = targetObject ? artifactsFor(targetInventory, targetObject) : [];
-    const memberArtifacts = [descriptor, ...sourceArtifacts.filter((artifact) => artifact.kind !== 'metadataXml')];
-    const descriptorSnapshot = await captureMergePath(descriptor.filePath, { retainContent: true }).catch(() => undefined);
-    if (descriptorSnapshot?.state !== 'file' || descriptorSnapshot.hash !== stripHash(descriptor.contentHash) || !descriptorSnapshot.contentBase64) {
-      const message = `Дескриптор Designer-пакета изменился после сравнения: ${descriptor.relativePath}`;
-      diagnostics.push(blocked(message, item.identity.sourceId, item.identity.qualifiedName));
-      presenceBlock(message);
-      continue;
-    }
-    const requiredBodyPath = requiredLinkedDesignerBodyPath(
-      kind,
-      descriptor.relativePath,
-      Buffer.from(descriptorSnapshot.contentBase64, 'base64'),
-    );
-    if (!requiredBodyPath || !memberArtifacts.some((artifact) => sameRelativePath(artifact.relativePath, requiredBodyPath))) {
-      const message = `Пакет ${item.identity.qualifiedName} не содержит обязательный descriptor или точный sidecar: ${requiredBodyPath ?? 'тип тела не определён'}.`;
-      diagnostics.push(blocked(message, item.identity.sourceId, item.identity.qualifiedName));
-      presenceBlock(message);
-      continue;
-    }
-    let targetDirectoryWitness: import('./merge/mergePreview').MergeFileWitness | undefined;
-    if (item.action === 'delete') {
-      const directoryRelativePath = canonicalRelativePath(sourceInventory.rootPath, indexed.object.containerPath);
-      const directorySnapshot = directoryRelativePath
-        ? await captureMergePath(path.join(sourceInventory.rootPath, ...directoryRelativePath.split('/')), { retainContent: false }).catch(() => undefined)
-        : undefined;
-      if (!directoryRelativePath || directorySnapshot?.state !== 'directory') {
-        const message = `Каталог sidecar-пакета ${item.identity.qualifiedName} отсутствует или не подтверждён.`;
-        diagnostics.push(blocked(message, item.identity.sourceId, item.identity.qualifiedName));
-        presenceBlock(message);
-        continue;
-      }
-      targetDirectoryWitness = {
-        sourceId: item.identity.sourceId,
-        relativePath: directoryRelativePath,
-        expectedHash: mergeSnapshotHash(directorySnapshot),
-        kind: 'directory',
-      };
-    }
-    const members: LinkedDesignerPackageMember[] = [];
-    let failed = false;
-    for (const artifact of memberArtifacts) {
-      const sourceRelativePath = canonicalRelativePath(sourceInventory.rootPath, artifact.filePath);
-      if (!sourceRelativePath) {failed = true;break;}
-      const targetRelativePath = item.action === 'copy'
-        ? sourceRelativePath
-        : canonicalRelativePath(sourceInventory.rootPath, artifact.filePath);
-      if (!targetRelativePath) {failed = true;break;}
-      const memberTargetArtifact = item.action === 'copy' && targetObject
-        ? matchPackageArtifact(artifact, indexed.object, targetArtifacts, targetObject)
-        : item.action === 'delete' ? artifact : undefined;
-      const expectedTargetHash = memberTargetArtifact
-        ? stripHash(memberTargetArtifact.contentHash)
-        : MISSING_TARGET_HASH;
-      let content: Buffer | undefined;
-      if (item.action === 'copy') {
-        const snapshot = samePath(artifact.filePath, descriptor.filePath)
-          ? descriptorSnapshot
-          : await captureMergePath(path.join(sourceInventory.rootPath, sourceRelativePath), { retainContent: true }).catch(() => undefined);
-        if (snapshot?.state !== 'file' || snapshot.contentBase64 === undefined || snapshot.hash !== stripHash(artifact.contentHash)) {
-          diagnostics.push(blocked(`Исходный Designer-файл изменился после сравнения: ${sourceRelativePath}`, item.identity.sourceId, item.identity.qualifiedName));
-          failed = true;
-          break;
-        }
-        content = Buffer.from(snapshot.contentBase64, 'base64');
-      }
-      members.push({
-        targetRelativePath,
-        ...(item.action === 'copy' ? { sourceRelativePath, sourceHash: stripHash(artifact.contentHash), content } : {}),
-        expectedTargetHash,
-        required: artifact.kind === 'metadataXml' || sameRelativePath(artifact.relativePath, requiredBodyPath),
-      });
-    }
-    if (failed || (item.action === 'copy' && members.some((member) => member.required && (!member.sourceHash || !member.content)))) {
-      presenceBlock('Не удалось захватить все обязательные файлы linked Designer-пакета.');
-      continue;
-    }
-    let ownerDescriptorSnapshot: LinkedOwnerDescriptorSnapshot | undefined;
-    if (ownerQualifiedName) {
-      const ownerKey = normalizePath(ownerQualifiedName);
-      if (!ownerDescriptorCache.has(ownerKey)) {
-        const ownerMatch = input.metadata.matches.find((match) => match.left.qualifiedName === ownerQualifiedName);
-        const ownerObject = ownerMatch ? findInventoryObject(input.leftInventory, ownerMatch.left.filePath) : undefined;
-        const ownerDescriptor = ownerObject && artifactsFor(input.leftInventory, ownerObject)
-          .find((artifact) => artifact.kind === 'metadataXml' && samePath(artifact.filePath, ownerObject.descriptorPath));
-        const ownerRelativePath = ownerDescriptor && canonicalRelativePath(input.leftInventory.rootPath, ownerDescriptor.filePath);
-        const ownerCapture = ownerRelativePath
-          ? await captureMergePath(ownerDescriptor!.filePath, { retainContent: true }).catch(() => undefined)
-          : undefined;
-        const ownerBytes = ownerCapture?.state === 'file' && ownerCapture.contentBase64
-          ? Buffer.from(ownerCapture.contentBase64, 'base64')
-          : undefined;
-        ownerDescriptorCache.set(ownerKey,
-          ownerDescriptor && ownerRelativePath && ownerCapture?.state === 'file' && ownerBytes
-            && ownerCapture.hash === stripHash(ownerDescriptor.contentHash)
-            ? { targetRelativePath: ownerRelativePath, targetHash: ownerCapture.hash, targetContent: ownerBytes.toString('utf8') }
-            : null
-        );
-      }
-      const cached = ownerDescriptorCache.get(ownerKey);
-      if (!cached) {
-        const message = `Дескриптор владельца ${ownerQualifiedName} не удалось подтвердить для linked package.`;
-        diagnostics.push(blocked(message, item.identity.sourceId, item.identity.qualifiedName));
-        presenceBlock(message);
-        continue;
-      }
-      ownerDescriptorSnapshot = cached;
-    }
-    const packageId = packageIdFor(kind, item.identity.qualifiedName);
-    packages.push({
-      packageId,
-      action: item.action,
-      kind,
-      qualifiedName: item.identity.qualifiedName,
-      ...(ownerQualifiedName ? { ownerQualifiedName } : {}),
-      ...(targetDirectoryWitness ? { targetDirectoryWitness } : {}),
-      ...(ownerDescriptorSnapshot ? { ownerDescriptorSnapshot } : {}),
-      ...(isRootObject ? { rootRegistration: { rootTag: item.identity.metadataType, objectName: finalName(item.identity.qualifiedName) } } : {}),
-      ...(ownerQualifiedName ? {
-        ownerTargetRelativePath: canonicalRelativePath(
-          input.leftInventory.rootPath,
-          input.metadata.matches.find((match) => match.left.qualifiedName === ownerQualifiedName)?.left.filePath ?? ''
-        ),
-      } : {}),
-      members,
-    });
-    blockedPresenceNodeIds.delete(presenceNodeId);
+function createCompareIndexState(input: CompareIndexInput): CompareIndexState {
+  return {
+    input,
+    diagnostics: [],
+    packages: [],
+    blockedPresenceNodeIds: new Map(),
+    seen: new Set(),
+    ownerDescriptorCache: new Map(),
+    identityCounts: new Map(),
+  };
+}
+
+async function processCompareIndexItem(state: CompareIndexState, item: UnmatchedPackageIdentity): Promise<void> {
+  const kind = DESIGNER_TYPES.get(item.identity.metadataType);
+  if (!kind) {return;}
+  const isRootObject = item.identity.metadataType.startsWith('Common');
+  const ownerQualifiedName = isRootObject ? undefined : nestedOwnerQualifiedName(item.identity);
+  const context: CompareIndexItemContext = {
+    state,
+    item,
+    kind,
+    isRootObject,
+    ...(ownerQualifiedName ? { ownerQualifiedName } : {}),
+    presenceNodeId: fileObjectNodeIdForIdentity(item.identity, item.action),
+  };
+  if (!isRootObject && (!ownerQualifiedName || !hasMatchedOwner(state.input.metadata, ownerQualifiedName))) {
+    setComparePresenceBlock(context, 'Вложенный Designer-объект нельзя переносить отдельно от регистрации владельца.');
+    return;
   }
+  setComparePresenceBlock(context, 'Linked Designer package не прошёл проверку захваченного inventory.');
+  if (!validateCompareIndexIdentity(context)) {return;}
+  const prepared = await prepareCompareIndexPackage(context);
+  if (!prepared) {return;}
+  const members = await captureComparePackageMembers(context, prepared);
+  if (!members) {
+    setComparePresenceBlock(context, 'Не удалось захватить все обязательные файлы linked Designer-пакета.');
+    return;
+  }
+  const ownerDescriptorSnapshot = await resolveCompareOwnerDescriptor(context);
+  if (ownerDescriptorSnapshot === null) {return;}
+  appendComparePackage(context, prepared, members, ownerDescriptorSnapshot);
+  state.blockedPresenceNodeIds.delete(context.presenceNodeId);
+}
 
+function validateCompareIndexIdentity(context: CompareIndexItemContext): boolean {
+  const { state, item } = context;
+  const identityKey = `${item.action}\0${item.identity.qualifiedName.toLocaleLowerCase('en-US')}`;
+  const sourceIdentityKey = `${item.identity.sourceId}\0${item.identity.qualifiedName.normalize('NFC').toLocaleLowerCase('en-US')}`;
+  if (!state.seen.has(identityKey) && state.identityCounts.get(sourceIdentityKey) === 1) {
+    state.seen.add(identityKey);
+    return true;
+  }
+  failCompareIndexItem(context, 'Имя связанного Designer-пакета неоднозначно; обновите сравнение и устраните дубликаты.');
+  return false;
+}
+
+function failCompareIndexItem(context: CompareIndexItemContext, message: string): void {
+  const { item } = context;
+  context.state.diagnostics.push(blocked(message, item.identity.sourceId, item.identity.qualifiedName));
+  setComparePresenceBlock(context, message);
+}
+
+function setComparePresenceBlock(context: CompareIndexItemContext, message: string): void {
+  context.state.blockedPresenceNodeIds.set(context.presenceNodeId, message);
+}
+
+async function prepareCompareIndexPackage(
+  context: CompareIndexItemContext,
+): Promise<PreparedCompareIndexPackage | undefined> {
+  const base = resolveCompareIndexPackageBase(context);
+  if (!base) {return undefined;}
+  const descriptorDetails = await captureCompareIndexPackageDescriptor(context, base);
+  if (!descriptorDetails) {return undefined;}
+  const sourceInventory = context.item.action === 'copy' ? context.state.input.rightInventory : context.state.input.leftInventory;
+  const targetDirectoryWitness = await captureCompareDeleteDirectory(context, sourceInventory, base.indexed.object);
+  if (context.item.action === 'delete' && !targetDirectoryWitness) {return undefined;}
+  return {
+    ...base,
+    ...descriptorDetails,
+    ...(targetDirectoryWitness ? { targetDirectoryWitness } : {}),
+  };
+}
+
+function resolveCompareIndexPackageBase(context: CompareIndexItemContext): CompareIndexPackageBase | undefined {
+  const { state, item } = context;
+  const sourceSide = item.action === 'copy' ? 'right' : 'left';
+  const sourceInventory = sourceSide === 'right' ? state.input.rightInventory : state.input.leftInventory;
+  const targetInventory = sourceSide === 'right' ? state.input.leftInventory : state.input.rightInventory;
+  const indexed = findIndexedPackageObject(item.identity, sourceInventory);
+  if (!indexed) {
+    failCompareIndexItem(context, 'Дескриптор связанного Designer-пакета отсутствует в captured inventory.');
+    return undefined;
+  }
+  const targetIdentity = item.action === 'copy'
+    ? counterpartIdentity(state.input.metadata, item.identity.qualifiedName, 'left')
+    : item.identity;
+  if (item.action === 'copy' && targetIdentity?.uuid && item.identity.uuid
+    && targetIdentity.uuid.toLocaleLowerCase('en-US') !== item.identity.uuid.toLocaleLowerCase('en-US')) {
+    failCompareIndexItem(context, 'В target уже существует Designer-объект с тем же именем и другим UUID; связанный перенос заблокирован.');
+    return undefined;
+  }
+  const targetObject = targetIdentity ? findInventoryObject(targetInventory, targetIdentity.filePath) : undefined;
+  const sourceArtifacts = artifactsFor(indexed.inventory, indexed.object);
+  const descriptor = sourceArtifacts.find((artifact) => artifact.kind === 'metadataXml' && samePath(artifact.filePath, item.identity.filePath));
+  if (!descriptor) {
+    failCompareIndexItem(context, 'Дескриптор linked Designer-пакета отсутствует в captured inventory.');
+    return undefined;
+  }
+  const targetArtifacts = targetObject ? artifactsFor(targetInventory, targetObject) : [];
+  const memberArtifacts = [descriptor, ...sourceArtifacts.filter((artifact) => artifact.kind !== 'metadataXml')];
+  return {
+    indexed,
+    ...(targetObject ? { targetObject } : {}),
+    descriptor,
+    sourceArtifacts,
+    targetArtifacts,
+    memberArtifacts,
+  };
+}
+
+async function captureCompareIndexPackageDescriptor(
+  context: CompareIndexItemContext,
+  base: CompareIndexPackageBase,
+): Promise<Pick<PreparedCompareIndexPackage, 'descriptorSnapshot' | 'requiredBodyPath'> | undefined> {
+  const { item } = context;
+  const { descriptor, memberArtifacts } = base;
+  const descriptorSnapshot = await captureMergePath(descriptor.filePath, { retainContent: true }).catch(() => undefined);
+  if (descriptorSnapshot?.state !== 'file' || descriptorSnapshot.hash !== stripHash(descriptor.contentHash) || !descriptorSnapshot.contentBase64) {
+    failCompareIndexItem(context, `Дескриптор Designer-пакета изменился после сравнения: ${descriptor.relativePath}`);
+    return undefined;
+  }
+  const requiredBodyPath = requiredLinkedDesignerBodyPath(
+    context.kind,
+    descriptor.relativePath,
+    Buffer.from(descriptorSnapshot.contentBase64, 'base64'),
+  );
+  if (!requiredBodyPath || !memberArtifacts.some((artifact) => sameRelativePath(artifact.relativePath, requiredBodyPath))) {
+    failCompareIndexItem(context, `Пакет ${item.identity.qualifiedName} не содержит обязательный descriptor или точный sidecar: ${requiredBodyPath ?? 'тип тела не определён'}.`);
+    return undefined;
+  }
+  return {
+    descriptorSnapshot,
+    requiredBodyPath,
+  };
+}
+
+async function captureCompareDeleteDirectory(
+  context: CompareIndexItemContext,
+  sourceInventory: ConfigurationInventory,
+  sourceObject: MetadataObjectUnit,
+): Promise<import('./merge/mergePreview').MergeFileWitness | undefined> {
+  const { item } = context;
+  if (item.action !== 'delete') {return undefined;}
+  const directoryRelativePath = canonicalRelativePath(sourceInventory.rootPath, sourceObject.containerPath);
+  const directorySnapshot = directoryRelativePath
+    ? await captureMergePath(path.join(sourceInventory.rootPath, ...directoryRelativePath.split('/')), { retainContent: false }).catch(() => undefined)
+    : undefined;
+  if (!directoryRelativePath || directorySnapshot?.state !== 'directory') {
+    failCompareIndexItem(context, `Каталог sidecar-пакета ${item.identity.qualifiedName} отсутствует или не подтверждён.`);
+    return undefined;
+  }
+  return {
+    sourceId: item.identity.sourceId,
+    relativePath: directoryRelativePath,
+    expectedHash: mergeSnapshotHash(directorySnapshot),
+    kind: 'directory',
+  };
+}
+
+async function captureComparePackageMembers(
+  context: CompareIndexItemContext,
+  prepared: PreparedCompareIndexPackage,
+): Promise<LinkedDesignerPackageMember[] | undefined> {
+  const members: LinkedDesignerPackageMember[] = [];
+  for (const artifact of prepared.memberArtifacts) {
+    const member = await captureComparePackageMember(context, prepared, artifact);
+    if (!member) {return undefined;}
+    members.push(member);
+  }
+  if (context.item.action === 'copy' && members.some((member) => member.required && (!member.sourceHash || !member.content))) {
+    return undefined;
+  }
+  return members;
+}
+
+async function captureComparePackageMember(
+  context: CompareIndexItemContext,
+  prepared: PreparedCompareIndexPackage,
+  artifact: ArtifactUnit,
+): Promise<LinkedDesignerPackageMember | undefined> {
+  const { item } = context;
+  const sourceRootPath = prepared.indexed.inventory.rootPath;
+  const sourceRelativePath = canonicalRelativePath(sourceRootPath, artifact.filePath);
+  if (!sourceRelativePath) {return undefined;}
+  const targetRelativePath = item.action === 'copy'
+    ? sourceRelativePath
+    : canonicalRelativePath(sourceRootPath, artifact.filePath);
+  if (!targetRelativePath) {return undefined;}
+  const memberTargetArtifact = item.action === 'copy' && prepared.targetObject
+    ? matchPackageArtifact(artifact, prepared.indexed.object, prepared.targetArtifacts, prepared.targetObject)
+    : item.action === 'delete' ? artifact : undefined;
+  const expectedTargetHash = memberTargetArtifact
+    ? stripHash(memberTargetArtifact.contentHash)
+    : MISSING_TARGET_HASH;
+  const content = await captureComparePackageMemberContent(context, prepared, artifact, sourceRelativePath);
+  if (item.action === 'copy' && !content) {return undefined;}
+  return {
+    targetRelativePath,
+    ...(item.action === 'copy' ? { sourceRelativePath, sourceHash: stripHash(artifact.contentHash), content } : {}),
+    expectedTargetHash,
+    required: artifact.kind === 'metadataXml' || sameRelativePath(artifact.relativePath, prepared.requiredBodyPath),
+  };
+}
+
+async function captureComparePackageMemberContent(
+  context: CompareIndexItemContext,
+  prepared: PreparedCompareIndexPackage,
+  artifact: ArtifactUnit,
+  sourceRelativePath: string,
+): Promise<Buffer | undefined> {
+  if (context.item.action !== 'copy') {return undefined;}
+  const snapshot = samePath(artifact.filePath, prepared.descriptor.filePath)
+    ? prepared.descriptorSnapshot
+    : await captureMergePath(path.join(prepared.indexed.inventory.rootPath, sourceRelativePath), { retainContent: true }).catch(() => undefined);
+  if (snapshot?.state !== 'file' || snapshot.contentBase64 === undefined || snapshot.hash !== stripHash(artifact.contentHash)) {
+    context.state.diagnostics.push(blocked(`Исходный Designer-файл изменился после сравнения: ${sourceRelativePath}`, context.item.identity.sourceId, context.item.identity.qualifiedName));
+    return undefined;
+  }
+  return Buffer.from(snapshot.contentBase64, 'base64');
+}
+
+async function resolveCompareOwnerDescriptor(
+  context: CompareIndexItemContext,
+): Promise<LinkedOwnerDescriptorSnapshot | undefined | null> {
+  const ownerQualifiedName = context.ownerQualifiedName;
+  if (!ownerQualifiedName) {return undefined;}
+  const { state } = context;
+  const ownerKey = normalizePath(ownerQualifiedName);
+  if (!state.ownerDescriptorCache.has(ownerKey)) {
+    state.ownerDescriptorCache.set(ownerKey, await captureCompareOwnerDescriptor(state, ownerQualifiedName));
+  }
+  const cached = state.ownerDescriptorCache.get(ownerKey);
+  if (cached) {return cached;}
+  failCompareIndexItem(context, `Дескриптор владельца ${ownerQualifiedName} не удалось подтвердить для linked package.`);
+  return null;
+}
+
+async function captureCompareOwnerDescriptor(
+  state: CompareIndexState,
+  ownerQualifiedName: string,
+): Promise<LinkedOwnerDescriptorSnapshot | null> {
+  const ownerMatch = state.input.metadata.matches.find((match) => match.left.qualifiedName === ownerQualifiedName);
+  const ownerObject = ownerMatch ? findInventoryObject(state.input.leftInventory, ownerMatch.left.filePath) : undefined;
+  const ownerDescriptor = ownerObject && artifactsFor(state.input.leftInventory, ownerObject)
+    .find((artifact) => artifact.kind === 'metadataXml' && samePath(artifact.filePath, ownerObject.descriptorPath));
+  const ownerRelativePath = ownerDescriptor && canonicalRelativePath(state.input.leftInventory.rootPath, ownerDescriptor.filePath);
+  const ownerCapture = ownerRelativePath
+    ? await captureMergePath(ownerDescriptor!.filePath, { retainContent: true }).catch(() => undefined)
+    : undefined;
+  const ownerBytes = ownerCapture?.state === 'file' && ownerCapture.contentBase64
+    ? Buffer.from(ownerCapture.contentBase64, 'base64')
+    : undefined;
+  return ownerDescriptor && ownerRelativePath && ownerCapture?.state === 'file' && ownerBytes
+    && ownerCapture.hash === stripHash(ownerDescriptor.contentHash)
+    ? { targetRelativePath: ownerRelativePath, targetHash: ownerCapture.hash, targetContent: ownerBytes.toString('utf8') }
+    : null;
+}
+
+function appendComparePackage(
+  context: CompareIndexItemContext,
+  prepared: PreparedCompareIndexPackage,
+  members: LinkedDesignerPackageMember[],
+  ownerDescriptorSnapshot: LinkedOwnerDescriptorSnapshot | undefined,
+): void {
+  const { item, state } = context;
+  state.packages.push({
+    packageId: packageIdFor(context.kind, item.identity.qualifiedName),
+    action: item.action,
+    kind: context.kind,
+    qualifiedName: item.identity.qualifiedName,
+    ...(context.ownerQualifiedName ? { ownerQualifiedName: context.ownerQualifiedName } : {}),
+    ...(prepared.targetDirectoryWitness ? { targetDirectoryWitness: prepared.targetDirectoryWitness } : {}),
+    ...(ownerDescriptorSnapshot ? { ownerDescriptorSnapshot } : {}),
+    ...(context.isRootObject ? { rootRegistration: { rootTag: item.identity.metadataType, objectName: finalName(item.identity.qualifiedName) } } : {}),
+    ...(context.ownerQualifiedName ? {
+      ownerTargetRelativePath: canonicalRelativePath(
+        state.input.leftInventory.rootPath,
+        state.input.metadata.matches.find((match) => match.left.qualifiedName === context.ownerQualifiedName)?.left.filePath ?? ''
+      ),
+    } : {}),
+    members,
+  });
+}
+
+async function finalizeCompareIndex(state: CompareIndexState): Promise<LinkedDesignerCompareIndex> {
+  const { input } = state;
   const rootConfigurationCapture = await captureRootConfigurationSnapshot(input.leftRootPath, input.rightRootPath);
   const rootConfiguration = rootConfigurationCapture.snapshot;
-  for (const recipe of packages) {
-    if (recipe.rootRegistration && !rootRegistrationIsAvailable(recipe, rootConfiguration)) {
-      diagnostics.push(blocked(`Root Configuration.xml не подтверждает регистрацию пакета ${recipe.qualifiedName}.`, 'right-source', recipe.qualifiedName));
-      continue;
-    }
-  }
-  const validPackages = packages.filter((recipe) => {
-    if (!recipe.rootRegistration || rootRegistrationIsAvailable(recipe, rootConfiguration)) {return true;}
-    const nodeId = `fileObject:${recipe.action === 'copy' ? 'rightOnly' : 'leftOnly'}:${encodeURIComponent(recipe.qualifiedName)}`;
-    blockedPresenceNodeIds.set(nodeId, 'Root Configuration.xml не подтверждает регистрацию Designer-пакета.');
-    return false;
-  });
+  const validPackages = filterRegisteredPackages(state.packages, rootConfiguration, state.diagnostics, state.blockedPresenceNodeIds);
   const wholeObjectCopiesByNodeId = await buildWholeObjectCopyRecipes({
     strategy: input.strategy,
     metadata: input.metadata,
     rightInventory: input.rightInventory,
     rootConfiguration,
     rootConfigurationCapture,
-    identityCounts,
-    diagnostics,
-    blockedPresenceNodeIds,
+    identityCounts: state.identityCounts,
+    diagnostics: state.diagnostics,
+    blockedPresenceNodeIds: state.blockedPresenceNodeIds,
   });
   return {
     packages: validPackages,
-    diagnostics,
-    blockedPresenceNodeIds,
+    diagnostics: state.diagnostics,
+    blockedPresenceNodeIds: state.blockedPresenceNodeIds,
     ...(rootConfiguration ? { rootConfiguration } : {}),
     ...(wholeObjectCopiesByNodeId.size > 0 ? { wholeObjectCopiesByNodeId } : {}),
   };
 }
 
-export { bindLinkedDesignerPackageNodes } from './linkedDesignerPackageBinding';
-
-function fileObjectNodeIdForIdentity(identity: MetadataIdentity, action: 'copy' | 'delete'): string {
-  return `fileObject:${action === 'copy' ? 'rightOnly' : 'leftOnly'}:${encodeURIComponent(identity.qualifiedName)}`;
-}
-
-function countIdentityNames(identities: readonly MetadataIdentity[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const identity of identities) {
-    const key = `${identity.sourceId}\0${identity.qualifiedName.normalize('NFC').toLocaleLowerCase('en-US')}`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+function filterRegisteredPackages(
+  packages: readonly LinkedDesignerPackageRecipe[],
+  rootConfiguration: LinkedDesignerRootConfigurationSnapshot | undefined,
+  diagnostics: CompareMessage[],
+  blockedPresenceNodeIds: Map<string, string>,
+): LinkedDesignerPackageRecipe[] {
+  for (const recipe of packages) {
+    if (recipe.rootRegistration && !rootRegistrationIsAvailable(recipe, rootConfiguration)) {
+      diagnostics.push(blocked(`Root Configuration.xml не подтверждает регистрацию пакета ${recipe.qualifiedName}.`, 'right-source', recipe.qualifiedName));
+    }
   }
-  return counts;
+  return packages.filter((recipe) => {
+    if (!recipe.rootRegistration || rootRegistrationIsAvailable(recipe, rootConfiguration)) {return true;}
+    const nodeId = `fileObject:${recipe.action === 'copy' ? 'rightOnly' : 'leftOnly'}:${encodeURIComponent(recipe.qualifiedName)}`;
+    blockedPresenceNodeIds.set(nodeId, 'Root Configuration.xml не подтверждает регистрацию Designer-пакета.');
+    return false;
+  });
 }
 
-function nestedOwnerQualifiedName(identity: MetadataIdentity): string | undefined {
-  const parts = identity.qualifiedName.split('.');
-  if (parts.length < 4) {return undefined;}
-  const nestedTypeIndex = parts.lastIndexOf(identity.metadataType);
-  if (nestedTypeIndex < 2 || nestedTypeIndex !== parts.length - 2) {return undefined;}
-  return parts.slice(0, nestedTypeIndex).join('.');
-}
-
-function hasMatchedOwner(metadata: MatchResult, ownerQualifiedName: string): boolean {
-  return metadata.matches.some((match) =>
-    match.left.qualifiedName === ownerQualifiedName && match.right.qualifiedName === ownerQualifiedName
-  );
-}
-
-function findIndexedPackageObject(
-  identity: MetadataIdentity,
-  inventory: ConfigurationInventory,
-): IndexedPackageObject | undefined {
-  const object = findInventoryObject(inventory, identity.filePath);
-  return object ? { identity, object, inventory } : undefined;
-}
-
-function findInventoryObject(inventory: ConfigurationInventory, descriptorPath: string): MetadataObjectUnit | undefined {
-  return findInventoryObjectByDescriptor(inventory, descriptorPath);
-}
+export { bindLinkedDesignerPackageNodes } from './linkedDesignerPackageBinding';
 
 function counterpartIdentity(
   metadata: MatchResult,
@@ -312,20 +477,6 @@ function counterpartIdentity(
   return candidates.length === 1 ? candidates[0] : undefined;
 }
 
-function artifactsFor(inventory: ConfigurationInventory, object: MetadataObjectUnit): ArtifactUnit[] {
-  return inventory.artifactsByObjectId.get(object.objectId) ?? [];
-}
-
-function samePath(left: string, right: string): boolean {
-  const a = normalizeAbsolutePath(left);
-  const b = normalizeAbsolutePath(right);
-  return process.platform === 'win32' ? a.toLocaleLowerCase('en-US') === b.toLocaleLowerCase('en-US') : a === b;
-}
-
-function sameRelativePath(left: string, right: string): boolean {
-  return normalizePath(left) === normalizePath(right);
-}
-
 function matchPackageArtifact(
   sourceArtifact: ArtifactUnit,
   _sourceObject: MetadataObjectUnit,
@@ -337,168 +488,6 @@ function matchPackageArtifact(
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-function packageIdFor(kind: LinkedDesignerKind, qualifiedName: string): string {
-  return `designer:${kind}:${encodeURIComponent(qualifiedName)}`;
-}
-
-async function captureRootConfigurationSnapshot(
-  leftRootPath: string,
-  rightRootPath: string,
-): Promise<RootConfigurationCapture> {
-  const [target, source] = await Promise.all([
-    captureMergePath(path.join(leftRootPath, 'Configuration.xml'), { retainContent: true }),
-    captureMergePath(path.join(rightRootPath, 'Configuration.xml'), { retainContent: true }),
-  ]);
-  const targetState = rootConfigurationFileState(target.state);
-  const sourceState = rootConfigurationFileState(source.state);
-  if (target.state !== 'file' || source.state !== 'file' || !target.contentBase64 || !source.contentBase64) {
-    return { targetState, sourceState };
-  }
-  const targetContent = Buffer.from(target.contentBase64, 'base64');
-  const sourceContent = Buffer.from(source.contentBase64, 'base64');
-  const targetRegistrations = readRootRegistrations(targetContent);
-  const sourceRegistrations = readRootRegistrations(sourceContent);
-  return {
-    targetState,
-    sourceState,
-    snapshot: {
-      targetHash: target.hash,
-      targetContent,
-      sourceHash: source.hash,
-      sourceContent,
-      targetHasRegistrations: targetRegistrations.registrations,
-      sourceHasRegistrations: sourceRegistrations.registrations,
-      targetValid: targetRegistrations.valid,
-      sourceValid: sourceRegistrations.valid,
-    },
-  };
-}
-
-type RootConfigurationFileState = 'file' | 'missing' | 'unavailable';
-
-interface RootConfigurationCapture {
-  readonly targetState: RootConfigurationFileState;
-  readonly sourceState: RootConfigurationFileState;
-  readonly snapshot?: LinkedDesignerRootConfigurationSnapshot;
-}
-
-function rootConfigurationFileState(state: 'file' | 'directory' | 'missing'): RootConfigurationFileState {
-  return state === 'file' ? 'file' : state === 'missing' ? 'missing' : 'unavailable';
-}
-
-async function buildWholeObjectCopyRecipes(input: {
-  strategy: 'left' | 'right' | 'full';
-  metadata: MatchResult;
-  rightInventory: ConfigurationInventory;
-  rootConfiguration?: LinkedDesignerRootConfigurationSnapshot;
-  rootConfigurationCapture: RootConfigurationCapture;
-  identityCounts: ReadonlyMap<string, number>;
-  diagnostics: CompareMessage[];
-  blockedPresenceNodeIds: Map<string, string>;
-}): Promise<Map<string, LinkedRootObjectCopyRecipe>> {
-  const recipes = new Map<string, LinkedRootObjectCopyRecipe>();
-  if (input.strategy === 'left') {return recipes;}
-  const supportedRootTypes = new Set(['Catalog', 'Document', 'CommonModule']);
-  for (const identity of input.metadata.unmatchedRight) {
-    if (!supportedRootTypes.has(identity.metadataType)) {continue;}
-    const parts = identity.qualifiedName.split('.');
-    if (parts.length !== 2 || parts[0] !== identity.metadataType || !parts[1]) {continue;}
-    const nodeId = fileObjectNodeIdForIdentity(identity, 'copy');
-    const fail = (message: string): void => {
-      input.diagnostics.push(blocked(message, identity.sourceId, identity.qualifiedName));
-      input.blockedPresenceNodeIds.set(nodeId, message);
-    };
-    const identityKey = `${identity.sourceId}\0${identity.qualifiedName.normalize('NFC').toLocaleLowerCase('en-US')}`;
-    if (input.identityCounts.get(identityKey) !== 1) {
-      fail('Имя переносимого корневого объекта неоднозначно; устраните дубликаты и повторите сравнение.');
-      continue;
-    }
-    const indexed = findIndexedPackageObject(identity, input.rightInventory);
-    const object = indexed?.object ?? metadataIdentityToObjectUnit(identity);
-    const descriptor = indexed && artifactsFor(indexed.inventory, indexed.object)
-      .find((artifact) => artifact.kind === 'metadataXml' && samePath(artifact.filePath, identity.filePath));
-    const descriptorRelativePath = canonicalRelativePath(input.rightInventory.rootPath, identity.filePath);
-    const containerRelativePath = canonicalRelativePath(input.rightInventory.rootPath, object.containerPath);
-    if (!descriptorRelativePath || !containerRelativePath
-      || (descriptor && !samePath(descriptor.filePath, identity.filePath))) {
-      fail('Дескриптор или каталог корневого объекта не ограничены корнем source.');
-      continue;
-    }
-
-    let configurationMode: 'registered' | 'legacyLoose';
-    const capture = input.rootConfigurationCapture;
-    if (capture.targetState === 'missing' && capture.sourceState === 'missing') {
-      configurationMode = 'legacyLoose';
-    } else {
-      const rootRegistration = { rootTag: identity.metadataType, objectName: parts[1] };
-      if (capture.targetState !== 'file' || capture.sourceState !== 'file'
-        || !input.rootConfiguration
-        || !rootRegistrationIsAvailable({ action: 'copy', rootRegistration }, input.rootConfiguration)) {
-        fail('Корневую регистрацию объекта нельзя безопасно добавить: обе Configuration.xml должны подтверждать только source-регистрацию.');
-        continue;
-      }
-      configurationMode = 'registered';
-    }
-
-    const relativeDescriptorFromContainer = path.relative(object.containerPath, identity.filePath);
-    const descriptorInContainer = relativeDescriptorFromContainer === ''
-      || (!relativeDescriptorFromContainer.startsWith('..') && !path.isAbsolute(relativeDescriptorFromContainer));
-    recipes.set(nodeId, {
-      nodeId,
-      action: 'copy',
-      qualifiedName: identity.qualifiedName,
-      rootRegistration: { rootTag: identity.metadataType, objectName: parts[1] },
-      registrationNodeId: nodeId,
-      configurationMode,
-      sourceContainerPath: object.containerPath,
-      sourceDescriptorRelativePath: descriptorRelativePath,
-      ...(descriptor ? { sourceDescriptorHash: stripHash(descriptor.contentHash) } : {}),
-      ...(identity.uuid ? { sourceUuid: identity.uuid } : {}),
-      sourceDescriptorInContainer: descriptorInContainer,
-    });
-  }
-  return recipes;
-}
-
-function readRootRegistrations(content: Buffer): { valid: boolean; registrations: Set<string> } {
-  try {
-    const root = parseXmlDocument(content.toString('utf8')).root;
-    const metadataNamespace = 'http://v8.1c.ru/8.3/MDClasses';
-    if (root.localName !== 'MetaDataObject' || namespaceUriForName(root) !== metadataNamespace) {return invalidRootRegistrations();}
-    const owners = elementChildren(root);
-    if (owners.length !== 1 || owners[0]!.localName !== 'Configuration' || namespaceUriForName(owners[0]!) !== metadataNamespace) {return invalidRootRegistrations();}
-    const childContainers = elementChildren(owners[0]!).filter((element) => element.localName === 'ChildObjects' && namespaceUriForName(element) === metadataNamespace);
-    if (childContainers.length > 1) {return invalidRootRegistrations();}
-    const result = new Set<string>();
-    for (const parent of childContainers[0] ? elementChildren(childContainers[0]) : []) {
-      if (namespaceUriForName(parent) !== metadataNamespace) {continue;}
-      for (const item of elementChildren(parent)) {
-        if (namespaceUriForName(item) !== metadataNamespace) {continue;}
-        const value = textContent(item).trim();
-        if (value) {result.add(`${parent.localName}\0${value}`);}
-      }
-      if (elementChildren(parent).length === 0) {
-        const value = textContent(parent).trim();
-        if (value) {result.add(`${parent.localName}\0${value}`);}
-      }
-    }
-    return { valid: true, registrations: result };
-  } catch {
-    return invalidRootRegistrations();
-  }
-}
-
-function invalidRootRegistrations(): { valid: false; registrations: Set<string> } {
-  return { valid: false, registrations: new Set() };
-}
-
-export function rootRegistrationIsAvailable(
-  recipe: Pick<LinkedDesignerPackageRecipe, 'action' | 'rootRegistration'>,
-  snapshot: LinkedDesignerRootConfigurationSnapshot | undefined,
-): boolean {
-  if (!snapshot || !snapshot.sourceValid || !snapshot.targetValid || !recipe.rootRegistration) {return false;}
-  const key = `${recipe.rootRegistration.rootTag}\0${recipe.rootRegistration.objectName}`;
-  return recipe.action === 'copy'
-    ? snapshot.sourceHasRegistrations.has(key) && !snapshot.targetHasRegistrations.has(key)
-    : snapshot.targetHasRegistrations.has(key) && !snapshot.sourceHasRegistrations.has(key);
-}
+export { buildLinkedDesignerPackageReferenceIndex } from './linkedDesignerPackageReferenceIndex';
+export { captureLinkedRootConfiguration, rootRegistrationIsAvailable } from './linkedDesignerRootConfiguration';
+export type { RootConfigurationCapture } from './linkedDesignerRootConfiguration';

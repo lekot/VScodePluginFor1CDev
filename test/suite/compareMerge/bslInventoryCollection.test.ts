@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import * as bslModuleIndexer from '../../../src/compareMerge/bsl/bslModuleIndexer';
 import { hashText } from '../../../src/compareMerge/bsl/bslRoutineLogicalScanner';
+import { locateMetadataFile } from '../../../src/services/metadataFileLocator';
 import {
   buildBslModuleIndex,
   indexBslModuleSource,
@@ -17,6 +18,25 @@ import {
 import type { ResolvedBslInventoryFile } from '../../../src/compareMerge/bsl/bslSourceRetention';
 
 suite('BSL inventory collection', () => {
+  test('resolves all owned paths through an injected pure location resolver', async () => {
+    const root = path.join(os.tmpdir(), 'bsl-inventory-pure-location');
+    const filePath = path.join(root, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
+    const resolvedPaths: string[] = [];
+    const resolution = await resolveBslInventoryIdentities({
+      sourceId: 'right-source',
+      side: 'right',
+      configRoot: root,
+      filePaths: [filePath],
+      locationResolver: (requestedPath, roots) => {
+        resolvedPaths.push(requestedPath);
+        return locateMetadataFile(requestedPath, roots);
+      },
+    });
+
+    assert.deepStrictEqual(resolvedPaths, [filePath]);
+    assert.strictEqual(resolution.files[0]?.identity?.moduleId, 'Catalog.Products.Object');
+  });
+
   test('reads every artifact, hashes and indexes last-wins duplicate paths across batch boundaries, retaining only selected sources', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bsl-inventory-collection-'));
     const duplicatePath = path.join(root, 'Catalogs', 'Item63', 'Ext', 'ObjectModule.bsl');
@@ -202,6 +222,119 @@ suite('BSL inventory collection', () => {
       assert.strictEqual(collection.contentHash, hashSourcesLikeLegacyMap(expectedSources));
     } finally {
       indexerModule.indexBslModuleSource = originalIndexBslModuleSource;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('retains physical raw-byte hashes while preserving decoded text and custom reader semantics', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bsl-inventory-raw-hash-'));
+    const filePath = await createBslFile(root, 'Catalogs/Raw/Ext/ObjectModule.bsl');
+    const rawBytes = Buffer.from([0xef, 0xbb, 0xbf, 0x50, 0x72, 0x6f, 0x63, 0x0d, 0x0a, 0xff]);
+    try {
+      await fs.writeFile(filePath, rawBytes);
+      const resolution = await resolveBslInventoryIdentities({
+        sourceId: 'right-source', side: 'right', configRoot: root, filePaths: [filePath],
+      });
+      const decodedText = rawBytes.toString('utf8');
+      const physicalHash = `sha256:${createHash('sha256').update(rawBytes).digest('hex')}`;
+      const defaultCollection = await collectBslInventorySources({
+        resolution,
+        retainedPaths: new Set([filePath]),
+        analysisPaths: new Set(),
+        concurrency: 1,
+        readFileBytes: (requestedPath) => fs.readFile(requestedPath),
+      });
+      assert.strictEqual(defaultCollection.sources.get(filePath), decodedText);
+      assert.strictEqual(defaultCollection.rawFileHashes?.get(filePath), physicalHash);
+      assert.strictEqual(defaultCollection.contentHash, hashSourcesLikeLegacyMap(new Map([[filePath, decodedText]])));
+
+      const hookText = 'hook-provided text must remain the legacy source';
+      const hookedCollection = await collectBslInventorySources({
+        resolution,
+        retainedPaths: new Set([filePath]),
+        analysisPaths: new Set(),
+        concurrency: 1,
+        readTextFile: async () => hookText,
+        readFileBytes: (requestedPath) => fs.readFile(requestedPath),
+      });
+      assert.strictEqual(hookedCollection.sources.get(filePath), hookText);
+      assert.strictEqual(hookedCollection.rawFileHashes?.get(filePath), physicalHash);
+      assert.notStrictEqual(hookedCollection.rawFileHashes?.get(filePath), `sha256:${createHash('sha256').update(Buffer.from(hookText, 'utf8')).digest('hex')}`);
+      assert.strictEqual(hookedCollection.contentHash, hashSourcesLikeLegacyMap(new Map([[filePath, hookText]])));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('captures only readPaths while preserving deferred identities and rejecting analysis outside the read scope before I/O', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bsl-inventory-read-scope-'));
+    const pairedPath = await createBslFile(root, 'Catalogs/Paired/Ext/ObjectModule.bsl');
+    const hashOnlyPath = await createBslFile(root, 'Catalogs/HashOnly/Ext/ObjectModule.bsl');
+    const deferredPath = await createBslFile(root, 'Catalogs/Deferred/Ext/ObjectModule.bsl');
+    const filePaths = [pairedPath, hashOnlyPath, deferredPath];
+    const resolution = await resolveBslInventoryIdentities({
+      sourceId: 'right-source',
+      side: 'right',
+      configRoot: root,
+      filePaths,
+    });
+    const readPaths = new Set([pairedPath, hashOnlyPath]);
+    const pairedText = 'Procedure Shared()\nEndProcedure';
+    const hashOnlyText = 'Procedure Added()\nEndProcedure';
+    const textByPath = new Map([[pairedPath, pairedText], [hashOnlyPath, hashOnlyText]]);
+    let textReads = 0;
+    let byteReads = 0;
+
+    try {
+      await fs.writeFile(pairedPath, Buffer.from('physical paired bytes'));
+      await fs.writeFile(hashOnlyPath, Buffer.from('physical hash-only bytes'));
+      await fs.writeFile(deferredPath, Buffer.from('must not be read'));
+      const collection = await collectBslInventorySources({
+        resolution,
+        readPaths,
+        retainedPaths: new Set([pairedPath]),
+        analysisPaths: new Set([pairedPath]),
+        concurrency: 2,
+        readTextFile: async (filePath) => {
+          textReads += 1;
+          const source = textByPath.get(filePath);
+          if (source === undefined) {throw new Error(`unexpected text read: ${filePath}`);}
+          return source;
+        },
+        readFileBytes: async (filePath) => {
+          byteReads += 1;
+          return fs.readFile(filePath);
+        },
+      });
+
+      assert.strictEqual(textReads, 2);
+      assert.strictEqual(byteReads, 2);
+      assert.strictEqual(collection.sourceCount, 2);
+      assert.deepStrictEqual([...collection.sources.keys()], [pairedPath]);
+      assert.strictEqual(collection.contentHash, hashSourcesLikeLegacyMap(textByPath));
+      assert.deepStrictEqual([...collection.rawFileHashes!.keys()].sort(), [pairedPath, hashOnlyPath].sort());
+      assert.strictEqual(collection.rawFileHashes!.get(pairedPath), `sha256:${createHash('sha256').update('physical paired bytes').digest('hex')}`);
+      assert.strictEqual(collection.rawFileHashes!.get(hashOnlyPath), `sha256:${createHash('sha256').update('physical hash-only bytes').digest('hex')}`);
+      assert.strictEqual(collection.rawFileHashes!.has(deferredPath), false);
+      const hashOnlyModule = collection.index.modules.find((module) => module.identity.filePath === hashOnlyPath);
+      const deferredModule = collection.index.modules.find((module) => module.identity.filePath === deferredPath);
+      assert.strictEqual(moduleAnalysisState(hashOnlyModule), 'deferred');
+      assert.strictEqual(moduleAnalysisState(deferredModule), 'deferred', 'unread identity remains present without a content hash or parse');
+
+      let invalidScopeReads = 0;
+      await assert.rejects(() => collectBslInventorySources({
+        resolution,
+        readPaths: new Set([pairedPath]),
+        analysisPaths: new Set([hashOnlyPath]),
+        retainedPaths: new Set(),
+        concurrency: 1,
+        readTextFile: async () => {
+          invalidScopeReads += 1;
+          return '';
+        },
+      }), /analysisPaths contains a path outside its allowed scope/u);
+      assert.strictEqual(invalidScopeReads, 0, 'inconsistent scope must fail before starting I/O');
+    } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
   });

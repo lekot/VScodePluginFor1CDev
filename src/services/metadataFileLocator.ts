@@ -1,6 +1,6 @@
 /**
- * Pure path-based locator: maps an absolute file path to a MetadataLocation descriptor.
- * No file I/O — works entirely with string operations.
+ * Metadata path mapping with filesystem-aware root selection for editor and workspace paths.
+ * The shared metadata grammar is path-based; manifest callers can use the pure within-root entry point.
  */
 
 import * as path from 'path';
@@ -130,9 +130,36 @@ export function locateMetadataFile(
     return null;
   }
 
-  const normalizedRoot = path.normalize(bestRoot);
-  const relative = bestRel;
-  let segments = relative.split(path.sep);
+  return parseMetadataLocation(bestRoot, bestRel);
+}
+
+/**
+ * Locate a metadata file beneath one known root using lexical paths only.
+ * The file and root must use the same path spelling; aliases and root selection are not resolved here.
+ */
+export function locateMetadataFileWithinRoot(
+  filePath: string,
+  configRoot: string
+): MetadataLocation | null {
+  const normalizedRoot = path.normalize(configRoot);
+  const normalizedFile = path.normalize(filePath);
+  const relativePath = path.relative(normalizedRoot, normalizedFile);
+  if (relativePath.length === 0 || isOutsideRootRelativePath(relativePath)) {
+    return null;
+  }
+
+  return parseMetadataLocation(configRoot, relativePath);
+}
+
+function isOutsideRootRelativePath(relativePath: string): boolean {
+  return path.isAbsolute(relativePath)
+    || relativePath === '..'
+    || relativePath.startsWith(`..${path.sep}`);
+}
+
+function parseMetadataLocation(configRoot: string, relativePath: string): MetadataLocation | null {
+  const normalizedRoot = path.normalize(configRoot);
+  let segments = relativePath.split(path.sep);
 
   let extensionName = getExtensionNameFromRoot(normalizedRoot);
 
@@ -155,131 +182,110 @@ export function locateMetadataFile(
   const rest = segments.slice(1);
 
   const base: Omit<MetadataLocation, 'objectName' | 'subPath' | 'hierarchy'> = {
-    configRoot: bestRoot,
+    configRoot,
     objectType,
     ...(extensionName !== undefined ? { extensionName } : {}),
   };
 
-  // --- Subsystems (recursive nesting: Subsystems/A/Subsystems/B/Subsystems/C.xml) ---
-  if (objectType === 'Subsystems') {
-    const hierarchy = parseSubsystemHierarchy(rest);
-    if (hierarchy === null) {
-      return null;
-    }
-    const objectName = hierarchy[0];
-    return {
-      ...base,
-      objectName,
-      hierarchy,
-    };
-  }
+  return parseMetadataTypePath(base, objectType, rest);
+}
 
-  // --- CommonModules ---
-  if (objectType === 'CommonModules') {
-    // CommonModules/X.xml → object itself
-    // CommonModules/X/Ext/Module.bsl → commonModule
-    if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
-      const objectName = stripXmlExt(rest[0]);
-      return { ...base, objectName };
-    }
-    if (rest.length === 3 && rest[1] === 'Ext') {
-      const subPath = resolveStandardModuleSubPath(objectType, rest[2]);
-      return subPath ? { ...base, objectName: rest[0], subPath } : null;
-    }
+type MetadataLocationBase = Omit<MetadataLocation, 'objectName' | 'subPath' | 'hierarchy'>;
+
+function parseMetadataTypePath(
+  base: MetadataLocationBase,
+  objectType: string,
+  rest: string[]
+): MetadataLocation | null {
+  switch (objectType) {
+    case 'Subsystems':
+      return parseSubsystemPath(base, rest);
+    case 'CommonModules':
+    case 'Constants':
+      return parseCommonModuleOrConstantPath(base, rest);
+    case 'Roles':
+      return parseRolePath(base, rest);
+    case 'CommonForms':
+      return parseCommonFormPath(base, rest);
+    case 'CommonCommands':
+      return parseCommonCommandPath(base, rest);
+    default:
+      return parseHierarchicalOrFlatPath(base, objectType, rest);
+  }
+}
+
+function parseSubsystemPath(base: MetadataLocationBase, rest: string[]): MetadataLocation | null {
+  const hierarchy = parseSubsystemHierarchy(rest);
+  if (hierarchy === null) {
     return null;
   }
+  return { ...base, objectName: hierarchy[0], hierarchy };
+}
 
-  // --- Constants ---
-  if (objectType === 'Constants') {
-    if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
-      return { ...base, objectName: stripXmlExt(rest[0]) };
-    }
-    if (rest.length === 3 && rest[1] === 'Ext') {
-      const subPath = resolveStandardModuleSubPath(objectType, rest[2]);
-      return subPath ? { ...base, objectName: rest[0], subPath } : null;
-    }
-    return null;
+function parseCommonModuleOrConstantPath(
+  base: MetadataLocationBase,
+  rest: string[]
+): MetadataLocation | null {
+  if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
+    return parseSingleObjectXml(base, rest);
   }
-
-  // --- Roles ---
-  if (objectType === 'Roles') {
-    if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
-      return { ...base, objectName: stripXmlExt(rest[0]) };
-    }
-    // Roles/R/Ext/Rights.xml
-    if (rest.length === 3 && rest[1] === 'Ext' && rest[2] === 'Rights.xml') {
-      return { ...base, objectName: rest[0], subPath: { kind: 'rights' } };
-    }
-    return null;
+  if (rest.length === 3 && rest[1] === 'Ext') {
+    const subPath = resolveStandardModuleSubPath(base.objectType, rest[2]);
+    return subPath ? { ...base, objectName: rest[0], subPath } : null;
   }
-
-  // --- CommonForms ---
-  if (objectType === 'CommonForms') {
-    if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
-      return { ...base, objectName: stripXmlExt(rest[0]) };
-    }
-    if (
-      rest.length === 3 &&
-      rest[1] === 'Ext' &&
-      rest[2] === 'Form.xml'
-    ) {
-      const formName = rest[0];
-      return {
-        ...base,
-        objectName: formName,
-        subPath: { kind: 'form', name: formName, subFile: 'container' },
-      };
-    }
-    if (
-      rest.length === 4 &&
-      rest[1] === 'Ext' &&
-      rest[2] === 'Form' &&
-      rest[3] === 'Module.bsl'
-    ) {
-      const formName = rest[0];
-      return {
-        ...base,
-        objectName: formName,
-        subPath: { kind: 'form', name: formName, subFile: 'module' },
-      };
-    }
-    return null;
-  }
-
-  // --- CommonCommands ---
-  if (objectType === 'CommonCommands') {
-    if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
-      return { ...base, objectName: stripXmlExt(rest[0]) };
-    }
-    if (rest.length === 3 && rest[1] === 'Ext' && rest[2] === 'CommandModule.bsl') {
-      const commandName = rest[0];
-      return {
-        ...base,
-        objectName: commandName,
-        subPath: { kind: 'command', name: commandName, subFile: 'module' },
-      };
-    }
-    return null;
-  }
-
-  // --- Flat XML types (single-level: just TypeFolder/Name.xml) ---
-  if (
-    FLAT_XML_TYPE_FOLDERS.has(objectType) &&
-    objectType !== 'Roles' &&
-    !TOP_LEVEL_TYPE_FOLDERS.has(objectType)
-  ) {
-    if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
-      return { ...base, objectName: stripXmlExt(rest[0]) };
-    }
-    return null;
-  }
-
-  // --- Hierarchical objects (Catalogs, Documents, etc.) ---
-  if (TOP_LEVEL_TYPE_FOLDERS.has(objectType)) {
-    return parseHierarchicalObject(base, rest);
-  }
-
   return null;
+}
+
+function parseRolePath(base: MetadataLocationBase, rest: string[]): MetadataLocation | null {
+  if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
+    return parseSingleObjectXml(base, rest);
+  }
+  if (rest.length === 3 && rest[1] === 'Ext' && rest[2] === 'Rights.xml') {
+    return { ...base, objectName: rest[0], subPath: { kind: 'rights' } };
+  }
+  return null;
+}
+
+function parseCommonFormPath(base: MetadataLocationBase, rest: string[]): MetadataLocation | null {
+  if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
+    return parseSingleObjectXml(base, rest);
+  }
+  if (rest.length === 3 && rest[1] === 'Ext' && rest[2] === 'Form.xml') {
+    const formName = rest[0];
+    return { ...base, objectName: formName, subPath: { kind: 'form', name: formName, subFile: 'container' } };
+  }
+  if (rest.length === 4 && rest[1] === 'Ext' && rest[2] === 'Form' && rest[3] === 'Module.bsl') {
+    const formName = rest[0];
+    return { ...base, objectName: formName, subPath: { kind: 'form', name: formName, subFile: 'module' } };
+  }
+  return null;
+}
+
+function parseCommonCommandPath(base: MetadataLocationBase, rest: string[]): MetadataLocation | null {
+  if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
+    return parseSingleObjectXml(base, rest);
+  }
+  if (rest.length === 3 && rest[1] === 'Ext' && rest[2] === 'CommandModule.bsl') {
+    return { ...base, objectName: rest[0], subPath: { kind: 'command', name: rest[0], subFile: 'module' } };
+  }
+  return null;
+}
+
+function parseSingleObjectXml(base: MetadataLocationBase, rest: string[]): MetadataLocation {
+  return { ...base, objectName: stripXmlExt(rest[0]) };
+}
+
+function parseHierarchicalOrFlatPath(
+  base: MetadataLocationBase,
+  objectType: string,
+  rest: string[]
+): MetadataLocation | null {
+  if (FLAT_XML_TYPE_FOLDERS.has(objectType) && !TOP_LEVEL_TYPE_FOLDERS.has(objectType)) {
+    return rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')
+      ? parseSingleObjectXml(base, rest)
+      : null;
+  }
+  return TOP_LEVEL_TYPE_FOLDERS.has(objectType) ? parseHierarchicalObject(base, rest) : null;
 }
 
 // ---------------------------------------------------------------------------

@@ -111,6 +111,72 @@ suite('CompareTreeProjection', () => {
     ]);
   });
 
+  test('projects outside-source changes as a separate conflict without blocking routine mergeability', () => {
+    const message = 'Изменения вне процедур требуют ручного сравнения всего модуля.';
+    const diff = Object.assign(bslDiff([['Save', 'changed']]), {
+      nonRoutineChange: { message },
+    });
+    const tree = buildCompareTreeProjection({
+      bsl: [
+        {
+          diff,
+          targetFilePath: path.join('left', 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl'),
+          mergeableRoutineIds: ['bsl:routine:Catalog.Products.Object:save'],
+        },
+      ],
+    });
+
+    const content = requireNode(tree.root, 'bsl:module-content:Catalog.Products.Object');
+    const routine = requireNode(tree.root, 'bsl:routine:Catalog.Products.Object:save');
+
+    assert.strictEqual(content.kind, 'bslModuleContent');
+    assert.strictEqual(content.status, 'changed');
+    assert.strictEqual(content.mergeable, false);
+    assert.deepStrictEqual(content.conflict, {
+      kind: 'bslLogicalConflict',
+      blocking: true,
+      message,
+    });
+    assert.deepStrictEqual(content.mergeState, { state: 'blocked', reason: message });
+    assert.strictEqual(routine.mergeable, true);
+  });
+
+  test('projects a guarded added routine as blocked while keeping a safe added sibling mergeable', () => {
+    const reason = 'Условный контекст модуля нельзя сохранить при автоматическом добавлении рутины.';
+    const diff = bslDiff([
+      ['Guarded', 'added'],
+      ['Healthy', 'added'],
+    ]);
+    Object.assign(diff.routines[0]!, { mergeBlockReason: reason });
+    const tree = buildCompareTreeProjection({
+      bsl: [
+        {
+          diff,
+          targetFilePath: path.join('left', 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl'),
+          mergeableRoutineIds: [
+            'bsl:routine:Catalog.Products.Object:guarded',
+            'bsl:routine:Catalog.Products.Object:healthy',
+          ],
+        },
+      ],
+    });
+    const guarded = requireNode(tree.root, 'bsl:routine:Catalog.Products.Object:guarded');
+    const healthy = requireNode(tree.root, 'bsl:routine:Catalog.Products.Object:healthy');
+
+    assert.strictEqual(guarded.mergeable, false);
+    assert.deepStrictEqual(guarded.conflict, {
+      kind: 'bslLogicalConflict',
+      blocking: true,
+      message: reason,
+    });
+    assert.deepStrictEqual(guarded.mergeState, {
+      state: 'blocked',
+      reason,
+      targetFilePath: path.join('left', 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl'),
+    });
+    assert.strictEqual(healthy.mergeable, true);
+  });
+
   test('nests BSL modules under their proven Form owners without merging sibling forms', () => {
     const formNames = ['Edit', 'Print'];
     const metadataNames = [

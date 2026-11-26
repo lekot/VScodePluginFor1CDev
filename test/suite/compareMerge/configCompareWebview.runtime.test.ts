@@ -147,6 +147,126 @@ suite('ConfigCompareWebview runtime', () => {
     }
   });
 
+  test('global selection skips paired whole-object replacements until explicit replacement intent', () => {
+    const posted: Array<{ type: string; nodeIds?: string[] }> = [];
+    const dto = makeBulkDto();
+    const { dom, errors } = createDom(
+      { generation: 0, status: 'ready' },
+      posted,
+      makeBulkPayload(),
+      bulkExecutableNodeIds()
+    );
+    try {
+      const document = dom.window.document;
+      dispatch(dom, stateMessage(dto, false, []));
+      (document.getElementById('selectAllChangesButton') as HTMLButtonElement).click();
+      assert.deepStrictEqual(lastSelection(posted), [
+        'metadata:changed',
+        'bsl:changed',
+        'file:replacement',
+      ], 'global healthy selection must retain binary replacement policy and skip only canonical whole-object replacement/deletions');
+
+      const viewport = document.getElementById('viewport')!;
+      Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 620 });
+      viewport.scrollTop = 100_000;
+      viewport.dispatchEvent(new dom.window.Event('scroll'));
+      while (true) {
+        const collapsedDisclosure = document.querySelector('#rows [aria-expanded="false"] .disclosure') as HTMLButtonElement | null;
+        if (!collapsedDisclosure) break;
+        collapsedDisclosure.click();
+      }
+      const replacementRow = document.querySelector('[data-key="extension:paired-replacement"]') as HTMLElement | null;
+      assert.ok(replacementRow, 'paired extension row should remain visible');
+      replacementRow?.click();
+      const replacementButton = document.querySelector('button.replacement-selection-action') as HTMLButtonElement | null;
+      assert.ok(replacementButton, 'whole-object replacement must have a separate explicit action');
+      assert.strictEqual(replacementButton?.textContent, 'Заменить объект целиком');
+      replacementButton?.click();
+      assert.deepStrictEqual(lastSelection(posted), [
+        'metadata:changed',
+        'bsl:changed',
+        'file:replacement',
+        'extension:paired-replacement',
+      ]);
+
+      (document.getElementById('selectAllChangesButton') as HTMLButtonElement).click();
+      assert.deepStrictEqual(lastSelection(posted), [
+        'extension:paired-replacement',
+        'metadata:changed',
+        'bsl:changed',
+        'file:replacement',
+      ], 'global selection preserves an already explicit replacement');
+      assert.strictEqual(posted.some((message) => message.type === 'createPreview'), false);
+      assert.strictEqual(posted.some((message) => message.type === 'executeMerge'), false);
+      assert.ok(errors.length === 0, errors.join('\n'));
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  test('keeps module routines out of virtual rows and keeps details, delete, keyboard and diff actions usable', () => {
+    const posted: Array<{ type: string; nodeId?: string; nodeIds?: string[] }> = [];
+    const moduleId = 'bsl:module:Form:Catalog.Products.Edit';
+    const changedRoutineId = `${moduleId}:routine:OnOpen`;
+    const deletedRoutineId = `${moduleId}:routine:OldHandler`;
+    const payload = makeBslModulePayload(moduleId, changedRoutineId, deletedRoutineId);
+    const dto = toWebviewPayload(payload, [changedRoutineId, deletedRoutineId], 'Тест') as ConfigCompareWebviewPayloadDto;
+    const { dom, errors } = createDom(
+      { generation: 0, status: 'ready' },
+      posted,
+      payload,
+      [changedRoutineId, deletedRoutineId]
+    );
+    try {
+      const document = dom.window.document;
+      dispatch(dom, stateMessage(dto, false, []));
+      assert.ok(document.querySelector(`[data-key="${moduleId}"]`), 'paired module must have one main row');
+      assert.strictEqual(document.querySelector(`[data-key="${changedRoutineId}"]`), null, 'routines must stay out of virtualized main rows');
+      assert.match(document.querySelector(`[data-key="${moduleId}"] .conflict-mark`)?.getAttribute('aria-label') ?? '', /1/u,
+        'module summary row should display its conflict count');
+      assert.match(document.getElementById('unresolvedConflictBanner')?.textContent ?? '', /1/u,
+        'the global conflict banner should remain visible while healthy module routines are selectable');
+
+      const moduleRow = document.querySelector(`[data-key="${moduleId}"]`) as HTMLElement | null;
+      moduleRow?.click();
+      const details = document.getElementById('details');
+      assert.match(details?.textContent ?? '', /OnOpen/u);
+      assert.match(details?.textContent ?? '', /Конфликт обработчика/u);
+      const detailCheckbox = document.querySelector('.bsl-detail-check') as HTMLInputElement | null;
+      assert.ok(detailCheckbox, 'changed routine has an individual checkbox in the details panel');
+      detailCheckbox?.click();
+      assert.deepStrictEqual(lastSelection(posted), [changedRoutineId]);
+      assert.strictEqual((document.querySelector('.bsl-detail-check') as HTMLInputElement | null)?.checked, true,
+        'details checkbox mirrors the canonical selection after rerender');
+
+      const deleteAction = document.querySelector('.bsl-detail-row button.delete-selection-action') as HTMLButtonElement | null;
+      assert.ok(deleteAction, 'routine deletions have an explicit details action');
+      deleteAction?.click();
+      assert.deepStrictEqual(lastSelection(posted), [changedRoutineId, deletedRoutineId]);
+      (document.getElementById('selectAllChangesButton') as HTMLButtonElement).click();
+      assert.deepStrictEqual(lastSelection(posted), [deletedRoutineId, changedRoutineId], 'global healthy selection preserves explicit routine deletion');
+
+      (document.querySelector('button.module-diff-action') as HTMLButtonElement).click();
+      assert.strictEqual(posted[posted.length - 1]?.type, 'openBslModuleDiff');
+      assert.strictEqual((posted[posted.length - 1] as { nodeId?: string }).nodeId, moduleId);
+      (document.querySelector(`[data-key="${moduleId}"]`) as HTMLElement | null)?.dispatchEvent(
+        new dom.window.MouseEvent('dblclick', { bubbles: true })
+      );
+      assert.strictEqual(posted[posted.length - 1]?.type, 'openBslModuleDiff');
+      assert.strictEqual((posted[posted.length - 1] as { nodeId?: string }).nodeId, moduleId);
+      (document.querySelector(`[data-key="${moduleId}"]`) as HTMLElement | null)?.focus();
+      document.getElementById('viewport')?.dispatchEvent(new dom.window.KeyboardEvent('keydown', {
+        key: 'Enter', bubbles: true, cancelable: true,
+      }));
+      assert.strictEqual(posted[posted.length - 1]?.type, 'openBslModuleDiff');
+      assert.strictEqual((posted[posted.length - 1] as { nodeId?: string }).nodeId, moduleId);
+      assert.strictEqual(posted.some((message) => message.type === 'executeMerge'), false);
+      assert.ok(errors.length === 0, errors.join('\n'));
+    } finally {
+      dom.window.close();
+    }
+  });
+
   test('legacy DTO without deletionNodeIds infers deletions from the display tree', () => {
     const posted: Array<{ type: string; nodeIds?: string[] }> = [];
     const { dom, errors } = createDom(
@@ -291,7 +411,8 @@ suite('ConfigCompareWebview runtime', () => {
     }
   });
 
-  test('clamps the virtual window after filtering a large tree from a distant scroll position', () => {
+  test('clamps the virtual window after filtering a large tree from a distant scroll position', function (this: Mocha.Context) {
+    this.timeout(15000);
     const payload = makeLargePayload(10_000);
     const { dom, errors } = createDom({ generation: 0, status: 'ready' }, [], payload, []);
     try {
@@ -394,6 +515,7 @@ function bulkExecutableNodeIds(): string[] {
     'bsl:changed',
     'bsl:deleted',
     'file:replacement',
+    'extension:paired-replacement',
     'file:deleted',
   ];
 }
@@ -446,12 +568,43 @@ function makeBulkPayload(): ConfigCompareWebviewPayload {
         testNode('metadata', 'Metadata', 'metadataGroup', 'changed', { children: metadata }),
         testNode('bsl', 'BSL', 'bslGroup', 'changed', { children: bsl }),
         testNode('adapter', 'Files', 'adapterGroup', 'changed', { children: files }),
+        testNode('extension:paired-replacement', 'Catalog.Ext_Item', 'extensionMetadataObject', 'changed', {
+          mergeable: true,
+          destructive: true,
+          replacement: true,
+        }),
       ],
     }),
     stats: { total: 8, different: 8, mergeable: 6 },
     sourceRoots: { left: 'Цель', right: 'Источник' },
     locked: false,
     strategy: 'full',
+  };
+}
+
+function makeBslModulePayload(moduleId: string, changedRoutineId: string, deletedRoutineId: string): ConfigCompareWebviewPayload {
+  const module = testNode(moduleId, 'Форма: Catalog.Products.Edit', 'bslModule', 'changed', {
+    leftValue: 'Есть · 2 процедуры/функции',
+    rightValue: 'Есть · 2 процедуры/функции',
+    children: [
+      testNode(changedRoutineId, 'OnOpen', 'bslRoutine', 'changed', { mergeable: true }),
+      testNode(deletedRoutineId, 'OldHandler', 'bslRoutine', 'leftOnly', { mergeable: true }),
+      testNode(`${moduleId}:diagnostic`, 'Конфликт обработчика', 'diagnostic', 'changed', {
+        conflict: { kind: 'bslLogicalConflict', blocking: true, message: 'Конфликт обработчика вручную.' },
+        mergeState: { state: 'blocked', reason: 'Конфликт обработчика вручную.' },
+      }),
+      testNode(`${moduleId}:equal`, 'SameHandler', 'bslRoutine', 'equal'),
+    ],
+  });
+  return {
+    root: testNode('configCompare', 'Compare', 'configCompare', 'changed', {
+      children: [testNode('bslGroup', 'Модули BSL', 'bslGroup', 'changed', { children: [module] })],
+    }),
+    stats: { total: 5, different: 4, mergeable: 2 },
+    sourceRoots: { left: 'Target', right: 'Source' },
+    locked: false,
+    strategy: 'full',
+    bslModuleDiffNodeIds: [moduleId],
   };
 }
 

@@ -1,6 +1,10 @@
 import { compareCodeUnits } from '../../utils/compareCodeUnits';
 import type { BslModuleDiagnostic } from '../bsl/bslModuleIndexer';
-import type { BslRoutineDiffResult, BslRoutineDiffStatus } from '../bsl/bslRoutineDiff';
+import type {
+  BslNonRoutineChange,
+  BslRoutineDiffResult,
+  BslRoutineDiffStatus,
+} from '../bsl/bslRoutineDiff';
 import type {
   CompareMessage,
   IdentityConflict,
@@ -354,12 +358,13 @@ function projectBslDiff(input: BslRoutineDiffProjectionInput): CompareTreeNode {
     ...diff.routines.map((routine) => {
       const nodeId = `bsl:routine:${diff.moduleId}:${routine.normalizedName}`;
       const blockedReason =
-        routine.status === 'changed' &&
+        routine.mergeBlockReason ??
+        (routine.status === 'changed' &&
         blockingDiagnostics.length === 0 &&
         Boolean(input.targetFilePath) &&
         !input.targetAmbiguous
           ? input.blockedRoutineReasons?.get(nodeId)
-          : undefined;
+          : undefined);
       const mergeState: CompareTreeMergeState = blockedReason
         ? {
             state: 'blocked',
@@ -394,8 +399,11 @@ function projectBslDiff(input: BslRoutineDiffProjectionInput): CompareTreeNode {
           : {}),
       });
     }),
-    ...diff.diagnostics.map((diagnostic) => projectBslDiagnostic(diagnostic)),
   ];
+  if (diff.nonRoutineChange) {
+    moduleChildren.push(projectBslModuleContentChange(diff, diff.nonRoutineChange));
+  }
+  moduleChildren.push(...diff.diagnostics.map((diagnostic) => projectBslDiagnostic(diagnostic)));
 
   return {
     ...branchNode(
@@ -406,6 +414,31 @@ function projectBslDiff(input: BslRoutineDiffProjectionInput): CompareTreeNode {
     ),
     presentation: bslOwnerPresentation(diff.leftIdentity, diff.rightIdentity),
   };
+}
+
+function projectBslModuleContentChange(
+  diff: BslRoutineDiffResult,
+  change: BslNonRoutineChange
+): CompareTreeNode {
+  return leafNode({
+    id: `bsl:module-content:${diff.moduleId}`,
+    label: 'Код модуля вне процедур',
+    kind: 'bslModuleContent',
+    status: 'changed',
+    leftValue: diff.leftIdentity.filePath,
+    rightValue: diff.rightIdentity.filePath,
+    mergeable: false,
+    payloadRef: `bslModuleContent:${diff.moduleId}`,
+    mergeState: {
+      state: 'blocked',
+      reason: change.message,
+    },
+    conflict: {
+      kind: 'bslLogicalConflict',
+      blocking: true,
+      message: change.message,
+    },
+  });
 }
 
 function bslOwnerPresentation(

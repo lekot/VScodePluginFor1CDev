@@ -1,15 +1,19 @@
 import * as assert from 'assert';
+import { execFileSync } from 'child_process';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 
 import { buildConfigurationCompare } from '../../../src/compareMerge/configurationCompareService';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
+import { parseLinkedFormReferenceOwnerState } from '../../../src/compareMerge/linkedDesignerValidation';
+import type { LinkedFormReferenceOwnerReference } from '../../../src/compareMerge/linkedDesignerTypes';
 import { elementChildren, parseXmlDocument, textContent } from '../../../src/compareMerge/xml/xmlDom';
 import { buildConfigurationInventory } from '../../../src/compareMerge/inventory/configurationInventory';
 import { indexMetadataFolder } from '../../../src/compareMerge/metadata/metadataIndexer';
 import { matchMetadataIdentities } from '../../../src/compareMerge/metadata/metadataMatcher';
 import { buildLinkedDesignerCompareIndex } from '../../../src/compareMerge/linkedDesignerPackageIndex';
+import fsPromisesRuntime = require('fs/promises');
 import { createMergeMutationTestRuntime } from './mergeMutationTestSupport';
 import { writeCompareBytes, writeDesignerConfiguration, type ExtensionCompareObjectFixture } from '../../helpers/extensionCompareFixtures';
 
@@ -20,6 +24,67 @@ suite('Linked Designer packages', () => {
     await Promise.all(mutationCoordinators.splice(0).map((coordinator) => coordinator.dispose()));
   });
 
+  test('accepts legacy and native metadata namespaces while rejecting foreign or mixed envelopes', () => {
+    const reference: LinkedFormReferenceOwnerReference = {
+      metadataType: 'Catalog',
+      qualifiedName: 'Catalog.Products',
+      targetRelativePath: 'Catalogs/Products.xml',
+      targetHash: 'a'.repeat(64),
+    };
+    const nativeNamespace = 'http://v8.1c.ru/8.3/MDClasses';
+    const validPayload = '<Properties><Name>Products</Name><DefaultObjectForm>Main</DefaultObjectForm></Properties><ChildObjects><Form>Main</Form></ChildObjects>';
+    const accepted = [
+      {
+        label: 'legacy namespace-less descriptor',
+        xml: `<MetaDataObject><Catalog uuid="1">${validPayload}</Catalog></MetaDataObject>`,
+      },
+      {
+        label: 'legacy descriptor with explicit empty namespace resets',
+        xml: '<MetaDataObject><Catalog xmlns="" uuid="1"><Properties xmlns=""><Name>Products</Name><DefaultObjectForm>Main</DefaultObjectForm></Properties><ChildObjects xmlns=""><Form>Main</Form></ChildObjects></Catalog></MetaDataObject>',
+      },
+      {
+        label: 'native default namespace descriptor',
+        xml: `<MetaDataObject xmlns="${nativeNamespace}"><Catalog uuid="1">${validPayload}</Catalog></MetaDataObject>`,
+      },
+      {
+        label: 'native prefixed namespace descriptor',
+        xml: `<md:MetaDataObject xmlns:md="${nativeNamespace}"><md:Catalog uuid="1"><md:Properties><md:Name>Products</md:Name><md:DefaultObjectForm>Main</md:DefaultObjectForm></md:Properties><md:ChildObjects><md:Form>Main</md:Form></md:ChildObjects></md:Catalog></md:MetaDataObject>`,
+      },
+    ];
+    const rejected = [
+      {
+        label: 'foreign wrapper and owner namespace',
+        xml: `<MetaDataObject xmlns="urn:vendor"><Catalog uuid="1">${validPayload}</Catalog></MetaDataObject>`,
+      },
+      {
+        label: 'native wrapper with namespace-less owner',
+        xml: `<MetaDataObject xmlns="${nativeNamespace}"><Catalog xmlns="" uuid="1">${validPayload}</Catalog></MetaDataObject>`,
+      },
+      {
+        label: 'namespace-less wrapper with native owner',
+        xml: `<MetaDataObject><Catalog xmlns="${nativeNamespace}" uuid="1">${validPayload}</Catalog></MetaDataObject>`,
+      },
+      {
+        label: 'foreign namespace reset on the owner Properties container',
+        xml: `<MetaDataObject xmlns="${nativeNamespace}"><Catalog uuid="1"><Properties xmlns="urn:vendor"><Name>Products</Name><DefaultObjectForm>Main</DefaultObjectForm></Properties><ChildObjects><Form>Main</Form></ChildObjects></Catalog></MetaDataObject>`,
+      },
+      {
+        label: 'nested Name cannot prove the root owner name',
+        xml: '<MetaDataObject><Catalog uuid="1"><Properties><DefaultObjectForm>Main</DefaultObjectForm></Properties><ChildObjects><Form><Properties><Name>Products</Name></Properties></Form></ChildObjects></Catalog></MetaDataObject>',
+      },
+    ];
+
+    for (const fixture of accepted) {
+      const state = parseLinkedFormReferenceOwnerState(reference, fixture.xml);
+      assert.ok(state, `${fixture.label} should be accepted`);
+      assert.deepStrictEqual(state!.baselineReferences, [{ propertyName: 'DefaultObjectForm', value: 'Main' }], fixture.label);
+      assert.deepStrictEqual(state!.baselineRegisteredForms, ['Main'], fixture.label);
+    }
+    for (const fixture of rejected) {
+      assert.strictEqual(parseLinkedFormReferenceOwnerState(reference, fixture.xml), undefined, fixture.label);
+    }
+  });
+
   test('selects a nested Form registration as one captured package and preserves target-only siblings', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'linked-designer-package-'));
     const leftRoot = path.join(tempRoot, 'left');
@@ -28,20 +93,33 @@ suite('Linked Designer packages', () => {
     const formDescriptorRelative = path.join('Catalogs', 'Products', 'Forms', 'Main.xml');
     const formXmlRelative = path.join('Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml');
     const moduleRelative = path.join('Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form', 'Module.bsl');
+    const modulePath = path.join(rightRoot, moduleRelative);
+    const moduleReadPathKeys = new Set([path.resolve(modulePath).toLowerCase()]);
+    const originalReadFileDescriptor = Object.getOwnPropertyDescriptor(fsPromisesRuntime, 'readFile')!;
+    const originalReadFile = fsPromisesRuntime.readFile;
+    let moduleContentReads = 0;
     let result: Awaited<ReturnType<typeof buildConfigurationCompare>> | undefined;
 
     try {
+      const instrumentedReadFile = ((...args: Parameters<typeof originalReadFile>) => {
+        if (typeof args[0] === 'string' && moduleReadPathKeys.has(path.resolve(args[0]).toLowerCase())) {
+          moduleContentReads += 1;
+        }
+        return Reflect.apply(originalReadFile, fsPromisesRuntime, args);
+      }) as typeof originalReadFile;
+      Object.defineProperty(fsPromisesRuntime, 'readFile', { ...originalReadFileDescriptor, value: instrumentedReadFile });
       await writeCatalogConfigurationPair(leftRoot, rightRoot);
       await writeFile(path.join(leftRoot, ownerRelative), catalogDescriptor('Products', false));
       await writeFile(path.join(rightRoot, ownerRelative), catalogDescriptor('Products', true));
       await writeFile(path.join(leftRoot, 'Catalogs', 'Products', 'Forms', 'Legacy.xml'), '<Legacy/>');
       await writeFile(path.join(rightRoot, formDescriptorRelative), formDescriptor('Main'));
       await writeFile(path.join(rightRoot, formXmlRelative), formXml('OnChange'));
-      await writeFile(path.join(rightRoot, moduleRelative), [
+      await writeFile(modulePath, [
         'Procedure OnChange()',
         '  Value = 1;',
         'EndProcedure',
       ].join('\n'));
+      moduleReadPathKeys.add((await fs.realpath(modulePath)).toLowerCase());
 
       const runtime = await createMergeMutationTestRuntime(leftRoot);
       mutationCoordinators.push(runtime.coordinator);
@@ -52,6 +130,7 @@ suite('Linked Designer packages', () => {
         mutationEngine: runtime.engine,
         configurationId: runtime.configurationId,
       });
+      assert.strictEqual(moduleContentReads, 0, 'unpaired package BSL remains path-only until the package is selected');
 
       const registration = collectNodes(result.projection.root, (node) =>
         node.kind === 'xmlElement' && node.label === 'Форма: Main' && node.status === 'rightOnly'
@@ -66,6 +145,7 @@ suite('Linked Designer packages', () => {
 
       const preview = await result.workspace.createPreviewForNodeIds([registration!.id]);
       assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      assert.ok(moduleContentReads > 0, 'selected package preview captures the deferred BSL member');
       assert.ok(preview.preview.operationCount >= 4, 'registration, descriptor, Form.xml, and module writes should be previewed');
       result.workspace.approvePreview(preview.preview.previewId);
       const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
@@ -81,6 +161,223 @@ suite('Linked Designer packages', () => {
       assert.strictEqual(await fs.readFile(path.join(leftRoot, formXmlRelative), 'utf8'), formXml('OnChange'));
       assert.match(await fs.readFile(path.join(leftRoot, moduleRelative), 'utf8'), /Procedure OnChange/u);
       assert.strictEqual(await fs.readFile(path.join(leftRoot, 'Catalogs', 'Products', 'Forms', 'Legacy.xml'), 'utf8'), '<Legacy/>');
+    } finally {
+      Object.defineProperty(fsPromisesRuntime, 'readFile', originalReadFileDescriptor);
+      result?.workspace.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('captures deferred non-BSL sidecar bytes only when selected for preview', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'linked-designer-selected-capture-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const formXmlPath = path.join(rightRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml');
+    let result: Awaited<ReturnType<typeof buildConfigurationCompare>> | undefined;
+    try {
+      await writeCatalogConfigurationPair(leftRoot, rightRoot);
+      await writeFile(path.join(leftRoot, 'Catalogs', 'Products.xml'), catalogDescriptor('Products', false));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), catalogDescriptor('Products', true));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products', 'Forms', 'Main.xml'), formDescriptor('Main'));
+      await writeFile(formXmlPath, formXmlWithoutEvent());
+      const runtime = await createMergeMutationTestRuntime(leftRoot);
+      mutationCoordinators.push(runtime.coordinator);
+
+      result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        mutationEngine: runtime.engine,
+        configurationId: runtime.configurationId,
+      });
+      const registration = collectNodes(result.workspace.payload.root, (node) =>
+        node.kind === 'xmlElement' && node.label === 'Форма: Main' && node.status === 'rightOnly'
+      )[0];
+      assert.ok(registration?.mergeable, registration?.mergeState?.reason);
+
+      const changedFormXml = formXmlWithoutEvent().replace('<Attributes/>', '<!-- captured when selected --><Attributes/>');
+      await writeFile(formXmlPath, changedFormXml);
+      const selectedPreview = await result.workspace.createPreviewForNodeIds([registration!.id]);
+      assert.strictEqual(selectedPreview.ok, true, JSON.stringify(selectedPreview));
+      assert.ok(selectedPreview.preview.operationCount >= 3, 'the selected package should include the registration, descriptor and Form.xml writes');
+      result.workspace.approvePreview(selectedPreview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(selectedPreview.preview.previewId);
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+      assert.strictEqual(await fs.readFile(path.join(leftRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml'), 'utf8'), changedFormXml);
+    } finally {
+      result?.workspace.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('keeps form-reference owner descriptors hash-only during compare and unrelated routine preview', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'linked-designer-owner-reference-lazy-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const ownerPath = path.join(leftRoot, 'Catalogs', 'Products.xml');
+    const leftModulePath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
+    const rightModulePath = path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
+    const originalReadFileDescriptor = Object.getOwnPropertyDescriptor(fsPromisesRuntime, 'readFile')!;
+    const originalReadFile = fsPromisesRuntime.readFile;
+    const ownerPathKeys = new Set([path.resolve(ownerPath).toLowerCase()]);
+    let ownerReads = 0;
+    let result: Awaited<ReturnType<typeof buildConfigurationCompare>> | undefined;
+    let runtime: Awaited<ReturnType<typeof createMergeMutationTestRuntime>> | undefined;
+
+    try {
+      await writeCatalogConfigurationPair(leftRoot, rightRoot);
+      await writeFile(ownerPath, catalogDescriptor('Products', false));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), catalogDescriptor('Products', false));
+      await writeFile(leftModulePath, 'Procedure Existing()\nEndProcedure');
+      await writeFile(rightModulePath, 'Procedure Existing()\nEndProcedure\nProcedure Added()\nEndProcedure');
+      ownerPathKeys.add((await fs.realpath(ownerPath)).toLowerCase());
+      runtime = await createMergeMutationTestRuntime(leftRoot);
+      mutationCoordinators.push(runtime.coordinator);
+
+      const instrumentedReadFile = ((...args: Parameters<typeof originalReadFile>) => {
+        if (typeof args[0] === 'string' && ownerPathKeys.has(path.resolve(args[0]).toLowerCase())) {ownerReads += 1;}
+        return Reflect.apply(originalReadFile, fsPromisesRuntime, args);
+      }) as typeof originalReadFile;
+      Object.defineProperty(fsPromisesRuntime, 'readFile', { ...originalReadFileDescriptor, value: instrumentedReadFile });
+      result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        mutationEngine: runtime.engine,
+        configurationId: runtime.configurationId,
+      });
+
+      assert.strictEqual(ownerReads, 1, 'compare should use the hydrated descriptor hash instead of rereading owner XML text');
+      const readsAfterCompare = ownerReads;
+      const routineId = 'bsl:routine:Catalog.Products.Object:added';
+      assert.ok(result.workspace.listMergeableNodeIds().includes(routineId));
+      const preview = await result.workspace.createPreviewForNodeIds([routineId]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      assert.strictEqual(ownerReads, readsAfterCompare, 'unrelated BSL preview should not load a form-reference owner descriptor');
+    } finally {
+      Object.defineProperty(fsPromisesRuntime, 'readFile', originalReadFileDescriptor);
+      result?.workspace.dispose();
+      if (!result && runtime) {await runtime.coordinator.dispose();}
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('does not retain parsed owner XML parents through compact reference values', function () {
+    this.timeout(30000);
+    const modulePath = path.resolve(process.cwd(), 'out', 'src', 'compareMerge', 'linkedDesignerValidation.js');
+    const childScript = `
+      const { parseLinkedFormReferenceOwnerState } = require(process.argv[1]);
+      const states = [];
+      global.gc();
+      const before = process.memoryUsage().heapUsed;
+      for (let index = 0; index < 1000; index += 1) {
+        const name = 'Object' + index;
+        const reference = { metadataType: 'Catalog', qualifiedName: 'Catalog.' + name,
+          targetRelativePath: 'Catalogs/' + name + '.xml', targetHash: 'a'.repeat(64) };
+        const xml = '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog><Properties><Name>' + name
+          + '</Name><DefaultObjectForm>Form1</DefaultObjectForm></Properties><Description>' + 'x'.repeat(64 * 1024)
+          + '</Description></Catalog></MetaDataObject>';
+        states.push(parseLinkedFormReferenceOwnerState(reference, xml));
+      }
+      global.gc();
+      process.stdout.write(JSON.stringify({ count: states.filter(Boolean).length,
+        retainedBytes: process.memoryUsage().heapUsed - before }));
+    `;
+    const output = execFileSync(process.execPath, [
+      '--expose-gc', '--max-old-space-size=192', '-e', childScript, modulePath,
+    ], { encoding: 'utf8', timeout: 25000 });
+    const result = JSON.parse(output) as { count: number; retainedBytes: number };
+    assert.strictEqual(result.count, 1000);
+    assert.ok(result.retainedBytes < 8 * 1024 * 1024, `retained ${Math.round(result.retainedBytes / 1024 / 1024)} MiB of owner XML`);
+  });
+
+  test('rejects a Form delete preview when a new potential owner descriptor appeared after compare', async () => {
+    const scenario = await createFullFormDeletionCase();
+    try {
+      await writeFile(path.join(scenario.leftRoot, 'Catalogs', 'Orders.xml'), catalogDescriptor('Orders', false));
+      const preview = await scenario.result.workspace.createPreviewForNodeIds([scenario.registration.id]);
+      assert.strictEqual(preview.ok, false, JSON.stringify(preview));
+      assert.match(JSON.stringify(preview), /набор metadata owner descriptors изменился после сравнения|descriptor.*после сравнения|состав.*descriptor|владельц.*измен/iu);
+    } finally {
+      scenario.result.workspace.dispose();
+      await fs.rm(scenario.tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('rechecks folder-style metadata owner descriptors without reading XML during the path-set scan', async () => {
+    const scenario = await createFullFormDeletionCase(false, 'DefaultObjectForm', true);
+    try {
+      const preview = await scenario.result.workspace.createPreviewForNodeIds([scenario.registration.id]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+    } finally {
+      scenario.result.workspace.dispose();
+      await fs.rm(scenario.tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('protects negative form-reference owners and Configuration.xml after a Form delete is approved', async () => {
+    const scenario = await createFormDeletionWithConstantOwnerCase();
+    try {
+      const preview = await scenario.result.workspace.createPreviewForNodeIds([scenario.registration.id]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      assert.strictEqual(scenario.result.workspace.approvePreview(preview.preview.previewId).ok, true);
+
+      await writeFile(path.join(scenario.leftRoot, 'Constants', 'Reader.xml'), constantDescriptor('Reader', 'Catalog.Products.Form.Main'));
+      const execution = await scenario.result.workspace.executeApprovedPreview(preview.preview.previewId, { destructiveConfirmed: true });
+      assert.strictEqual(execution.ok, false, JSON.stringify(execution));
+      assert.match(JSON.stringify(execution), /changed|изменил|PLAN_CONFLICT/iu);
+      assert.ok(await pathExists(path.join(scenario.leftRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml')));
+    } finally {
+      scenario.result.workspace.dispose();
+      await fs.rm(scenario.tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('protects target Configuration.xml after a nested Form delete is approved', async () => {
+    const scenario = await createFullFormDeletionCase();
+    try {
+      const preview = await scenario.result.workspace.createPreviewForNodeIds([scenario.registration.id]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      assert.strictEqual(scenario.result.workspace.approvePreview(preview.preview.previewId).ok, true);
+
+      await writeFile(path.join(scenario.leftRoot, 'Configuration.xml'), configurationWithCatalogAndConstant());
+      const execution = await scenario.result.workspace.executeApprovedPreview(preview.preview.previewId, { destructiveConfirmed: true });
+      assert.strictEqual(execution.ok, false, JSON.stringify(execution));
+      assert.match(JSON.stringify(execution), /witness changed after preview|changed|изменил|PLAN_CONFLICT/iu);
+      assert.ok(await pathExists(path.join(scenario.leftRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml')));
+    } finally {
+      scenario.result.workspace.dispose();
+      await fs.rm(scenario.tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('rejects selected package preview when its source path set changes after compare', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'linked-designer-pathset-change-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const unexpectedPath = path.join(rightRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Unexpected.xml');
+    let result: Awaited<ReturnType<typeof buildConfigurationCompare>> | undefined;
+    try {
+      await writeCatalogConfigurationPair(leftRoot, rightRoot);
+      await writeFile(path.join(leftRoot, 'Catalogs', 'Products.xml'), catalogDescriptor('Products', false));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), catalogDescriptor('Products', true));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products', 'Forms', 'Main.xml'), formDescriptor('Main'));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml'), formXmlWithoutEvent());
+
+      result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+      });
+      const registration = collectNodes(result.workspace.payload.root, (node) =>
+        node.kind === 'xmlElement' && node.label === 'Форма: Main' && node.status === 'rightOnly'
+      )[0];
+      assert.ok(registration?.mergeable, registration?.mergeState?.reason);
+
+      await writeFile(unexpectedPath, '<Unexpected/>');
+      const preview = await result.workspace.createPreviewForNodeIds([registration!.id]);
+      assert.strictEqual(preview.ok, false, JSON.stringify(preview));
+      assert.match(JSON.stringify(preview), /состав файлов или каталогов Designer-пакета изменился после сравнения/iu);
     } finally {
       result?.workspace.dispose();
       await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
@@ -874,7 +1171,11 @@ suite('Linked Designer packages', () => {
   });
 });
 
-async function createFullFormDeletionCase(withDefaultFormReference = false, referenceProperty = 'DefaultObjectForm'): Promise<{
+async function createFullFormDeletionCase(
+  withDefaultFormReference = false,
+  referenceProperty = 'DefaultObjectForm',
+  hierarchicalOwnerDescriptor = false,
+): Promise<{
   tempRoot: string;
   leftRoot: string;
   result: Awaited<ReturnType<typeof buildConfigurationCompare>>;
@@ -883,7 +1184,9 @@ async function createFullFormDeletionCase(withDefaultFormReference = false, refe
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'linked-designer-delete-'));
   const leftRoot = path.join(tempRoot, 'left');
   const rightRoot = path.join(tempRoot, 'right');
-  const ownerRelative = path.join('Catalogs', 'Products.xml');
+  const ownerRelative = hierarchicalOwnerDescriptor
+    ? path.join('Catalogs', 'Products', 'Products.xml')
+    : path.join('Catalogs', 'Products.xml');
   const formDescriptorRelative = path.join('Catalogs', 'Products', 'Forms', 'Main.xml');
   const formXmlRelative = path.join('Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml');
   await writeCatalogConfigurationPair(leftRoot, rightRoot);
@@ -907,6 +1210,42 @@ async function createFullFormDeletionCase(withDefaultFormReference = false, refe
   )[0];
   assert.ok(registration, 'the existing Form registration should be selectable for a full-strategy delete; candidates=' + JSON.stringify(collectNodes(result.workspace.payload.root, (node) => node.kind === 'xmlElement').map((node) => ({ id: node.id, label: node.label, status: node.status, mergeable: node.mergeable, left: node.leftValue, right: node.rightValue, ref: node.payloadRef }))));
   assert.strictEqual(registration!.mergeable, true, registration!.mergeState?.reason);
+  return { tempRoot, leftRoot, result, registration: registration! };
+}
+
+async function createFormDeletionWithConstantOwnerCase(): Promise<{
+  tempRoot: string;
+  leftRoot: string;
+  result: Awaited<ReturnType<typeof buildConfigurationCompare>>;
+  registration: CompareTreeNode;
+}> {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'linked-designer-negative-owner-'));
+  const leftRoot = path.join(tempRoot, 'left');
+  const rightRoot = path.join(tempRoot, 'right');
+  const configuration = configurationWithCatalogAndConstant();
+  await writeFile(path.join(leftRoot, 'Configuration.xml'), configuration);
+  await writeFile(path.join(rightRoot, 'Configuration.xml'), configuration);
+  await writeFile(path.join(leftRoot, 'Catalogs', 'Products.xml'), catalogDescriptor('Products', true));
+  await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), catalogDescriptor('Products', false));
+  await writeFile(path.join(leftRoot, 'Constants', 'Reader.xml'), constantDescriptor('Reader', ''));
+  await writeFile(path.join(rightRoot, 'Constants', 'Reader.xml'), constantDescriptor('Reader', ''));
+  await writeFile(path.join(leftRoot, 'Catalogs', 'Products', 'Forms', 'Main.xml'), formDescriptor('Main'));
+  await writeFile(path.join(leftRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml'), formXml('OnChange'));
+  const runtime = await createMergeMutationTestRuntime(leftRoot);
+  mutationCoordinators.push(runtime.coordinator);
+  const result = await buildConfigurationCompare({
+    leftRootPath: leftRoot,
+    rightRootPath: rightRoot,
+    backupRootPath: path.join(tempRoot, 'backups'),
+    mutationEngine: runtime.engine,
+    configurationId: runtime.configurationId,
+  });
+  const strategy = await result.workspace.setStrategy('full');
+  assert.strictEqual(strategy.ok, true, JSON.stringify(strategy));
+  const registration = collectNodes(result.workspace.payload.root, (node) =>
+    node.kind === 'xmlElement' && node.label === 'Форма: Main' && node.status === 'leftOnly'
+  )[0];
+  assert.ok(registration?.mergeable, registration?.mergeState?.reason);
   return { tempRoot, leftRoot, result, registration: registration! };
 }
 
@@ -1005,6 +1344,10 @@ async function writeCatalogConfigurationPair(leftRoot: string, rightRoot: string
 
 function configurationWithCatalog(): string {
   return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Configuration uuid="31234567-89ab-cdef-0123-456789abcdef"><Properties><Name>Config</Name></Properties><ChildObjects><Catalog>Products</Catalog></ChildObjects></Configuration></MetaDataObject>`;
+}
+
+function configurationWithCatalogAndConstant(): string {
+  return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Configuration uuid="31234567-89ab-cdef-0123-456789abcdef"><Properties><Name>Config</Name></Properties><ChildObjects><Catalog>Products</Catalog><Constant>Reader</Constant></ChildObjects></Configuration></MetaDataObject>`;
 }
 
 function configurationWithCatalogAndCommonForm(includeCommonForm: boolean): string {

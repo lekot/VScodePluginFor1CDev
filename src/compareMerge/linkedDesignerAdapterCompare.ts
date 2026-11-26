@@ -16,7 +16,7 @@ import { stripHash } from './linkedDesignerUtils';
 import type { CompareSession } from './domain/compareSession';
 import { throwIfCompareCancelled, type CompareCancellationToken } from './compareCancellation';
 import type { CompareJoinStrategy } from './configurationCompareWorkspace';
-import type { LinkedDefaultFormDependency, LinkedDesignerPackageRecipe, LinkedEventDependency, LinkedFormModuleSnapshot } from './linkedDesignerTypes';
+import type { LinkedDefaultFormDependency, LinkedDesignerPackageReference, LinkedEventDependency, LinkedFormModuleSnapshot } from './linkedDesignerTypes';
 import { buildLinkedDesignerAdapterContext, collectDefaultFormDependencies, collectEventRoutineDependencies, findFormModuleSnapshot } from './linkedDesignerContext';
 
 const MDCLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
@@ -29,7 +29,7 @@ export async function compareLinkedDesignerXmlArtifact(
     readonly session: CompareSession;
     readonly cancellation?: CompareCancellationToken;
     readonly readTextFile?: (filePath: string) => Promise<string>;
-    readonly linkedDesignerPackages: readonly LinkedDesignerPackageRecipe[];
+    readonly linkedDesignerPackages: readonly LinkedDesignerPackageReference[];
     readonly linkedModules: readonly LinkedFormModuleSnapshot[];
     readonly eventRoutineDependencies: Map<string, LinkedEventDependency>;
     readonly defaultFormDependencies: Map<string, LinkedDefaultFormDependency>;

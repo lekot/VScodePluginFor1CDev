@@ -19,11 +19,15 @@ export interface CompareDisplayNode {
   leftValue?: string;
   rightValue?: string;
   destructive?: boolean;
+  replacement?: boolean;
   mergeState?: CompareTreeNode['mergeState'];
   conflict?: CompareTreeNode['conflict'];
   ownerAliases?: string[];
   metadataType?: string;
   qualifiedNames?: string[];
+  detailChildren?: CompareDisplayNode[];
+  conflictCount?: number;
+  bslRoutineAnalysis?: 'complete' | 'partial';
   canonicalNodeIds: string[];
   candidateNodeIds: string[];
   identities: CompareDisplayIdentity[];
@@ -116,6 +120,8 @@ const BSL_MODULE_LABELS: Readonly<Record<string, string>> = {
   Form: 'Модуль формы',
   Manager: 'Модуль менеджера',
   Object: 'Модуль объекта',
+  RecordSet: 'Модуль набора записей',
+  ValueManager: 'Модуль менеджера значений',
 };
 
 /**
@@ -204,7 +210,7 @@ export function buildCompareDisplayTree(root: CompareTreeNode): CompareDisplayTr
     if (node.kind === 'bslGroup') {
       if (bslFallbacks.length > 0) {
         rootChildren.push(
-          displayGroup('display:bsl', 'Процедуры и функции', 'displayGroup', bslFallbacks)
+          displayGroup('display:bsl', 'Модули BSL', 'displayGroup', bslFallbacks)
         );
       }
     } else if (node.kind === 'adapterGroup') {
@@ -424,6 +430,7 @@ function displayMetadataOwner(
     destructive: candidateNodeIds.some((id) => nodes.some((node) => node.id === id && node.destructive))
       ? true
       : undefined,
+    replacement: nodes.some((node) => node.replacement === true) ? true : undefined,
     conflict: conflictNode?.conflict,
     canonicalNodeIds: nodes.map((node) => node.id),
     candidateNodeIds,
@@ -528,6 +535,9 @@ function metadataParentQualifiedName(owner: CompareDisplayNode): string | undefi
 }
 
 function displayCanonicalNode(node: CompareTreeNode): CompareDisplayNode {
+  if (node.kind === 'bslModule') {
+    return displayBslModuleNode(node);
+  }
   return {
     key: node.id,
     label: canonicalDisplayLabel(node),
@@ -536,6 +546,7 @@ function displayCanonicalNode(node: CompareTreeNode): CompareDisplayNode {
     leftValue: node.leftValue,
     rightValue: node.rightValue,
     destructive: node.destructive,
+    replacement: node.replacement,
     mergeState: node.mergeState,
     conflict: node.conflict,
     canonicalNodeIds: [node.id],
@@ -546,6 +557,88 @@ function displayCanonicalNode(node: CompareTreeNode): CompareDisplayNode {
     qualifiedNames: node.presentation?.qualifiedName ? [node.presentation.qualifiedName] : undefined,
     children: node.children.map((child) => displayCanonicalNode(child)),
   };
+}
+
+function displayBslModuleNode(node: CompareTreeNode): CompareDisplayNode {
+  const descendants = collectSubtreeNodes(node);
+  const routines = descendants.filter((child) => child.kind === 'bslRoutine');
+  const details = descendants.filter((child) =>
+    child.kind === 'diagnostic' ||
+    child.kind === 'bslModuleContent' ||
+    (child.kind === 'bslRoutine' && child.status !== 'equal') ||
+    child.conflict?.blocking === true ||
+    child.mergeState?.state === 'blocked' ||
+    child.mergeState?.state === 'identityConflict' ||
+    child.mergeState?.state === 'readOnly'
+  ).map(displayCanonicalNode);
+  const candidateNodeIds = [...new Set(descendants
+    .filter((child) => child.mergeable === true)
+    .map((child) => child.id))];
+  const conflictIds = new Set(descendants
+    .filter((child) => child.conflict?.blocking || child.mergeState?.state === 'identityConflict')
+    .map((child) => child.id));
+  const analysis = node.presentation?.bslRoutineAnalysis ?? 'complete';
+
+  return {
+    key: node.id,
+    label: canonicalDisplayLabel(node),
+    kind: node.kind,
+    status: node.status,
+    leftValue: moduleSideSummary(node, routines, 'left', analysis),
+    rightValue: moduleSideSummary(node, routines, 'right', analysis),
+    destructive: candidateNodeIds.some((id) => descendants.some((child) => child.id === id && child.destructive))
+      ? true
+      : undefined,
+    mergeState: node.mergeState,
+    conflict: node.conflict,
+    canonicalNodeIds: [node.id],
+    candidateNodeIds,
+    identities: uniqueIdentities(node.presentation?.identities ?? []),
+    ownerAliases: node.presentation?.ownerAliases ? [...node.presentation.ownerAliases] : undefined,
+    metadataType: node.presentation?.metadataType,
+    qualifiedNames: node.presentation?.qualifiedName ? [node.presentation.qualifiedName] : undefined,
+    detailChildren: details,
+    conflictCount: conflictIds.size,
+    bslRoutineAnalysis: analysis,
+    children: [],
+  };
+}
+
+function moduleSideSummary(
+  module: CompareTreeNode,
+  routines: readonly CompareTreeNode[],
+  side: 'left' | 'right',
+  analysis: 'complete' | 'partial'
+): string {
+  const identities = module.presentation?.identities ?? [];
+  const present = identities.some((identity) => identity.side === side) ||
+    (identities.length === 0 && (side === 'left'
+      ? module.status !== 'rightOnly'
+      : module.status !== 'leftOnly'));
+  if (!present) {
+    return 'Нет';
+  }
+  if (analysis === 'partial') {
+    return 'Есть · остальные процедуры не анализировались';
+  }
+
+  const count = routines.filter((routine) => side === 'left'
+    ? routine.status !== 'rightOnly'
+    : routine.status !== 'leftOnly').length;
+  return `Есть · ${count} процедур/функций`;
+}
+
+function collectSubtreeNodes(root: CompareTreeNode): CompareTreeNode[] {
+  const result: CompareTreeNode[] = [];
+  const stack = [...root.children];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    result.push(node);
+    for (let index = node.children.length - 1; index >= 0; index -= 1) {
+      stack.push(node.children[index]);
+    }
+  }
+  return result;
 }
 
 function canonicalDisplayLabel(node: CompareTreeNode): string {

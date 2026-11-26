@@ -10,6 +10,7 @@ import {
   type BslModuleFileInput,
   type BslModuleIndexEntry,
   type BslModuleIndexResult,
+  type BslModuleLocationResolver,
 } from './bslModuleIndexer';
 import { hashText } from './bslRoutineLogicalScanner';
 import type { CompareSide } from '../domain/compareContracts';
@@ -31,12 +32,15 @@ export interface BslInventoryResolution {
 export interface BslInventoryCollection {
   readonly sources: Map<string, string>;
   readonly contentHash: string;
+  /** Raw SHA-256 values are present only when a byte reader supplied the original file bytes. */
+  readonly rawFileHashes?: ReadonlyMap<string, string>;
   readonly index: BslModuleIndexResult;
   readonly sourceCount: number;
 }
 
 interface ProcessedBslInventoryFile {
   readonly contentHash: string;
+  readonly rawFileHash?: string;
   readonly source?: string;
   readonly indexed?: BslModuleIndexEntry;
   readonly diagnostic?: BslModuleDiagnostic;
@@ -48,6 +52,7 @@ export async function resolveBslInventoryIdentities(input: {
   configRoot: string;
   filePaths: readonly string[];
   cancellation?: CompareCancellationToken;
+  locationResolver?: BslModuleLocationResolver;
 }): Promise<BslInventoryResolution> {
   throwIfCompareCancelled(input.cancellation);
   const filePaths = [...input.filePaths].sort((left, right) => left.localeCompare(right));
@@ -64,7 +69,7 @@ export async function resolveBslInventoryIdentities(input: {
       filePath,
       configRoots: [input.configRoot],
     };
-    const resolved = resolveSupportedBslModuleIdentity(fileInput);
+    const resolved = resolveSupportedBslModuleIdentity(fileInput, input.locationResolver);
     throwIfCompareCancelled(input.cancellation);
     files.push(resolved.identity
       ? { filePath, identity: resolved.identity }
@@ -88,12 +93,22 @@ export async function collectBslInventorySources(input: {
   retainedPaths: ReadonlySet<string>;
   /** When provided, only these supported modules receive a full routine parse. */
   analysisPaths?: ReadonlySet<string>;
+  /** When provided, only these paths are read and included in the composite content hash. */
+  readPaths?: ReadonlySet<string>;
   concurrency: number;
   cancellation?: CompareCancellationToken;
   readTextFile?: (filePath: string) => Promise<string>;
+  readFileBytes?: (filePath: string) => Promise<Buffer>;
 }): Promise<BslInventoryCollection> {
   throwIfCompareCancelled(input.cancellation);
-  const reader = input.readTextFile ?? ((filePath: string) => fs.readFile(filePath, 'utf-8'));
+  const allPaths = new Set(input.resolution.files.map((file) => file.filePath));
+  const readPaths = input.readPaths ?? allPaths;
+  assertPathSetSubset('readPaths', readPaths, allPaths);
+  assertPathSetSubset('analysisPaths', input.analysisPaths, readPaths);
+  if (input.readPaths !== undefined) {
+    assertPathSetSubset('retainedPaths', input.retainedPaths, readPaths);
+  }
+  const textReader = input.readTextFile ?? defaultTextReader;
   const fileByPath = new Map(input.resolution.files.map((file) => [file.filePath, file]));
   const lastOccurrenceByPath = new Map<string, number>();
   input.resolution.filePaths.forEach((filePath, index) => lastOccurrenceByPath.set(filePath, index));
@@ -104,12 +119,23 @@ export async function collectBslInventorySources(input: {
 
   for (let offset = 0; offset < input.resolution.filePaths.length; offset += BSL_INVENTORY_BATCH_SIZE) {
     throwIfCompareCancelled(input.cancellation);
-    const batchPaths = input.resolution.filePaths.slice(offset, offset + BSL_INVENTORY_BATCH_SIZE);
-    const batchSources = await readBatch(batchPaths, readConcurrency, reader, input.cancellation);
+    const batchRows = input.resolution.filePaths
+      .slice(offset, offset + BSL_INVENTORY_BATCH_SIZE)
+      .map((filePath, index) => ({ filePath, rowIndex: offset + index }))
+      .filter((row) => readPaths.has(row.filePath));
+    if (batchRows.length === 0) {continue;}
+    const batchPaths = batchRows.map((row) => row.filePath);
+    const batchFiles = await readBatch({
+      filePaths: batchPaths,
+      concurrency: readConcurrency,
+      readTextFile: textReader,
+      readFileBytes: input.readFileBytes,
+      cancellation: input.cancellation,
+    });
     for (let index = 0; index < batchPaths.length; index += 1) {
       const filePath = batchPaths[index]!;
-      const source = batchSources[index]!;
-      if (lastOccurrenceByPath.get(filePath) !== offset + index) {
+      const { source, rawFileHash } = batchFiles[index]!;
+      if (lastOccurrenceByPath.get(filePath) !== batchRows[index]!.rowIndex) {
         continue;
       }
       throwIfCompareCancelled(input.cancellation);
@@ -121,6 +147,7 @@ export async function collectBslInventorySources(input: {
         : undefined;
       processedByPath.set(filePath, {
         contentHash: hashText(source),
+        ...(rawFileHash ? { rawFileHash } : {}),
         ...(input.retainedPaths.has(filePath) ? { source } : {}),
         ...(indexed ? { indexed } : {}),
         ...(!file?.identity && file?.diagnostic ? { diagnostic: file.diagnostic } : {}),
@@ -139,26 +166,33 @@ export async function collectBslInventorySources(input: {
   }
 
   const sources = new Map<string, string>();
+  const rawFileHashes = input.readFileBytes ? new Map<string, string>() : undefined;
   const modules: BslModuleIndexEntry[] = [];
   const diagnostics: BslModuleDiagnostic[] = [];
   for (const file of input.resolution.files) {
     const processed = processedByPath.get(file.filePath);
-    if (!processed) {
-      throw new Error(`BSL inventory source was not processed: ${file.filePath}`);
-    }
-    if (processed.source !== undefined) {
+    if (processed?.source !== undefined) {
       sources.set(file.filePath, processed.source);
     }
-    if (processed.indexed) {
+    if (processed?.rawFileHash !== undefined) {
+      rawFileHashes?.set(file.filePath, processed.rawFileHash);
+    }
+    if (processed?.indexed) {
       modules.push(processed.indexed);
       diagnostics.push(...processed.indexed.diagnostics);
-    } else if (processed.diagnostic) {
+    } else if (processed?.diagnostic) {
       diagnostics.push(processed.diagnostic);
+    } else if (!processed && file.identity) {
+      modules.push({ identity: file.identity, routines: [], diagnostics: [], analysisState: 'deferred' });
+    } else if (!processed && file.diagnostic) {
+      diagnostics.push(file.diagnostic);
     }
   }
 
   const hash = createHash('sha256');
-  const hashEntries = [...input.resolution.files].sort((left, right) => left.filePath.localeCompare(right.filePath));
+  const hashEntries = [...input.resolution.files]
+    .filter((file) => readPaths.has(file.filePath))
+    .sort((left, right) => left.filePath.localeCompare(right.filePath));
   for (const file of hashEntries) {
     const processed = processedByPath.get(file.filePath)!;
     hash.update(path.normalize(file.filePath).replace(/\\/g, '/'));
@@ -170,19 +204,39 @@ export async function collectBslInventorySources(input: {
   return {
     sources,
     contentHash: hash.digest('hex'),
+    ...(rawFileHashes ? { rawFileHashes } : {}),
     index: { modules, diagnostics },
-    sourceCount: input.resolution.sourceCount,
+    sourceCount: input.resolution.filePaths.filter((filePath) => readPaths.has(filePath)).length,
   };
 }
 
-async function readBatch(
-  filePaths: readonly string[],
-  concurrency: number,
-  reader: (filePath: string) => Promise<string>,
-  cancellation: CompareCancellationToken | undefined
-): Promise<string[]> {
-  const limit = Math.max(1, Math.min(concurrency, filePaths.length || 1));
-  const sources = new Array<string>(filePaths.length);
+function assertPathSetSubset(
+  name: string,
+  candidate: ReadonlySet<string> | undefined,
+  allowed: ReadonlySet<string>,
+): void {
+  if (!candidate) {return;}
+  for (const filePath of candidate) {
+    if (!allowed.has(filePath)) {
+      throw new Error(`${name} contains a path outside its allowed scope: ${filePath}`);
+    }
+  }
+}
+
+interface ReadBslFileResult {
+  readonly source: string;
+  readonly rawFileHash?: string;
+}
+
+async function readBatch(input: {
+  readonly filePaths: readonly string[];
+  readonly concurrency: number;
+  readonly readTextFile: (filePath: string) => Promise<string>;
+  readonly readFileBytes?: (filePath: string) => Promise<Buffer>;
+  readonly cancellation?: CompareCancellationToken;
+}): Promise<ReadBslFileResult[]> {
+  const limit = Math.max(1, Math.min(input.concurrency, input.filePaths.length || 1));
+  const files = new Array<ReadBslFileResult>(input.filePaths.length);
   let nextIndex = 0;
   let failed = false;
   let failure: unknown;
@@ -191,8 +245,8 @@ async function readBatch(
     while (!failed) {
       let index: number;
       try {
-        throwIfCompareCancelled(cancellation);
-        if (nextIndex >= filePaths.length) {
+        throwIfCompareCancelled(input.cancellation);
+        if (nextIndex >= input.filePaths.length) {
           return;
         }
         index = nextIndex;
@@ -204,8 +258,28 @@ async function readBatch(
       }
 
       try {
-        sources[index] = await reader(filePaths[index]!);
-        throwIfCompareCancelled(cancellation);
+        const filePath = input.filePaths[index]!;
+        if (!input.readFileBytes) {
+          files[index] = { source: await input.readTextFile(filePath) };
+        } else if (input.readTextFile !== defaultTextReader) {
+          const [sourceResult, bytesResult] = await Promise.allSettled([
+            input.readTextFile(filePath),
+            input.readFileBytes(filePath),
+          ]);
+          if (sourceResult.status === 'rejected') {throw sourceResult.reason;}
+          if (bytesResult.status === 'rejected') {throw bytesResult.reason;}
+          files[index] = {
+            source: sourceResult.value,
+            rawFileHash: rawHash(bytesResult.value),
+          };
+        } else {
+          const bytes = await input.readFileBytes(filePath);
+          files[index] = {
+            source: bytes.toString('utf8'),
+            rawFileHash: rawHash(bytes),
+          };
+        }
+        throwIfCompareCancelled(input.cancellation);
       } catch (error) {
         failed = true;
         failure ??= error;
@@ -218,8 +292,14 @@ async function readBatch(
   if (failed) {
     throw failure;
   }
-  throwIfCompareCancelled(cancellation);
-  return sources;
+  throwIfCompareCancelled(input.cancellation);
+  return files;
+}
+
+const defaultTextReader = (filePath: string): Promise<string> => fs.readFile(filePath, 'utf-8');
+
+function rawHash(bytes: Buffer): string {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 
 function yieldToEventLoop(): Promise<void> {

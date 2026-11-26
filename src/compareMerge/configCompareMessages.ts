@@ -15,6 +15,7 @@ export type ConfigCompareWebviewToHostMessage =
   | { type: 'retry' }
   | { type: 'close' }
   | { type: 'setStrategy'; strategy: CompareJoinStrategy }
+  | { type: 'openBslModuleDiff'; nodeId: string }
   | { type: 'selectionChanged'; nodeIds: string[] }
   | { type: 'createPreview'; nodeIds: string[] }
   | { type: 'approvePreview'; previewId: string }
@@ -31,8 +32,10 @@ export interface ConfigCompareWebviewPayloadDto {
   strategy: CompareJoinStrategy;
   executableNodeIds: string[];
   deletionNodeIds?: string[];
+  replacementNodeIds?: string[];
   unresolvedConflictCount?: number;
   comparisonInfo?: ConfigurationCompareInfo;
+  bslModuleDiffNodeIds?: string[];
 }
 
 export interface ConfigComparePreviewItemDto extends WorkspacePreviewItemDto {

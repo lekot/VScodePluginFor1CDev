@@ -33,6 +33,8 @@ export interface ExtensionTransferRow {
   /** Granular CF↔CFE semantic path; never authorizes a whole-row transfer. */
   readonly semanticAction?: ExtensionTransferSemanticAction;
   readonly mergeable: boolean;
+  /** Whole-copy intent for a changed paired CFE object; ordinary bulk selection excludes it. */
+  readonly replacement?: boolean;
   readonly reason?: string;
   readonly targetBase?: ExtensionMetadataIndex;
   readonly incomingBase?: ExtensionMetadataIndex;
@@ -185,6 +187,11 @@ export async function analyzeExtensionTransfers(input: {
       ? semanticChange ? 'changed' : 'equal'
       : 'rightOnly';
     const mergeable = Boolean(action && !reason && incoming.valid && incoming.supportedRootType && semanticChange);
+    const replacement = Boolean(
+      mergeable && semanticChange && targetMatch.object
+      && input.target.rootKind === 'cfe' && input.incoming.rootKind === 'cfe'
+      && (action === 'full-copy' || action === 'adopted-cfe-copy')
+    );
     const row: ExtensionTransferRow = {
       id,
       qualifiedName: incoming.qualifiedName,
@@ -196,6 +203,7 @@ export async function analyzeExtensionTransfers(input: {
       action,
       ...(semanticAction ? { semanticAction } : {}),
       mergeable,
+      ...(replacement ? { replacement: true } : {}),
       reason,
       targetBase: input.targetBase,
       incomingBase: input.incomingBase,
@@ -762,7 +770,10 @@ function projectTransferRow(row: ExtensionTransferRow): CompareTreeNode {
     leftValue: row.target?.descriptorRelativePath,
     rightValue: row.incoming?.descriptorRelativePath,
     mergeable: row.mergeable,
-    ...(row.action === 'full-copy' || row.action === 'adopted-cfe-copy' ? { destructive: hasTargetOrphans(row) } : {}),
+    ...(row.replacement ? { replacement: true } : {}),
+    ...(row.action === 'full-copy' || row.action === 'adopted-cfe-copy'
+      ? { destructive: row.replacement === true || hasTargetOrphans(row) }
+      : {}),
     ...(reason ? { conflict: { kind: 'unsupported', message: reason, blocking: true } } : {}),
     mergeState: row.mergeable
       ? { state: 'ready', targetFilePath: row.target?.descriptorRelativePath ?? row.incoming?.descriptorRelativePath }

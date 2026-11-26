@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { performance } from 'perf_hooks';
@@ -6,10 +7,62 @@ import { performance } from 'perf_hooks';
 import {
   buildBslModuleIndex,
   indexBslModuleFile,
+  resolveSupportedBslModuleIdentity,
+  type BslModuleLocationResolver,
   type BslModuleFileInput,
 } from '../../../src/compareMerge/bsl/bslModuleIndexer';
+import { locateMetadataFileWithinRoot } from '../../../src/services/metadataFileLocator';
 
 suite('BslModuleIndexerCooperative', () => {
+  test('uses one supplied location resolver without filesystem fallback', () => {
+    const input = createInputs(1)[0]!;
+    let resolverCalls = 0;
+    const originalRealpath = fs.realpathSync.native;
+    let realpathCalls = 0;
+    Reflect.set(fs.realpathSync, 'native', new Proxy(originalRealpath, {
+      apply(target, thisArg, args) {
+        realpathCalls += 1;
+        return Reflect.apply(target, thisArg, args);
+      },
+    }));
+
+    try {
+      const resolver: BslModuleLocationResolver = (filePath, configRoots) => {
+        resolverCalls += 1;
+        assert.strictEqual(filePath, input.filePath);
+        assert.deepStrictEqual(configRoots, input.configRoots);
+        return locateMetadataFileWithinRoot(filePath, configRoots[0]!);
+      };
+      const result = resolveSupportedBslModuleIdentity(input, resolver);
+
+      assert.strictEqual(resolverCalls, 1);
+      assert.strictEqual(realpathCalls, 0);
+      assert.strictEqual(result.identity?.moduleId, 'CommonModule.Module0');
+    } finally {
+      Reflect.set(fs.realpathSync, 'native', originalRealpath);
+    }
+  });
+
+  test('keeps the filesystem-aware resolver as the default', () => {
+    const input = createInputs(1)[0]!;
+    const originalRealpath = fs.realpathSync.native;
+    let realpathCalls = 0;
+    Reflect.set(fs.realpathSync, 'native', new Proxy(originalRealpath, {
+      apply(target, thisArg, args) {
+        realpathCalls += 1;
+        return Reflect.apply(target, thisArg, args);
+      },
+    }));
+
+    try {
+      const result = resolveSupportedBslModuleIdentity(input);
+      assert.strictEqual(result.identity?.moduleId, 'CommonModule.Module0');
+      assert.ok(realpathCalls > 0);
+    } finally {
+      Reflect.set(fs.realpathSync, 'native', originalRealpath);
+    }
+  });
+
   test('yields to cancellation after the module batch limit', async () => {
     const originalNow = performance.now;
     const cancellation = { isCancellationRequested: false };

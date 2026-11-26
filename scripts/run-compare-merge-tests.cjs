@@ -6,6 +6,9 @@ const { spawnSync } = require('node:child_process');
 
 const RUN_ROOT_PREFIX = '.tmp-compare-merge-run-';
 const MAX_LOG_CHARS = 12000;
+const COMPILE_TIMEOUT_MS = 180_000;
+const MOCHA_TIMEOUT_MS = 300_000;
+const MOCHA_CASE_TIMEOUT_MS = 10_000;
 const SUITES = [
   'configurationCompareService',
   'configCompareProvider',
@@ -24,7 +27,16 @@ const SUITES = [
   'formXmlAdapter',
   'extensionCompareValidation',
   'capturedFileWrite',
+  'bslRoutineLogicalMerge',
+  'extensionCompare',
+  'metadataIndexer',
+  'configurationInventory',
+  'linkedDesignerPackageBinding',
 ];
+const ADDITIONAL_SUITE_FILES = [
+  path.join('test', 'suite', 'metadataFileLocator.test.ts'),
+];
+const SUITE_COUNT = SUITES.length + ADDITIONAL_SUITE_FILES.length;
 
 function samePath(left, right) {
   const normalizedLeft = path.resolve(left);
@@ -102,8 +114,9 @@ function runTargetedCompareMergeTests(options = {}) {
   const cleanup = options.cleanupImpl || cleanupOwnedRunRoot;
   const output = options.outputSink || { stdout: process.stdout, stderr: process.stderr };
   const logParts = [
-    `Targeted Compare & Merge run (${SUITES.length} suites)`,
-    `Suites: ${SUITES.join(', ')}`,
+    'Targeted Compare & Merge run (' + SUITE_COUNT + ' suites)',
+    'Compare & Merge suites: ' + SUITES.join(', '),
+    'Additional suites: ' + ADDITIONAL_SUITE_FILES.join(', '),
   ];
 
   let runRoot;
@@ -114,33 +127,41 @@ function runTargetedCompareMergeTests(options = {}) {
     fs.mkdirSync(suiteReportsRoot, { recursive: true });
     runRoot = fs.mkdtempSync(path.join(suiteReportsRoot, RUN_ROOT_PREFIX));
     const buildRoot = path.join(runRoot, 'build');
+    const fixturesTempRoot = path.join(runRoot, 'fixtures-temp');
+    fs.mkdirSync(fixturesTempRoot, { recursive: true });
     const compilerConfigPath = path.join(runRoot, 'tsconfig.json');
     const compilerConfig = {
       extends: path.join(projectRoot, 'tsconfig.test.json'),
       compilerOptions: { outDir: buildRoot },
       include: [
         path.join(projectRoot, 'test', 'helpers', 'vscodeStubRegister.ts'),
+        ...ADDITIONAL_SUITE_FILES.map((suiteFile) => path.join(projectRoot, suiteFile)),
         ...SUITES.map((suite) => path.join(projectRoot, 'test', 'suite', 'compareMerge', `${suite}.test.ts`)),
       ],
     };
     fs.writeFileSync(compilerConfigPath, `${JSON.stringify(compilerConfig, null, 2)}\n`, 'utf8');
 
     const typescriptCli = path.join(projectRoot, 'node_modules', 'typescript', 'bin', 'tsc');
-    runStep('TypeScript compile', [typescriptCli, '-p', compilerConfigPath]);
+    runStep('TypeScript compile', [typescriptCli, '-p', compilerConfigPath], COMPILE_TIMEOUT_MS, fixturesTempRoot);
 
     const mochaCli = path.join(projectRoot, 'node_modules', 'mocha', 'bin', 'mocha.js');
     const helperPath = path.join(buildRoot, 'test', 'helpers', 'vscodeStubRegister.js');
-    const suitePaths = SUITES.map((suite) => path.join(buildRoot, 'test', 'suite', 'compareMerge', `${suite}.test.js`));
+    const suitePaths = [
+      ...SUITES.map((suite) => path.join(buildRoot, 'test', 'suite', 'compareMerge', `${suite}.test.js`)),
+      ...ADDITIONAL_SUITE_FILES.map((suiteFile) => path.join(buildRoot, suiteFile.slice(0, -3) + '.js')),
+    ];
     runStep('Targeted Mocha suites', [
       mochaCli,
       '--ui',
       'tdd',
       '--reporter',
       'dot',
+      '--timeout',
+      String(MOCHA_CASE_TIMEOUT_MS),
       '--require',
       helperPath,
       ...suitePaths,
-    ]);
+    ], MOCHA_TIMEOUT_MS, fixturesTempRoot);
   } catch (error) {
     primaryError = error;
     const message = error && error.stack ? error.stack : String(error);
@@ -168,12 +189,19 @@ function runTargetedCompareMergeTests(options = {}) {
   }
   return primaryError ? (Number.isInteger(primaryError.exitCode) ? primaryError.exitCode : 1) : 0;
 
-  function runStep(label, args) {
+  function runStep(label, args, timeoutMs, fixturesTempRoot) {
     logParts.push(`=== ${label} ===`);
     const result = runProcess(process.execPath, args, {
       cwd: projectRoot,
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,
+      timeout: timeoutMs,
+      env: {
+        ...process.env,
+        TEMP: fixturesTempRoot,
+        TMP: fixturesTempRoot,
+        TMPDIR: fixturesTempRoot,
+      },
       windowsHide: true,
     });
     const stdout = result && result.stdout ? String(result.stdout) : '';
@@ -187,7 +215,10 @@ function runTargetedCompareMergeTests(options = {}) {
       logParts.push(stderr);
     }
     if (result && result.error) {
-      const failure = new Error(`${label} could not start: ${result.error.message || String(result.error)}`);
+      const message = result.error.message || String(result.error);
+      const failure = result.error.code === 'ETIMEDOUT'
+        ? new Error(`${label} exceeded its ${timeoutMs} ms timeout.`)
+        : new Error(`${label} could not start: ${message}`);
       failure.cause = result.error;
       failure.exitCode = 1;
       throw failure;

@@ -1,7 +1,7 @@
 import { parseXmlDocument, textContent } from './xml/xmlDom';
 import type { AdapterCompareResult } from './adapters/mergeAdapter';
 import type { CompareTreeNode } from './compareTreeTypes';
-import type { LinkedDesignerKind, LinkedDesignerPackageRecipe } from './linkedDesignerTypes';
+import type { LinkedDesignerKind, LinkedDesignerPackageRecipe, LinkedDesignerPackageReference } from './linkedDesignerTypes';
 import { finalName, normalizePath } from './linkedDesignerUtils';
 
 type Registration = { readonly kind: LinkedDesignerKind; readonly name: string };
@@ -21,12 +21,17 @@ const REGISTRATION_KINDS: readonly LinkedDesignerKind[] = ['Form', 'Template', '
 /** Associates enabled registration or object-presence nodes with their host-owned package recipes. */
 export function bindLinkedDesignerPackageNodes(input: {
   readonly results: readonly AdapterCompareResult[];
-  readonly packages: readonly LinkedDesignerPackageRecipe[];
+  readonly packages: readonly (LinkedDesignerPackageRecipe | LinkedDesignerPackageReference)[];
   readonly blockedPresenceNodeIds?: ReadonlyMap<string, string>;
-}): { packagesByNodeId: ReadonlyMap<string, LinkedDesignerPackageRecipe>; results: readonly AdapterCompareResult[] } {
+}): {
+  packagesByNodeId: ReadonlyMap<string, LinkedDesignerPackageRecipe>;
+  packageReferencesByNodeId: ReadonlyMap<string, LinkedDesignerPackageReference>;
+  results: readonly AdapterCompareResult[];
+} {
   const packagesByNodeId = new Map<string, LinkedDesignerPackageRecipe>();
+  const packageReferencesByNodeId = new Map<string, LinkedDesignerPackageReference>();
   const duplicateRecipes = new Map<string, number>();
-  const packageKeys = new Map<LinkedDesignerPackageRecipe, string>();
+  const packageKeys = new Map<LinkedDesignerPackageRecipe | LinkedDesignerPackageReference, string>();
   const rootNodeIds = new Set<string>();
   const presenceNodeIds = new Set<string>();
 
@@ -101,7 +106,7 @@ export function bindLinkedDesignerPackageNodes(input: {
       const nodeId = fileObjectNodeId(recipe);
       const evidence = rootEvidence.get(nodeId);
       if (evidence?.hasNode) {
-        packagesByNodeId.set(nodeId, recipe);
+        bindRecipeByNodeId(recipe, nodeId, packagesByNodeId, packageReferencesByNodeId);
         recipe.registrationNodeId = nodeId;
       }
       continue;
@@ -117,7 +122,7 @@ export function bindLinkedDesignerPackageNodes(input: {
     if (!owner) {continue;}
     const candidate = findSuffixCandidate(registrationIndex, normalizePath(owner));
     if (candidate) {
-      packagesByNodeId.set(candidate.id, recipe);
+      bindRecipeByNodeId(recipe, candidate.id, packagesByNodeId, packageReferencesByNodeId);
       recipe.registrationNodeId = candidate.id;
     }
   }
@@ -174,10 +179,10 @@ export function bindLinkedDesignerPackageNodes(input: {
     }
   }
 
-  return { packagesByNodeId, results: nextResults };
+  return { packagesByNodeId, packageReferencesByNodeId, results: nextResults };
 }
 
-function ownerRegistrationKey(recipe: LinkedDesignerPackageRecipe): string {
+function ownerRegistrationKey(recipe: LinkedDesignerPackageRecipe | LinkedDesignerPackageReference): string {
   return `${normalizePath(recipe.ownerTargetRelativePath ?? '')}\0${recipe.kind}\0${normalizedRegistrationName(finalName(recipe.qualifiedName))}`;
 }
 
@@ -263,7 +268,20 @@ function findSuffixCandidate(root: RegistrationPathIndex, suffix: string): Compa
   return current.first;
 }
 
-function fileObjectNodeId(recipe: LinkedDesignerPackageRecipe): string {
+function fileObjectNodeId(recipe: LinkedDesignerPackageRecipe | LinkedDesignerPackageReference): string {
   const status = recipe.action === 'copy' ? 'rightOnly' : 'leftOnly';
   return `fileObject:${status}:${encodeURIComponent(recipe.qualifiedName)}`;
+}
+
+function bindRecipeByNodeId(
+  recipe: LinkedDesignerPackageRecipe | LinkedDesignerPackageReference,
+  nodeId: string,
+  packagesByNodeId: Map<string, LinkedDesignerPackageRecipe>,
+  packageReferencesByNodeId: Map<string, LinkedDesignerPackageReference>,
+): void {
+  if ('memberReferences' in recipe) {
+    packageReferencesByNodeId.set(nodeId, recipe);
+  } else {
+    packagesByNodeId.set(nodeId, recipe);
+  }
 }

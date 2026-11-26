@@ -12,7 +12,7 @@ import { buildMetadataReferenceContext } from './adapters/metadataReferenceConte
 import { matchMetadataIdentities } from './metadata/metadataMatcher';
 import { compareLinkedDesignerXmlArtifact } from './linkedDesignerAdapterCompare';
 import {
-  type LinkedDesignerPackageRecipe,
+  type LinkedDesignerPackageReference,
   type LinkedFormModuleSnapshot,
 } from './linkedDesignerMaterializer';
 import { findInventoryObjectByDescriptor, metadataIdentityToObjectUnit } from './metadataObjectLookup';
@@ -132,7 +132,7 @@ export async function buildAdapterCompareResults(input: {
   cancellation?: CompareCancellationToken;
   concurrency: number;
   readTextFile?: (filePath: string) => Promise<string>;
-  linkedDesignerPackages: readonly LinkedDesignerPackageRecipe[];
+  linkedDesignerPackages: readonly LinkedDesignerPackageReference[];
   linkedModules: readonly LinkedFormModuleSnapshot[];
   eventRoutineDependencies: Map<string, {
     moduleId: string;

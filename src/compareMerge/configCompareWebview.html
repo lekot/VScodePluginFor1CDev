@@ -90,6 +90,9 @@
     .disclosure:hover { background: var(--vscode-toolbar-hoverBackground); }
     .row-check { flex: 0 0 auto; margin: 0 2px 0 0; }
     .delete-selection-action { flex: 0 0 auto; min-height: 20px; padding: 1px 5px; font-size: .82em; white-space: nowrap; }
+    .replacement-action-section { display: grid; justify-items: start; gap: 5px; margin-top: 8px; }
+    .replacement-action-section p { margin: 0; }
+    .replacement-selection-action { max-width: 100%; }
     .row-label { min-width: 0; overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
     .row-status { flex: 0 0 auto; max-width: 150px; overflow: hidden; margin-left: auto; color: var(--vscode-descriptionForeground); font-size: .9em; text-overflow: ellipsis; white-space: nowrap; }
     .row-status.blocked { color: var(--vscode-errorForeground); }
@@ -99,6 +102,16 @@
     .details-grid { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr); gap: 3px 10px; }
     .details-key { color: var(--vscode-descriptionForeground); }
     .details-value { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .bsl-module-details { display: grid; gap: 6px; margin-top: 8px; }
+    .bsl-module-details p { margin: 0; }
+    .module-diff-action { justify-self: start; }
+    .bsl-detail-list { display: grid; gap: 5px; }
+    .bsl-detail-row { display: grid; grid-template-columns: auto minmax(90px, 1fr) auto; align-items: center; gap: 4px 8px; padding: 4px 0; border-top: 1px solid var(--vscode-panel-border); }
+    .bsl-detail-controls { display: flex; align-items: center; gap: 5px; }
+    .bsl-detail-label { min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
+    .bsl-detail-status { color: var(--vscode-descriptionForeground); white-space: nowrap; }
+    .bsl-detail-status.blocked, .bsl-detail-reason { color: var(--vscode-errorForeground); }
+    .bsl-detail-reason { grid-column: 2 / -1; overflow-wrap: anywhere; white-space: pre-wrap; }
     .preview, .result { display: grid; gap: 7px; background: var(--vscode-editorWidget-background); }
     .preview ul, .notice ul, .comparison-info ul { margin: 0; padding-left: 20px; }
     .destructive-warning { border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); color: var(--vscode-errorForeground); }
@@ -113,6 +126,9 @@
       .disclosure, .disclosure-spacer { flex-basis: 14px; width: 14px; }
       .row-status { flex: 0 1 60px; max-width: 60px; min-width: 0; }
       .delete-selection-action { max-width: 128px; overflow: hidden; padding-right: 3px; padding-left: 3px; font-size: .76em; text-overflow: ellipsis; }
+      .replacement-selection-action { max-width: 100%; }
+      .bsl-detail-row { grid-template-columns: auto minmax(70px, 1fr) auto; gap: 4px 5px; }
+      .module-diff-action { max-width: 100%; }
     }
   </style>
 </head>
@@ -137,6 +153,7 @@
       </span>
       <label class="checkbox-label"><input id="onlyDifferences" type="checkbox" checked> Только различия</label>
       <input id="searchInput" type="search" placeholder="Поиск по имени, пути или UUID" aria-label="Поиск по дереву">
+      <button id="selectAllChangesButton" class="secondary">Выбрать все изменения</button>
       <button id="selectVisibleButton" class="secondary">Выбрать видимые</button>
       <button id="clearSelectionButton" class="secondary">Снять выбор</button>
     </section>
@@ -198,6 +215,7 @@
       selectedIds: new Set(),
       executableIds: new Set(window.__configCompareData?.executableNodeIds ?? []),
       deletionIds: new Set(),
+      replacementIds: new Set(),
       busy: false,
       locked: Boolean(window.__configCompareData?.locked),
       preview: undefined,
@@ -230,6 +248,7 @@
       strategyButtons: [...document.querySelectorAll('[data-strategy]')],
       onlyDifferences: document.getElementById('onlyDifferences'),
       searchInput: document.getElementById('searchInput'),
+      selectAllChangesButton: document.getElementById('selectAllChangesButton'),
       selectVisibleButton: document.getElementById('selectVisibleButton'),
       clearSelectionButton: document.getElementById('clearSelectionButton'),
       previewButton: document.getElementById('previewButton'),
@@ -263,10 +282,20 @@
       renderTree();
       renderToolbar();
     });
+    elements.selectAllChangesButton.addEventListener('click', () => {
+      if (!isInteractive()) return;
+      const selectedExplicitActions = state.selectedNodeIds.filter((id) =>
+        state.deletionIds.has(id) || state.replacementIds.has(id));
+      const allExecutable = (state.payload?.executableNodeIds ?? [])
+        .filter((id) => !state.deletionIds.has(id) && !state.replacementIds.has(id));
+      const selected = unique([...selectedExplicitActions, ...allExecutable]);
+      if (selected.length) setSelection(selected);
+    });
     elements.selectVisibleButton.addEventListener('click', () => {
       if (!isInteractive()) return;
-      const selectedDeletes = state.selectedNodeIds.filter((id) => state.deletionIds.has(id));
-      const selected = unique([...selectedDeletes, ...state.visibleCandidateIds]);
+      const selectedExplicitActions = state.selectedNodeIds.filter((id) =>
+        state.deletionIds.has(id) || state.replacementIds.has(id));
+      const selected = unique([...selectedExplicitActions, ...state.visibleCandidateIds]);
       if (selected.length) setSelection(selected);
     });
     elements.clearSelectionButton.addEventListener('click', () => {
@@ -374,6 +403,7 @@
       state.payload = payload;
       state.executableIds = new Set(payload?.executableNodeIds ?? []);
       state.deletionIds = deletionIdsForPayload(payload);
+      state.replacementIds = replacementIdsForPayload(payload);
       state.nodesByKey.clear();
       if (!payload?.root) return;
       const stack = [payload.root];
@@ -406,6 +436,26 @@
         }
       }
       return deletionIds;
+    }
+
+    function replacementIdsForPayload(payload) {
+      if (Array.isArray(payload?.replacementNodeIds)) {
+        return new Set(payload.replacementNodeIds.filter((id) => state.executableIds.has(id)));
+      }
+      const replacementIds = new Set();
+      const stack = payload?.root ? [payload.root] : [];
+      while (stack.length > 0) {
+        const node = stack.pop();
+        if (node.replacement === true) {
+          for (const id of node.candidateNodeIds ?? node.canonicalNodeIds ?? []) {
+            if (state.executableIds.has(id)) replacementIds.add(id);
+          }
+        }
+        for (let index = (node.children ?? []).length - 1; index >= 0; index -= 1) {
+          stack.push(node.children[index]);
+        }
+      }
+      return replacementIds;
     }
 
     function unresolvedConflictCount(payload) {
@@ -451,7 +501,7 @@
 
     function mergeableCandidateIds(node) {
       return (node.candidateNodeIds ?? []).filter(
-        (id) => state.executableIds.has(id) && !state.deletionIds.has(id)
+        (id) => state.executableIds.has(id) && !state.deletionIds.has(id) && !state.replacementIds.has(id)
       );
     }
 
@@ -585,6 +635,9 @@
       });
       elements.onlyDifferences.disabled = !state.payload?.root;
       elements.searchInput.disabled = !state.payload?.root;
+      const allHealthyIds = (state.payload?.executableNodeIds ?? [])
+        .filter((id) => !state.deletionIds.has(id) && !state.replacementIds.has(id));
+      elements.selectAllChangesButton.disabled = !actionable || allHealthyIds.length === 0;
       elements.previewButton.disabled = !actionable || selected.length === 0;
       elements.approveButton.disabled = !actionable || !state.preview || Boolean(state.preview.approved);
       elements.executeButton.disabled = !actionable || !state.preview?.approved;
@@ -619,14 +672,15 @@
       };
       for (const child of root.children) visit(child, 0);
       state.visibleCandidateIds = unique(state.visibleRows.flatMap((entry) => entry.node.candidateNodeIds ?? []))
-        .filter((id) => state.executableIds.has(id) && !state.deletionIds.has(id));
+        .filter((id) => state.executableIds.has(id) && !state.deletionIds.has(id) && !state.replacementIds.has(id));
       renderWindow();
     }
 
     function markIncluded(node) {
       let childIncluded = false;
       for (const child of node.children ?? []) childIncluded = markIncluded(child) || childIncluded;
-      const matchesText = !state.search || searchableText(node).includes(state.search);
+      const detailMatches = (node.detailChildren ?? []).some((child) => searchableText(child).includes(state.search));
+      const matchesText = !state.search || searchableText(node).includes(state.search) || detailMatches;
         const matchesDifference = !state.onlyDifferences || node.status !== 'equal' || Boolean(node.conflict) || node.mergeState?.state === 'identityConflict';
       const include = (matchesText && matchesDifference) || childIncluded;
       state.included.set(node.key, include);
@@ -635,6 +689,11 @@
 
     function searchableText(node) {
       const values = [node.label, node.kind, node.status, node.leftValue, node.rightValue, node.mergeState?.reason, node.conflict?.message];
+      if (node.detailChildren?.length) {
+        for (const child of node.detailChildren) {
+          values.push(child.label, child.kind, child.status, child.mergeState?.reason, child.conflict?.message);
+        }
+      }
       for (const identity of node.identities ?? []) {
         values.push(identity.qualifiedName, identity.uuid, identity.sourceUuid, identity.filePath, identity.ownership);
       }
@@ -741,11 +800,12 @@
         });
         name.append(deleteAction);
       }
-      if (node.conflict || node.mergeState?.state === 'identityConflict') {
+      if (node.conflict || node.mergeState?.state === 'identityConflict' || (node.conflictCount ?? 0) > 0) {
         const mark = document.createElement('span');
         mark.className = 'conflict-mark';
-        mark.textContent = '⚠';
-        mark.setAttribute('aria-label', 'Конфликт');
+        const conflictCount = Math.max(0, Math.floor(node.conflictCount ?? 0));
+        mark.textContent = conflictCount > 0 ? `⚠ ${conflictCount}` : '⚠';
+        mark.setAttribute('aria-label', conflictCount > 0 ? `Конфликтов: ${conflictCount}` : 'Конфликт');
         name.append(mark);
       }
       const status = document.createElement('span');
@@ -764,6 +824,9 @@
         state.focusKey = node.key;
         state.detailKey = node.key;
         renderDetails();
+      });
+      row.addEventListener('dblclick', () => {
+        if (node.kind === 'bslModule') openBslModuleDiff(node);
       });
       return row;
     }
@@ -802,6 +865,7 @@
       state.selectedIds = new Set(selected);
       vscode.postMessage({ type: 'selectionChanged', nodeIds: state.selectedNodeIds });
       renderWindow();
+      renderDetails();
     }
 
     function toggleExpanded(key) {
@@ -858,7 +922,11 @@
       } else if (event.key === 'Enter') {
         event.preventDefault();
         state.detailKey = current.key;
-        renderDetails();
+        if (current.kind === 'bslModule' && canOpenBslModuleDiff(current) && isInteractive()) {
+          openBslModuleDiff(current);
+        } else {
+          renderDetails();
+        }
       }
     }
 
@@ -919,7 +987,141 @@
         if (identity.filePath) detailField(grid, `${prefix}: путь`, identity.filePath);
       }
       if (node.qualifiedNames?.length) detailField(grid, 'Квалифицированные имена', node.qualifiedNames.join('\n'));
-      elements.details.replaceChildren(title, grid);
+      const contents = [title, grid];
+      if (node.kind === 'bslModule') {
+        contents.push(renderBslModuleDetails(node));
+      }
+      if (node.replacement === true) {
+        contents.push(renderReplacementAction(node));
+      }
+      elements.details.replaceChildren(...contents);
+    }
+
+    function renderReplacementAction(node) {
+      const section = document.createElement('section');
+      section.className = 'replacement-action-section';
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary replacement-selection-action';
+      const ids = replacementCandidateIds(node);
+      const selectedCount = ids.filter((id) => state.selectedIds.has(id)).length;
+      const allSelected = ids.length > 0 && selectedCount === ids.length;
+      button.textContent = allSelected ? 'Отменить замену объекта целиком' : 'Заменить объект целиком';
+      button.disabled = !isInteractive() || ids.length === 0;
+      button.setAttribute('aria-pressed', String(allSelected));
+      button.addEventListener('click', () => updateSelection(ids, !allSelected));
+      section.append(button);
+      const explanation = document.createElement('p');
+      explanation.className = 'muted';
+      explanation.textContent = 'Полная замена объекта требует отдельного выбора и подтверждения destructive-операции.';
+      section.append(explanation);
+      return section;
+    }
+
+    function replacementCandidateIds(node) {
+      return (node.candidateNodeIds ?? node.canonicalNodeIds ?? []).filter(
+        (id) => state.executableIds.has(id) && state.replacementIds.has(id)
+      );
+    }
+
+    function renderBslModuleDetails(node) {
+      const section = document.createElement('section');
+      section.className = 'bsl-module-details';
+      const action = document.createElement('button');
+      action.type = 'button';
+      action.className = 'secondary module-diff-action';
+      action.textContent = 'Открыть сравнение файла · Источник → Приёмник';
+      action.disabled = !isInteractive() || !canOpenBslModuleDiff(node);
+      action.addEventListener('click', () => openBslModuleDiff(node));
+      section.append(action);
+
+      if (!canOpenBslModuleDiff(node)) {
+        const reason = document.createElement('p');
+        reason.className = 'muted module-diff-reason';
+        reason.textContent = node.bslRoutineAnalysis === 'partial'
+          ? 'Файловый diff недоступен для этого снимка. Обновите сравнение.'
+          : 'Файловый diff для модуля недоступен. Обновите сравнение.';
+        section.append(reason);
+      }
+
+      if (node.bslRoutineAnalysis === 'partial') {
+        const analysisNote = document.createElement('p');
+        analysisNote.className = 'muted';
+        analysisNote.textContent = 'В этом режиме сравниваются только связанные обработчики; остальное содержимое модуля не анализировалось.';
+        section.append(analysisNote);
+      }
+
+      const details = node.detailChildren ?? [];
+      if (details.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'muted';
+        empty.textContent = node.bslRoutineAnalysis === 'partial'
+          ? 'Связанные процедуры и диагностика не найдены.'
+          : 'Изменённых процедур и диагностики нет.';
+        section.append(empty);
+        return section;
+      }
+
+      const list = document.createElement('div');
+      list.className = 'bsl-detail-list';
+      for (const child of details) {
+        const row = document.createElement('div');
+        row.className = 'bsl-detail-row';
+        const controls = document.createElement('span');
+        controls.className = 'bsl-detail-controls';
+        const candidates = (child.candidateNodeIds ?? []).filter((id) => state.executableIds.has(id));
+        const deletions = candidates.filter((id) => state.deletionIds.has(id));
+        const executable = candidates.filter((id) => !state.deletionIds.has(id));
+        if (executable.length > 0) {
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.className = 'row-check bsl-detail-check';
+          const selected = executable.filter((id) => state.selectedIds.has(id)).length;
+          checkbox.checked = selected === executable.length;
+          checkbox.indeterminate = selected > 0 && selected < executable.length;
+          checkbox.disabled = !isInteractive();
+          checkbox.setAttribute('aria-label', `Выбрать ${child.label}`);
+          checkbox.addEventListener('change', () => updateSelection(executable, checkbox.checked));
+          controls.append(checkbox);
+        }
+        if (deletions.length > 0) {
+          const deleteAction = document.createElement('button');
+          deleteAction.type = 'button';
+          deleteAction.className = 'secondary delete-selection-action';
+          const selectedDeletes = deletions.filter((id) => state.selectedIds.has(id)).length;
+          const allSelected = selectedDeletes === deletions.length;
+          deleteAction.textContent = `${allSelected ? 'Отменить' : 'Выбрать'} удаление (${deletions.length})`;
+          deleteAction.disabled = !isInteractive();
+          deleteAction.addEventListener('click', () => updateSelection(deletions, !allSelected));
+          controls.append(deleteAction);
+        }
+        const label = document.createElement('span');
+        label.className = 'bsl-detail-label';
+        label.textContent = child.label;
+        const status = document.createElement('span');
+        status.className = `bsl-detail-status${child.conflict || child.mergeState?.state === 'blocked' || child.mergeState?.state === 'identityConflict' ? ' blocked' : ''}`;
+        status.textContent = statusLabels[child.status] ?? child.status;
+        row.append(controls, label, status);
+        const reasonText = child.conflict?.message ?? child.mergeState?.reason;
+        if (reasonText) {
+          const reason = document.createElement('div');
+          reason.className = 'bsl-detail-reason';
+          reason.textContent = reasonText;
+          row.append(reason);
+        }
+        list.append(row);
+      }
+      section.append(list);
+      return section;
+    }
+
+    function canOpenBslModuleDiff(node) {
+      return node.kind === 'bslModule' && (state.payload?.bslModuleDiffNodeIds ?? []).includes(node.key);
+    }
+
+    function openBslModuleDiff(node) {
+      if (!isInteractive() || !canOpenBslModuleDiff(node)) return;
+      vscode.postMessage({ type: 'openBslModuleDiff', nodeId: node.key });
     }
 
     function detailField(parent, label, value) {
@@ -937,6 +1139,7 @@
       const labels = {
         metadataOwner: 'Объект метаданных', extensionMetadataObject: 'Объект расширения',
         xmlProperty: 'Свойство XML', bslRoutine: 'Процедура или функция BSL',
+        bslModule: 'Модуль BSL', bslModuleContent: 'Содержимое модуля BSL',
         diagnosticsGroup: 'Диагностика', displayGroup: 'Группа объектов', displayRoot: 'Корень сравнения',
         metadataTypeGroup: 'Тип метаданных', extensionSemanticFile: 'Файл расширения',
       };

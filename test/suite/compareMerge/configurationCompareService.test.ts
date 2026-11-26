@@ -18,9 +18,9 @@ import type { CompareDisplayNode } from '../../../src/compareMerge/projection/co
 import { awaitAllSettled, createCompareProgressThrottle, mapLimit } from '../../../src/compareMerge/compareBuildPipeline';
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 import { createMergeMutationTestRuntime } from './mergeMutationTestSupport';
+import bslModuleIndexerRuntime = require('../../../src/compareMerge/bsl/bslModuleIndexer');
 
 const mutationCoordinators: Array<{ dispose(): Promise<void> }> = [];
-const bslModuleIndexerRuntime = require('../../../src/compareMerge/bsl/bslModuleIndexer') as typeof import('../../../src/compareMerge/bsl/bslModuleIndexer');
 
 type FutureConfigCompareWebviewPayloadDto = ReturnType<typeof toWebviewPayload> & {
   deletionNodeIds?: string[];
@@ -543,6 +543,7 @@ suite('ConfigurationCompareService', () => {
 
     try {
       for (const name of ['First', 'Second']) {
+        await writeCatalog(path.join(tempRoot, 'left'), name, `cancel-${name}`);
         await writeCatalog(rightRoot, name, `cancel-${name}`);
         await writeFile(
           path.join(rightRoot, 'Catalogs', name, 'Ext', 'ObjectModule.bsl'),
@@ -1754,6 +1755,141 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
+  test('deeply compares all canonical standard modules and executes only healthy additions', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-standard-bsl-modules-'));
+    const leftRoot = path.join(tempRoot, 'target');
+    const rightRoot = path.join(tempRoot, 'incoming');
+    let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+    const originalIndexer = bslModuleIndexerRuntime.indexBslModuleSource;
+    const indexedModules: Array<{ moduleId: string; side: string; routineCount: number }> = [];
+    const moduleCases = [
+      {
+        metadataType: 'InformationRegister',
+        folder: 'InformationRegisters',
+        name: 'Stock',
+        fileName: 'RecordSetModule.bsl',
+        moduleId: 'InformationRegister.Stock.RecordSet',
+      },
+      {
+        metadataType: 'Constant',
+        folder: 'Constants',
+        name: 'ExchangeRate',
+        fileName: 'ValueManagerModule.bsl',
+        moduleId: 'Constant.ExchangeRate.ValueManager',
+      },
+      {
+        metadataType: 'DataProcessor',
+        folder: 'DataProcessors',
+        name: 'ImportData',
+        fileName: 'ObjectModule.bsl',
+        moduleId: 'DataProcessor.ImportData.Object',
+      },
+      {
+        metadataType: 'Report',
+        folder: 'Reports',
+        name: 'Revenue',
+        fileName: 'ManagerModule.bsl',
+        moduleId: 'Report.Revenue.Manager',
+      },
+    ] as const;
+
+    bslModuleIndexerRuntime.indexBslModuleSource = (input) => {
+      const entry = originalIndexer(input);
+      indexedModules.push({
+        moduleId: input.identity.moduleId,
+        side: input.identity.side,
+        routineCount: entry.routines.length,
+      });
+      return entry;
+    };
+
+    try {
+      for (const [index, moduleCase] of moduleCases.entries()) {
+        const descriptorPath = (rootPath: string): string =>
+          path.join(rootPath, moduleCase.folder, `${moduleCase.name}.xml`);
+        const modulePath = (rootPath: string): string =>
+          path.join(rootPath, moduleCase.folder, moduleCase.name, 'Ext', moduleCase.fileName);
+        const descriptorXml = `<MetaDataObject><${moduleCase.metadataType} uuid="standard-module-${index}"><Properties><Name>${moduleCase.name}</Name></Properties></${moduleCase.metadataType}></MetaDataObject>`;
+        const targetSource = [
+          'Procedure ManualConflict()',
+          '  Value = 1;',
+          'EndProcedure',
+        ].join('\n');
+        const incomingSource = [
+          'Procedure ManualConflict()',
+          '  Value = 2;',
+          'EndProcedure',
+          '',
+          'Procedure HealthyAddition()',
+          '  Value = 3;',
+          'EndProcedure',
+        ].join('\n');
+        await writeFile(descriptorPath(leftRoot), descriptorXml);
+        await writeFile(descriptorPath(rightRoot), descriptorXml);
+        await writeFile(modulePath(leftRoot), targetSource);
+        await writeFile(modulePath(rightRoot), incomingSource);
+      }
+
+      const sourceModuleBytes = await Promise.all(moduleCases.map(async (moduleCase) => ({
+        moduleId: moduleCase.moduleId,
+        bytes: await fs.readFile(path.join(rightRoot, moduleCase.folder, moduleCase.name, 'Ext', moduleCase.fileName)),
+      })));
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-11-24T10:00:00.000Z'),
+      });
+      workspace = result.workspace;
+
+      assert.strictEqual(indexedModules.length, moduleCases.length * 2,
+        'each side of every matched standard module must be deeply parsed exactly once');
+      for (const moduleCase of moduleCases) {
+        const moduleCalls = indexedModules.filter((entry) => entry.moduleId === moduleCase.moduleId);
+        assert.strictEqual(moduleCalls.length, 2, `${moduleCase.moduleId}: both paired sides must be parsed`);
+        assert.deepStrictEqual(moduleCalls.map((entry) => entry.side).sort(), ['left', 'right']);
+        assert.deepStrictEqual(moduleCalls.map((entry) => entry.routineCount).sort(), [1, 2]);
+      }
+
+      const healthyIds: string[] = [];
+      for (const moduleCase of moduleCases) {
+        const manual = requireNode(result.projection.root, `bsl:routine:${moduleCase.moduleId}:manualconflict`);
+        const healthyId = `bsl:routine:${moduleCase.moduleId}:healthyaddition`;
+        const healthy = requireNode(result.projection.root, healthyId);
+        assert.strictEqual(manual.mergeable, false, `${moduleCase.moduleId}: the changed routine stays manual`);
+        assert.strictEqual(manual.mergeState?.state, 'blocked');
+        assert.strictEqual(manual.conflict?.blocking, true);
+        assert.strictEqual(healthy.mergeable, true, `${moduleCase.moduleId}: the independent addition stays selectable`);
+        healthyIds.push(healthyId);
+      }
+
+      const preview = await workspace.createPreviewForNodeIds(healthyIds);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      if (!preview.ok) { return; }
+      assert.strictEqual(preview.preview.operationCount, moduleCases.length);
+      const approval = workspace.approvePreview(preview.preview.previewId);
+      assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+      const execution = await workspace.executeApprovedPreview(preview.preview.previewId, { destructiveConfirmed: true });
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+
+      for (const [index, moduleCase] of moduleCases.entries()) {
+        const mergedTarget = await readText(path.join(leftRoot, moduleCase.folder, moduleCase.name, 'Ext', moduleCase.fileName));
+        assert.match(mergedTarget, /Procedure ManualConflict\(\)[\s\S]*Value = 1;/u);
+        assert.doesNotMatch(mergedTarget, /Value = 2;/u);
+        assert.match(mergedTarget, /Procedure HealthyAddition\(\)/u);
+        assert.deepStrictEqual(
+          await fs.readFile(path.join(rightRoot, moduleCase.folder, moduleCase.name, 'Ext', moduleCase.fileName)),
+          sourceModuleBytes[index]!.bytes,
+          `${moduleCase.moduleId}: incoming source bytes remain unchanged`
+        );
+      }
+    } finally {
+      bslModuleIndexerRuntime.indexBslModuleSource = originalIndexer;
+      workspace?.dispose();
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   test('copies unpaired ordinary BSL as an exact fileArtifact without deep parsing', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-unpaired-bsl-copy-'));
     const leftRoot = path.join(tempRoot, 'target');
@@ -2303,6 +2439,70 @@ suite('ConfigurationCompareService', () => {
     } finally {
       workspace?.dispose();
       await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('copies incoming InformationRegister, DataProcessor and Role roots with descriptor, sidecar and root registration', async () => {
+    const metadataCases = [
+      { type: 'InformationRegister', folder: 'InformationRegisters', name: 'Stocks' },
+      { type: 'DataProcessor', folder: 'DataProcessors', name: 'ImportData' },
+      { type: 'Role', folder: 'Roles', name: 'Auditor' },
+    ] as const;
+    for (const metadataCase of metadataCases) {
+      const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `configuration-compare-${metadataCase.type}-copy-`));
+      const leftRoot = path.join(tempRoot, 'left');
+      const rightRoot = path.join(tempRoot, 'right');
+      const descriptorRelativePath = path.join(metadataCase.folder, `${metadataCase.name}.xml`);
+      const targetDescriptorPath = path.join(leftRoot, descriptorRelativePath);
+      const targetSidecarPath = path.join(leftRoot, metadataCase.folder, metadataCase.name, 'Ext', 'payload.bin');
+      const expectedSidecar = Buffer.from(`${metadataCase.type} sidecar`);
+      let workspace: Awaited<ReturnType<typeof buildConfigurationCompare>>['workspace'] | undefined;
+      let runtime: Awaited<ReturnType<typeof createMergeMutationTestRuntime>> | undefined;
+      try {
+        const configuration = (name: string, includeObject: boolean): string => [
+          '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">',
+          '  <Configuration uuid="01234567-89ab-cdef-0123-456789abcdef">',
+          `    <Properties><Name>${name}</Name></Properties>`,
+          `    <ChildObjects>${includeObject ? `<${metadataCase.type}>${metadataCase.name}</${metadataCase.type}>` : ''}</ChildObjects>`,
+          '  </Configuration>',
+          '</MetaDataObject>',
+        ].join('\n');
+        await writeFile(path.join(leftRoot, 'Configuration.xml'), configuration('Target', false));
+        await writeFile(path.join(rightRoot, 'Configuration.xml'), configuration('Source', true));
+        await writeFile(
+          path.join(rightRoot, descriptorRelativePath),
+          `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><${metadataCase.type} uuid="11234567-89ab-cdef-0123-456789abcdef"><Properties><Name>${metadataCase.name}</Name></Properties></${metadataCase.type}></MetaDataObject>`
+        );
+        await writeFileBytes(path.join(rightRoot, metadataCase.folder, metadataCase.name, 'Ext', 'payload.bin'), expectedSidecar);
+        runtime = await createMergeMutationTestRuntime(leftRoot);
+
+        const result = await buildConfigurationCompare({
+          leftRootPath: leftRoot,
+          rightRootPath: rightRoot,
+          backupRootPath: path.join(tempRoot, 'backups'),
+          mutationEngine: runtime.engine,
+          configurationId: runtime.configurationId,
+        });
+        workspace = result.workspace;
+        const nodeId = `fileObject:rightOnly:${metadataCase.type}.${metadataCase.name}`;
+        assert.ok(workspace.listMergeableNodeIds().includes(nodeId), `${nodeId} should be selectable`);
+        const preview = await workspace.createPreviewForNodeIds([nodeId]);
+        assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+        const approval = workspace.approvePreview(preview.preview.previewId);
+        assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+        const execution = await workspace.executeApprovedPreview(preview.preview.previewId, { destructiveConfirmed: true });
+        assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+
+        const registeredConfiguration = await fs.readFile(path.join(leftRoot, 'Configuration.xml'), 'utf8');
+        assert.match(registeredConfiguration, new RegExp(`<${metadataCase.type}>${metadataCase.name}</${metadataCase.type}>`, 'u'));
+        assert.strictEqual(await fs.readFile(targetDescriptorPath, 'utf8'),
+          `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><${metadataCase.type} uuid="11234567-89ab-cdef-0123-456789abcdef"><Properties><Name>${metadataCase.name}</Name></Properties></${metadataCase.type}></MetaDataObject>`);
+        assert.deepStrictEqual(await fs.readFile(targetSidecarPath), expectedSidecar);
+      } finally {
+        workspace?.dispose();
+        await runtime?.coordinator.dispose();
+        await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
     }
   });
 

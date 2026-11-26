@@ -18,6 +18,7 @@ import type { CompareBuildOptions } from '../../../src/compareMerge/compareProgr
 import { CompareSession } from '../../../src/compareMerge/domain/compareSession';
 import type { CompareMessage } from '../../../src/compareMerge/domain/compareContracts';
 import type { MergeCandidate } from '../../../src/compareMerge/merge/mergePlanner';
+import { createBslModuleComparisonReference, createBslModuleComparisonReferences } from '../../../src/compareMerge/bsl/bslModuleComparison';
 import { hashXmlText } from '../../../src/compareMerge/xml/xmlPatch';
 
 suite('ConfigurationCompareWorkspace', () => {
@@ -32,6 +33,195 @@ suite('ConfigurationCompareWorkspace', () => {
       ['CONFIG_COMPARE_UNKNOWN_SELECTION']
     );
     assert.deepStrictEqual(workspace.listMergeableNodeIds(), ['bsl:routine:Catalog.Products.Object:run']);
+  });
+
+  test('resolves only current paired module snapshots and rejects source or target drift and outside paths', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'compare-workspace-bsl-module-'));
+    const leftRoot = path.join(tempRoot, 'target');
+    const rightRoot = path.join(tempRoot, 'source');
+    const outsideRoot = path.join(tempRoot, 'outside');
+    const moduleId = 'bsl:module:Form:Catalog.Products.Edit';
+    const leftFile = path.join(leftRoot, 'Catalogs', 'Products', 'Forms', 'Edit', 'Form', 'Module.bsl');
+    const rightFile = path.join(rightRoot, 'Catalogs', 'Products', 'Forms', 'Edit', 'Form', 'Module.bsl');
+    const outsideFile = path.join(outsideRoot, 'Module.bsl');
+    const leftText = 'Procedure OnOpen()\n    Message("target");\nEndProcedure';
+    const rightText = 'Procedure OnOpen()\n    Message("source");\nEndProcedure';
+
+    try {
+      await fs.mkdir(path.dirname(leftFile), { recursive: true });
+      await fs.mkdir(path.dirname(rightFile), { recursive: true });
+      await fs.mkdir(outsideRoot, { recursive: true });
+      await fs.writeFile(leftFile, leftText, 'utf8');
+      await fs.writeFile(rightFile, rightText, 'utf8');
+      await fs.writeFile(outsideFile, leftText, 'utf8');
+      const reference = createBslModuleComparisonReference({
+        nodeId: moduleId,
+        moduleLabel: 'Форма: Catalog.Products.Edit',
+        leftFilePath: leftFile,
+        rightFilePath: rightFile,
+        leftText,
+        rightText,
+      });
+      const workspace = new ConfigurationCompareWorkspace({
+        session: makeSession(),
+        projection: {
+          root: {
+            id: 'configCompare', label: 'Compare', kind: 'configCompare', status: 'changed',
+            children: [{ id: moduleId, label: 'Edit', kind: 'bslModule', status: 'changed', children: [] }],
+          },
+          stats: { total: 1, different: 1, mergeable: 0 },
+        },
+        candidateFactories: new Map(),
+        mergeableNodeIds: [],
+        bslModuleComparisons: new Map([[moduleId, reference]]),
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+      });
+
+      assert.deepStrictEqual(workspace.listBslModuleComparisonNodeIds(), [moduleId]);
+      const resolved = await workspace.resolveBslModuleComparison(moduleId);
+      assert.strictEqual(resolved.ok, true, resolved.ok ? '' : resolved.message);
+      if (resolved.ok) {
+        assert.strictEqual(resolved.snapshot.sourceSnapshotText, rightText);
+        assert.strictEqual(resolved.snapshot.targetFilePath, await fs.realpath(leftFile));
+        assert.strictEqual('leftFilePath' in resolved.snapshot, false, 'the workspace returns a host-only text snapshot and target path');
+      }
+      assert.strictEqual((await workspace.resolveBslModuleComparison('file:///forged.bsl')).ok, false);
+
+      await fs.writeFile(leftFile, `${leftText}\n// drift`, 'utf8');
+      assert.strictEqual((await workspace.resolveBslModuleComparison(moduleId)).ok, false, 'target text drift must invalidate the native diff');
+      await fs.writeFile(leftFile, leftText, 'utf8');
+      await fs.writeFile(rightFile, `${rightText}\n// drift`, 'utf8');
+      assert.strictEqual((await workspace.resolveBslModuleComparison(moduleId)).ok, false, 'source text drift must invalidate the native diff');
+      workspace.dispose();
+
+      const outsideReference = createBslModuleComparisonReference({
+        nodeId: moduleId,
+        moduleLabel: 'Форма: Catalog.Products.Edit',
+        leftFilePath: outsideFile,
+        rightFilePath: rightFile,
+        leftText,
+        rightText: `${rightText}\n// drift`,
+      });
+      const outsideWorkspace = new ConfigurationCompareWorkspace({
+        session: makeSession(),
+        projection: {
+          root: {
+            id: 'configCompare', label: 'Compare', kind: 'configCompare', status: 'changed',
+            children: [{ id: moduleId, label: 'Edit', kind: 'bslModule', status: 'changed', children: [] }],
+          },
+          stats: { total: 1, different: 1, mergeable: 0 },
+        },
+        candidateFactories: new Map(),
+        mergeableNodeIds: [],
+        bslModuleComparisons: new Map([[moduleId, outsideReference]]),
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups-outside'),
+      });
+      assert.strictEqual((await outsideWorkspace.resolveBslModuleComparison(moduleId)).ok, false,
+        'a captured reference outside its side root must never fall back to a live file diff');
+      outsideWorkspace.dispose();
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('indexes a large canonical module tree once and excludes stale or mismatched reference IDs', () => {
+    const moduleCount = 2048;
+    const nodes: CompareTreeNode[] = Array.from({ length: moduleCount }, (_unused, index) => ({
+      id: `bsl:module:Form:Catalog.Item${String(index).padStart(4, '0')}`,
+      label: `Module ${index}`,
+      kind: 'bslModule',
+      status: 'changed',
+      children: [],
+    }));
+    const references = new Map(nodes.map((node) => [node.id, {
+      nodeId: node.id,
+      moduleLabel: node.label,
+      leftFilePath: path.resolve('target', `${node.id}.bsl`),
+      rightFilePath: path.resolve('source', `${node.id}.bsl`),
+      leftTextHash: 'left-hash',
+      rightTextHash: 'right-hash',
+    }] as const));
+    references.set('bsl:module:Form:stale', {
+      nodeId: 'bsl:module:Form:stale', moduleLabel: 'stale',
+      leftFilePath: 'target/stale.bsl', rightFilePath: 'source/stale.bsl',
+      leftTextHash: 'left-hash', rightTextHash: 'right-hash',
+    });
+    references.set('bsl:module:Form:mismatched-key', {
+      nodeId: 'bsl:module:Form:mismatched', moduleLabel: 'mismatched',
+      leftFilePath: 'target/mismatched.bsl', rightFilePath: 'source/mismatched.bsl',
+      leftTextHash: 'left-hash', rightTextHash: 'right-hash',
+    });
+    const workspace = new ConfigurationCompareWorkspace({
+      session: makeSession(),
+      projection: {
+        root: { id: 'configCompare', label: 'Compare', kind: 'configCompare', status: 'changed', children: nodes },
+        stats: { total: moduleCount, different: moduleCount, mergeable: 0 },
+      },
+      candidateFactories: new Map(),
+      mergeableNodeIds: [],
+      bslModuleComparisons: references,
+      leftRootPath: path.resolve('target'),
+      rightRootPath: path.resolve('source'),
+      backupRootPath: path.resolve('backups'),
+    });
+
+    const ids = workspace.listBslModuleComparisonNodeIds();
+
+    assert.strictEqual(ids.length, moduleCount);
+    assert.ok(ids[0]?.endsWith('Item0000'));
+    assert.ok(ids[ids.length - 1]?.endsWith(`Item${String(moduleCount - 1).padStart(4, '0')}`));
+    workspace.dispose();
+  });
+
+  test('captures file-diff references only for unique paired modules with exact decoded-text hashes', () => {
+    const leftText = 'Procedure Same()\r\nEndProcedure';
+    const rightText = 'Procedure Same()\nEndProcedure';
+    const entry = (moduleId: string, filePath: string, displayName: string) => ({
+      identity: { ...makeIdentity(), moduleId, filePath, displayName },
+      routines: [],
+      diagnostics: [],
+    });
+    const leftModules = [
+      entry('Catalog.Products.Object', 'left/ObjectModule.bsl', 'Приёмник: Products'),
+      entry('Catalog.Ambiguous.Object', 'left/AmbiguousA.bsl', 'Ambiguous A'),
+      entry('Catalog.Ambiguous.Object', 'left/AmbiguousB.bsl', 'Ambiguous B'),
+      entry('Catalog.LeftOnly.Object', 'left/LeftOnly.bsl', 'Left only'),
+    ];
+    const rightModules = [
+      entry('Catalog.Products.Object', 'right/ObjectModule.bsl', 'Источник: Products'),
+      entry('Catalog.Ambiguous.Object', 'right/Ambiguous.bsl', 'Ambiguous'),
+      entry('Catalog.RightOnly.Object', 'right/RightOnly.bsl', 'Right only'),
+    ];
+    const leftSources = new Map([
+      ['left/ObjectModule.bsl', leftText],
+      ['left/AmbiguousA.bsl', leftText],
+      ['left/AmbiguousB.bsl', leftText],
+      ['left/LeftOnly.bsl', leftText],
+    ]);
+    const rightSources = new Map([
+      ['right/ObjectModule.bsl', rightText],
+      ['right/Ambiguous.bsl', rightText],
+      ['right/RightOnly.bsl', rightText],
+    ]);
+
+    const references = createBslModuleComparisonReferences({
+      leftModules,
+      rightModules,
+      leftSources,
+      rightSources,
+    });
+
+    assert.deepStrictEqual([...references.keys()], ['bsl:module:Catalog.Products.Object']);
+    const reference = references.get('bsl:module:Catalog.Products.Object');
+    assert.strictEqual(reference?.moduleLabel, 'Источник: Products');
+    assert.strictEqual(reference?.leftFilePath, 'left/ObjectModule.bsl');
+    assert.strictEqual(reference?.rightFilePath, 'right/ObjectModule.bsl');
+    assert.strictEqual(reference?.leftTextHash, createHash('sha256').update(Buffer.from(leftText, 'utf8')).digest('hex'));
+    assert.strictEqual(reference?.rightTextHash, createHash('sha256').update(Buffer.from(rightText, 'utf8')).digest('hex'));
   });
 
   test('requires at least one executable selected node for preview and accepts bulk selection', async () => {

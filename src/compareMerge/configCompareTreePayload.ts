@@ -4,6 +4,7 @@ import type { CompareTreeNode } from './compareTreeTypes';
 
 export interface ConfigCompareSelectionMetadata {
   deletionNodeIds: string[];
+  replacementNodeIds: string[];
   unresolvedConflictCount: number;
 }
 
@@ -14,6 +15,8 @@ export function summarizeCanonicalSelection(
   const executableIds = new Set(executableNodeIds);
   const deletionNodeIds: string[] = [];
   const deletionIds = new Set<string>();
+  const replacementNodeIds: string[] = [];
+  const replacementIds = new Set<string>();
   const blockingConflictIds = new Set<string>();
   const stack = [root];
 
@@ -31,12 +34,16 @@ export function summarizeCanonicalSelection(
       deletionIds.add(node.id);
       deletionNodeIds.push(node.id);
     }
+    if (executableIds.has(node.id) && node.replacement === true && !replacementIds.has(node.id)) {
+      replacementIds.add(node.id);
+      replacementNodeIds.push(node.id);
+    }
     for (let index = node.children.length - 1; index >= 0; index -= 1) {
       stack.push(node.children[index]);
     }
   }
 
-  return { deletionNodeIds, unresolvedConflictCount: blockingConflictIds.size };
+  return { deletionNodeIds, replacementNodeIds, unresolvedConflictCount: blockingConflictIds.size };
 }
 
 export function redactTreeNode(node: CompareTreeNode): CompareTreeNode {
@@ -49,6 +56,7 @@ export function redactTreeNode(node: CompareTreeNode): CompareTreeNode {
     rightValue: redactTreeValue(node.rightValue),
     mergeable: node.mergeable,
     destructive: node.destructive,
+    replacement: node.replacement,
     conflict: node.conflict
       ? { ...node.conflict, message: redactSafeText(node.conflict.message) ?? node.conflict.message }
       : undefined,
@@ -64,6 +72,7 @@ export function redactTreeNode(node: CompareTreeNode): CompareTreeNode {
           ownerAliases: node.presentation.ownerAliases ? [...node.presentation.ownerAliases] : undefined,
           metadataType: node.presentation.metadataType,
           moduleKind: node.presentation.moduleKind,
+          bslRoutineAnalysis: node.presentation.bslRoutineAnalysis,
           qualifiedName: node.presentation.qualifiedName,
           identityConflict: node.presentation.identityConflict,
           ambiguousIdentitySet: node.presentation.ambiguousIdentitySet,

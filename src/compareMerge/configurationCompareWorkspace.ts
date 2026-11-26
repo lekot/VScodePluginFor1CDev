@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { pathToFileURL } from 'url';
 import type { ConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
 import type { ConfigurationId } from '../services/configurationSession/types';
 
@@ -8,6 +8,12 @@ import { compareCodeUnits } from '../utils/compareCodeUnits';
 import type { CompareTreeNode, CompareTreeStats } from './compareTreeTypes';
 import type { CompareBuildOptions } from './compareProgress';
 import type { CompareTreeProjection } from './projection/compareTreeProjection';
+import {
+  listCanonicalBslModuleComparisonNodeIds,
+  resolveVerifiedBslModuleComparison,
+  type BslModuleComparisonReference,
+  type BslModuleComparisonResolution,
+} from './bsl/bslModuleComparison';
 import { CompareSession } from './domain/compareSession';
 import type { CompareMessage, CompareSide } from './domain/compareContracts';
 import {
@@ -30,6 +36,7 @@ import { validateSemanticXmlCandidates } from './merge/semanticXmlPreviewValidat
 import { isConfigurationCompareCancelled } from './compareCancellation';
 import {
   cancelledRefreshDiagnostic,
+  redactConfigurationCompareDiagnostic,
   configurationCompareWorkspaceDiagnostic as diagnostic,
 } from './configurationCompareWorkspaceDiagnostics';
 
@@ -46,6 +53,7 @@ export interface ConfigCompareWebviewPayload {
   locked: boolean;
   strategy?: CompareJoinStrategy;
   comparisonInfo?: ConfigurationCompareInfo;
+  bslModuleDiffNodeIds?: string[];
 }
 
 export interface ConfigurationCompareInfo {
@@ -174,6 +182,7 @@ export interface ConfigurationCompareWorkspaceState {
   materializeSelection?: WorkspaceSelectionMaterializer;
   mergeableNodeIds?: readonly string[];
   comparisonInfo?: ConfigurationCompareInfo;
+  bslModuleComparisons?: ReadonlyMap<string, BslModuleComparisonReference>;
 }
 
 export interface ConfigurationCompareWorkspaceInput extends ConfigurationCompareWorkspaceState {
@@ -219,6 +228,7 @@ export class ConfigurationCompareWorkspace {
   private materializeSelection?: WorkspaceSelectionMaterializer;
   private mergeableNodeIds: string[] = [];
   private comparisonInfo?: ConfigurationCompareInfo;
+  private bslModuleComparisons: ReadonlyMap<string, BslModuleComparisonReference> = new Map();
   private selectionRevision = 0;
   private previewCounter = 0;
   private disposed = false;
@@ -256,7 +266,40 @@ export class ConfigurationCompareWorkspace {
       locked: this.locked,
       strategy: this.strategy,
       comparisonInfo: this.comparisonInfo,
+      bslModuleDiffNodeIds: this.listBslModuleComparisonNodeIds(),
     };
+  }
+
+  listBslModuleComparisonNodeIds(): string[] {
+    if (this.disposed || this.locked || this.bslModuleComparisons.size === 0) {
+      return [];
+    }
+    return listCanonicalBslModuleComparisonNodeIds(this.projection.root, this.bslModuleComparisons);
+  }
+
+  async resolveBslModuleComparison(nodeId: string): Promise<BslModuleComparisonResolution> {
+    const unavailable = this.unavailableDiagnostic();
+    if (unavailable) {
+      return { ok: false, message: 'Обновите сравнение перед открытием файла модуля.' };
+    }
+    const reference = this.bslModuleComparisons.get(nodeId);
+    const session = this.session;
+    const projection = this.projection;
+    return resolveVerifiedBslModuleComparison({
+      nodeId,
+      reference,
+      root: projection.root,
+      leftRootPath: this.leftRootPath,
+      rightRootPath: this.rightRootPath,
+      isCurrent: () => {
+        const currentModule = findNode(this.projection.root, nodeId);
+        return !this.unavailableDiagnostic() &&
+          this.session === session &&
+          this.projection === projection &&
+          this.bslModuleComparisons.get(nodeId) === reference &&
+          currentModule?.kind === 'bslModule';
+      },
+    });
   }
 
   selectNodeIds(nodeIds: readonly string[]): WorkspaceSelectionState {
@@ -351,7 +394,7 @@ export class ConfigurationCompareWorkspace {
         return { ok: false, diagnostics: [stale] };
       }
       if (!result.ok) {
-        return { ok: false, diagnostics: result.diagnostics.map(redactDiagnostic) };
+        return { ok: false, diagnostics: result.diagnostics.map(redactConfigurationCompareDiagnostic) };
       }
       candidates = [...result.candidates];
       if (candidates.length === 0) {
@@ -383,7 +426,7 @@ export class ConfigurationCompareWorkspace {
       return { ok: false, diagnostics: [stale] };
     }
     if (semanticDiagnostics.length > 0) {
-      return { ok: false, diagnostics: semanticDiagnostics.map(redactDiagnostic) };
+      return { ok: false, diagnostics: semanticDiagnostics.map(redactConfigurationCompareDiagnostic) };
     }
 
     const previewId = this.nextPreviewId();
@@ -398,7 +441,7 @@ export class ConfigurationCompareWorkspace {
     });
 
     if (!validation.ok) {
-      return { ok: false, diagnostics: validation.diagnostics.map(redactDiagnostic) };
+      return { ok: false, diagnostics: validation.diagnostics.map(redactConfigurationCompareDiagnostic) };
     }
 
     const redacted = this.redactPreview(validation.preview);
@@ -498,7 +541,7 @@ export class ConfigurationCompareWorkspace {
       return {
         ok: false,
         locked: this.locked,
-        diagnostics: preflight.diagnostics.map(redactDiagnostic),
+        diagnostics: preflight.diagnostics.map(redactConfigurationCompareDiagnostic),
       };
     }
 
@@ -508,7 +551,7 @@ export class ConfigurationCompareWorkspace {
       mutationEngine: this.mutationEngine,
       configurationId: this.configurationId,
     });
-    const executionDiagnostics = result.diagnostics.map(redactDiagnostic);
+    const executionDiagnostics = result.diagnostics.map(redactConfigurationCompareDiagnostic);
     const ok = result.receipt
       ? result.receipt.status === 'committed'
       : result.failed.length === 0;
@@ -752,7 +795,7 @@ export class ConfigurationCompareWorkspace {
       operationCount: preview.operations.length,
       destructiveCount: items.filter((item) => item.destructive).length,
       items,
-      diagnostics: preview.diagnostics.map(redactDiagnostic),
+      diagnostics: preview.diagnostics.map(redactConfigurationCompareDiagnostic),
     };
   }
 
@@ -772,6 +815,7 @@ export class ConfigurationCompareWorkspace {
     this.candidateFactories.clear();
     this.materializeSelection = undefined;
     this.mergeableNodeIds = [];
+    this.bslModuleComparisons = new Map();
   }
 
   private availableMergeableNodeIds(): string[] {
@@ -790,6 +834,7 @@ export class ConfigurationCompareWorkspace {
       ? [...new Set(state.mergeableNodeIds ?? [])]
       : [...this.candidateFactories.keys()];
     this.comparisonInfo = state.comparisonInfo;
+    this.bslModuleComparisons = new Map(state.bslModuleComparisons ?? []);
   }
 
   private async materializeLegacyCandidates(
@@ -812,7 +857,7 @@ export class ConfigurationCompareWorkspace {
 
     const firstResult = await firstFactory();
     if (!firstResult.ok) {
-      return { ok: false, diagnostics: firstResult.diagnostics.map(redactDiagnostic) };
+      return { ok: false, diagnostics: firstResult.diagnostics.map(redactConfigurationCompareDiagnostic) };
     }
 
     const candidates: MergeCandidate[] = [firstResult.candidate];
@@ -833,7 +878,7 @@ export class ConfigurationCompareWorkspace {
       if (result.ok) {
         candidates.push(result.candidate);
       } else {
-        diagnostics.push(...result.diagnostics.map(redactDiagnostic));
+        diagnostics.push(...result.diagnostics.map(redactConfigurationCompareDiagnostic));
       }
     }
     return diagnostics.length > 0 ? { ok: false, diagnostics } : { ok: true, candidates };
@@ -934,56 +979,8 @@ function findNode(node: CompareTreeNode, id: string): CompareTreeNode | undefine
   return undefined;
 }
 
-function redactDiagnostic(message: CompareMessage): CompareMessage {
-  return {
-    severity: message.severity,
-    code: message.code,
-    phase: message.phase,
-    sourceId: message.sourceId,
-    nodeId: message.nodeId,
-    blocking: message.blocking,
-    suggestedAction: redactSuggestedAction(message.suggestedAction, message.path),
-  };
-}
-
 function randomBackupBasename(): string {
   return `${randomUUID()}.bak`;
-}
-
-function redactSuggestedAction(
-  suggestedAction: string | undefined,
-  sensitivePath: string | undefined
-): string | undefined {
-  if (!suggestedAction) {
-    return undefined;
-  }
-
-  if (sensitivePath && containsSensitivePath(suggestedAction, sensitivePath)) {
-    return 'Проверьте диагностику сравнения и пересоздайте preview перед повтором.';
-  }
-
-  return suggestedAction;
-}
-
-function containsSensitivePath(value: string, sensitivePath: string): boolean {
-  return sensitivePathVariants(sensitivePath).some((variant) => value.includes(variant));
-}
-
-function sensitivePathVariants(sensitivePath: string): string[] {
-  const variants = new Set<string>([sensitivePath]);
-  variants.add(sensitivePath.replace(/\\/g, '/'));
-  variants.add(sensitivePath.replace(/\//g, '\\'));
-
-  try {
-    const filePath = fileURLToPath(sensitivePath);
-    variants.add(filePath);
-    variants.add(filePath.replace(/\\/g, '/'));
-    variants.add(filePath.replace(/\//g, '\\'));
-  } catch {
-    // Non-file paths are already covered by raw slash/backslash variants.
-  }
-
-  return [...variants].filter((variant) => variant.length > 0);
 }
 
 function isDefined<T>(value: T | undefined): value is T {

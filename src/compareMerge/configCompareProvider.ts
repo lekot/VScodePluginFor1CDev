@@ -6,6 +6,8 @@ import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 import { Logger } from '../utils/logger';
 import { renderSecureWebviewHtml } from '../utils/webviewSecurity';
 import type { MutationFailureProjection } from '../services/configurationSession/mutationReceiptError';
+import type { BslModuleComparisonResolution } from './bsl/bslModuleComparison';
+import { createBslModuleDiffController, type BslModuleDiffController } from './configCompareModuleDiff';
 import type { CompareTreeNode } from './compareTreeTypes';
 import type { CompareMessage } from './domain/compareContracts';
 import type { CompareBuildOptions, CompareBuildProgress } from './compareProgress';
@@ -69,6 +71,7 @@ export type ConfigCompareWorkspaceLike = Pick<
   | 'dispose'
 > & {
   listMergeableNodeIds?: () => string[];
+  resolveBslModuleComparison?: (nodeId: string) => Promise<BslModuleComparisonResolution>;
   setStrategy?: (
     strategy: CompareJoinStrategy,
     options?: CompareBuildOptions
@@ -156,6 +159,20 @@ export function bindConfigurationCompareWebview(
   let activePartialPayload: ConfigCompareWebviewPayloadDto | undefined;
   let progressTimer: ReturnType<typeof setTimeout> | undefined;
   let retryOperation: (() => Promise<void>) | undefined;
+  let panelDisposed = false;
+  let controllerDisposed = false;
+  const moduleDiffController = createBslModuleDiffController(Boolean(workspace.resolveBslModuleComparison));
+
+  const disposeController = (): void => {
+    if (controllerDisposed) {return;}
+    controllerDisposed = true;
+    operationSource?.cancel();
+    operationSource?.dispose();
+    operationSource = undefined;
+    if (progressTimer !== undefined) {clearTimeout(progressTimer);}
+    progressTimer = undefined;
+    moduleDiffController.dispose();
+  };
 
   const publishLoadState = async (message: ConfigCompareLoadStateMessage): Promise<void> => {
     try {
@@ -325,6 +342,7 @@ export function bindConfigurationCompareWebview(
   }
 
   const messageSubscription = panel.webview.onDidReceiveMessage(async (rawMessage: unknown) => {
+    if (controllerDisposed || panelDisposed) {return;}
     const message = parseWebviewMessage(rawMessage);
     if (!message) {
       Logger.warn('Ignored invalid configuration compare webview message', rawMessage);
@@ -361,7 +379,15 @@ export function bindConfigurationCompareWebview(
           ? Promise.resolve(workspace.setStrategy(message.strategy, buildOptions))
           : Promise.resolve({ ok: false, payload: workspace.payload, diagnostics: [] }));
       } else {
-        await handleWebviewMessage(panel.webview, workspace, title, state, message);
+        await handleWebviewMessage(
+          panel.webview,
+          workspace,
+          title,
+          state,
+          message,
+          moduleDiffController,
+          () => panelDisposed || controllerDisposed
+        );
       }
     } catch (error) {
       Logger.error('Configuration compare webview message failed', error);
@@ -377,10 +403,8 @@ export function bindConfigurationCompareWebview(
   });
 
   const disposeSubscription = panel.onDidDispose(() => {
-    operationSource?.cancel();
-    operationSource?.dispose();
-    operationSource = undefined;
-    if (progressTimer !== undefined) {clearTimeout(progressTimer);}
+    panelDisposed = true;
+    disposeController();
     messageSubscription.dispose();
     workspace.dispose();
   });
@@ -391,10 +415,7 @@ export function bindConfigurationCompareWebview(
 
   return {
     dispose: () => {
-      operationSource?.cancel();
-      operationSource?.dispose();
-      operationSource = undefined;
-      if (progressTimer !== undefined) {clearTimeout(progressTimer);}
+      disposeController();
       messageSubscription.dispose();
       disposeSubscription.dispose();
     },
@@ -406,7 +427,9 @@ async function handleWebviewMessage(
   workspace: ConfigCompareWorkspaceLike,
   title: string,
   state: ControllerState,
-  message: ConfigCompareWebviewToHostMessage
+  message: ConfigCompareWebviewToHostMessage,
+  moduleDiffController: BslModuleDiffController,
+  isDisposed: () => boolean
 ): Promise<void> {
   if (state.busy && message.type !== 'ready') {
     await rejectBusyMessage(webview, workspace, title, state);
@@ -437,6 +460,18 @@ async function handleWebviewMessage(
       return;
     case 'executeMerge':
       await executeMerge(webview, workspace, title, state, message.previewId, message.destructiveConfirmed === true);
+      return;
+    case 'openBslModuleDiff':
+      await moduleDiffController.open({
+        webview,
+        workspace,
+        title,
+        state,
+        nodeId: message.nodeId,
+        isDisposed,
+        postState: () => postState(webview, workspace, title, state),
+        postError: (errorMessage) => postError(webview, errorMessage, [], workspace.payload.locked),
+      });
       return;
     case 'refresh':
       await refresh(webview, workspace, title, state);
@@ -692,6 +727,7 @@ export function toWebviewPayload(
     stats: payload.stats,
     locked: lockedOverride ?? payload.locked,
     strategy: payload.strategy ?? 'right',
+    bslModuleDiffNodeIds: [...(payload.bslModuleDiffNodeIds ?? [])],
     executableNodeIds: [...executableNodeIds],
     ...summarizeCanonicalSelection(payload.root, executableNodeIds),
     comparisonInfo: payload.comparisonInfo
@@ -831,6 +867,10 @@ export function parseWebviewMessage(message: unknown): ConfigCompareWebviewToHos
     case 'setStrategy':
       return hasOnlyKeys(message, ['type', 'strategy']) && isCompareJoinStrategy(message.strategy)
         ? { type: 'setStrategy', strategy: message.strategy }
+        : undefined;
+    case 'openBslModuleDiff':
+      return hasOnlyKeys(message, ['type', 'nodeId']) && typeof message.nodeId === 'string' && message.nodeId.length > 0
+        ? { type: 'openBslModuleDiff', nodeId: message.nodeId }
         : undefined;
     case 'selectionChanged':
     case 'createPreview':

@@ -29,6 +29,7 @@ export interface CompareTreeNodePresentation {
   ownerAliases?: string[];
   metadataType?: string;
   moduleKind?: string;
+  bslRoutineAnalysis?: 'complete' | 'partial';
   qualifiedName?: string;
   identityConflict?: boolean;
   ambiguousIdentitySet?: boolean;
@@ -44,6 +45,8 @@ export interface CompareTreeNode {
   rightValue?: string;
   mergeable?: boolean;
   destructive?: boolean;
+  /** A paired CFE metadata object whose full incoming copy replaces an existing target object. */
+  replacement?: boolean;
   payloadRef?: string;
   conflict?: CompareTreeConflict;
   mergeState?: CompareTreeMergeState;

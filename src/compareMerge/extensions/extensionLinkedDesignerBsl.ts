@@ -3,6 +3,7 @@ import { pathToFileURL } from 'url';
 
 import { parseBslRoutines } from '../../bsl/routineRangeProvider';
 import type { BslRoutineInfo } from '../../bsl/bslRoutineTypes';
+import { fingerprintBslRoutineConditionalContexts } from '../bsl/bslModuleIndexer';
 import type { AdapterCompareInput, ExecutableCandidateFactory } from '../adapters/mergeAdapter';
 import type { CompareMessage } from '../domain/compareContracts';
 import type { CompareTreeNode } from '../compareTreeTypes';
@@ -59,7 +60,7 @@ export function collectExtensionEventDependencies(input: {
 }
 
 /** Captures only a paired Form module needed to prove changed Event handler references. */
-export async function projectExtensionFormEventHandlers(input: {
+interface ExtensionFormEventInput {
   readonly row: ExtensionTransferRow;
   readonly targetRoot: ExtensionMetadataIndex;
   readonly incomingRoot: ExtensionMetadataIndex;
@@ -70,112 +71,304 @@ export async function projectExtensionFormEventHandlers(input: {
   readonly targetFormXml: Buffer;
   readonly sourceFormXml: Buffer;
   readonly rightSnapshotId: string;
-}): Promise<ExtensionFormEventProjection> {
-  const targetModulePath = path.posix.join(path.posix.dirname(input.targetFormPath), 'Form', 'Module.bsl');
-  const sourceModulePath = path.posix.join(path.posix.dirname(input.sourceFormPath), 'Form', 'Module.bsl');
-  const targetFile = input.targetOwner.sidecarFiles.filter((file) => samePath(file.relativePath, targetModulePath));
-  const sourceFile = input.incomingOwner.sidecarFiles.filter((file) => samePath(file.relativePath, sourceModulePath));
-  const diagnostics: CompareMessage[] = [];
-  if (targetFile.length > 1 || sourceFile.length > 1) {
-    return projectionFailure(input, 'Module формы имеет неоднозначный sidecar path.');
-  }
-  const [targetContent, sourceContent] = await Promise.all([
-    targetFile[0] ? captureFile(input.targetRoot, input.targetOwner, targetFile[0]!) : Promise.resolve(undefined),
-    sourceFile[0] ? captureFile(input.incomingRoot, input.incomingOwner, sourceFile[0]!) : Promise.resolve(undefined),
-  ]);
-  if ((targetFile[0] && !targetContent) || (sourceFile[0] && !sourceContent)) {
-    return projectionFailure(input, 'Не удалось подтвердить captured BSL module формы.');
+}
+
+type FormModuleFile = ExtensionIndexedObject['sidecarFiles'][number];
+type ParsedBslModule = ReturnType<typeof parseBslRoutines>;
+
+interface CapturedFormModules {
+  readonly targetModulePath: string;
+  readonly targetFile?: FormModuleFile;
+  readonly sourceFile?: FormModuleFile;
+  readonly targetContent?: Buffer;
+  readonly sourceContent?: Buffer;
+  readonly failure?: string;
+}
+
+interface FormHandlerProjectionState {
+  readonly input: ExtensionFormEventInput;
+  readonly capture: CapturedFormModules;
+  readonly targetText?: string;
+  readonly sourceText?: string;
+  readonly targetIndex?: ParsedBslModule;
+  readonly sourceIndex?: ParsedBslModule;
+  readonly targetHasParseErrors: boolean;
+  readonly sourceHasParseErrors: boolean;
+  readonly sourceRoutinesByName: Map<string, IndexedBslRoutine[]>;
+  readonly sourceConditionalContexts?: readonly string[];
+  readonly moduleId: string;
+  readonly targetPath: string;
+  readonly sourcePath?: string;
+  readonly routineSelections: Map<string, ExtensionLinkedRoutineSelection>;
+  readonly routineCandidateIds: Map<string, string>;
+  readonly routineNodes: CompareTreeNode[];
+}
+
+interface FormHandlerCapability {
+  readonly name: string;
+  readonly targetHasHandler: boolean;
+  readonly incomingRoutineNodeId?: string;
+  readonly targetWitnesses?: NonNullable<AdapterCompareInput['linkedDesignerContext']>['formEventHandlers'][number]['targetWitnesses'];
+}
+
+export async function projectExtensionFormEventHandlers(
+  input: ExtensionFormEventInput
+): Promise<ExtensionFormEventProjection> {
+  const capture = await captureFormModules(input);
+  if (capture.failure) {
+    return projectionFailure(input, capture.failure);
   }
 
-  const targetText = targetContent?.toString('utf8');
-  const sourceText = sourceContent?.toString('utf8');
+  const state = buildFormHandlerProjectionState(input, capture);
+  const context = eventHandlers(input.sourceFormXml).map((name) => projectFormHandler(name, state));
+  const module = createFormModuleSnapshot(state);
+  return {
+    context,
+    module,
+    routineSelections: state.routineSelections,
+    routineNodes: state.routineNodes,
+    diagnostics: [],
+  };
+}
+
+async function captureFormModules(input: ExtensionFormEventInput): Promise<CapturedFormModules> {
+  const targetModulePath = path.posix.join(path.posix.dirname(input.targetFormPath), 'Form', 'Module.bsl');
+  const sourceModulePath = path.posix.join(path.posix.dirname(input.sourceFormPath), 'Form', 'Module.bsl');
+  const targetFiles = input.targetOwner.sidecarFiles.filter((file) => samePath(file.relativePath, targetModulePath));
+  const sourceFiles = input.incomingOwner.sidecarFiles.filter((file) => samePath(file.relativePath, sourceModulePath));
+  const result: CapturedFormModules = { targetModulePath, targetFile: targetFiles[0], sourceFile: sourceFiles[0] };
+  if (targetFiles.length > 1 || sourceFiles.length > 1) {
+    return { ...result, failure: 'Module формы имеет неоднозначный sidecar path.' };
+  }
+
+  const [targetContent, sourceContent] = await Promise.all([
+    targetFiles[0] ? captureFile(input.targetRoot, input.targetOwner, targetFiles[0]) : Promise.resolve(undefined),
+    sourceFiles[0] ? captureFile(input.incomingRoot, input.incomingOwner, sourceFiles[0]) : Promise.resolve(undefined),
+  ]);
+  if ((targetFiles[0] && !targetContent) || (sourceFiles[0] && !sourceContent)) {
+    return { ...result, targetContent, sourceContent, failure: 'Не удалось подтвердить captured BSL module формы.' };
+  }
+  return { ...result, targetContent, sourceContent };
+}
+
+function buildFormHandlerProjectionState(
+  input: ExtensionFormEventInput,
+  capture: CapturedFormModules
+): FormHandlerProjectionState {
+  const targetText = capture.targetContent?.toString('utf8');
+  const sourceText = capture.sourceContent?.toString('utf8');
   const targetIndex = targetText === undefined ? undefined : parseBslRoutines(targetText);
   const sourceIndex = sourceText === undefined ? undefined : parseBslRoutines(sourceText);
-  const targetHasParseErrors = targetIndex?.diagnostics.some((item) => item.severity === 'error') ?? false;
-  const sourceHasParseErrors = sourceIndex?.diagnostics.some((item) => item.severity === 'error') ?? false;
-  const handlerNames = eventHandlers(input.sourceFormXml);
-  const targetPath = targetFile[0]?.relativePath ?? targetModulePath;
-  const sourcePath = sourceFile[0]?.relativePath;
   const formName = path.posix.basename(path.posix.dirname(path.posix.dirname(input.targetFormPath)));
   const formType = input.row.incoming?.metadataType ?? input.row.target?.metadataType;
   const formQualifiedName = formType === 'CommonForm'
     ? input.row.qualifiedName
     : `${input.row.qualifiedName}.Form.${formName}`;
-  const moduleId = canonicalFormModuleId(formQualifiedName);
-  const routineSelections = new Map<string, ExtensionLinkedRoutineSelection>();
-  const routineCandidateIds = new Map<string, string>();
-  const routineNodes: CompareTreeNode[] = [];
-  const capabilities: Array<NonNullable<AdapterCompareInput['linkedDesignerContext']>['formEventHandlers'][number]> = [];
+  return {
+    input,
+    capture,
+    targetText,
+    sourceText,
+    targetIndex,
+    sourceIndex,
+    targetHasParseErrors: hasBslParseErrors(targetIndex),
+    sourceHasParseErrors: hasBslParseErrors(sourceIndex),
+    sourceRoutinesByName: indexRoutinesByName(sourceIndex?.routines ?? []),
+    sourceConditionalContexts: sourceIndex && sourceText !== undefined
+      ? fingerprintBslRoutineConditionalContexts(sourceText, sourceIndex.routines)
+      : undefined,
+    moduleId: canonicalFormModuleId(formQualifiedName),
+    targetPath: capture.targetFile?.relativePath ?? capture.targetModulePath,
+    sourcePath: capture.sourceFile?.relativePath,
+    routineSelections: new Map(),
+    routineCandidateIds: new Map(),
+    routineNodes: [],
+  };
+}
 
-  for (const name of handlerNames) {
-    const normalized = name.toLocaleLowerCase('en-US');
-    const targetMatches = targetIndex?.routines.filter((routine) => routine.normalizedName === normalized) ?? [];
-    const sourceMatches = sourceIndex?.routines.filter((routine) => routine.normalizedName === normalized) ?? [];
-    const targetHasHandler = Boolean(targetIndex && !targetHasParseErrors && targetMatches.length === 1);
-    let incomingRoutineNodeId: string | undefined;
-    if (!targetHasHandler && sourceIndex && !sourceHasParseErrors && sourceMatches.length === 1 && targetPath && sourcePath && sourceFile[0]) {
-      const routine = sourceMatches[0]!;
-      const sourceSpan = captureBslRoutineSpan(sourceText!, routine);
-      if (sourceSpan) {
-        const sourceTextForRoutine = sourceSpan.sourceText;
-        incomingRoutineNodeId = `extension:bsl-routine:${input.row.id}:${encodeURIComponent(moduleId)}:${encodeURIComponent(normalized)}`;
-        const factory = routineCandidateFactory({
-          nodeId: incomingRoutineNodeId,
-          row: input.row,
-          rightSnapshotId: input.rightSnapshotId,
-          targetPath,
-          sourcePath,
-          targetText,
-          targetMissing: !targetFile[0],
-          targetSourceId: input.targetRoot.sourceId,
-          sourceId: input.incomingRoot.sourceId,
-          sourceText: sourceTextForRoutine,
-          sourceHash: sourceFile[0].hash,
-          routine,
-          sourceTextRange: sourceSpan.sourceTextRange,
-        });
-        routineCandidateIds.set(normalized, incomingRoutineNodeId);
-        routineSelections.set(incomingRoutineNodeId, { nodeId: incomingRoutineNodeId, rowId: input.row.id, moduleId, candidateFactory: factory });
-        routineNodes.push({
-          id: incomingRoutineNodeId,
-          label: `Процедура: ${routine.name}`,
-          kind: 'bslRoutine',
-          status: 'rightOnly',
-          leftValue: '',
-          rightValue: sourceTextForRoutine,
-          mergeable: true,
-          mergeState: { state: 'ready', targetFilePath: targetPath },
-          children: [],
-        });
-      }
-    }
-    capabilities.push({
-      name,
-      targetHasHandler,
-      ...(incomingRoutineNodeId ? { incomingRoutineNodeId } : {}),
-      ...(targetFile[0] ? { targetWitnesses: [{
-        sourceId: input.targetRoot.sourceId,
-        relativePath: targetFile[0].relativePath,
-        expectedHash: targetFile[0].hash,
-        kind: 'file' as const,
-      }] } : {}),
-    });
+function hasBslParseErrors(index: ParsedBslModule | undefined): boolean {
+  return index?.diagnostics.some((item) => item.severity === 'error') ?? false;
+}
+
+function projectFormHandler(name: string, state: FormHandlerProjectionState): FormHandlerCapability {
+  const normalized = name.toLocaleLowerCase('en-US');
+  const targetMatches = state.targetIndex?.routines.filter((routine) => routine.normalizedName === normalized) ?? [];
+  const targetHasHandler = Boolean(state.targetIndex && !state.targetHasParseErrors && targetMatches.length === 1);
+  const sourceMatches = state.sourceRoutinesByName.get(normalized) ?? [];
+  const sourceRoutine = findAddableSourceRoutine(sourceMatches, targetHasHandler, state);
+  const incomingRoutineNodeId = sourceRoutine ? addIncomingFormRoutine(normalized, sourceRoutine, state) : undefined;
+  return {
+    name,
+    targetHasHandler,
+    ...(incomingRoutineNodeId ? { incomingRoutineNodeId } : {}),
+    ...(state.capture.targetFile ? { targetWitnesses: [createTargetModuleWitness(state)] } : {}),
+  };
+}
+
+function findAddableSourceRoutine(
+  sourceMatches: readonly IndexedBslRoutine[],
+  targetHasHandler: boolean,
+  state: FormHandlerProjectionState
+): IndexedBslRoutine | undefined {
+  if (targetHasHandler || !state.sourceIndex || state.sourceHasParseErrors || sourceMatches.length !== 1
+    || !state.sourcePath || !state.capture.sourceFile) {
+    return undefined;
+  }
+  return sourceMatches[0];
+}
+
+function addIncomingFormRoutine(
+  normalized: string,
+  indexedRoutine: IndexedBslRoutine,
+  state: FormHandlerProjectionState
+): string | undefined {
+  const { routine, index } = indexedRoutine;
+  const nodeId = formRoutineNodeId(normalized, state);
+  const context = state.sourceConditionalContexts?.[index];
+  if (context !== '') {
+    state.routineNodes.push(blockedFormEventRoutineNode({
+      nodeId,
+      moduleId: state.moduleId,
+      routine,
+      targetPath: state.targetPath,
+      reason: conditionalHandlerBlockReason(context),
+    }));
+    return undefined;
   }
 
-  const module = targetPath && sourcePath && sourceFile[0]
-    ? {
-      moduleId,
-      targetRelativePath: targetPath,
-      sourceRelativePath: sourcePath,
-      targetHash: targetFile[0]?.hash ?? MISSING_TARGET_HASH,
-      sourceHash: sourceFile[0].hash,
-      targetContent: targetText,
-      sourceContent: sourceText,
-      ...(!targetFile[0] ? { targetMissing: true as const } : {}),
-      routineCandidateIds,
-    }
-    : undefined;
-  return { context: capabilities, module, routineSelections, routineNodes, diagnostics };
+  const sourceSpan = state.sourceText === undefined ? undefined : captureBslRoutineSpan(state.sourceText, routine);
+  if (!sourceSpan || !state.sourcePath || !state.capture.sourceFile) {
+    return undefined;
+  }
+  const sourceTextForRoutine = sourceSpan.sourceText;
+  const candidateFactory = createFormRoutineCandidate(nodeId, routine, sourceSpan, sourceTextForRoutine, state);
+  state.routineCandidateIds.set(normalized, nodeId);
+  state.routineSelections.set(nodeId, {
+    nodeId,
+    rowId: state.input.row.id,
+    moduleId: state.moduleId,
+    candidateFactory,
+  });
+  state.routineNodes.push(readyFormEventRoutineNode(nodeId, routine, sourceTextForRoutine, state));
+  return nodeId;
+}
+
+function formRoutineNodeId(normalized: string, state: FormHandlerProjectionState): string {
+  return `extension:bsl-routine:${state.input.row.id}:${encodeURIComponent(state.moduleId)}:${encodeURIComponent(normalized)}`;
+}
+
+function createFormRoutineCandidate(
+  nodeId: string,
+  routine: BslRoutineInfo,
+  sourceSpan: NonNullable<ReturnType<typeof captureBslRoutineSpan>>,
+  sourceTextForRoutine: string,
+  state: FormHandlerProjectionState
+): ExecutableCandidateFactory {
+  return routineCandidateFactory({
+    nodeId,
+    row: state.input.row,
+    rightSnapshotId: state.input.rightSnapshotId,
+    targetPath: state.targetPath,
+    sourcePath: state.sourcePath!,
+    targetText: state.targetText,
+    targetMissing: !state.capture.targetFile,
+    targetSourceId: state.input.targetRoot.sourceId,
+    sourceId: state.input.incomingRoot.sourceId,
+    sourceText: sourceTextForRoutine,
+    sourceHash: state.capture.sourceFile!.hash,
+    routine,
+    sourceTextRange: sourceSpan.sourceTextRange,
+  });
+}
+
+function readyFormEventRoutineNode(
+  nodeId: string,
+  routine: BslRoutineInfo,
+  sourceText: string,
+  state: FormHandlerProjectionState
+): CompareTreeNode {
+  return {
+    id: nodeId,
+    label: `Процедура: ${routine.name}`,
+    kind: 'bslRoutine',
+    status: 'rightOnly',
+    leftValue: '',
+    rightValue: sourceText,
+    mergeable: true,
+    mergeState: { state: 'ready', targetFilePath: state.targetPath },
+    presentation: { qualifiedName: state.moduleId },
+    children: [],
+  };
+}
+
+function createTargetModuleWitness(state: FormHandlerProjectionState): NonNullable<FormHandlerCapability['targetWitnesses']>[number] {
+  return {
+    sourceId: state.input.targetRoot.sourceId,
+    relativePath: state.capture.targetFile!.relativePath,
+    expectedHash: state.capture.targetFile!.hash,
+    kind: 'file',
+  };
+}
+
+function createFormModuleSnapshot(state: FormHandlerProjectionState): LinkedFormModuleSnapshot | undefined {
+  if (!state.sourcePath || !state.capture.sourceFile) {
+    return undefined;
+  }
+  return {
+    moduleId: state.moduleId,
+    targetRelativePath: state.targetPath,
+    sourceRelativePath: state.sourcePath,
+    targetHash: state.capture.targetFile?.hash ?? MISSING_TARGET_HASH,
+    sourceHash: state.capture.sourceFile.hash,
+    targetContent: state.targetText,
+    sourceContent: state.sourceText,
+    ...(!state.capture.targetFile ? { targetMissing: true as const } : {}),
+    routineCandidateIds: state.routineCandidateIds,
+  };
+}
+
+interface IndexedBslRoutine {
+  readonly routine: BslRoutineInfo;
+  readonly index: number;
+}
+
+function indexRoutinesByName(routines: readonly BslRoutineInfo[]): Map<string, IndexedBslRoutine[]> {
+  const byName = new Map<string, IndexedBslRoutine[]>();
+  routines.forEach((routine, index) => {
+    const matches = byName.get(routine.normalizedName) ?? [];
+    matches.push({ routine, index });
+    byName.set(routine.normalizedName, matches);
+  });
+  return byName;
+}
+
+function conditionalHandlerBlockReason(context: string | undefined): string {
+  return context === undefined
+    ? 'Условный контекст обработчика формы не подтверждён; требуется ручное добавление.'
+    : 'Обработчик формы расположен внутри условных директив; автоматическое добавление небезопасно.';
+}
+
+function blockedFormEventRoutineNode(input: {
+  readonly nodeId: string;
+  readonly moduleId: string;
+  readonly routine: BslRoutineInfo;
+  readonly targetPath: string;
+  readonly reason: string;
+}): CompareTreeNode {
+  return {
+    id: input.nodeId,
+    label: `Процедура: ${input.routine.name}`,
+    kind: 'bslRoutine',
+    status: 'rightOnly',
+    leftValue: '',
+    rightValue: input.routine.name,
+    mergeable: false,
+    payloadRef: `extensionBslRoutine:${input.moduleId}:${input.routine.normalizedName}`,
+    conflict: { kind: 'bslLogicalConflict', blocking: true, message: input.reason },
+    mergeState: { state: 'blocked', reason: input.reason, targetFilePath: input.targetPath },
+    presentation: { qualifiedName: input.moduleId },
+    children: [],
+  };
 }
 
 export function makeExtensionLinkedBslContext(

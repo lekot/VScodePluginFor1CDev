@@ -4,6 +4,8 @@ import * as path from 'path';
 import type { CompareSide, MetadataIdentity, MetadataNameSource } from '../domain/compareContracts';
 import { getValueByLocalName, localName } from '../../parsers/xmlNavHelpers';
 import { XmlParser } from '../../parsers/xmlParser';
+import { getMetadataTypeDescriptorByRootTag, METADATA_TYPE_DESCRIPTORS } from '../../constants/metadataTypeDescriptors';
+import { readMetadataHeaderPrefix } from './metadataHeaderReader';
 import {
   type CompareCancellationToken,
   throwIfCompareCancelled,
@@ -53,6 +55,13 @@ export async function indexMetadataFile(input: MetadataIndexFileInput): Promise<
 
   const parsed = await XmlParser.parseFileAsync(input.filePath);
   throwIfCompareCancelled(input.cancellation);
+  return projectMetadataIdentity(input, parsed);
+}
+
+function projectMetadataIdentity(
+  input: MetadataIndexFileInput,
+  parsed: Record<string, unknown>
+): MetadataIdentity {
   const root = getRootElement(parsed);
   const metadataType =
     input.metadataType ??
@@ -97,7 +106,8 @@ async function readMetadataUuidPrefix(filePath: string): Promise<string | undefi
 }
 
 function readMetadataUuidFast(content: string): string | undefined {
-  return content.match(/\buuid\s*=\s*"([^"]+)"/i)?.[1];
+  const uuid = content.match(/\buuid\s*=\s*"([^"]+)"/i)?.[1];
+  return uuid === undefined ? undefined : Buffer.from(uuid, 'utf8').toString('utf8');
 }
 
 export async function indexMetadataFolder(
@@ -118,7 +128,7 @@ export async function indexMetadataFolder(
       }
     }
 
-    return indexMetadataFile({
+    const fileInput: MetadataIndexFileInput = {
       sourceId: input.sourceId,
       side: input.side,
       filePath,
@@ -126,10 +136,58 @@ export async function indexMetadataFolder(
       qualifiedName: pathContext?.qualifiedName,
       readUuid: input.readUuid,
       cancellation: input.cancellation,
-    });
+    };
+    if (fileInput.metadataType && !fileInput.qualifiedName) {
+      return indexMetadataFileFromHeader(fileInput);
+    }
+    return indexMetadataFile(fileInput);
   }, input.cancellation);
 
   return indexed.filter((identity): identity is MetadataIdentity => Boolean(identity));
+}
+
+async function indexMetadataFileFromHeader(input: MetadataIndexFileInput): Promise<MetadataIdentity> {
+  const metadataType = input.metadataType;
+  if (!metadataType) {
+    return indexMetadataFile(input);
+  }
+
+  const descriptor = METADATA_DESCRIPTORS_BY_TYPE.get(metadataType);
+  const rootTags = [metadataType, descriptor?.designerRootTag, ...(descriptor?.designerRootTagAliases ?? [])]
+    .filter((tag): tag is string => tag !== undefined);
+  const prefix = await readMetadataHeaderPrefix({
+    filePath: input.filePath,
+    rootTags,
+    cancellation: input.cancellation,
+  });
+  if (!prefix) {
+    return indexMetadataFile(input);
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = XmlParser.parseString(prefix);
+  } catch {
+    return indexMetadataFile(input);
+  }
+  throwIfCompareCancelled(input.cancellation);
+
+  stripProcessingInstructionNodes(parsed);
+  const root = getRootElement(parsed);
+  const objectElement = findMetadataObjectElement(parsed, metadataType) ?? root.value;
+  if (!readPropertiesName(objectElement) && !readPropertiesName(root.value)) {
+    return indexMetadataFile(input);
+  }
+
+  return projectMetadataIdentity(input, parsed);
+}
+
+function stripProcessingInstructionNodes(parsed: Record<string, unknown>): void {
+  for (const key of Object.keys(parsed)) {
+    if (key.startsWith('?')) {
+      delete parsed[key];
+    }
+  }
 }
 
 interface MetadataPathContext {
@@ -364,7 +422,7 @@ function inferMetadataTypeFromXml(
 ): string | undefined {
   const rootName = localName(root.name);
   if (rootName !== 'MetaDataObject') {
-    return rootName;
+    return metadataTypeForRootTag(rootName);
   }
 
   if (!isRecord(root.value)) {
@@ -373,7 +431,7 @@ function inferMetadataTypeFromXml(
 
   for (const [key, value] of Object.entries(root.value)) {
     if (isXmlPayloadKey(key) && value !== undefined) {
-      return localName(key);
+      return metadataTypeForRootTag(localName(key));
     }
   }
 
@@ -397,6 +455,10 @@ function isKnownMetadataType(metadataType: string): boolean {
   return KNOWN_METADATA_TYPES.has(metadataType);
 }
 
+function metadataTypeForRootTag(rootTag: string): string {
+  return String(getMetadataTypeDescriptorByRootTag(rootTag)?.type ?? rootTag);
+}
+
 function findMetadataObjectElement(parsed: Record<string, unknown>, metadataType: string): unknown {
   const root = getRootElement(parsed);
   if (localName(root.name) === metadataType) {
@@ -404,9 +466,12 @@ function findMetadataObjectElement(parsed: Record<string, unknown>, metadataType
   }
 
   if (isRecord(root.value)) {
-    const direct = getValueByLocalName(root.value, metadataType);
-    if (direct !== undefined) {
-      return firstValue(direct);
+    const descriptor = METADATA_DESCRIPTORS_BY_TYPE.get(metadataType);
+    const rootTags = [metadataType, descriptor?.designerRootTag, ...(descriptor?.designerRootTagAliases ?? [])]
+      .filter((value): value is string => value !== undefined);
+    for (const rootTag of rootTags) {
+      const direct = getValueByLocalName(root.value, rootTag);
+      if (direct !== undefined) {return firstValue(direct);}
     }
   }
 
@@ -494,51 +559,7 @@ function singularizeMetadataFolder(folderName: string): string {
   return folderName;
 }
 
-const METADATA_FOLDER_TYPES: Record<string, string> = {
-  AccumulationRegisters: 'AccumulationRegister',
-  AccountingRegisters: 'AccountingRegister',
-  BusinessProcesses: 'BusinessProcess',
-  CalculationRegisters: 'CalculationRegister',
-  Catalogs: 'Catalog',
-  ChartsOfAccounts: 'ChartOfAccounts',
-  ChartsOfCalculationTypes: 'ChartOfCalculationTypes',
-  ChartsOfCharacteristicTypes: 'ChartOfCharacteristicTypes',
-  CommonAttributes: 'CommonAttribute',
-  CommonCommands: 'CommonCommand',
-  CommonForms: 'CommonForm',
-  CommonModules: 'CommonModule',
-  CommonPictures: 'CommonPicture',
-  CommonTemplates: 'CommonTemplate',
-  CommandGroups: 'CommandGroup',
-  Constants: 'Constant',
-  DataProcessors: 'DataProcessor',
-  DefinedTypes: 'DefinedType',
-  DocumentJournals: 'DocumentJournal',
-  DocumentNumerators: 'DocumentNumerator',
-  Documents: 'Document',
-  Enums: 'Enum',
-  EventSubscriptions: 'EventSubscription',
-  ExchangePlans: 'ExchangePlan',
-  ExternalDataSources: 'ExternalDataSource',
-  FilterCriteria: 'FilterCriterion',
-  FunctionalOptions: 'FunctionalOption',
-  FunctionalOptionsParameters: 'FunctionalOptionsParameter',
-  HTTPServices: 'HTTPService',
-  InformationRegisters: 'InformationRegister',
-  IntegrationServices: 'IntegrationService',
-  Interfaces: 'Interface',
-  Languages: 'Language',
-  Reports: 'Report',
-  Roles: 'Role',
-  ScheduledJobs: 'ScheduledJob',
-  SessionParameters: 'SessionParameter',
-  SettingsStorages: 'SettingsStorage',
-  Styles: 'Style',
-  Subsystems: 'Subsystem',
-  Tasks: 'Task',
-  WebServices: 'WebService',
-  WSReferences: 'WSReference',
-  XDTOPackages: 'XDTOPackage',
+const NESTED_METADATA_FOLDER_TYPES: Record<string, string> = {
   Attributes: 'Attribute',
   Commands: 'Command',
   Dimensions: 'Dimension',
@@ -548,4 +569,18 @@ const METADATA_FOLDER_TYPES: Record<string, string> = {
   Templates: 'Template',
 };
 
+const METADATA_FOLDER_TYPES: Record<string, string> = Object.fromEntries([
+  ...METADATA_TYPE_DESCRIPTORS.map((descriptor) => [descriptor.designerFolder, String(descriptor.type)]),
+  ...Object.entries(NESTED_METADATA_FOLDER_TYPES),
+]);
+
+const METADATA_DESCRIPTORS_BY_TYPE = new Map(
+  METADATA_TYPE_DESCRIPTORS.map((descriptor) => [String(descriptor.type), descriptor])
+);
+
 const KNOWN_METADATA_TYPES = new Set(Object.values(METADATA_FOLDER_TYPES));
+
+/** Metadata roots that can own a Designer descriptor/container in a configuration export. */
+export const KNOWN_ROOT_METADATA_TYPES: ReadonlySet<string> = new Set(
+  METADATA_TYPE_DESCRIPTORS.map((descriptor) => String(descriptor.type))
+);

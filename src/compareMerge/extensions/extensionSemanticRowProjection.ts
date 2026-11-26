@@ -18,6 +18,7 @@ export function extensionSemanticRowNode(
     leftValue: row.target?.descriptorRelativePath,
     rightValue: row.incoming?.descriptorRelativePath,
     mergeable: row.mergeable,
+    ...(row.replacement ? { replacement: true, destructive: true } : {}),
     ...(row.reason ? { conflict: { kind: 'unsupported' as const, message: row.reason, blocking: true } } : {}),
     mergeState: row.mergeable
       ? { state: 'ready', targetFilePath: row.target?.descriptorRelativePath ?? row.incoming?.descriptorRelativePath }

@@ -4,6 +4,7 @@ import { pathToFileURL } from 'url';
 
 import type { ConfigurationMutationEngine } from '../services/configurationSession/ConfigurationMutationEngine';
 import type { ConfigurationId } from '../services/configurationSession/types';
+import { locateMetadataFileWithinRoot } from '../services/metadataFileLocator';
 import { compareCodeUnits } from '../utils/compareCodeUnits';
 import {
   indexBslModuleSource,
@@ -11,6 +12,7 @@ import {
   type BslModuleDiagnostic,
 } from './bsl/bslModuleIndexer';
 import { collectBslInventorySources, resolveBslInventoryIdentities } from './bsl/bslInventoryCollection';
+import { createBslModuleComparisonReferences } from './bsl/bslModuleComparison';
 import { selectBslSourceRetention } from './bsl/bslSourceRetention';
 import { createBslRoutineLogicalMergePlan } from './bsl/bslRoutineLogicalMerge';
 import {
@@ -41,8 +43,13 @@ import {
 } from './compareBuildPipeline';
 import { CompareSession } from './domain/compareSession';
 import type { CompareMessage, CompareSide, MetadataIdentity } from './domain/compareContracts';
-import { buildConfigurationInventory } from './inventory/configurationInventory';
-import type { ConfigurationInventory } from './inventory/configurationInventory';
+import {
+  appendHashedBslArtifacts,
+  hydrateConfigurationInventoryFromManifest,
+} from './inventory/configurationInventory';
+import { buildConfigurationFileManifest, metadataObjectId } from './inventory/configurationFileManifest';
+import type { ConfigurationFileManifest } from './inventory/configurationFileManifest';
+import { normalizeAbsolutePath } from './linkedDesignerUtils';
 import { discoverConfigurationCompareManifest } from './configurationCompareManifest';
 import {
   buildCompareTreeProjection,
@@ -52,12 +59,12 @@ import {
 import { type CompareCancellationToken, throwIfCompareCancelled } from './compareCancellation';
 import {
   buildFormXmlModulePathMap,
-  linkedDesignerDescriptorScope,
   mapLinkedModulesByTargetPath,
 } from './linkedDesignerContext';
 import { captureLinkedFormXmlSnapshots } from './linkedDesignerCapture';
 import { captureBslRoutineSpan } from './linkedDesignerRoutineSpan';
 import { prepareLinkedDesignerBslContext } from './linkedDesignerBslContext';
+import { collectUnmatchedLinkedDesignerBslPaths } from './linkedDesignerPackageIndex';
 import { tryBuildExtensionCompareState } from './extensions/extensionCompare';
 import {
   createReadOnlyCompareProjection,
@@ -68,7 +75,8 @@ import {
 import { tryBuildEdtUnsupportedState } from './edtUnsupportedCompare';
 import {
   bindLinkedDesignerPackageNodes,
-  buildLinkedDesignerCompareIndex,
+  buildLinkedDesignerPackageReferenceIndex,
+  captureLinkedRootConfiguration,
   materializeLinkedDesignerSelection,
   type LinkedDesignerMaterializerContext,
 } from './linkedDesignerMaterializer';
@@ -218,31 +226,122 @@ async function buildConfigurationCompareState(
         buildCompareTreeProjection({ metadata: partialMetadata })
       );
     }
-    const descriptorScope = linkedDesignerDescriptorScope(metadata, strategy);
     publishCompareBuildProgress(input, { phase: 'inventory' });
-    const [leftInventory, rightInventory] = await awaitAllSettled([
-      buildConfigurationInventory(leftRootPath, {
+    const [leftManifest, rightManifest] = await awaitAllSettled([
+      buildConfigurationFileManifest(leftRootPath, {
         identities: leftMetadata,
-        includeDescriptorPaths: descriptorScope.left,
+        cancellation: input.cancellation,
+      }),
+      buildConfigurationFileManifest(rightRootPath, {
+        identities: rightMetadata,
+        cancellation: input.cancellation,
+      }),
+    ]);
+    const rootConfigurationCapture = await captureLinkedRootConfiguration(leftRootPath, rightRootPath);
+    const matchedLeftOwnerIds = new Set(metadata.matches.map((match) => metadataObjectId(match.left)));
+    const matchedRightOwnerIds = new Set(metadata.matches.map((match) => metadataObjectId(match.right)));
+    const [leftHydratedInventory, rightHydratedInventory] = await awaitAllSettled([
+      hydrateConfigurationInventoryFromManifest({
+        manifest: leftManifest,
+        matchedOwnerObjectIds: matchedLeftOwnerIds,
         cancellation: input.cancellation,
         artifactConcurrency: limits.inventoryReadConcurrency,
       }),
-      buildConfigurationInventory(rightRootPath, {
-        identities: rightMetadata,
-        includeDescriptorPaths: descriptorScope.right,
+      hydrateConfigurationInventoryFromManifest({
+        manifest: rightManifest,
+        matchedOwnerObjectIds: matchedRightOwnerIds,
         cancellation: input.cancellation,
         artifactConcurrency: limits.inventoryReadConcurrency,
       }),
     ]);
-    publishCompareBuildProgress(input, { phase: 'inventory', completed: 2, total: 2 });
-    const linkedFormXmlCapture = await captureLinkedFormXmlSnapshots(leftInventory);
-    const linkedDesignerIndex = await buildLinkedDesignerCompareIndex({
+    publishCompareBuildProgress(input, { phase: 'inventory', completed: 5, total: 5 });
+
+    throwIfCompareCancelled(input.cancellation);
+    publishCompareBuildProgress(input, { phase: 'bsl' });
+    const [leftResolution, rightResolution] = await awaitAllSettled([
+      resolveBslInventoryIdentities({
+        sourceId: LEFT_SOURCE_ID,
+        side: 'left',
+        configRoot: leftRootPath,
+        filePaths: collectBslManifestPaths(leftManifest),
+        cancellation: input.cancellation,
+        locationResolver: (filePath) => locateMetadataFileWithinRoot(filePath, leftRootPath),
+      }),
+      resolveBslInventoryIdentities({
+        sourceId: RIGHT_SOURCE_ID,
+        side: 'right',
+        configRoot: rightRootPath,
+        filePaths: collectBslManifestPaths(rightManifest),
+        cancellation: input.cancellation,
+        locationResolver: (filePath) => locateMetadataFileWithinRoot(filePath, rightRootPath),
+      }),
+    ]);
+    const retention = selectBslSourceRetention({
+      left: leftResolution.files,
+      right: rightResolution.files,
+      matchedFormModuleIds: collectMatchedFormModuleIds(metadata.matches),
+    });
+    const deferredPackageBslPaths = collectUnmatchedLinkedDesignerBslPaths({
+      metadata,
+      leftManifest,
+      rightManifest,
+      strategy,
+    });
+    const leftReadPaths = collectBslReadPaths({
+      manifest: leftManifest,
+      matchedOwnerObjectIds: matchedLeftOwnerIds,
+      analysisPaths: retention.leftPaths,
+      deferredPackagePaths: deferredPackageBslPaths.left,
+    });
+    const rightReadPaths = collectBslReadPaths({
+      manifest: rightManifest,
+      matchedOwnerObjectIds: matchedRightOwnerIds,
+      analysisPaths: retention.rightPaths,
+      deferredPackagePaths: deferredPackageBslPaths.right,
+    });
+    const leftCollection = await collectBslInventorySources({
+      resolution: leftResolution,
+      retainedPaths: retention.leftPaths,
+      analysisPaths: retention.leftPaths,
+      readPaths: leftReadPaths,
+      concurrency: limits.bslReadConcurrency,
+      cancellation: input.cancellation,
+      readTextFile: input.io?.readTextFile,
+      readFileBytes: (filePath) => fs.readFile(filePath),
+    });
+    const rightCollection = await collectBslInventorySources({
+      resolution: rightResolution,
+      retainedPaths: retention.rightPaths,
+      analysisPaths: retention.rightPaths,
+      readPaths: rightReadPaths,
+      concurrency: limits.bslReadConcurrency,
+      cancellation: input.cancellation,
+      readTextFile: input.io?.readTextFile,
+      readFileBytes: (filePath) => fs.readFile(filePath),
+    });
+    const leftInventory = appendHashedBslArtifacts({
+      inventory: leftHydratedInventory,
+      manifest: leftManifest,
+      rawFileHashes: leftCollection.rawFileHashes ?? new Map(),
+      includedPaths: leftReadPaths,
+    });
+    const rightInventory = appendHashedBslArtifacts({
+      inventory: rightHydratedInventory,
+      manifest: rightManifest,
+      rawFileHashes: rightCollection.rawFileHashes ?? new Map(),
+      includedPaths: rightReadPaths,
+    });
+    const linkedFormXmlCapture = await captureLinkedFormXmlSnapshots(leftInventory, { includeReferenceOwnerSnapshots: false });
+    const linkedDesignerIndex = await buildLinkedDesignerPackageReferenceIndex({
       metadata,
       leftInventory,
       rightInventory,
+      leftManifest,
+      rightManifest,
       leftRootPath,
       rightRootPath,
       strategy,
+      rootConfigurationCapture,
     });
     const linkedTemplateTransitions = await captureLinkedTemplateTypeTransitions({
       metadata,
@@ -252,45 +351,6 @@ async function buildConfigurationCompareState(
       rightRootPath,
     });
     for (const diagnostic of linkedDesignerIndex.diagnostics) {session.addMessage(diagnostic);}
-    throwIfCompareCancelled(input.cancellation);
-    publishCompareBuildProgress(input, { phase: 'bsl' });
-    const [leftResolution, rightResolution] = await awaitAllSettled([
-      resolveBslInventoryIdentities({
-        sourceId: LEFT_SOURCE_ID,
-        side: 'left',
-        configRoot: leftRootPath,
-        filePaths: collectBslArtifactPaths(leftInventory),
-        cancellation: input.cancellation,
-      }),
-      resolveBslInventoryIdentities({
-        sourceId: RIGHT_SOURCE_ID,
-        side: 'right',
-        configRoot: rightRootPath,
-        filePaths: collectBslArtifactPaths(rightInventory),
-        cancellation: input.cancellation,
-      }),
-    ]);
-    const retention = selectBslSourceRetention({
-      left: leftResolution.files,
-      right: rightResolution.files,
-      matchedFormModuleIds: collectMatchedFormModuleIds(metadata.matches),
-    });
-    const leftCollection = await collectBslInventorySources({
-      resolution: leftResolution,
-      retainedPaths: retention.leftPaths,
-      analysisPaths: retention.leftPaths,
-      concurrency: limits.bslReadConcurrency,
-      cancellation: input.cancellation,
-      readTextFile: input.io?.readTextFile,
-    });
-    const rightCollection = await collectBslInventorySources({
-      resolution: rightResolution,
-      retainedPaths: retention.rightPaths,
-      analysisPaths: retention.rightPaths,
-      concurrency: limits.bslReadConcurrency,
-      cancellation: input.cancellation,
-      readTextFile: input.io?.readTextFile,
-    });
     leftSources = leftCollection.sources;
     rightSources = rightCollection.sources;
     const leftBsl = leftCollection.index;
@@ -333,6 +393,8 @@ async function buildConfigurationCompareState(
     const bsl = buildBslProjectionInputs({
       leftModules: leftBsl.modules,
       rightModules: rightBsl.modules,
+      leftSuppressedUnmatchedPaths: collectBslPathsOwnedBy(metadata.unmatchedLeft, leftManifest),
+      rightSuppressedUnmatchedPaths: collectBslPathsOwnedBy(metadata.unmatchedRight, rightManifest),
       leftSources,
       rightSources,
       session,
@@ -368,6 +430,12 @@ async function buildConfigurationCompareState(
     }
     const linkedModules = linkedBslContext.modules;
     const { eventRoutineDependencies, defaultFormDependencies } = linkedBslContext;
+    const bslModuleComparisons = createBslModuleComparisonReferences({
+      leftModules: leftBsl.modules,
+      rightModules: rightBsl.modules,
+      leftSources,
+      rightSources,
+    });
     // Candidate factories and linked snapshots retain the module details they still need.
     leftBsl.modules.length = 0;
     rightBsl.modules.length = 0;
@@ -388,7 +456,7 @@ async function buildConfigurationCompareState(
       cancellation: input.cancellation,
       concurrency: limits.adapterReadConcurrency,
       readTextFile: input.io?.readTextFile,
-      linkedDesignerPackages: linkedDesignerIndex.packages,
+      linkedDesignerPackages: linkedDesignerIndex.packageReferences,
       linkedModules,
       eventRoutineDependencies,
       defaultFormDependencies,
@@ -412,7 +480,7 @@ async function buildConfigurationCompareState(
     });
     const bound = bindLinkedDesignerPackageNodes({
       results: adapterResults,
-      packages: linkedDesignerIndex.packages,
+      packages: linkedDesignerIndex.packageReferences,
       blockedPresenceNodeIds: linkedDesignerIndex.blockedPresenceNodeIds,
     });
     const transitionBound = bindLinkedTemplateTypeTransitionNodes({
@@ -448,6 +516,9 @@ async function buildConfigurationCompareState(
       session,
       candidateFactories,
       packagesByNodeId: bound.packagesByNodeId,
+      packageReferencesByNodeId: bound.packageReferencesByNodeId,
+      packageManifests: { target: leftManifest, source: rightManifest },
+      rootConfigurationStates: linkedDesignerIndex.rootConfigurationStates,
       wholeObjectCopiesByNodeId: linkedDesignerIndex.wholeObjectCopiesByNodeId,
       rootConfiguration: linkedDesignerIndex.rootConfiguration,
       formModules: linkedModules.filter((module) => module.moduleId.includes('.Form.') || module.moduleId.startsWith('CommonForm.')),
@@ -456,6 +527,8 @@ async function buildConfigurationCompareState(
       formXmlSnapshotIssues: linkedFormXmlCapture.issues,
       formReferenceOwnerSnapshots: linkedFormXmlCapture.referenceOwners,
       formReferenceOwnerSnapshotIssues: linkedFormXmlCapture.referenceOwnerIssues,
+      formReferenceOwnerReferences: linkedFormXmlCapture.referenceOwnerReferences,
+      formReferenceOwnerReferenceIssues: linkedFormXmlCapture.referenceOwnerIssues,
       eventRoutineDependencies,
       defaultFormDependencies,
       formXmlModuleByTargetPath: buildFormXmlModulePathMap(metadata, linkedModules, leftInventory),
@@ -467,6 +540,7 @@ async function buildConfigurationCompareState(
       projection,
       candidateFactories,
       mergeableNodeIds: [...candidateFactories.keys()],
+      bslModuleComparisons,
       materializeSelection: (nodeIds) => materializeLinkedDesignerSelection(materializerContext, nodeIds),
     };
   } catch (error) {
@@ -507,12 +581,28 @@ function throwIfCompareCancelledAndDispose(
   }
 }
 
-function collectBslArtifactPaths(inventory: ConfigurationInventory): string[] {
-  return [...inventory.artifactsByObjectId.values()]
-    .flat()
-    .filter((artifact) => artifact.kind === 'bslModule')
-    .map((artifact) => artifact.filePath)
+function collectBslManifestPaths(manifest: ConfigurationFileManifest): string[] {
+  return manifest.entries
+    .filter((entry) => entry.artifactKindHint === 'bslModule')
+    .map((entry) => entry.filePath)
     .sort((left, right) => left.localeCompare(right));
+}
+
+function collectBslReadPaths(input: {
+  readonly manifest: ConfigurationFileManifest;
+  readonly matchedOwnerObjectIds: ReadonlySet<string>;
+  readonly analysisPaths: ReadonlySet<string>;
+  readonly deferredPackagePaths: ReadonlySet<string>;
+}): ReadonlySet<string> {
+  const result = new Set(input.analysisPaths);
+  for (const entry of input.manifest.entries) {
+    if (entry.artifactKindHint === 'bslModule'
+      && input.matchedOwnerObjectIds.has(entry.ownerObjectId)
+      && !input.deferredPackagePaths.has(entry.filePath)) {
+      result.add(entry.filePath);
+    }
+  }
+  return result;
 }
 
 function collectMatchedFormModuleIds(
@@ -533,6 +623,8 @@ function collectMatchedFormModuleIds(
 function buildBslProjectionInputs(input: {
   leftModules: readonly BslModuleIndexEntry[];
   rightModules: readonly BslModuleIndexEntry[];
+  leftSuppressedUnmatchedPaths: ReadonlySet<string>;
+  rightSuppressedUnmatchedPaths: ReadonlySet<string>;
   leftSources: ReadonlyMap<string, string>;
   rightSources: ReadonlyMap<string, string>;
   session: CompareSession;
@@ -581,10 +673,33 @@ function buildBslProjectionInputs(input: {
       continue;
     }
 
+    if (leftMatches.length === 1 && rightMatches.length === 0
+      && input.leftSuppressedUnmatchedPaths.has(normalizeAbsolutePath(leftMatches[0]!.identity.filePath))) {
+      continue;
+    }
+    if (rightMatches.length === 1 && leftMatches.length === 0
+      && input.rightSuppressedUnmatchedPaths.has(normalizeAbsolutePath(rightMatches[0]!.identity.filePath))) {
+      continue;
+    }
     addUnmatchedBslMessage(input.session, moduleId, leftMatches, rightMatches);
   }
 
   return { items: projections, matchedDiagnostics, candidateFactories };
+}
+
+function collectBslPathsOwnedBy(
+  identities: readonly MetadataIdentity[],
+  manifest: ConfigurationFileManifest,
+): ReadonlySet<string> {
+  const result = new Set<string>();
+  for (const identity of identities) {
+    const object = manifest.objectsByDescriptorPath.get(normalizeAbsolutePath(identity.filePath));
+    if (!object) {continue;}
+    for (const entry of manifest.entriesByOwnerObjectId.get(object.objectId) ?? []) {
+      if (entry.artifactKindHint === 'bslModule') {result.add(normalizeAbsolutePath(entry.filePath));}
+    }
+  }
+  return result;
 }
 
 function groupModulesById(
@@ -626,6 +741,10 @@ function registerExecutableRoutineCandidates(input: {
 
   for (const routine of diff.routines) {
     const nodeId = `bsl:routine:${diff.moduleId}:${routine.normalizedName}`;
+    if (routine.mergeBlockReason) {
+      blockedRoutineReasons.set(nodeId, routine.mergeBlockReason);
+      continue;
+    }
     if (routine.status === 'added' && routine.right) {
       registerAddedRoutineCandidate({
         left: input.left,

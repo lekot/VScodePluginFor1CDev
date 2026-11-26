@@ -2122,6 +2122,10 @@ suite('Extension-aware configuration compare', () => {
       }
       await writeCompareBytes(paths.target, 'Catalogs/Products/Forms/Existing/Ext/Form.xml', targetBody);
       await writeCompareBytes(paths.source, 'Catalogs/Products/Forms/Existing/Ext/Form.xml', sourceBody);
+      const targetModule = 'Procedure OnOpen()\n    Message("target");\nEndProcedure';
+      const sourceModule = 'Procedure OnOpen()\n    Message("source");\nEndProcedure';
+      await writeCompareBytes(paths.target, 'Catalogs/Products/Forms/Existing/Ext/Form/Module.bsl', targetModule);
+      await writeCompareBytes(paths.source, 'Catalogs/Products/Forms/Existing/Ext/Form/Module.bsl', sourceModule);
       const sourceOwnerBefore = await fs.readFile(path.join(paths.source, 'Catalogs/Products.xml'));
       const baseOwnerBefore = await fs.readFile(path.join(paths.targetBase, 'Catalogs/Products.xml'));
 
@@ -2130,6 +2134,19 @@ suite('Extension-aware configuration compare', () => {
         extensionBaseRoots: { left: paths.targetBase, right: paths.sourceBase },
       });
       try {
+        const moduleNode = collectNodes(compare.result.workspace.payload.root).find((node) => node.kind === 'bslModule');
+        assert.ok(moduleNode, 'the captured linked Form module should be wrapped as one canonical BSL module row');
+        assert.ok(compare.result.workspace.payload.bslModuleDiffNodeIds?.includes(moduleNode!.id),
+          'a verified paired linked Form snapshot should expose the native diff capability');
+        const moduleDiff = await compare.result.workspace.resolveBslModuleComparison(moduleNode!.id);
+        assert.strictEqual(moduleDiff.ok, true, moduleDiff.ok ? '' : moduleDiff.message);
+        if (moduleDiff.ok) {
+          assert.strictEqual(moduleDiff.snapshot.sourceSnapshotText, sourceModule);
+          assert.strictEqual(
+            moduleDiff.snapshot.targetFilePath,
+            await fs.realpath(path.join(paths.target, 'Catalogs/Products/Forms/Existing/Ext/Form/Module.bsl'))
+          );
+        }
         const owner = collectNodes(compare.result.projection.root).find((node) =>
           node.kind === 'extensionMetadataObject' && node.label === 'Catalog.Products');
         const formChange = owner && collectNodes(owner).find((node) => node.mergeable
@@ -2146,6 +2163,107 @@ suite('Extension-aware configuration compare', () => {
         assert.strictEqual(await readUtf8(paths.target, 'Catalogs/Products/Forms/Existing.xml'), descriptor);
         assert.deepStrictEqual(await fs.readFile(path.join(paths.source, 'Catalogs/Products.xml')), sourceOwnerBefore);
         assert.deepStrictEqual(await fs.readFile(path.join(paths.targetBase, 'Catalogs/Products.xml')), baseOwnerBefore);
+      } finally {
+        await compare.dispose();
+      }
+    });
+  });
+
+  test('blocks an added FormEvent handler inside #Если while keeping a healthy sibling selectable', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cfe');
+      const source = path.join(tempRoot, 'source-cfe');
+      const formObject: ExtensionCompareObjectFixture = {
+        type: 'CommonForm',
+        name: 'Ext_EventForm',
+        uuid: '99999999-9999-4999-8999-999999999999',
+        belonging: 'Own',
+      };
+      await writeDesignerConfiguration(target, {
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+        objects: [formObject],
+      });
+      await writeDesignerConfiguration(source, {
+        purpose: 'Customization',
+        namePrefix: 'Ext_',
+        objects: [formObject],
+      });
+      const formRelativePath = 'CommonForms/Ext_EventForm/Ext/Form.xml';
+      const moduleRelativePath = 'CommonForms/Ext_EventForm/Ext/Form/Module.bsl';
+      const targetForm = '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Attributes/><Commands/><Parameters/><ChildItems><InputField name="Field" id="1"><Title>Source</Title></InputField></ChildItems></Form>';
+      const sourceForm = [
+        '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">',
+        '<Attributes/><Commands/><Parameters/><ChildItems>',
+        '<InputField name="Field" id="1"><Title>Source</Title><Events>',
+        '<Event name="OnGuarded">GuardedHandler</Event>',
+        '<Event name="OnHealthy">HealthyHandler</Event>',
+        '</Events></InputField>',
+        '</ChildItems>',
+        '</Form>',
+      ].join('');
+      const targetModule = [
+        'Procedure ExistingHandler()',
+        '  Value = 1;',
+        'EndProcedure',
+      ].join('\n');
+      const sourceModule = [
+        'Procedure ExistingHandler()',
+        '  Value = 1;',
+        'EndProcedure',
+        '',
+        '#Если Сервер Тогда',
+        'Procedure GuardedHandler()',
+        '  Value = 2;',
+        'EndProcedure',
+        '#КонецЕсли',
+        '',
+        'Procedure HealthyHandler()',
+        '  Value = 3;',
+        'EndProcedure',
+      ].join('\n');
+      await writeCompareBytes(target, formRelativePath, targetForm);
+      await writeCompareBytes(source, formRelativePath, sourceForm);
+      await writeCompareBytes(target, moduleRelativePath, targetModule);
+      await writeCompareBytes(source, moduleRelativePath, sourceModule);
+      const sourceFormBefore = await fs.readFile(path.join(source, formRelativePath));
+      const sourceModuleBefore = await fs.readFile(path.join(source, moduleRelativePath));
+
+      const compare = await openCompare(tempRoot, target, source, { withRuntime: true });
+      try {
+        const nodes = collectNodes(compare.result.projection.root);
+        const guarded = nodes.find((node) => node.kind === 'bslRoutine' && node.label.includes('GuardedHandler'));
+        const healthy = nodes.find((node) => node.kind === 'bslRoutine' && node.label.includes('HealthyHandler'));
+        const guardedEvent = nodes.find((node) => node.label.startsWith('Событие:') && node.rightValue?.includes('GuardedHandler'));
+        const healthyEvent = nodes.find((node) => node.label.startsWith('Событие:') && node.rightValue?.includes('HealthyHandler'));
+        assert.ok(guarded, 'the guarded source handler should remain visible with its blocking reason');
+        assert.strictEqual(guarded!.mergeable, false);
+        assert.strictEqual(guarded!.mergeState?.state, 'blocked');
+        assert.match(guarded!.conflict?.message ?? '', /условн/i);
+        assert.ok(healthy && healthy.mergeable, 'the unguarded handler should remain selectable');
+        assert.ok(guardedEvent, 'the incoming FormEvent pointer should remain visible');
+        assert.strictEqual(guardedEvent!.mergeable, false);
+        assert.ok(healthyEvent && healthyEvent.mergeable, 'the healthy FormEvent pointer should have a linked candidate');
+
+        const guardedPreview = await compare.result.workspace.createPreviewForNodeIds([guardedEvent!.id]);
+        assert.strictEqual(guardedPreview.ok, false, 'an event reference without a safe handler must not preview');
+        const healthyPreview = await compare.result.workspace.createPreviewForNodeIds([healthy!.id, healthyEvent!.id]);
+        assert.strictEqual(healthyPreview.ok, true, JSON.stringify(healthyPreview));
+        if (!healthyPreview.ok) { return; }
+        const approval = compare.result.workspace.approvePreview(healthyPreview.preview.previewId);
+        assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+        const execution = await compare.result.workspace.executeApprovedPreview(healthyPreview.preview.previewId, { destructiveConfirmed: true });
+        assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+
+        const mergedModule = await readUtf8(target, moduleRelativePath);
+        const mergedForm = await readUtf8(target, formRelativePath);
+        assert.match(mergedModule, /Procedure ExistingHandler\(\)/u);
+        assert.match(mergedModule, /Procedure HealthyHandler\(\)/u);
+        assert.doesNotMatch(mergedModule, /Procedure GuardedHandler\(\)/u);
+        assert.match(mergedForm, /<Event name="OnHealthy"[^>]*>HealthyHandler<\/Event>/u);
+        assert.doesNotMatch(mergedForm, /GuardedHandler/u);
+        assert.deepStrictEqual(await fs.readFile(path.join(source, formRelativePath)), sourceFormBefore);
+        assert.deepStrictEqual(await fs.readFile(path.join(source, moduleRelativePath)), sourceModuleBefore);
       } finally {
         await compare.dispose();
       }
@@ -2318,15 +2436,26 @@ suite('Extension-aware configuration compare', () => {
         uuid: UUID.catalog,
         propertiesXml: '<Comment>target version</Comment>',
       };
+      const attributes = (name: string, uuid: string): string =>
+        `<Attribute uuid="${uuid}"><Properties><Name>${name}</Name></Properties></Attribute>`;
+      const targetObject: ExtensionCompareObjectFixture = {
+        ...own,
+        childObjectsXml: attributes('Rekv1', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
+      };
+      const incomingObject: ExtensionCompareObjectFixture = {
+        ...own,
+        propertiesXml: '<Comment>source version</Comment>',
+        childObjectsXml: attributes('Rekv2', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),
+      };
       await writeDesignerConfiguration(target, {
         purpose: 'Customization',
         namePrefix: 'Ext_',
-        objects: [own],
+        objects: [targetObject],
       });
       await writeDesignerConfiguration(source, {
         purpose: 'Customization',
         namePrefix: 'Ext_',
-        objects: [{ ...own, propertiesXml: '<Comment>source version</Comment>' }],
+        objects: [incomingObject],
       });
       const sidecar = Buffer.from([0x4f, 0x77, 0x6e, 0x00, 0xff]);
       await writeCompareBytes(source, 'Catalogs/Ext_Orders/Ext/opaque.bin', sidecar);
@@ -2334,12 +2463,89 @@ suite('Extension-aware configuration compare', () => {
       const compare = await openCompare(tempRoot, target, source, { withRuntime: true });
       try {
         const nodeId = onlyMergeableNodeId(compare.result);
+        const canonicalNode = collectNodes(compare.result.workspace.payload.root).find((node) => node.id === nodeId);
+        assert.strictEqual(canonicalNode?.replacement, true, 'paired CFE full-copy row must require explicit replacement intent');
+        assert.strictEqual(canonicalNode?.destructive, true, 'the canonical full-copy row must remain destructive');
+        const executableIds = compare.result.workspace.listMergeableNodeIds();
+        const dto = toWebviewPayload(compare.result.workspace.payload, executableIds, 'CFE compare');
+        assert.deepStrictEqual(dto.replacementNodeIds, [nodeId]);
+
+        const deletionIds = new Set(dto.deletionNodeIds ?? []);
+        const semanticIds = executableIds.filter((id) => id !== nodeId && !deletionIds.has(id));
+        assert.ok(semanticIds.length > 0, 'granular semantic candidates should remain available beside the whole-object replacement');
+        const canonicalNodes = collectNodes(compare.result.workspace.payload.root);
+        assert.ok(semanticIds.some((id) => canonicalNodes.find((node) => node.id === id)?.label.includes('Rekv2')),
+          'the incoming Rekv2 candidate must remain available for a granular union');
+        const semanticPreview = await compare.result.workspace.createPreviewForNodeIds(semanticIds);
+        assert.strictEqual(semanticPreview.ok, true, semanticPreview.ok ? '' : JSON.stringify(semanticPreview.diagnostics));
+
         const preview = await createPreview(compare.result, [nodeId]);
-        await execute(compare.result, preview.previewId);
+        assert.ok(preview.items.some((item) => item.nodeId === nodeId && item.previewEffect === 'replace' && item.destructive),
+          'replacing the paired descriptor must be marked destructive even without orphan sidecars');
+        compare.result.workspace.approvePreview(preview.previewId);
+        const withoutConfirmation = await compare.result.workspace.executeApprovedPreview(preview.previewId);
+        assert.strictEqual(withoutConfirmation.ok, false);
+        if (!withoutConfirmation.ok) {
+          assert.strictEqual(withoutConfirmation.diagnostics[0]?.code, 'CONFIG_COMPARE_DESTRUCTIVE_CONFIRMATION_REQUIRED');
+        }
+        assert.match(await readUtf8(target, 'Catalogs/Ext_Orders.xml'), /<Comment>target version<\/Comment>/u,
+          'missing destructive confirmation must leave the existing CFE descriptor untouched');
+        const confirmed = await compare.result.workspace.executeApprovedPreview(preview.previewId, { destructiveConfirmed: true });
+        assert.strictEqual(confirmed.ok, true);
         const xml = await readUtf8(target, 'Catalogs/Ext_Orders.xml');
         assert.match(xml, new RegExp(`<Catalog uuid="${UUID.catalog}"`, 'u'));
         assert.match(xml, /<Comment>source version<\/Comment>/u);
+        assert.match(xml, /<Name>Rekv2<\/Name>/u);
         assert.deepStrictEqual(await fs.readFile(path.join(target, 'Catalogs/Ext_Orders/Ext/opaque.bin')), sidecar);
+      } finally {
+        await compare.dispose();
+      }
+    });
+  });
+
+  test('CFE granular selection keeps target Rekv1 while adding incoming Rekv2 without selecting whole-object replacement', async () => {
+    await withTempRoot(async (tempRoot) => {
+      const target = path.join(tempRoot, 'target-cfe');
+      const source = path.join(tempRoot, 'source-cfe');
+      const attribute = (name: string, uuid: string): string =>
+        `<Attribute uuid="${uuid}"><Properties><Name>${name}</Name></Properties></Attribute>`;
+      const targetObject: ExtensionCompareObjectFixture = {
+        type: 'Catalog', name: 'Ext_Item', uuid: UUID.catalog,
+        childObjectsXml: attribute('Rekv1', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
+      };
+      const sourceObject: ExtensionCompareObjectFixture = {
+        ...targetObject,
+        childObjectsXml: attribute('Rekv2', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'),
+      };
+      await writeDesignerConfiguration(target, { purpose: 'Customization', namePrefix: 'Ext_', objects: [targetObject] });
+      await writeDesignerConfiguration(source, { purpose: 'Customization', namePrefix: 'Ext_', objects: [sourceObject] });
+
+      const compare = await openCompare(tempRoot, target, source, { withRuntime: true });
+      try {
+        const canonicalNodes = collectNodes(compare.result.workspace.payload.root);
+        const replacement = canonicalNodes.find((node) => node.kind === 'extensionMetadataObject' && node.mergeable);
+        assert.ok(replacement);
+        assert.strictEqual(replacement!.replacement, true);
+        const executableIds = compare.result.workspace.listMergeableNodeIds();
+        const dto = toWebviewPayload(compare.result.workspace.payload, executableIds, 'CFE compare');
+        const deletions = new Set(dto.deletionNodeIds ?? []);
+        const replacementIds = new Set(dto.replacementNodeIds ?? []);
+        const healthySemanticIds = executableIds.filter((id) => id !== replacement!.id
+          && !deletions.has(id) && !replacementIds.has(id));
+        const incomingAttribute = canonicalNodes.find((node) => node.mergeable && node.label.includes('Rekv2'));
+        assert.ok(incomingAttribute, `incoming Rekv2 must be a healthy granular candidate: ${JSON.stringify(canonicalNodes.map((node) => ({ id: node.id, label: node.label, kind: node.kind, mergeable: node.mergeable })))}`);
+        assert.ok(healthySemanticIds.includes(incomingAttribute!.id));
+        assert.ok(!healthySemanticIds.includes(replacement!.id), 'global healthy selection must exclude the paired whole-object replacement');
+
+        const preview = await compare.result.workspace.createPreviewForNodeIds(healthySemanticIds);
+        assert.strictEqual(preview.ok, true, preview.ok ? '' : JSON.stringify(preview.diagnostics));
+        const approved = compare.result.workspace.approvePreview(preview.preview.previewId);
+        assert.strictEqual(approved.ok, true);
+        const executed = await compare.result.workspace.executeApprovedPreview(preview.preview.previewId, { destructiveConfirmed: true });
+        assert.strictEqual(executed.ok, true, JSON.stringify({ diagnostics: executed.diagnostics, failed: executed.result?.failed }));
+
+        const output = metadataChildSnapshot(await readUtf8(target, 'Catalogs/Ext_Item.xml'), 'Catalog');
+        assert.deepStrictEqual(output.children.map((child) => child.name).sort(), ['Rekv1', 'Rekv2']);
       } finally {
         await compare.dispose();
       }

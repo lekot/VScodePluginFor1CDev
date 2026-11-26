@@ -5,11 +5,124 @@ import fsPromises = require('fs/promises');
 import * as os from 'os';
 import * as path from 'path';
 
-import { buildConfigurationInventory } from '../../../src/compareMerge/inventory/configurationInventory';
+import {
+  appendHashedBslArtifacts,
+  buildConfigurationInventory,
+} from '../../../src/compareMerge/inventory/configurationInventory';
 import { createArtifactUnit } from '../../../src/compareMerge/inventory/configurationArtifacts';
+import { buildConfigurationFileManifest } from '../../../src/compareMerge/inventory/configurationFileManifest';
+import { hydrateConfigurationInventoryFromManifest } from '../../../src/compareMerge/inventory/configurationInventory';
 import type { MetadataIdentity } from '../../../src/compareMerge/domain/compareContracts';
 
 suite('ConfigurationInventory', () => {
+  test('appends only explicitly hashed BSL paths and keeps the default all-path contract strict', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-inventory-bsl-hash-scope-'));
+    const descriptorPath = path.join(tempRoot, 'Catalogs', 'Products.xml');
+    const bslPath = path.join(tempRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
+    const bslBytes = Buffer.from('Procedure ObjectModule()\nEndProcedure');
+    try {
+      await writeFile(descriptorPath, '<MetaDataObject><Catalog uuid="products" /></MetaDataObject>');
+      await fs.mkdir(path.dirname(bslPath), { recursive: true });
+      await fs.writeFile(bslPath, bslBytes);
+      const manifest = await buildConfigurationFileManifest(tempRoot, {
+        identities: [inventoryIdentity(tempRoot, 'Catalog', 'Catalog.Products', descriptorPath, 'products')],
+      });
+      const ownerId = manifest.objects[0]!.objectId;
+      const inventory = await hydrateConfigurationInventoryFromManifest({
+        manifest,
+        matchedOwnerObjectIds: new Set(),
+      });
+      const rawHash = `sha256:${createHash('sha256').update(bslBytes).digest('hex')}`;
+      const selected = appendHashedBslArtifacts({
+        inventory,
+        manifest,
+        rawFileHashes: new Map([[bslPath, rawHash]]),
+        includedPaths: new Set([bslPath]),
+      });
+      assert.strictEqual(selected.artifactsByObjectId.get(ownerId)?.filter((artifact) => artifact.kind === 'bslModule').length, 1);
+
+      const deferred = appendHashedBslArtifacts({
+        inventory,
+        manifest,
+        rawFileHashes: new Map(),
+        includedPaths: new Set(),
+      });
+      assert.strictEqual(deferred.artifactsByObjectId.get(ownerId)?.some((artifact) => artifact.kind === 'bslModule'), false);
+      assert.throws(() => appendHashedBslArtifacts({ inventory, manifest, rawFileHashes: new Map() }), /Raw BSL file hash was not collected/u);
+      assert.throws(() => appendHashedBslArtifacts({
+        inventory,
+        manifest,
+        rawFileHashes: new Map(),
+        includedPaths: new Set([path.join(tempRoot, 'Catalogs', 'Products', 'Ext', 'Missing.bsl')]),
+      }), /not present in the configuration manifest/u);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('builds a symmetric path-only manifest and hydrates descriptors plus matched-owner non-BSL files only', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-file-manifest-'));
+    const catalogDescriptor = path.join(tempRoot, 'Catalogs', 'Products.xml');
+    const logoPath = path.join(tempRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const formDescriptor = path.join(tempRoot, 'Catalogs', 'Products', 'Forms', 'Main.xml');
+    const formXml = path.join(tempRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml');
+    const formModule = path.join(tempRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form', 'Module.bsl');
+    const unrelatedPath = path.join(tempRoot, '.git', 'objects', 'large.dat');
+    try {
+      await writeFile(catalogDescriptor, '<MetaDataObject><Catalog uuid="products" /></MetaDataObject>');
+      await writeFile(logoPath, 'logo');
+      await writeFile(formDescriptor, '<MetaDataObject><Form uuid="main" /></MetaDataObject>');
+      await writeFile(formXml, '<Form/>');
+      await writeFile(formModule, 'Procedure Main()\nEndProcedure');
+      await writeFile(unrelatedPath, 'must not be traversed');
+      await writeFile(path.join(tempRoot, 'Logs', 'viewer.log'), 'must not be traversed');
+
+      const identities = [
+        inventoryIdentity(tempRoot, 'Catalog', 'Catalog.Products', catalogDescriptor, 'products'),
+        inventoryIdentity(tempRoot, 'Form', 'Catalog.Products.Form.Main', formDescriptor, 'main'),
+      ];
+      const mutableFs = fsPromises;
+      const originalReaddir = mutableFs.readdir;
+      const enumerated = new Set<string>();
+      const instrumentedReaddir = (async (...args: Parameters<typeof originalReaddir>) => {
+        if (typeof args[0] === 'string') {enumerated.add(path.resolve(args[0]).toLowerCase());}
+        return Reflect.apply(originalReaddir, mutableFs, args);
+      }) as typeof originalReaddir;
+      Object.defineProperty(mutableFs, 'readdir', { configurable: true, value: instrumentedReaddir });
+      let manifest: Awaited<ReturnType<typeof buildConfigurationFileManifest>>;
+      try {
+        manifest = await buildConfigurationFileManifest(tempRoot, { identities });
+      } finally {
+        Object.defineProperty(mutableFs, 'readdir', { configurable: true, value: originalReaddir });
+      }
+
+      assert.strictEqual(enumerated.has(path.join(tempRoot, '.git').toLowerCase()), false);
+      assert.strictEqual(enumerated.has(path.join(tempRoot, 'Logs').toLowerCase()), false);
+      assert.ok(manifest.entries.some((entry) => entry.filePath === formXml));
+      assert.ok(manifest.entries.some((entry) => entry.filePath === formModule));
+      assert.ok(manifest.subtreeFileCountsByDirectory.get(path.join('Catalogs', 'Products').toLowerCase().replace(/\\/gu, '/'))! >= 4);
+
+      const matchedCatalogId = manifest.objects.find((object) => object.qualifiedName === 'Catalog.Products')!.objectId;
+      const hydrated = await hydrateConfigurationInventoryFromManifest({
+        manifest,
+        matchedOwnerObjectIds: new Set([matchedCatalogId]),
+      });
+      const catalog = hydrated.objects.find((object) => object.qualifiedName === 'Catalog.Products')!;
+      const form = hydrated.objects.find((object) => object.qualifiedName === 'Catalog.Products.Form.Main')!;
+      assert.deepStrictEqual(
+        (hydrated.artifactsByObjectId.get(catalog.objectId) ?? []).map((artifact) => path.basename(artifact.filePath)).sort(),
+        ['Products.xml', 'logo.bin'],
+      );
+      assert.deepStrictEqual(
+        (hydrated.artifactsByObjectId.get(form.objectId) ?? []).map((artifact) => path.basename(artifact.filePath)),
+        ['Main.xml'],
+        'all descriptors remain available while an unmatched Form sidecar is not hydrated',
+      );
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   test('scans overlapping selected object containers once and preserves selected artifact ownership', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-inventory-overlap-'));
     try {
