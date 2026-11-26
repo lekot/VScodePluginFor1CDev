@@ -10,6 +10,7 @@ import {
   type ArtifactMergeMode,
   type ArtifactUnit,
 } from './configurationArtifacts';
+import { metadataDescriptorPathKey } from '../metadataObjectLookup';
 import type { ConfigurationFileManifest } from './configurationFileManifest';
 import {
   type CompareCancellationToken,
@@ -101,7 +102,7 @@ export async function buildConfigurationInventory(
 
   for (const object of objects) {
     artifactsByObjectId.set(object.objectId, []);
-    objectsByDescriptorPath.set(normalizeKey(object.descriptorPath), object);
+    objectsByDescriptorPath.set(metadataDescriptorPathKey(object.descriptorPath), object);
   }
 
   const ownedFiles: { filePath: string; owner: ObjectCandidate }[] = [];
@@ -157,7 +158,7 @@ export async function hydrateConfigurationInventoryFromManifest(input: {
   const objectsByDescriptorPath = new Map<string, MetadataObjectUnit>();
   for (const object of objects) {
     artifactsByObjectId.set(object.objectId, []);
-    objectsByDescriptorPath.set(normalizeKey(object.descriptorPath), object);
+    objectsByDescriptorPath.set(metadataDescriptorPathKey(object.descriptorPath), object);
   }
 
   const selectedEntries = input.manifest.entries.filter((entry) =>

@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 import type { MetadataIdentity } from '../domain/compareContracts';
+import { metadataDescriptorPathKey, metadataManifestRelativePathKey } from '../metadataObjectLookup';
 import { throwIfCompareCancelled, type CompareCancellationToken } from '../compareCancellation';
 import { indexMetadataFolder } from '../metadata/metadataIndexer';
 
@@ -140,7 +141,7 @@ function createManifestObjects(identities: readonly MetadataIdentity[]): Manifes
 function indexManifestObjects(objects: readonly ManifestObject[]): Map<string, ConfigurationFileManifestObject> {
   const objectsByDescriptorPath = new Map<string, ConfigurationFileManifestObject>();
   for (const object of objects) {
-    objectsByDescriptorPath.set(normalizeKey(object.descriptorPath), stripInternalObjectFields(object));
+    objectsByDescriptorPath.set(metadataDescriptorPathKey(object.descriptorPath), stripInternalObjectFields(object));
   }
   return objectsByDescriptorPath;
 }
@@ -444,7 +445,7 @@ function normalizeKey(filePath: string): string {
 }
 
 function normalizeRelativeKey(relativePath: string): string {
-  return relativePath.replace(/\\/gu, '/').replace(/\/+$/u, '').toLowerCase();
+  return metadataManifestRelativePathKey(relativePath);
 }
 
 function parentDirectoryKeys(relativePath: string): string[] {

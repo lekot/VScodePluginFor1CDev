@@ -5,9 +5,10 @@ import { MISSING_TARGET_HASH } from './merge/mergePreview';
 import type { CompareMessage, MetadataIdentity, MatchResult } from './domain/compareContracts';
 import type { ConfigurationInventory, MetadataObjectUnit, ArtifactUnit } from './inventory/configurationInventory';
 import type { ConfigurationFileManifest } from './inventory/configurationFileManifest';
-import { blocked, canonicalRelativePath, finalName, normalizeAbsolutePath, normalizePath, stripHash } from './linkedDesignerUtils';
+import { blocked, canonicalRelativePath, finalName, normalizePath, stripHash } from './linkedDesignerUtils';
 import type { LinkedDesignerCompareIndex, LinkedDesignerKind, LinkedDesignerPackageMember, LinkedDesignerPackageRecipe, IndexedPackageObject, LinkedDesignerRootConfigurationSnapshot, LinkedOwnerDescriptorSnapshot } from './linkedDesignerTypes';
 import { requiredLinkedDesignerBodyPath } from './linkedDesignerPackageRules';
+import { metadataDescriptorPathKey } from './metadataObjectLookup';
 import {
   type UnmatchedPackageIdentity,
   DESIGNER_TYPES,
@@ -95,7 +96,7 @@ export function collectUnmatchedLinkedDesignerBslPaths(input: {
   for (const item of unmatched) {
     if (!DESIGNER_TYPES.has(item.identity.metadataType)) {continue;}
     const manifest = item.side === 'right' ? input.rightManifest : input.leftManifest;
-    const object = manifest.objectsByDescriptorPath.get(normalizeAbsolutePath(item.identity.filePath));
+    const object = manifest.objectsByDescriptorPath.get(metadataDescriptorPathKey(item.identity.filePath));
     if (!object) {continue;}
     const destination = item.side === 'right' ? right : left;
     for (const entry of manifest.entriesByOwnerObjectId.get(object.objectId) ?? []) {

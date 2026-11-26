@@ -12,6 +12,7 @@ import {
 import { createArtifactUnit } from '../../../src/compareMerge/inventory/configurationArtifacts';
 import { buildConfigurationFileManifest } from '../../../src/compareMerge/inventory/configurationFileManifest';
 import { hydrateConfigurationInventoryFromManifest } from '../../../src/compareMerge/inventory/configurationInventory';
+import { findInventoryObjectByDescriptor, metadataDescriptorPathKey } from '../../../src/compareMerge/metadataObjectLookup';
 import type { MetadataIdentity } from '../../../src/compareMerge/domain/compareContracts';
 
 suite('ConfigurationInventory', () => {
@@ -56,6 +57,30 @@ suite('ConfigurationInventory', () => {
         includedPaths: new Set([path.join(tempRoot, 'Catalogs', 'Products', 'Ext', 'Missing.bsl')]),
       }), /not present in the configuration manifest/u);
     } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('keeps manifest and inventory descriptor lookups consistent with Linux path casing', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-descriptor-key-portability-'));
+    const descriptorPath = path.join(tempRoot, 'Catalogs', 'Products.xml');
+    const identity = inventoryIdentity(tempRoot, 'Catalog', 'Catalog.Products', descriptorPath, 'products');
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    assert.ok(originalPlatform?.configurable, 'process.platform must be restorable for this isolated path lookup test');
+    try {
+      await writeFile(descriptorPath, '<MetaDataObject><Catalog uuid="products" /></MetaDataObject>');
+      const [manifest, inventory] = await Promise.all([
+        buildConfigurationFileManifest(tempRoot, { identities: [identity] }),
+        buildConfigurationInventory(tempRoot, { identities: [identity] }),
+      ]);
+
+      Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
+      const lookupPath = metadataDescriptorPathKey(descriptorPath);
+      assert.ok(manifest.objectsByDescriptorPath.get(lookupPath), 'manifest consumer lookup should resolve the producer entry');
+      assert.ok(inventory.objectsByDescriptorPath.get(lookupPath), 'inventory consumer lookup should resolve the producer entry');
+      assert.ok(findInventoryObjectByDescriptor(inventory, descriptorPath), 'the existing inventory lookup API remains available');
+    } finally {
+      Object.defineProperty(process, 'platform', originalPlatform);
       await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });

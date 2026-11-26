@@ -12,6 +12,7 @@ import { elementChildren, parseXmlDocument, textContent } from '../../../src/com
 import { buildConfigurationInventory } from '../../../src/compareMerge/inventory/configurationInventory';
 import { indexMetadataFolder } from '../../../src/compareMerge/metadata/metadataIndexer';
 import { matchMetadataIdentities } from '../../../src/compareMerge/metadata/metadataMatcher';
+import bslModuleIndexerRuntime = require('../../../src/compareMerge/bsl/bslModuleIndexer');
 import { buildLinkedDesignerCompareIndex } from '../../../src/compareMerge/linkedDesignerPackageIndex';
 import fsPromisesRuntime = require('fs/promises');
 import { createMergeMutationTestRuntime } from './mergeMutationTestSupport';
@@ -432,6 +433,108 @@ suite('Linked Designer packages', () => {
         JSON.stringify(linkedIndex.diagnostics),
       );
     } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  test('resolves manifest-backed root and nested packages under Linux path casing and suppresses whole-object BSL rows', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'linked-designer-linux-descriptor-key-'));
+    const leftRoot = path.join(tempRoot, 'target');
+    const rightRoot = path.join(tempRoot, 'incoming');
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const originalIndexer = bslModuleIndexerRuntime.indexBslModuleSource;
+    assert.ok(originalPlatform?.configurable, 'process.platform must be restorable for this isolated path lookup test');
+    const indexedModuleIds: string[] = [];
+    let result: Awaited<ReturnType<typeof buildConfigurationCompare>> | undefined;
+    bslModuleIndexerRuntime.indexBslModuleSource = (input) => {
+      indexedModuleIds.push(input.identity.moduleId);
+      return originalIndexer(input);
+    };
+    try {
+      await writeFile(path.join(leftRoot, 'Configuration.xml'), linuxDescriptorKeyConfiguration(false));
+      await writeFile(path.join(rightRoot, 'Configuration.xml'), linuxDescriptorKeyConfiguration(true));
+      await writeFile(path.join(leftRoot, 'Catalogs', 'Products.xml'), catalogDescriptor('Products', false));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products.xml'), catalogDescriptor('Products', true));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products', 'Forms', 'Main.xml'), formDescriptor('Main'));
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml'), formXmlWithoutEvent());
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form', 'Module.bsl'), routine('NestedFormModule'));
+
+      await writeFile(path.join(rightRoot, 'CommonForms', 'Shared.xml'), commonFormDescriptor('Shared'));
+      await writeFile(path.join(rightRoot, 'CommonForms', 'Shared', 'Ext', 'Form.xml'), formXmlWithoutEvent());
+      await writeFile(path.join(rightRoot, 'CommonTemplates', 'Print.xml'), commonTemplateDescriptor('Print'));
+      await writeFile(path.join(rightRoot, 'CommonTemplates', 'Print', 'Ext', 'Template.xml'), '<document/>');
+      await writeFile(path.join(rightRoot, 'CommonCommands', 'Run.xml'), commonCommandDescriptor('Run'));
+      await writeFile(path.join(rightRoot, 'CommonCommands', 'Run', 'Ext', 'CommandModule.bsl'), routine('RunCommand'));
+
+      await writeFile(path.join(rightRoot, 'InformationRegisters', 'Stock.xml'), informationRegisterDescriptor('Stock'));
+      await writeFile(path.join(rightRoot, 'InformationRegisters', 'Stock', 'Ext', 'RecordSetModule.bsl'), routine('StockRecordSet'));
+      await writeFile(path.join(rightRoot, 'DataProcessors', 'Importer.xml'), dataProcessorDescriptor('Importer'));
+      await writeFile(path.join(rightRoot, 'DataProcessors', 'Importer', 'Ext', 'ObjectModule.bsl'), routine('ImporterObject'));
+      const incomingFiles = await collectFileBytes(rightRoot);
+
+      Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
+      result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+      });
+
+      const root = result.workspace.payload.root;
+      const rootPackageIds = [
+        'fileObject:rightOnly:CommonForm.Shared',
+        'fileObject:rightOnly:CommonTemplate.Print',
+        'fileObject:rightOnly:CommonCommand.Run',
+      ];
+      const rootPackages = rootPackageIds.map((id) => collectNodes(root, (node) => node.id === id)[0]);
+      assert.ok(rootPackages.every((node) => node?.mergeable), JSON.stringify(rootPackages.map((node) => node?.mergeState)));
+      const nestedForm = collectNodes(root, (node) => node.kind === 'xmlElement' && node.label === 'Форма: Main' && node.status === 'rightOnly')[0];
+      assert.ok(nestedForm?.mergeable, nestedForm?.mergeState?.reason);
+      const wholeObjectIds = [
+        'fileObject:rightOnly:InformationRegister.Stock',
+        'fileObject:rightOnly:DataProcessor.Importer',
+      ];
+      const wholeObjects = wholeObjectIds.map((id) => collectNodes(root, (node) => node.id === id)[0]);
+      assert.ok(wholeObjects.every((node) => node?.mergeable), JSON.stringify(wholeObjects.map((node) => node?.mergeState)));
+
+      const unresolvedModuleMessages = result.session.state.messages.filter((message) =>
+        message.code === 'BSL_MODULE_RIGHT_ONLY' && /Stock\.RecordSet|Importer\.Object|Run\.Command|Form\.Main/u.test(message.nodeId ?? '')
+      );
+      assert.deepStrictEqual(unresolvedModuleMessages, [], 'whole-object/package BSL members must not surface as separate unmatched modules');
+      assert.deepStrictEqual(indexedModuleIds, [], 'unmatched whole-object/package BSL members must not be parsed');
+
+      const commonFormDescriptorPath = path.join(rightRoot, 'CommonForms', 'Shared.xml');
+      const selectedCommonFormId = rootPackageIds[0]!;
+      await writeFile(commonFormDescriptorPath, commonFormDescriptor('Drifted'));
+      const driftPreview = await result.workspace.createPreviewForNodeIds([selectedCommonFormId]);
+      assert.strictEqual(driftPreview.ok, false, 'selected package preview must detect descriptor drift since compare');
+      assert.match(JSON.stringify(driftPreview), /Файл Designer-пакета изменился после сравнения/iu);
+      assert.match(JSON.stringify(driftPreview), /CommonForms.*Shared\.xml/iu);
+      await writeFile(commonFormDescriptorPath, commonFormDescriptor('Shared'));
+
+      const selectedIds = [...rootPackageIds, nestedForm!.id, ...wholeObjectIds];
+      const preview = await result.workspace.createPreviewForNodeIds(selectedIds);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      if (!preview.ok) {return;}
+      const approval = result.workspace.approvePreview(preview.preview.previewId);
+      assert.strictEqual(approval.ok, true, JSON.stringify(approval));
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId, { destructiveConfirmed: true });
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+
+      for (const relativePath of [
+        path.join('Catalogs', 'Products', 'Forms', 'Main', 'Ext', 'Form.xml'),
+        path.join('CommonForms', 'Shared', 'Ext', 'Form.xml'),
+        path.join('CommonTemplates', 'Print', 'Ext', 'Template.xml'),
+        path.join('CommonCommands', 'Run', 'Ext', 'CommandModule.bsl'),
+        path.join('InformationRegisters', 'Stock', 'Ext', 'RecordSetModule.bsl'),
+        path.join('DataProcessors', 'Importer', 'Ext', 'ObjectModule.bsl'),
+      ]) {
+        assert.ok(await pathExists(path.join(leftRoot, relativePath)), `${relativePath} should be materialized`);
+      }
+      assert.deepStrictEqual(await collectFileBytes(rightRoot), incomingFiles, 'all source package and object bytes must remain unchanged');
+    } finally {
+      Object.defineProperty(process, 'platform', originalPlatform);
+      bslModuleIndexerRuntime.indexBslModuleSource = originalIndexer;
+      result?.workspace.dispose();
       await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
@@ -1352,6 +1455,47 @@ function configurationWithCatalogAndConstant(): string {
 
 function configurationWithCatalogAndCommonForm(includeCommonForm: boolean): string {
   return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Configuration uuid="31234567-89ab-cdef-0123-456789abcdef"><Properties><Name>Config</Name></Properties><ChildObjects><Catalog>Products</Catalog>${includeCommonForm ? '<CommonForm>Shared</CommonForm>' : ''}</ChildObjects></Configuration></MetaDataObject>`;
+}
+
+function linuxDescriptorKeyConfiguration(includeIncomingObjects: boolean): string {
+  const incomingObjects = includeIncomingObjects
+    ? '<CommonForm>Shared</CommonForm><CommonTemplate>Print</CommonTemplate><CommonCommand>Run</CommonCommand><InformationRegister>Stock</InformationRegister><DataProcessor>Importer</DataProcessor>'
+    : '';
+  return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Configuration uuid="31234567-89ab-cdef-0123-456789abcdef"><Properties><Name>Config</Name></Properties><ChildObjects><Catalog>Products</Catalog>${incomingObjects}</ChildObjects></Configuration></MetaDataObject>`;
+}
+
+function commonTemplateDescriptor(name: string): string {
+  return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><CommonTemplate uuid="31234567-89ab-cdef-0123-456789abcd01"><Properties><Name>${name}</Name><TemplateType>DataCompositionSchema</TemplateType></Properties></CommonTemplate></MetaDataObject>`;
+}
+
+function commonCommandDescriptor(name: string): string {
+  return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><CommonCommand uuid="31234567-89ab-cdef-0123-456789abcd02"><Properties><Name>${name}</Name></Properties></CommonCommand></MetaDataObject>`;
+}
+
+function informationRegisterDescriptor(name: string): string {
+  return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><InformationRegister uuid="31234567-89ab-cdef-0123-456789abcd03"><Properties><Name>${name}</Name></Properties></InformationRegister></MetaDataObject>`;
+}
+
+function dataProcessorDescriptor(name: string): string {
+  return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><DataProcessor uuid="31234567-89ab-cdef-0123-456789abcd04"><Properties><Name>${name}</Name></Properties></DataProcessor></MetaDataObject>`;
+}
+
+async function collectFileBytes(rootPath: string): Promise<Map<string, Buffer>> {
+  const results = new Map<string, Buffer>();
+  const pending = [rootPath];
+  while (pending.length > 0) {
+    const directoryPath = pending.pop()!;
+    const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(directoryPath, entry.name);
+      if (entry.isDirectory()) {pending.push(entryPath); continue;}
+      if (entry.isFile()) {
+        const relativePath = path.relative(rootPath, entryPath).replace(/\\/gu, '/');
+        results.set(relativePath, await fs.readFile(entryPath));
+      }
+    }
+  }
+  return new Map([...results.entries()].sort(([left], [right]) => left.localeCompare(right)));
 }
 
 function formXml(handler: string): string {

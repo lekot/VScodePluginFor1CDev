@@ -4,7 +4,8 @@ import * as path from 'path';
 import { assertNoSymlinkSegments, assertPathWithinRoot, validateWorkspaceRelativePath } from '../services/configurationSession/pathBoundary';
 import { captureMergePath, mergeSnapshotHash } from './merge/mergeSnapshot';
 import { MISSING_TARGET_HASH, type MergeFileWitness } from './merge/mergePreview';
-import { blocked, hashBuffer, normalizeAbsolutePath, normalizePath, stripHash } from './linkedDesignerUtils';
+import { blocked, hashBuffer, normalizePath, stripHash } from './linkedDesignerUtils';
+import { metadataDescriptorPathKey, metadataManifestRelativePathKey } from './metadataObjectLookup';
 import type { ConfigurationFileManifest, ConfigurationFileManifestObject } from './inventory/configurationFileManifest';
 import type {
   LinkedDesignerMaterializerContext,
@@ -116,7 +117,7 @@ async function validateSelectedPackageSource(
   if (!manifests) {throw new Error('Снимок путей linked Designer-пакета отсутствует; повторите сравнение.');}
   const manifest = reference.action === 'copy' ? manifests.source : manifests.target;
   const rootPath = reference.action === 'copy' ? context.sourceRootPath : context.targetRootPath;
-  const object = manifest.objectsByDescriptorPath.get(normalizeAbsolutePath(resolveRootPath(rootPath, reference.sourceDescriptorRelativePath)));
+  const object = manifest.objectsByDescriptorPath.get(metadataDescriptorPathKey(resolveRootPath(rootPath, reference.sourceDescriptorRelativePath)));
   if (!object || object.objectId !== reference.sourceObjectId) {
     throw new Error(`Дескриптор ${reference.qualifiedName} больше не соответствует compare-time manifest.`);
   }
@@ -138,8 +139,8 @@ function packageTreeMatchesManifest(
 ): boolean {
   return currentTree.files.length === reference.sourceContainerFileCount
     && currentTree.directories.length === reference.sourceContainerDirectoryCount
-    && !currentTree.files.some((relativePath) => !manifest.entriesByRelativePath.has(normalizePath(relativePath)))
-    && !currentTree.directories.some((relativePath) => !manifest.directoryPathsByRelativePath.has(normalizePath(relativePath)));
+    && !currentTree.files.some((relativePath) => !manifest.entriesByRelativePath.has(metadataManifestRelativePathKey(relativePath)))
+    && !currentTree.directories.some((relativePath) => !manifest.directoryPathsByRelativePath.has(metadataManifestRelativePathKey(relativePath)));
 }
 
 function throwPackageTreeChanged(reference: LinkedDesignerPackageReference): never {

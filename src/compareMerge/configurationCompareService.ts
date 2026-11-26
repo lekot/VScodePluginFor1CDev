@@ -50,6 +50,7 @@ import {
 import { buildConfigurationFileManifest, metadataObjectId } from './inventory/configurationFileManifest';
 import type { ConfigurationFileManifest } from './inventory/configurationFileManifest';
 import { normalizeAbsolutePath } from './linkedDesignerUtils';
+import { metadataDescriptorPathKey } from './metadataObjectLookup';
 import { discoverConfigurationCompareManifest } from './configurationCompareManifest';
 import {
   buildCompareTreeProjection,
@@ -693,7 +694,7 @@ function collectBslPathsOwnedBy(
 ): ReadonlySet<string> {
   const result = new Set<string>();
   for (const identity of identities) {
-    const object = manifest.objectsByDescriptorPath.get(normalizeAbsolutePath(identity.filePath));
+    const object = manifest.objectsByDescriptorPath.get(metadataDescriptorPathKey(identity.filePath));
     if (!object) {continue;}
     for (const entry of manifest.entriesByOwnerObjectId.get(object.objectId) ?? []) {
       if (entry.artifactKindHint === 'bslModule') {result.add(normalizeAbsolutePath(entry.filePath));}

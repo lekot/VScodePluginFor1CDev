@@ -7,6 +7,7 @@ import type { ArtifactUnit, ConfigurationInventory, MetadataObjectUnit } from '.
 import type { ConfigurationFileManifest } from './inventory/configurationFileManifest';
 import type { LinkedDesignerKind, LinkedDesignerPackageMemberReference, LinkedDesignerPackageReference, LinkedDesignerPackageReferenceIndex, LinkedDesignerRootConfigurationSnapshot } from './linkedDesignerTypes';
 import { requiredLinkedDesignerBodyPath } from './linkedDesignerPackageRules';
+import { metadataDescriptorPathKey, metadataManifestRelativePathKey } from './metadataObjectLookup';
 import { buildWholeObjectCopyRecipes } from './linkedDesignerWholeObjectRecipes';
 import { captureRootConfigurationSnapshot, rootRegistrationIsAvailable, type RootConfigurationCapture } from './linkedDesignerRootConfiguration';
 import {
@@ -184,7 +185,7 @@ function resolveReferencePackageInventories(
   const targetManifest = sourceSide === 'right' ? state.input.leftManifest : state.input.rightManifest;
   const sourceArtifactsByPath = sourceSide === 'right' ? state.rightArtifactsByPath : state.leftArtifactsByPath;
   const targetArtifactsByPath = sourceSide === 'right' ? state.leftArtifactsByPath : state.rightArtifactsByPath;
-  const sourceObject = sourceManifest.objectsByDescriptorPath.get(normalizeAbsolutePath(item.identity.filePath));
+  const sourceObject = sourceManifest.objectsByDescriptorPath.get(metadataDescriptorPathKey(item.identity.filePath));
   if (!sourceObject) {
     failReferenceIndexItem(context, 'Дескриптор связанного Designer-пакета отсутствует в captured inventory.');
     return undefined;
@@ -198,7 +199,7 @@ function resolveReferencePackageInventories(
     return undefined;
   }
   const targetObjectId = targetIdentity
-    ? targetManifest.objectsByDescriptorPath.get(normalizeAbsolutePath(targetIdentity.filePath))?.objectId
+    ? targetManifest.objectsByDescriptorPath.get(metadataDescriptorPathKey(targetIdentity.filePath))?.objectId
     : undefined;
   const targetEntriesByRelativePath = indexTargetPackageEntries(targetManifest, targetObjectId);
   return {
@@ -296,7 +297,7 @@ function resolveReferenceOwnerDescriptor(
   const state = context.state;
   const ownerMatch = state.firstMatchedOwnerByName.get(ownerQualifiedName);
   const ownerObject = ownerMatch
-    ? state.input.leftManifest.objectsByDescriptorPath.get(normalizeAbsolutePath(ownerMatch.left.filePath))
+    ? state.input.leftManifest.objectsByDescriptorPath.get(metadataDescriptorPathKey(ownerMatch.left.filePath))
     : undefined;
   const ownerDescriptor = ownerObject
     ? state.leftArtifactsByPath.get(normalizeAbsolutePath(ownerObject.descriptorPath))?.find((artifact) => artifact.kind === 'metadataXml')
@@ -322,7 +323,7 @@ function appendPackageReference(
     failReferenceIndexItem(context, `Каталог linked Designer-пакета ${item.identity.qualifiedName} не ограничен корнем source.`);
     return false;
   }
-  const sourceContainerPathKey = normalizePath(sourceContainerRelativePath);
+  const sourceContainerPathKey = metadataManifestRelativePathKey(sourceContainerRelativePath);
   const sourceContainerFileCount = inventories.sourceManifest.subtreeFileCountsByDirectory.get(sourceContainerPathKey) ?? 0;
   const sourceContainerDirectoryCount = inventories.sourceManifest.subtreeDirectoryCountsByDirectory.get(sourceContainerPathKey) ?? 0;
   const packageId = packageIdFor(context.kind, item.identity.qualifiedName);
