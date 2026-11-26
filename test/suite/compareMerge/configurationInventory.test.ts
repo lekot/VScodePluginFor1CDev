@@ -148,6 +148,46 @@ suite('ConfigurationInventory', () => {
     }
   });
 
+  test('preserves nested mixed-case Unicode owners and direct-sidecar paths in the manifest', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-manifest-unicode-paths-'));
+    const parentDescriptor = path.join(tempRoot, 'Catalogs', 'MiXeD', 'Пакеты', 'Пакеты.xml');
+    const directSidecar = path.join(path.dirname(parentDescriptor), 'Ext', 'ObjectModule.bsl');
+    const childDescriptor = path.join(path.dirname(parentDescriptor), 'TabularSections', 'Строки.xml');
+    const childSidecar = path.join(path.dirname(childDescriptor), 'Строки', 'Ext', 'Описание.xml');
+    try {
+      await writeFile(parentDescriptor, '<MetaDataObject><Catalog uuid="package" /></MetaDataObject>');
+      await writeFile(directSidecar, 'Procedure ObjectModule()\nEndProcedure');
+      await writeFile(childDescriptor, '<MetaDataObject><TabularSection uuid="rows" /></MetaDataObject>');
+      await writeFile(childSidecar, '<Description/>');
+
+      const manifest = await buildConfigurationFileManifest(tempRoot, {
+        identities: [
+          inventoryIdentity(tempRoot, 'Catalog', 'Catalog.Пакеты', parentDescriptor, 'package'),
+          inventoryIdentity(tempRoot, 'TabularSection', 'Catalog.Пакеты.TabularSection.Строки', childDescriptor, 'rows'),
+        ],
+      });
+      const parent = manifest.objects.find((object) => object.qualifiedName === 'Catalog.Пакеты')!;
+      const child = manifest.objects.find((object) => object.qualifiedName === 'Catalog.Пакеты.TabularSection.Строки')!;
+      const parentEntries = manifest.entriesByOwnerObjectId.get(parent.objectId) ?? [];
+      const childEntries = manifest.entriesByOwnerObjectId.get(child.objectId) ?? [];
+
+      assert.deepStrictEqual(
+        parentEntries.map((entry) => entry.filePath).sort(),
+        [parentDescriptor, directSidecar].map((filePath) => path.normalize(filePath)).sort(),
+      );
+      assert.deepStrictEqual(
+        childEntries.map((entry) => entry.filePath).sort(),
+        [childDescriptor, childSidecar].map((filePath) => path.normalize(filePath)).sort(),
+      );
+      assert.ok(manifest.directoriesByOwnerObjectId.get(child.objectId)?.some((directory) => directory.filePath === path.dirname(childSidecar)));
+      assert.ok(manifest.entriesByRelativePath.get(path.join('catalogs', 'mixed', 'пакеты', 'tabularsections', 'строки', 'ext', 'описание.xml').replace(/\\/gu, '/'))
+        ?.some((entry) => entry.ownerObjectId === child.objectId));
+      assert.ok(manifest.subtreeFileCountsByDirectory.get('catalogs/mixed/пакеты')! >= 4);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   test('scans overlapping selected object containers once and preserves selected artifact ownership', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-inventory-overlap-'));
     try {

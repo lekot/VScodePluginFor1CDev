@@ -328,7 +328,7 @@ async function collectMetadataOwnedPaths(
         const entries = await fs.readdir(directoryPath, { withFileTypes: true });
         throwIfCompareCancelled(cancellation);
         if (failed) {continue;}
-        directories.add(path.normalize(directoryPath));
+        directories.add(directoryPath);
         entries.sort((left, right) => left.name.localeCompare(right.name));
         for (const entry of entries) {
           throwIfCompareCancelled(cancellation);
@@ -336,7 +336,7 @@ async function collectMetadataOwnedPaths(
           if (entry.isDirectory()) {
             enqueueDirectory(entryPath);
           } else if (entry.isFile()) {
-            files.add(path.normalize(entryPath));
+            files.add(entryPath);
           }
         }
       } catch (error) {
