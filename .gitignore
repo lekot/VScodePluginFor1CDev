@@ -30,6 +30,7 @@ docs/*
 !docs/design/
 docs/design/*
 !docs/design/configuration-compare-manifest-plan.md
+!docs/design/configuration-compare-memory-diagnostic.md
 !docs/design/bsl-complete-module-diff.md
 !docs/design/bsl-manifest-path-resolution.md
 !docs/design/metadata-header-discovery.md
