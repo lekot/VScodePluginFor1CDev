@@ -19,9 +19,29 @@ import { CompareSession } from '../../../src/compareMerge/domain/compareSession'
 import type { CompareMessage } from '../../../src/compareMerge/domain/compareContracts';
 import type { MergeCandidate } from '../../../src/compareMerge/merge/mergePlanner';
 import { createBslModuleComparisonReference, createBslModuleComparisonReferences } from '../../../src/compareMerge/bsl/bslModuleComparison';
+import { trimTrailingPathSeparators } from '../../../src/compareMerge/normalizedFilePath';
 import { hashXmlText } from '../../../src/compareMerge/xml/xmlPatch';
 
 suite('ConfigurationCompareWorkspace', () => {
+  test('trims only trailing path separators and preserves other path characters', () => {
+    const cases: Array<[string, string]> = [
+      ['', ''],
+      ['/', ''],
+      ['\\', ''],
+      ['/\\//\\', ''],
+      ['C:\\', 'C:'],
+      ['alpha////\\\\', 'alpha'],
+      ['a///b\\\\c', 'a///b\\\\c'],
+      ['Данные/目录\\\\', 'Данные/目录'],
+      [`${'x'.repeat(100_000)}${'/'.repeat(100_000)}z`, `${'x'.repeat(100_000)}${'/'.repeat(100_000)}z`],
+      [`${'/\\'.repeat(50_000)}`, ''],
+    ];
+
+    for (const [input, expected] of cases) {
+      assert.strictEqual(trimTrailingPathSeparators(input), expected);
+    }
+  });
+
   test('resolves only host-side registered node ids and rejects forged webview input', async () => {
     const workspace = makeWorkspace();
 

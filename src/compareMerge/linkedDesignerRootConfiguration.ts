@@ -5,6 +5,9 @@ import { captureMergePath } from './merge/mergeSnapshot';
 import type { LinkedDesignerPackageRecipe, LinkedDesignerRootConfigurationSnapshot } from './linkedDesignerTypes';
 import { parseXmlDocument, elementChildren, textContent } from './xml/xmlDom';
 
+// This is the Designer XML namespace identifier, not a network endpoint.
+const MDCLASSES_NAMESPACE = 'http://v8.1c.ru/8.3/MDClasses';
+
 type RootConfigurationFileState = 'file' | 'missing' | 'unavailable';
 
 export interface RootConfigurationCapture {
@@ -77,28 +80,26 @@ interface RootChildObjectsContainer {
 }
 
 function rootChildObjectsContainer(root: XmlElement): RootChildObjectsContainer {
-  const metadataNamespace = 'http://v8.1c.ru/8.3/MDClasses';
-  if (root.localName !== 'MetaDataObject' || namespaceUriForName(root) !== metadataNamespace) {return { valid: false };}
+  if (root.localName !== 'MetaDataObject' || namespaceUriForName(root) !== MDCLASSES_NAMESPACE) {return { valid: false };}
   const owners = elementChildren(root);
-  if (owners.length !== 1 || owners[0]!.localName !== 'Configuration' || namespaceUriForName(owners[0]!) !== metadataNamespace) {return { valid: false };}
-  const childContainers = elementChildren(owners[0]!).filter((element) => element.localName === 'ChildObjects' && namespaceUriForName(element) === metadataNamespace);
+  if (owners.length !== 1 || owners[0]!.localName !== 'Configuration' || namespaceUriForName(owners[0]!) !== MDCLASSES_NAMESPACE) {return { valid: false };}
+  const childContainers = elementChildren(owners[0]!).filter((element) => element.localName === 'ChildObjects' && namespaceUriForName(element) === MDCLASSES_NAMESPACE);
   if (childContainers.length > 1) {return { valid: false };}
   return { valid: true, ...(childContainers[0] ? { element: childContainers[0] } : {}) };
 }
 
 function collectRootRegistrations(childContainer: XmlElement | undefined): Set<string> {
-  const metadataNamespace = 'http://v8.1c.ru/8.3/MDClasses';
   const result = new Set<string>();
   for (const parent of childContainer ? elementChildren(childContainer) : []) {
-    if (namespaceUriForName(parent) !== metadataNamespace) {continue;}
-    collectParentRegistrations(parent, metadataNamespace, result);
+    if (namespaceUriForName(parent) !== MDCLASSES_NAMESPACE) {continue;}
+    collectParentRegistrations(parent, result);
   }
   return result;
 }
 
-function collectParentRegistrations(parent: XmlElement, metadataNamespace: string, result: Set<string>): void {
+function collectParentRegistrations(parent: XmlElement, result: Set<string>): void {
   for (const item of elementChildren(parent)) {
-    if (namespaceUriForName(item) !== metadataNamespace) {continue;}
+    if (namespaceUriForName(item) !== MDCLASSES_NAMESPACE) {continue;}
     const value = textContent(item).trim();
     if (value) {result.add(`${parent.localName}\0${value}`);}
   }

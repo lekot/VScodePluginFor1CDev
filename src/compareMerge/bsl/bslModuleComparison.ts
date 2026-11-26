@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 import { compareCodeUnits } from '../../utils/compareCodeUnits';
+import { trimTrailingPathSeparators } from '../normalizedFilePath';
 import type { CompareTreeNode } from '../compareTreeTypes';
 import type { BslModuleIndexEntry } from './bslModuleIndexer';
 
@@ -240,8 +241,8 @@ function pathContains(root: string, candidate: string): boolean {
 }
 
 function sameNormalizedPath(left: string, right: string): boolean {
-  const normalizedLeft = path.resolve(left).replace(/[\\/]+$/u, '');
-  const normalizedRight = path.resolve(right).replace(/[\\/]+$/u, '');
+  const normalizedLeft = trimTrailingPathSeparators(path.resolve(left));
+  const normalizedRight = trimTrailingPathSeparators(path.resolve(right));
   return process.platform === 'win32'
     ? normalizedLeft.toLocaleLowerCase('en-US') === normalizedRight.toLocaleLowerCase('en-US')
     : normalizedLeft === normalizedRight;
